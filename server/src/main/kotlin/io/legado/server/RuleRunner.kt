@@ -29,7 +29,7 @@ import java.time.Duration
  * A deliberately small, server-safe subset of Legado's declarative source protocol.
  * It keeps execution away from Android APIs and rejects private-network targets.
  */
-class RuleRunner {
+class RuleRunner(private val responseFetcher: ((String) -> String)? = null) {
     private val client = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(10)).followRedirects(HttpClient.Redirect.NEVER).build()
     private val json = Json { ignoreUnknownKeys = true }
 
@@ -37,16 +37,18 @@ class RuleRunner {
         val source = sourceJson.objectValue()
         source.string("mainJs")?.takeIf { it.isNotBlank() }?.let { return JsSourceRunner(this, source).search(keyword) }
         val searchUrl = source.string("searchUrl") ?: throw RuleExecutionException("该书源未配置 searchUrl")
-        val body = fetch(renderUrl(searchUrl, keyword))
+        if (searchUrl.trimStart().startsWith("@js")) throw RuleExecutionException("该书源的 searchUrl JavaScript 尚不受服务器支持")
+        val sourceUrl = source.string("bookSourceUrl") ?: throw RuleExecutionException("书源缺少 bookSourceUrl")
+        val body = fetch(renderUrl(searchUrl, keyword).absolute(sourceUrl))
         val rule = source.objectValue("ruleSearch") ?: throw RuleExecutionException("该书源未配置 ruleSearch")
         val items = nodes(body, rule.string("bookList") ?: throw RuleExecutionException("缺少 ruleSearch.bookList"))
         return items.mapNotNull { item ->
-            val url = item.value(rule.string("bookUrl"))?.absolute(source.string("bookSourceUrl") ?: "") ?: return@mapNotNull null
+            val url = item.value(rule.string("bookUrl"))?.absolute(sourceUrl) ?: return@mapNotNull null
             SearchResult(
-                sourceId = source.string("bookSourceUrl")!!,
+                sourceId = sourceUrl,
                 name = item.value(rule.string("name")) ?: return@mapNotNull null,
                 author = item.value(rule.string("author")), bookUrl = url,
-                coverUrl = item.value(rule.string("coverUrl"))?.absolute(source.string("bookSourceUrl")!!),
+                coverUrl = item.value(rule.string("coverUrl"))?.absolute(sourceUrl),
                 intro = item.value(rule.string("intro")),
             )
         }
@@ -57,7 +59,7 @@ class RuleRunner {
         source.string("mainJs")?.takeIf { it.isNotBlank() }?.let { return JsSourceRunner(this, source).details(bookUrl) }
         val body = fetch(bookUrl)
         val rule = source.objectValue("ruleBookInfo") ?: throw RuleExecutionException("该书源未配置 ruleBookInfo")
-        val root = NodeValue.document(body)
+        val root = NodeValue.document(body).at(rule.string("init"))
         return BookDetails(
             sourceId = source.string("bookSourceUrl")!!,
             name = root.value(rule.string("name")) ?: "未命名书籍",
@@ -91,6 +93,7 @@ class RuleRunner {
     }
 
     internal fun fetch(url: String): String {
+        responseFetcher?.let { return it(url) }
         val initial = URI(url); validateTarget(initial)
         var request = HttpRequest.newBuilder(initial).timeout(Duration.ofSeconds(20)).header("User-Agent", "LegadoServer/0.1").GET().build()
         repeat(4) {
@@ -119,6 +122,7 @@ class RuleRunner {
     private fun renderUrl(template: String, keyword: String): String = template
         .replace("{{key}}", URLEncoder.encode(keyword, Charsets.UTF_8))
         .replace("{{keyword}}", URLEncoder.encode(keyword, Charsets.UTF_8))
+        .replace("{{page}}", "1")
         .replace("<key>", URLEncoder.encode(keyword, Charsets.UTF_8))
 
     private fun nodes(body: String, rule: String): List<NodeValue> = when {
@@ -193,16 +197,35 @@ private class JsSourceRunner(private val runner: RuleRunner, private val source:
 private class NodeValue private constructor(private val html: Element?, private val json: Any?) {
     fun value(rule: String?): String? {
         if (rule.isNullOrBlank()) return null
-        return if (json != null) runCatching { JsonPath.read<Any>(json, rule).toString() }.getOrNull()
+        return if (json != null) valueJson(rule)
         else html?.let { element ->
             val selector = rule.removePrefix("@css:"); val mode = selector.substringAfter("@", "text")
             val target = element.selectFirst(selector.substringBefore("@")) ?: return null
             when (mode) { "html" -> target.html(); "text" -> target.text(); else -> target.attr(mode) }
         }
     }
+    fun at(rule: String?): NodeValue {
+        if (json == null || rule.isNullOrBlank() || !rule.trimStart().startsWith("$")) return this
+        return runCatching { NodeValue.json(readJson(rule)) }.getOrDefault(this)
+    }
+
+    private fun valueJson(rule: String): String? {
+        val template = Regex("\\{\\{(.*?)}}").replace(rule) { match ->
+            runCatching { readJson(match.groupValues[1]).toString() }.getOrDefault("")
+        }
+        if (!template.startsWith("$")) return template.takeIf { it.isNotBlank() }
+        return runCatching { readJson(template).toString() }.getOrNull()
+    }
+
+    private fun readJson(path: String): Any = JsonPath.parse(json).read(path)
+
     companion object {
         fun html(element: Element) = NodeValue(element, null)
-        fun document(body: String) = NodeValue(Jsoup.parse(body).body(), null)
+        fun document(body: String) = if (body.trimStart().startsWith("{") || body.trimStart().startsWith("[")) {
+            NodeValue(null, JsonPath.parse(body).json<Any>())
+        } else {
+            NodeValue(Jsoup.parse(body).body(), null)
+        }
         fun json(value: Any?) = NodeValue(null, value)
     }
 }

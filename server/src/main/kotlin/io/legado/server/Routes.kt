@@ -106,7 +106,7 @@ fun Route.apiRoutes(database: Database, auth: AuthService, runner: RuleRunner) {
         put("/reading-progress") {
             if (auth.requireSession(call, true) == null) return@put
             val progress = call.receive<ReadingProgress>()
-            if (progress.sourceId.isBlank() || progress.bookUrl.isBlank() || progress.chapterUrl.isBlank() || progress.chapterIndex < 0) { call.respond(HttpStatusCode.BadRequest, ApiError("invalid_progress", "阅读进度无效")); return@put }
+            if (progress.sourceId.isBlank() || progress.bookUrl.isBlank() || progress.chapterUrl.isBlank() || progress.chapterIndex < 0 || !progress.scrollPosition.isFinite() || progress.scrollPosition !in 0.0..1.0) { call.respond(HttpStatusCode.BadRequest, ApiError("invalid_progress", "阅读进度无效")); return@put }
             call.respond(database.saveProgress(progress))
         }
     }

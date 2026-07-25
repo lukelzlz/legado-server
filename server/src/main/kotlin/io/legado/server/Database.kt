@@ -40,6 +40,7 @@ class Database(private val path: String) {
                 );
             """.trimIndent())
         }
+        migrateReadingProgress(db)
         val userExists = db.prepareStatement("select 1 from app_user where id = 1").use { it.executeQuery().next() }
         if (!userExists) {
             require(!initialPassword.isNullOrBlank()) { "首次启动必须提供 ADMIN_PASSWORD" }
@@ -109,14 +110,14 @@ class Database(private val path: String) {
     fun deleteSource(id: String): Boolean = connect { db -> db.prepareStatement("delete from source where id = ?").use { it.setString(1, id); it.executeUpdate() == 1 } }
     fun saveProgress(progress: ReadingProgress): ReadingProgress = connect { db ->
         val now = System.currentTimeMillis()
-        db.prepareStatement("""insert into reading_progress(source_id,book_url,chapter_url,chapter_index,updated_at) values(?,?,?,?,?)
-            on conflict(source_id,book_url) do update set chapter_url=excluded.chapter_url,chapter_index=excluded.chapter_index,updated_at=excluded.updated_at""").use {
-            it.setString(1, progress.sourceId); it.setString(2, progress.bookUrl); it.setString(3, progress.chapterUrl); it.setInt(4, progress.chapterIndex); it.setLong(5, now); it.executeUpdate()
+        db.prepareStatement("""insert into reading_progress(source_id,book_url,chapter_url,chapter_index,scroll_position,updated_at) values(?,?,?,?,?,?)
+            on conflict(source_id,book_url) do update set chapter_url=excluded.chapter_url,chapter_index=excluded.chapter_index,scroll_position=excluded.scroll_position,updated_at=excluded.updated_at""").use {
+            it.setString(1, progress.sourceId); it.setString(2, progress.bookUrl); it.setString(3, progress.chapterUrl); it.setInt(4, progress.chapterIndex); it.setDouble(5, progress.scrollPosition); it.setLong(6, now); it.executeUpdate()
         }
         progress.copy(updatedAt = now)
     }
-    fun getProgress(sourceId: String, bookUrl: String): ReadingProgress? = connect { db -> db.prepareStatement("select source_id,book_url,chapter_url,chapter_index,updated_at from reading_progress where source_id=? and book_url=?").use {
-        it.setString(1, sourceId); it.setString(2, bookUrl); it.executeQuery().use { rs -> if (rs.next()) ReadingProgress(rs.getString(1), rs.getString(2), rs.getString(3), rs.getInt(4), rs.getLong(5)) else null }
+    fun getProgress(sourceId: String, bookUrl: String): ReadingProgress? = connect { db -> db.prepareStatement("select source_id,book_url,chapter_url,chapter_index,scroll_position,updated_at from reading_progress where source_id=? and book_url=?").use {
+        it.setString(1, sourceId); it.setString(2, bookUrl); it.executeQuery().use { rs -> if (rs.next()) ReadingProgress(rs.getString(1), rs.getString(2), rs.getString(3), rs.getInt(4), rs.getDouble(5), rs.getLong(6)) else null }
     } }
     fun exportSources(ids: List<String>?): List<String> = connect { db ->
         val sql = if (ids.isNullOrEmpty()) "select payload from source order by name collate nocase" else "select payload from source where id in (${ids.joinToString(",") { "?" }}) order by name collate nocase"
@@ -124,6 +125,16 @@ class Database(private val path: String) {
     }
 
     private fun java.sql.ResultSet.toSummary() = SourceSummary(getString("id"), getString("name"), getString("source_url"), getString("source_group"), getInt("enabled") == 1, getInt("is_js") == 1, getLong("updated_at"), getLong("version"))
+    private fun migrateReadingProgress(db: Connection) {
+        val columns = db.createStatement().use { statement ->
+            statement.executeQuery("pragma table_info(reading_progress)").use { result ->
+                buildSet { while (result.next()) add(result.getString("name")) }
+            }
+        }
+        if ("scroll_position" !in columns) {
+            db.createStatement().use { it.executeUpdate("alter table reading_progress add column scroll_position real not null default 0") }
+        }
+    }
     private fun secret(): String = ByteArray(32).also(random::nextBytes).let { Base64.getUrlEncoder().withoutPadding().encodeToString(it) }
     private fun passwordHash(password: String): String {
         val salt = ByteArray(SALT_BYTES).also(random::nextBytes)

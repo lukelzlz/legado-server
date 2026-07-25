@@ -3,6 +3,7 @@ export type SourceRecord = { id: string; json: string; version: number; updatedA
 export type SearchResult = { sourceId: string; name: string; author?: string; bookUrl: string; coverUrl?: string; intro?: string }
 export type BookDetails = { sourceId: string; name: string; author?: string; intro?: string; coverUrl?: string; tocUrl: string }
 export type Chapter = { index: number; title: string; url: string }
+export type ReadingProgress = { sourceId: string; bookUrl: string; chapterUrl: string; chapterIndex: number; scrollPosition: number; updatedAt: number }
 
 let csrfToken: string | null = null
 export const setCsrfToken = (token: string | null) => { csrfToken = token }
@@ -33,5 +34,6 @@ export const api = {
   details: (sourceId: string, bookUrl: string) => request<BookDetails>('/api/books/details', { method: 'POST', body: JSON.stringify({ sourceId, bookUrl }) }),
   chapters: (sourceId: string, bookUrl: string) => request<Chapter[]>('/api/books/chapters', { method: 'POST', body: JSON.stringify({ sourceId, bookUrl }) }),
   content: (sourceId: string, chapterUrl: string) => request<{ title?: string; content: string }>('/api/books/content', { method: 'POST', body: JSON.stringify({ sourceId, chapterUrl }) }),
-  saveProgress: (sourceId: string, bookUrl: string, chapterUrl: string, chapterIndex: number) => request<void>('/api/reading-progress', { method: 'PUT', body: JSON.stringify({ sourceId, bookUrl, chapterUrl, chapterIndex }) }),
+  progress: (sourceId: string, bookUrl: string) => request<ReadingProgress | undefined>(`/api/reading-progress?sourceId=${encodeURIComponent(sourceId)}&bookUrl=${encodeURIComponent(bookUrl)}`),
+  saveProgress: (sourceId: string, bookUrl: string, chapterUrl: string, chapterIndex: number, scrollPosition: number) => request<ReadingProgress>('/api/reading-progress', { method: 'PUT', body: JSON.stringify({ sourceId, bookUrl, chapterUrl, chapterIndex, scrollPosition }) }),
 }

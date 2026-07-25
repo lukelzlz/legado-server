@@ -8,5 +8,5 @@ import io.ktor.server.http.content.*
 
 fun Route.staticWeb() {
     staticResources("/", "static")
-    get("/") { call.respondText("Legado Server is running. Build web/ and copy its dist/ into server/src/main/resources/static/.", ContentType.Text.Plain) }
+    get("/") { call.respondResource("static/index.html") }
 }

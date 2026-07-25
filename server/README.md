@@ -1,6 +1,6 @@
 # Legado Server
 
-独立的单用户 Web 服务。首次启动必须设置至少 12 位的 `ADMIN_PASSWORD`；密码只在初始化时写入 Argon2id 哈希，之后可移除该环境变量。
+独立的单用户 Web 服务。首次启动必须设置至少 12 位的 `ADMIN_PASSWORD`；密码只在初始化时写入 PBKDF2-HMAC-SHA256 哈希，之后可移除该环境变量。
 
 ## 运行
 

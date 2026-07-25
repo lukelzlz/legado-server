@@ -1,16 +1,17 @@
 package io.legado.server
 
-import de.mkammerer.argon2.Argon2Factory
 import java.nio.file.Files
 import java.nio.file.Path
 import java.security.SecureRandom
+import java.security.MessageDigest
+import javax.crypto.SecretKeyFactory
+import javax.crypto.spec.PBEKeySpec
 import java.sql.Connection
 import java.sql.DriverManager
 import java.util.Base64
 
 class Database(private val path: String) {
     private val random = SecureRandom()
-    private val argon2 = Argon2Factory.create()
 
     init { Files.createDirectories(Path.of(path).toAbsolutePath().parent) }
 
@@ -43,7 +44,7 @@ class Database(private val path: String) {
         if (!userExists) {
             require(!initialPassword.isNullOrBlank()) { "首次启动必须提供 ADMIN_PASSWORD" }
             db.prepareStatement("insert into app_user(id, password_hash) values(1, ?)").use {
-                it.setString(1, argon2.hash(3, 65536, 1, initialPassword.toCharArray()))
+                it.setString(1, passwordHash(initialPassword))
                 it.executeUpdate()
             }
         }
@@ -51,13 +52,13 @@ class Database(private val path: String) {
 
     fun verifyPassword(password: String): Boolean = connect { db ->
         db.prepareStatement("select password_hash from app_user where id = 1").use { query ->
-            query.executeQuery().use { result -> result.next() && argon2.verify(result.getString(1), password.toCharArray()) }
+            query.executeQuery().use { result -> result.next() && verifyPassword(result.getString(1), password) }
         }
     }
 
     fun resetPassword(password: String) = connect { db ->
         db.prepareStatement("update app_user set password_hash = ? where id = 1").use {
-            it.setString(1, argon2.hash(3, 65536, 1, password.toCharArray()))
+            it.setString(1, passwordHash(password))
             it.executeUpdate()
         }
         db.createStatement().use { it.executeUpdate("delete from session") }
@@ -124,7 +125,27 @@ class Database(private val path: String) {
 
     private fun java.sql.ResultSet.toSummary() = SourceSummary(getString("id"), getString("name"), getString("source_url"), getString("source_group"), getInt("enabled") == 1, getInt("is_js") == 1, getLong("updated_at"), getLong("version"))
     private fun secret(): String = ByteArray(32).also(random::nextBytes).let { Base64.getUrlEncoder().withoutPadding().encodeToString(it) }
-    companion object { private const val SESSION_TTL = 30L * 24 * 60 * 60 * 1000 }
+    private fun passwordHash(password: String): String {
+        val salt = ByteArray(SALT_BYTES).also(random::nextBytes)
+        val digest = derive(password, salt, PBKDF2_ITERATIONS)
+        return "pbkdf2-sha256$${PBKDF2_ITERATIONS}$${Base64.getEncoder().encodeToString(salt)}$${Base64.getEncoder().encodeToString(digest)}"
+    }
+    private fun verifyPassword(stored: String, password: String): Boolean {
+        val parts = stored.split('$')
+        if (parts.size != 4 || parts[0] != "pbkdf2-sha256") return false
+        val iterations = parts[1].toIntOrNull() ?: return false
+        return runCatching { MessageDigest.isEqual(derive(password, Base64.getDecoder().decode(parts[2]), iterations), Base64.getDecoder().decode(parts[3])) }.getOrDefault(false)
+    }
+    private fun derive(password: String, salt: ByteArray, iterations: Int): ByteArray {
+        val spec = PBEKeySpec(password.toCharArray(), salt, iterations, HASH_BITS)
+        return try { SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256").generateSecret(spec).encoded } finally { spec.clearPassword() }
+    }
+    companion object {
+        private const val SESSION_TTL = 30L * 24 * 60 * 60 * 1000
+        private const val PBKDF2_ITERATIONS = 600_000
+        private const val SALT_BYTES = 16
+        private const val HASH_BITS = 256
+    }
 }
 
 class VersionConflict : RuntimeException()

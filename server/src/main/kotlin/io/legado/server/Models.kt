@@ -52,4 +52,11 @@ import kotlinx.serialization.Serializable
 @Serializable data class Chapter(val index: Int, val title: String, val url: String)
 @Serializable data class ContentRequest(val sourceId: String, val chapterUrl: String)
 @Serializable data class ChapterContent(val title: String? = null, val content: String)
-@Serializable data class ReadingProgress(val sourceId: String, val bookUrl: String, val chapterUrl: String, val chapterIndex: Int, val updatedAt: Long = 0)
+@Serializable data class ReadingProgress(
+    val sourceId: String,
+    val bookUrl: String,
+    val chapterUrl: String,
+    val chapterIndex: Int,
+    val scrollPosition: Double = 0.0,
+    val updatedAt: Long = 0,
+)

@@ -1,0 +1,41 @@
+plugins {
+    alias libs.plugins.kotlin.jvm
+    alias libs.plugins.kotlin.serialization
+    id 'application'
+}
+
+group = 'io.legado'
+version = '0.1.0'
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(21)
+    }
+    sourceCompatibility = JavaVersion.VERSION_17
+    targetCompatibility = JavaVersion.VERSION_17
+}
+
+tasks.withType(org.jetbrains.kotlin.gradle.tasks.KotlinCompile).configureEach {
+    compilerOptions.jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
+}
+
+application {
+    mainClass = 'io.legado.server.ApplicationKt'
+}
+
+dependencies {
+    implementation "io.ktor:ktor-server-cio:3.4.3"
+    implementation "io.ktor:ktor-server-core:3.4.3"
+    implementation "io.ktor:ktor-server-content-negotiation:3.4.3"
+    implementation "io.ktor:ktor-serialization-kotlinx-json:3.4.3"
+    implementation "io.ktor:ktor-server-sessions:3.4.3"
+    implementation "io.ktor:ktor-server-status-pages:3.4.3"
+    implementation "org.xerial:sqlite-jdbc:3.49.1.0"
+    implementation "de.mkammerer:argon2-jvm:2.12"
+    implementation "org.jsoup:jsoup:1.18.3"
+    implementation "com.jayway.jsonpath:json-path:2.9.0"
+    implementation "org.mozilla:rhino:1.8.0"
+    implementation "org.slf4j:slf4j-simple:2.0.16"
+    testImplementation "io.ktor:ktor-server-test-host:3.4.3"
+    testImplementation libs.junit
+}

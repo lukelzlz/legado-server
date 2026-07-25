@@ -1,0 +1,16 @@
+services:
+  legado-server:
+    build:
+      context: .
+      dockerfile: Dockerfile.server
+    restart: unless-stopped
+    environment:
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?set ADMIN_PASSWORD in .env}
+      LEGADO_SECURE_COOKIES: "true"
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - legado-data:/data
+
+volumes:
+  legado-data:

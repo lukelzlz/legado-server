@@ -19,7 +19,12 @@ svg { width: 18px; height: 18px; flex: none; }
 .app-page-header nav button { position: relative; padding: 0 18px; color: var(--muted); background: transparent; font-size: 13px; }
 .app-page-header nav button.active { color: var(--ink); font-weight: 650; }
 .app-page-header nav button.active::after { position: absolute; right: 16px; bottom: 0; left: 16px; height: 2px; background: var(--accent); content: ''; }
-.app-page-header > .tool-button { justify-self: end; }
+.header-actions { justify-self: end; display: flex; align-items: center; gap: 15px; }
+.header-themes { display: flex; gap: 7px; }
+.header-themes button { width: 15px; height: 15px; padding: 0; border: 1px solid var(--line); border-radius: 50%; background: #fff; }
+.header-themes .theme-paper { background: #e8f0e2; }
+.header-themes .theme-dark { background: #292e2b; }
+.header-themes .selected { outline: 2px solid var(--accent); outline-offset: 2px; }
 .tool-button { width: 34px; height: 34px; display: grid; place-items: center; padding: 0; border-radius: 5px; color: var(--muted); background: transparent; }
 .tool-button:hover { background: var(--surface-muted); color: var(--ink); }
 .primary-button, .subtle-button, .danger-button { min-height: 34px; display: inline-flex; align-items: center; justify-content: center; gap: 7px; padding: 0 14px; border-radius: 5px; font-size: 13px; font-weight: 600; }
@@ -169,7 +174,7 @@ svg { width: 18px; height: 18px; flex: none; }
 .reader-icon-button { width: 34px; height: 34px; display: grid; place-items: center; padding: 0; color: var(--ink); background: transparent; border-radius: 5px; }
 .reader-icon-button:hover { background: var(--surface-muted); }
 .reader-icon-button svg { width: 18px; }
-.reading-content { width: min(690px, calc(100% - var(--reader-content-padding) * 2)); padding: clamp(44px, 7vw, 76px) 0 42px; margin: 0 auto; font-family: Georgia, "Noto Serif SC", "Songti SC", serif; font-size: var(--reader-font-size); line-height: var(--reader-line-height); letter-spacing: var(--reader-letter-spacing); }
+.reading-content { width: min(560px, calc(100% - var(--reader-content-padding) * 2)); padding: clamp(44px, 7vw, 76px) 0 42px; margin: 0 auto; font-family: Georgia, "Noto Serif SC", "Songti SC", serif; font-size: var(--reader-font-size); line-height: var(--reader-line-height); letter-spacing: var(--reader-letter-spacing); }
 .reading-content.font-serif { font-family: Georgia, "Noto Serif SC", serif; }
 .reading-content.font-song { font-family: "Songti SC", "STSong", "Noto Serif SC", serif; }
 .reading-content.font-system { font-family: "PingFang SC", "Microsoft YaHei", sans-serif; }
@@ -223,6 +228,7 @@ svg { width: 18px; height: 18px; flex: none; }
   .app-brand strong { display: none; }
   .app-page-header nav button { padding: 0 11px; }
   .app-page-header nav button.active::after { right: 9px; left: 9px; }
+  .header-themes { display: none; }
   .sources-page { min-height: calc(100vh - 58px); grid-template-columns: 1fr; }
   .sources-page .source-sidebar { min-height: auto; height: auto; }
   .source-sidebar-heading { display: none; }

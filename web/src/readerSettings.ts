@@ -1,8 +1,19 @@
 export type ReaderTheme = 'light' | 'paper' | 'dark'
-export type ReaderSettings = { theme: ReaderTheme; fontSize: number; lineHeight: number }
+export type ReaderFont = 'serif' | 'song' | 'system'
+export type ReaderSettings = {
+  theme: ReaderTheme
+  fontSize: number
+  lineHeight: number
+  letterSpacing: number
+  paragraphSpacing: number
+  contentPadding: number
+  font: ReaderFont
+}
 
 const storageKey = 'legado-reader-settings-v1'
-export const defaultReaderSettings: ReaderSettings = { theme: 'light', fontSize: 19, lineHeight: 1.95 }
+export const defaultReaderSettings: ReaderSettings = {
+  theme: 'light', fontSize: 19, lineHeight: 1.95, letterSpacing: 0, paragraphSpacing: 1.15, contentPadding: 80, font: 'song',
+}
 
 export function clampScrollPosition(value: number): number {
   return Number.isFinite(value) ? Math.min(1, Math.max(0, value)) : 0
@@ -19,6 +30,10 @@ export function loadReaderSettings(): ReaderSettings {
       theme: saved.theme === 'paper' || saved.theme === 'dark' ? saved.theme : defaultReaderSettings.theme,
       fontSize: typeof saved.fontSize === 'number' ? Math.min(28, Math.max(15, saved.fontSize)) : defaultReaderSettings.fontSize,
       lineHeight: typeof saved.lineHeight === 'number' ? Math.min(2.4, Math.max(1.45, saved.lineHeight)) : defaultReaderSettings.lineHeight,
+      letterSpacing: typeof saved.letterSpacing === 'number' ? Math.min(1.5, Math.max(-.25, saved.letterSpacing)) : defaultReaderSettings.letterSpacing,
+      paragraphSpacing: typeof saved.paragraphSpacing === 'number' ? Math.min(2, Math.max(.7, saved.paragraphSpacing)) : defaultReaderSettings.paragraphSpacing,
+      contentPadding: typeof saved.contentPadding === 'number' ? Math.min(120, Math.max(36, saved.contentPadding)) : defaultReaderSettings.contentPadding,
+      font: saved.font === 'serif' || saved.font === 'system' ? saved.font : defaultReaderSettings.font,
     }
   } catch {
     return defaultReaderSettings

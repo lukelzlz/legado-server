@@ -48,6 +48,7 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
   const [loading, setLoading] = useState(true)
   const [chapterQuery, setChapterQuery] = useState('')
   const [mobilePanel, setMobilePanel] = useState<'toc' | 'settings' | null>(null)
+  const [inShelf, setInShelf] = useState(true)
   const currentRef = useRef<{ chapter: Chapter; position: number } | null>(null)
   const timerRef = useRef<number | null>(null)
   const restoredRef = useRef(false)
@@ -67,6 +68,13 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
     setChapterIndex(nextIndex)
     setMobilePanel(null)
   }, [chapterIndex, openBook.chapters.length, persist])
+  const toggleShelf = async () => {
+    if (inShelf) {
+      if (!confirm(`移出“${openBook.details.name}”将清除书架、阅读进度和缓存封面，确定继续吗？`)) return
+      await api.removeFromBookshelf(openBook.details.sourceId, openBook.bookUrl); setInShelf(false); return
+    }
+    await api.addToBookshelf({ sourceId: openBook.details.sourceId, bookUrl: openBook.bookUrl, name: openBook.details.name, author: openBook.details.author, tocUrl: openBook.details.tocUrl, coverUrl: openBook.details.coverUrl }); setInShelf(true)
+  }
 
   useEffect(() => {
     let cancelled = false
@@ -114,7 +122,7 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
   } as CSSProperties
 
   return <main className={`reader-workspace theme-${settings.theme}`} style={readerStyle}>
-    <aside className="reader-sidebar"><header className="reader-brand"><strong>{openBook.details.name}</strong><Icon name="chevronDown" /></header><div className="chapter-search"><Icon name="search" /><input value={chapterQuery} onChange={event => setChapterQuery(event.target.value)} placeholder="搜索章节" /></div><div className="reader-side-title"><Icon name="list" /><span>目录</span></div><ChapterList chapters={filteredChapters} chapterIndex={chapterIndex} onSelect={changeChapter} /><footer><button className="shelf-button"><Icon name="plus" />添加到书架</button></footer></aside>
+    <aside className="reader-sidebar"><header className="reader-brand"><strong>{openBook.details.name}</strong><Icon name="chevronDown" /></header><div className="chapter-search"><Icon name="search" /><input value={chapterQuery} onChange={event => setChapterQuery(event.target.value)} placeholder="搜索章节" /></div><div className="reader-side-title"><Icon name="list" /><span>目录</span></div><ChapterList chapters={filteredChapters} chapterIndex={chapterIndex} onSelect={changeChapter} /><footer><button className="shelf-button" onClick={() => void toggleShelf()}><Icon name={inShelf ? 'check' : 'plus'} />{inShelf ? '已加入书架' : '添加到书架'}</button></footer></aside>
     <section className="reader-main"><header className="reader-header"><div className="reader-header-left"><IconButton label="返回书籍详情" icon="arrowLeft" onClick={() => { persist(); onClose() }} /><IconButton label="目录" icon="list" onClick={() => setMobilePanel('toc')} /></div><strong>{openBook.details.name}</strong><div className="reader-header-actions"><IconButton label="阅读进度" icon="bookmark" onClick={() => window.scrollTo({ top: 0, behavior: 'smooth' })} /><IconButton label="阅读设置" icon="settings" onClick={() => setMobilePanel('settings')} /><IconButton label="更多操作" icon="more" onClick={() => undefined} /></div></header><article className={`reading-content font-${settings.font}`}><h1>{chapter?.title}</h1>{loading && <p className="reader-status">正在加载正文...</p>}{message && <p className="reader-error">{message}</p>}{content && content.split('\n').filter(Boolean).map((line, index) => <p key={index}>{line}</p>)}{content && <footer className="reader-navigation"><button disabled={chapterIndex === 0 || loading} onClick={() => changeChapter(chapterIndex - 1)}><Icon name="arrowLeft" />上一章</button><div className="chapter-progress"><i style={{ width: `${chapterProgress}%` }} /><span>{chapterIndex + 1} / {openBook.chapters.length}</span></div><button disabled={chapterIndex === openBook.chapters.length - 1 || loading} onClick={() => changeChapter(chapterIndex + 1)}>下一章<Icon name="arrowRight" /></button></footer>}</article></section>
     <ReaderSettingsPanel settings={settings} onChange={onSettingsChange} />
     <nav className="mobile-reader-nav"><button onClick={() => setMobilePanel('toc')}><Icon name="list" /><span>目录</span></button><button onClick={() => window.scrollTo({ top: 0, behavior: 'smooth' })}><Icon name="sliders" /><span>进度</span></button><button onClick={() => setMobilePanel('settings')}><span className="aa">Aa</span><span>设置</span></button><button onClick={() => onSettingsChange({ ...settings, theme: settings.theme === 'dark' ? 'light' : 'dark' })}><Icon name="moon" /><span>夜间</span></button></nav>

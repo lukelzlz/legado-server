@@ -38,6 +38,15 @@ class Database(private val path: String) {
                   chapter_index integer not null, updated_at integer not null,
                   primary key (source_id, book_url)
                 );
+                create table if not exists cover_cache (
+                  cache_key text primary key, content_type text not null
+                );
+                create table if not exists book_shelf (
+                  source_id text not null, book_url text not null, name text not null,
+                  author text, toc_url text not null, cover_url text, cover_key text,
+                  last_read_at integer not null, primary key (source_id, book_url)
+                );
+                create index if not exists book_shelf_last_read_idx on book_shelf(last_read_at desc);
             """.trimIndent())
         }
         migrateReadingProgress(db)
@@ -114,17 +123,47 @@ class Database(private val path: String) {
             on conflict(source_id,book_url) do update set chapter_url=excluded.chapter_url,chapter_index=excluded.chapter_index,scroll_position=excluded.scroll_position,updated_at=excluded.updated_at""").use {
             it.setString(1, progress.sourceId); it.setString(2, progress.bookUrl); it.setString(3, progress.chapterUrl); it.setInt(4, progress.chapterIndex); it.setDouble(5, progress.scrollPosition); it.setLong(6, now); it.executeUpdate()
         }
+        db.prepareStatement("update book_shelf set last_read_at=? where source_id=? and book_url=?").use {
+            it.setLong(1, now); it.setString(2, progress.sourceId); it.setString(3, progress.bookUrl); it.executeUpdate()
+        }
         progress.copy(updatedAt = now)
     }
     fun getProgress(sourceId: String, bookUrl: String): ReadingProgress? = connect { db -> db.prepareStatement("select source_id,book_url,chapter_url,chapter_index,scroll_position,updated_at from reading_progress where source_id=? and book_url=?").use {
         it.setString(1, sourceId); it.setString(2, bookUrl); it.executeQuery().use { rs -> if (rs.next()) ReadingProgress(rs.getString(1), rs.getString(2), rs.getString(3), rs.getInt(4), rs.getDouble(5), rs.getLong(6)) else null }
     } }
+    fun saveBookshelf(request: BookshelfWriteRequest, cover: CachedCover?): BookshelfItem = connect { db ->
+        val now = System.currentTimeMillis()
+        db.autoCommit = false
+        try {
+            cover?.let { value -> db.prepareStatement("insert into cover_cache(cache_key,content_type) values(?,?) on conflict(cache_key) do update set content_type=excluded.content_type").use { it.setString(1, value.key); it.setString(2, value.contentType); it.executeUpdate() } }
+            db.prepareStatement("""insert into book_shelf(source_id,book_url,name,author,toc_url,cover_url,cover_key,last_read_at) values(?,?,?,?,?,?,?,?)
+                on conflict(source_id,book_url) do update set name=excluded.name,author=excluded.author,toc_url=excluded.toc_url,cover_url=excluded.cover_url,cover_key=coalesce(excluded.cover_key,book_shelf.cover_key),last_read_at=excluded.last_read_at""").use {
+                it.setString(1, request.sourceId); it.setString(2, request.bookUrl); it.setString(3, request.name); it.setString(4, request.author); it.setString(5, request.tocUrl); it.setString(6, request.coverUrl); it.setString(7, cover?.key); it.setLong(8, now); it.executeUpdate()
+            }
+            db.commit(); getBookshelf(db, request.sourceId, request.bookUrl)!!
+        } catch (error: Throwable) { db.rollback(); throw error } finally { db.autoCommit = true }
+    }
+    fun listBookshelf(): List<BookshelfItem> = connect { db -> db.prepareStatement("""select s.source_id,s.book_url,s.name,s.author,s.toc_url,s.cover_key,p.chapter_index,p.scroll_position,s.last_read_at from book_shelf s left join reading_progress p on p.source_id=s.source_id and p.book_url=s.book_url order by s.last_read_at desc""").use { query -> query.executeQuery().use { rs -> buildList { while (rs.next()) add(rs.toShelf()) } } } }
+    fun removeBookshelf(sourceId: String, bookUrl: String): String? = connect { db ->
+        db.autoCommit = false
+        try {
+            val key = db.prepareStatement("select cover_key from book_shelf where source_id=? and book_url=?").use { it.setString(1, sourceId); it.setString(2, bookUrl); it.executeQuery().use { rs -> if (rs.next()) rs.getString(1) else null } }
+            db.prepareStatement("delete from book_shelf where source_id=? and book_url=?").use { it.setString(1, sourceId); it.setString(2, bookUrl); it.executeUpdate() }
+            db.prepareStatement("delete from reading_progress where source_id=? and book_url=?").use { it.setString(1, sourceId); it.setString(2, bookUrl); it.executeUpdate() }
+            val orphan = key?.takeIf { value -> db.prepareStatement("select 1 from book_shelf where cover_key=?").use { it.setString(1, value); !it.executeQuery().next() } }
+            orphan?.let { value -> db.prepareStatement("delete from cover_cache where cache_key=?").use { it.setString(1, value); it.executeUpdate() } }
+            db.commit(); orphan
+        } catch (error: Throwable) { db.rollback(); throw error } finally { db.autoCommit = true }
+    }
+    fun coverContentType(key: String): String? = connect { db -> db.prepareStatement("select content_type from cover_cache where cache_key=?").use { it.setString(1, key); it.executeQuery().use { rs -> if (rs.next()) rs.getString(1) else null } } }
     fun exportSources(ids: List<String>?): List<String> = connect { db ->
         val sql = if (ids.isNullOrEmpty()) "select payload from source order by name collate nocase" else "select payload from source where id in (${ids.joinToString(",") { "?" }}) order by name collate nocase"
         db.prepareStatement(sql).use { statement -> ids?.forEachIndexed { index, id -> statement.setString(index + 1, id) }; statement.executeQuery().use { rs -> buildList { while (rs.next()) add(rs.getString(1)) } } }
     }
 
     private fun java.sql.ResultSet.toSummary() = SourceSummary(getString("id"), getString("name"), getString("source_url"), getString("source_group"), getInt("enabled") == 1, getInt("is_js") == 1, getLong("updated_at"), getLong("version"))
+    private fun java.sql.ResultSet.toShelf() = BookshelfItem(getString(1), getString(2), getString(3), getString(4), getString(5), getString(6), getObject(7) as? Int, getObject(8) as? Double, getLong(9))
+    private fun getBookshelf(db: Connection, sourceId: String, bookUrl: String): BookshelfItem? = db.prepareStatement("""select s.source_id,s.book_url,s.name,s.author,s.toc_url,s.cover_key,p.chapter_index,p.scroll_position,s.last_read_at from book_shelf s left join reading_progress p on p.source_id=s.source_id and p.book_url=s.book_url where s.source_id=? and s.book_url=?""").use { it.setString(1, sourceId); it.setString(2, bookUrl); it.executeQuery().use { rs -> if (rs.next()) rs.toShelf() else null } }
     private fun migrateReadingProgress(db: Connection) {
         val columns = db.createStatement().use { statement ->
             statement.executeQuery("pragma table_info(reading_progress)").use { result ->

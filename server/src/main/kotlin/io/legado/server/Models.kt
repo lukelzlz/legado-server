@@ -60,3 +60,22 @@ import kotlinx.serialization.Serializable
     val scrollPosition: Double = 0.0,
     val updatedAt: Long = 0,
 )
+@Serializable data class BookshelfWriteRequest(
+    val sourceId: String,
+    val bookUrl: String,
+    val name: String,
+    val author: String? = null,
+    val tocUrl: String,
+    val coverUrl: String? = null,
+)
+@Serializable data class BookshelfItem(
+    val sourceId: String,
+    val bookUrl: String,
+    val name: String,
+    val author: String? = null,
+    val tocUrl: String,
+    val coverKey: String? = null,
+    val chapterIndex: Int? = null,
+    val scrollPosition: Double? = null,
+    val lastReadAt: Long,
+)

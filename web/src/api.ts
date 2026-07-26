@@ -4,6 +4,8 @@ export type SearchResult = { sourceId: string; name: string; author?: string; bo
 export type BookDetails = { sourceId: string; name: string; author?: string; intro?: string; coverUrl?: string; tocUrl: string }
 export type Chapter = { index: number; title: string; url: string }
 export type ReadingProgress = { sourceId: string; bookUrl: string; chapterUrl: string; chapterIndex: number; scrollPosition: number; updatedAt: number }
+export type BookshelfItem = { sourceId: string; bookUrl: string; name: string; author?: string; tocUrl: string; coverKey?: string; chapterIndex?: number; scrollPosition?: number; lastReadAt: number }
+export type BookshelfWrite = { sourceId: string; bookUrl: string; name: string; author?: string; tocUrl: string; coverUrl?: string }
 
 let csrfToken: string | null = null
 export const setCsrfToken = (token: string | null) => { csrfToken = token }
@@ -36,4 +38,8 @@ export const api = {
   content: (sourceId: string, chapterUrl: string) => request<{ title?: string; content: string }>('/api/books/content', { method: 'POST', body: JSON.stringify({ sourceId, chapterUrl }) }),
   progress: (sourceId: string, bookUrl: string) => request<ReadingProgress | undefined>(`/api/reading-progress?sourceId=${encodeURIComponent(sourceId)}&bookUrl=${encodeURIComponent(bookUrl)}`),
   saveProgress: (sourceId: string, bookUrl: string, chapterUrl: string, chapterIndex: number, scrollPosition: number) => request<ReadingProgress>('/api/reading-progress', { method: 'PUT', body: JSON.stringify({ sourceId, bookUrl, chapterUrl, chapterIndex, scrollPosition }) }),
+  bookshelf: () => request<BookshelfItem[]>('/api/bookshelf'),
+  addToBookshelf: (book: BookshelfWrite) => request<BookshelfItem>('/api/bookshelf', { method: 'POST', body: JSON.stringify(book) }),
+  removeFromBookshelf: (sourceId: string, bookUrl: string) => request<void>(`/api/bookshelf?sourceId=${encodeURIComponent(sourceId)}&bookUrl=${encodeURIComponent(bookUrl)}`, { method: 'DELETE' }),
+  cover: (key: string) => `/api/covers/${encodeURIComponent(key)}`,
 }

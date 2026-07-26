@@ -8,7 +8,7 @@ import io.ktor.server.routing.*
 import kotlinx.coroutines.delay
 import kotlinx.serialization.json.Json
 
-fun Route.apiRoutes(database: Database, auth: AuthService, runner: RuleRunner) {
+fun Route.apiRoutes(database: Database, auth: AuthService, runner: RuleRunner, coverCache: CoverCache) {
     route("/api") {
         get("/sources") {
             if (auth.requireSession(call) == null) return@get
@@ -95,6 +95,32 @@ fun Route.apiRoutes(database: Database, auth: AuthService, runner: RuleRunner) {
             if (auth.requireSession(call, true) == null) return@post
             val request = call.receive<ContentRequest>(); val source = database.getSource(request.sourceId) ?: run { call.respond(HttpStatusCode.NotFound, ApiError("not_found", "书源不存在")); return@post }
             call.respondCatching { runner.content(source.json, request.chapterUrl) }
+        }
+        get("/bookshelf") {
+            if (auth.requireSession(call) == null) return@get
+            call.respond(database.listBookshelf())
+        }
+        post("/bookshelf") {
+            if (auth.requireSession(call, true) == null) return@post
+            val request = call.receive<BookshelfWriteRequest>()
+            if (request.sourceId.isBlank() || request.bookUrl.isBlank() || request.name.isBlank() || request.tocUrl.isBlank()) { call.respond(HttpStatusCode.BadRequest, ApiError("invalid_bookshelf", "书架数据无效")); return@post }
+            val cover = request.coverUrl?.takeIf { it.isNotBlank() }?.let { url -> runCatching { coverCache.cache(url) }.getOrNull() }
+            call.respond(database.saveBookshelf(request, cover))
+        }
+        delete("/bookshelf") {
+            if (auth.requireSession(call, true) == null) return@delete
+            val sourceId = call.request.queryParameters["sourceId"]; val bookUrl = call.request.queryParameters["bookUrl"]
+            if (sourceId.isNullOrBlank() || bookUrl.isNullOrBlank()) { call.respond(HttpStatusCode.BadRequest, ApiError("invalid_bookshelf", "缺少书籍标识")); return@delete }
+            database.removeBookshelf(sourceId, bookUrl)?.let(coverCache::delete)
+            call.respond(HttpStatusCode.NoContent)
+        }
+        get("/covers/{key}") {
+            if (auth.requireSession(call) == null) return@get
+            val key = call.parameters["key"] ?: return@get call.respond(HttpStatusCode.NotFound)
+            val file = coverCache.file(key) ?: return@get call.respond(HttpStatusCode.NotFound)
+            val type = database.coverContentType(key)?.let(ContentType::parse) ?: ContentType.Application.OctetStream
+            call.response.cacheControl(CacheControl.MaxAge(maxAgeSeconds = 7 * 24 * 60 * 60, visibility = CacheControl.Visibility.Private))
+            call.respondFile(file.toFile(), type)
         }
         get("/reading-progress") {
             if (auth.requireSession(call) == null) return@get

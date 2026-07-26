@@ -43,5 +43,20 @@ class DatabaseTest {
         }
     }
 
+    @Test
+    fun `removing shelf item clears its progress and returns an orphaned cover`() {
+        val path = temporaryDatabase()
+        try {
+            val database = Database(path); database.initialize("password-for-test")
+            val book = BookshelfWriteRequest("source", "book", "书名", "作者", "toc", "cover")
+            database.saveBookshelf(book, CachedCover("a".repeat(64), "image/jpeg"))
+            database.saveProgress(ReadingProgress("source", "book", "chapter", 3, .42))
+            assertEquals(1, database.listBookshelf().size)
+            assertEquals("a".repeat(64), database.removeBookshelf("source", "book"))
+            assertEquals(0, database.listBookshelf().size)
+            assertEquals(null, database.getProgress("source", "book"))
+        } finally { Files.deleteIfExists(java.nio.file.Path.of(path)) }
+    }
+
     private fun temporaryDatabase(): String = Files.createTempFile("legado-server-test", ".sqlite").toString()
 }

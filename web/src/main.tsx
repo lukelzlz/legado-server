@@ -1,14 +1,14 @@
 import { FormEvent, useCallback, useEffect, useState } from 'react'
 import { createRoot } from 'react-dom/client'
-import { api, SearchResult, setCsrfToken, SourceRecord, SourceSummary } from './api'
+import { api, BookshelfItem, SearchResult, setCsrfToken, SourceRecord, SourceSummary } from './api'
 import { Icon } from './icons'
 import { OpenBook, ReaderScreen } from './ReaderScreen'
 import { loadReaderSettings, ReaderSettings, saveReaderSettings } from './readerSettings'
 import './styles.css'
 
-type Page = 'sources' | 'library' | 'reader'
+type Page = 'sources' | 'library' | 'shelf' | 'reader'
 const readerStorageKey = 'legado-open-book-v1'
-const pageFromHash = (): Page => location.hash === '#sources' ? 'sources' : location.hash === '#reader' ? 'reader' : 'library'
+const pageFromHash = (): Page => location.hash === '#sources' ? 'sources' : location.hash === '#shelf' ? 'shelf' : location.hash === '#reader' ? 'reader' : 'library'
 
 function ToolButton({ label, icon, onClick }: { label: string; icon: Parameters<typeof Icon>[0]['name']; onClick: () => void }) {
   return <button className="tool-button" title={label} aria-label={label} onClick={onClick}><Icon name={icon} /></button>
@@ -21,7 +21,7 @@ function Login({ onLogin }: { onLogin: () => void }) {
 }
 
 function AppHeader({ page, settings, onSettingsChange, onNavigate, onLogout }: { page: Page; settings: ReaderSettings; onSettingsChange: (next: ReaderSettings) => void; onNavigate: (page: Page) => void; onLogout: () => void }) {
-  return <header className="app-page-header"><button className="app-brand" onClick={() => onNavigate('library')}><Icon name="book" /><strong>阅读服务器</strong></button><nav><button className={page === 'library' ? 'active' : ''} onClick={() => onNavigate('library')}>书库</button><button className={page === 'sources' ? 'active' : ''} onClick={() => onNavigate('sources')}>书源</button></nav><div className="header-actions"><div className="header-themes" aria-label="全站主题">{(['light', 'paper', 'dark'] as const).map(theme => <button key={theme} className={`theme-${theme} ${settings.theme === theme ? 'selected' : ''}`} aria-label={theme === 'light' ? '晓白' : theme === 'paper' ? '护眼' : '夜读'} onClick={() => onSettingsChange({ ...settings, theme })} />)}</div><ToolButton label="退出登录" icon="more" onClick={onLogout} /></div></header>
+  return <header className="app-page-header"><button className="app-brand" onClick={() => onNavigate('library')}><Icon name="book" /><strong>阅读服务器</strong></button><nav><button className={page === 'library' ? 'active' : ''} onClick={() => onNavigate('library')}>书库</button><button className={page === 'shelf' ? 'active' : ''} onClick={() => onNavigate('shelf')}>书架</button><button className={page === 'sources' ? 'active' : ''} onClick={() => onNavigate('sources')}>书源</button></nav><div className="header-actions"><div className="header-themes" aria-label="全站主题">{(['light', 'paper', 'dark'] as const).map(theme => <button key={theme} className={`theme-${theme} ${settings.theme === theme ? 'selected' : ''}`} aria-label={theme === 'light' ? '晓白' : theme === 'paper' ? '护眼' : '夜读'} onClick={() => onSettingsChange({ ...settings, theme })} />)}</div><ToolButton label="退出登录" icon="more" onClick={onLogout} /></div></header>
 }
 
 function SourceEditor({ selected, onSaved }: { selected: SourceSummary | null; onSaved: () => void }) {
@@ -50,18 +50,27 @@ function LibraryPage({ selected, sources, onSelect, onOpen }: { selected: Source
   return <main className="library-page"><section className="library-hero"><span className="section-kicker">在线书库</span><h1>找一本书，安静地读下去。</h1><p>从已配置的书源搜索并继续上次阅读。</p><form onSubmit={search}><Icon name="search" /><input value={keyword} onChange={event => setKeyword(event.target.value)} placeholder="输入书名或作者" /><button className="primary-button" disabled={loading}>{loading ? '搜索中...' : '搜索'}</button></form><label className="library-source-select">搜索范围<select value={selected?.id ?? ''} onChange={event => onSelect(sources.find(source => source.id === event.target.value) ?? null)}><option value="">全部书源</option>{sources.map(source => <option key={source.id} value={source.id}>{source.name}</option>)}</select></label></section>{message && <p className="form-error library-message">{message}</p>}{results.length > 0 && <section className="library-results"><header><h2>搜索结果</h2><small>{results.length} 本书</small></header><div>{results.map(result => <button key={`${result.sourceId}-${result.bookUrl}`} onClick={() => void open(result)}><span className="result-mark"><Icon name="book" /></span><span><strong>{result.name}</strong><small>{result.author || result.sourceId}</small></span><Icon name="arrowRight" /></button>)}</div></section>}{openBook && <section className="library-book-detail"><header><div><span className="section-kicker">书籍详情</span><h2>{openBook.details.name}</h2><p>{openBook.details.author || '未知作者'}</p></div><button className="primary-button" onClick={() => onOpen(openBook, resumeIndex)}>{openBook.progress ? '继续阅读' : '开始阅读'}<Icon name="arrowRight" /></button></header>{openBook.details.intro && <p className="book-intro">{openBook.details.intro}</p>}<div className="preview-chapters">{openBook.chapters.slice(0, 16).map(item => <button className={item.index === resumeIndex ? 'resume-chapter' : ''} key={item.url} onClick={() => onOpen(openBook, item.index)}><span>{item.title}</span>{item.index === resumeIndex && openBook.progress && <small>上次阅读</small>}</button>)}</div>{openBook.chapters.length > 16 && <p className="chapter-count">共 {openBook.chapters.length} 章，进入阅读器查看完整目录</p>}</section>}</main>
 }
 
+function ShelfPage({ onOpen }: { onOpen: (item: BookshelfItem) => void }) {
+  const [items, setItems] = useState<BookshelfItem[]>([]); const [message, setMessage] = useState('')
+  const load = useCallback(() => { void api.bookshelf().then(setItems).catch(error => setMessage(error instanceof Error ? error.message : '无法载入书架')) }, [])
+  useEffect(load, [load])
+  const remove = async (item: BookshelfItem) => { if (!confirm(`移出“${item.name}”将清除书架、阅读进度和缓存封面，确定继续吗？`)) return; try { await api.removeFromBookshelf(item.sourceId, item.bookUrl); setItems(values => values.filter(value => value.sourceId !== item.sourceId || value.bookUrl !== item.bookUrl)) } catch (error) { setMessage(error instanceof Error ? error.message : '移出失败') } }
+  return <main className="shelf-page"><header className="page-title"><div><span className="section-kicker">我的阅读</span><h1>书架</h1><p>继续上次未读完的故事。</p></div><small>{items.length} 本书</small></header>{message && <p className="form-error">{message}</p>}{items.length === 0 && !message ? <section className="shelf-empty"><Icon name="book" /><h2>书架还是空的</h2><p>打开一本书开始阅读，它会自动出现在这里。</p></section> : <section className="shelf-grid">{items.map(item => <article key={`${item.sourceId}-${item.bookUrl}`}><button className="shelf-cover" onClick={() => onOpen(item)} aria-label={`继续阅读 ${item.name}`}>{item.coverKey ? <img src={api.cover(item.coverKey)} alt="" /> : <span>{item.name.slice(0, 1)}</span>}</button><div className="shelf-card-body"><button className="shelf-title" onClick={() => onOpen(item)}>{item.name}</button><p>{item.author || '未知作者'}</p><small>{item.chapterIndex === undefined ? '刚加入书架' : `第 ${item.chapterIndex + 1} 章`}</small><div><button className="subtle-button" onClick={() => onOpen(item)}>继续阅读</button><button className="shelf-remove" onClick={() => void remove(item)} aria-label={`移出 ${item.name}`}><Icon name="close" /></button></div></div></article>)}</section>}</main>
+}
+
 function App() {
   const [ready, setReady] = useState(false); const [authenticated, setAuthenticated] = useState(false); const [settings, setSettings] = useState<ReaderSettings>(loadReaderSettings); const [page, setPage] = useState<Page>(pageFromHash); const [sources, setSources] = useState<SourceSummary[]>([]); const [selected, setSelected] = useState<SourceSummary | null>(null); const [reader, setReader] = useState<{ book: OpenBook; index: number } | null>(() => { try { return JSON.parse(sessionStorage.getItem(readerStorageKey) ?? 'null') } catch { return null } })
   useEffect(() => { saveReaderSettings(settings) }, [settings])
   useEffect(() => { void api.session().then(result => { setAuthenticated(result.authenticated); setCsrfToken(result.csrfToken ?? null); if (result.authenticated) void api.sources().then(setSources).catch(() => undefined) }).finally(() => setReady(true)) }, [])
   useEffect(() => { const sync = () => setPage(pageFromHash()); addEventListener('hashchange', sync); return () => removeEventListener('hashchange', sync) }, [])
   const navigate = (next: Page) => { if (next === 'reader' && !reader) return; location.hash = `#${next}`; setPage(next) }
-  const openReader = (book: OpenBook, index: number) => { const value = { book, index }; setReader(value); sessionStorage.setItem(readerStorageKey, JSON.stringify(value)); location.hash = '#reader'; setPage('reader') }
+  const openReader = (book: OpenBook, index: number) => { void api.addToBookshelf({ sourceId: book.details.sourceId, bookUrl: book.bookUrl, name: book.details.name, author: book.details.author, tocUrl: book.details.tocUrl, coverUrl: book.details.coverUrl }).catch(() => undefined); const value = { book, index }; setReader(value); sessionStorage.setItem(readerStorageKey, JSON.stringify(value)); location.hash = '#reader'; setPage('reader') }
+  const openShelfItem = async (item: BookshelfItem) => { try { const details = await api.details(item.sourceId, item.bookUrl); const [chapters, progress] = await Promise.all([api.chapters(details.sourceId, details.tocUrl), api.progress(details.sourceId, item.bookUrl)]); openReader({ details, bookUrl: item.bookUrl, chapters, progress }, progress?.chapterIndex ?? 0) } catch { navigate('library') } }
   const logout = async () => { try { await api.logout() } finally { setCsrfToken(null); setAuthenticated(false) } }
   if (!ready) return <main className={`app-loading theme-${settings.theme}`}><span>正在打开阅读空间...</span></main>
   if (!authenticated) return <div className={`app-shell theme-${settings.theme}`}><Login onLogin={() => setAuthenticated(true)} /></div>
   if (page === 'reader' && reader) return <div className={`app-shell theme-${settings.theme}`}><ReaderScreen openBook={reader.book} startIndex={reader.index} settings={settings} onSettingsChange={setSettings} onClose={() => navigate('library')} /></div>
-  return <div className={`app-shell theme-${settings.theme}`}><AppHeader page={page} settings={settings} onSettingsChange={setSettings} onNavigate={navigate} onLogout={() => void logout()} />{page === 'sources' ? <SourcesPage selected={selected} onSelect={setSelected} onSourcesChange={setSources} /> : <LibraryPage selected={selected} sources={sources} onSelect={setSelected} onOpen={openReader} />}</div>
+  return <div className={`app-shell theme-${settings.theme}`}><AppHeader page={page} settings={settings} onSettingsChange={setSettings} onNavigate={navigate} onLogout={() => void logout()} />{page === 'sources' ? <SourcesPage selected={selected} onSelect={setSelected} onSourcesChange={setSources} /> : page === 'shelf' ? <ShelfPage onOpen={item => void openShelfItem(item)} /> : <LibraryPage selected={selected} sources={sources} onSelect={setSelected} onOpen={openReader} />}</div>
 }
 
 createRoot(document.getElementById('root')!).render(<App />)

@@ -48,7 +48,7 @@ fun Application.legadoApplication(config: ServerConfig = ServerConfig.fromEnviro
     routing {
         get("/healthz") { call.respond(mapOf("status" to "ok")) }
         authRoutes(auth)
-        apiRoutes(database, auth, RuleRunner())
+        apiRoutes(database, auth, RuleRunner(), CoverCache(config.coverCacheDirectory))
         staticWeb()
     }
 }

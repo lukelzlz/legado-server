@@ -132,7 +132,9 @@ fun Route.apiRoutes(database: Database, auth: AuthService, runner: RuleRunner, c
         }
         post("/books/content") {
             if (auth.requireSession(call, true) == null) return@post
-            val request = call.receive<ContentRequest>(); val source = database.getSource(request.sourceId) ?: run { call.respond(HttpStatusCode.NotFound, ApiError("not_found", "书源不存在")); return@post }
+            val request = call.receive<ContentRequest>()
+            if (request.sourceId.isBlank() || request.chapterUrl.isBlank()) { call.respond(HttpStatusCode.BadRequest, ApiError("invalid_content", "缺少书源或章节地址")); return@post }
+            val source = database.getSource(request.sourceId) ?: run { call.respond(HttpStatusCode.NotFound, ApiError("not_found", "书源不存在")); return@post }
             val cached = request.bookUrl?.let { database.cachedContent(request.sourceId, it, request.chapterUrl) }
             if (cached != null) call.respond(cached)
             else call.respondCatching {

@@ -1,7 +1,8 @@
 FROM docker.m.daocloud.io/library/node:22-alpine AS web-build
 WORKDIR /src/web
-COPY web/package.json ./
-RUN npm install --ignore-scripts
+COPY web/package.json web/package-lock.json ./
+RUN --mount=type=cache,id=legado-npm-cache,target=/root/.npm \
+    npm ci --ignore-scripts --no-audit --fund=false
 COPY web/ ./
 RUN npm run build
 

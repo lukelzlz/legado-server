@@ -28,8 +28,11 @@ fun Application.legadoApplication(config: ServerConfig = ServerConfig.fromEnviro
     database.initialize(config.initialAdminPassword)
     val auth = AuthService(database, config.secureCookies)
     val subscriptions = SubscriptionService(database) { message -> log.info(message) }
+    val runner = RuleRunner()
+    val bookCache = BookCacheService(database, runner) { message -> log.info(message) }
     subscriptions.start()
-    environment.monitor.subscribe(ApplicationStopped) { subscriptions.stop() }
+    bookCache.start()
+    environment.monitor.subscribe(ApplicationStopped) { subscriptions.stop(); bookCache.stop() }
 
     install(ContentNegotiation) {
         json(Json { ignoreUnknownKeys = true; explicitNulls = false })
@@ -51,7 +54,7 @@ fun Application.legadoApplication(config: ServerConfig = ServerConfig.fromEnviro
     routing {
         get("/healthz") { call.respond(mapOf("status" to "ok")) }
         authRoutes(auth)
-        apiRoutes(database, auth, RuleRunner(), CoverCache(config.coverCacheDirectory), subscriptions)
+        apiRoutes(database, auth, runner, CoverCache(config.coverCacheDirectory), subscriptions, bookCache)
         staticWeb()
     }
 }

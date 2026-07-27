@@ -63,7 +63,7 @@ import kotlinx.serialization.Serializable
     val tocUrl: String,
 )
 @Serializable data class Chapter(val index: Int, val title: String, val url: String)
-@Serializable data class ContentRequest(val sourceId: String, val chapterUrl: String)
+@Serializable data class ContentRequest(val sourceId: String, val chapterUrl: String, val bookUrl: String? = null)
 @Serializable data class ChapterContent(val title: String? = null, val content: String)
 @Serializable data class ReadingProgress(
     val sourceId: String,
@@ -81,6 +81,12 @@ import kotlinx.serialization.Serializable
     val tocUrl: String,
     val coverUrl: String? = null,
 )
+@Serializable data class BookshelfSourceSwitchRequest(
+    val oldSourceId: String,
+    val oldBookUrl: String,
+    val book: BookshelfWriteRequest,
+)
+data class CachedBookRequest(val sourceId: String, val bookUrl: String, val tocUrl: String)
 @Serializable data class BookshelfItem(
     val sourceId: String,
     val bookUrl: String,
@@ -91,4 +97,8 @@ import kotlinx.serialization.Serializable
     val chapterIndex: Int? = null,
     val scrollPosition: Double? = null,
     val lastReadAt: Long,
+    val cachedChapters: Int = 0,
+    val totalChapters: Int = 0,
+    val cacheState: String = "idle",
+    val cacheError: String? = null,
 )

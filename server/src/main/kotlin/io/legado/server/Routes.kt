@@ -17,7 +17,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.Json
 
-fun Route.apiRoutes(database: Database, auth: AuthService, runner: RuleRunner, coverCache: CoverCache, subscriptions: SubscriptionService) {
+fun Route.apiRoutes(database: Database, auth: AuthService, runner: RuleRunner, coverCache: CoverCache, subscriptions: SubscriptionService, bookCache: BookCacheService) {
     route("/api") {
         get("/sources") {
             if (auth.requireSession(call) == null) return@get
@@ -133,7 +133,11 @@ fun Route.apiRoutes(database: Database, auth: AuthService, runner: RuleRunner, c
         post("/books/content") {
             if (auth.requireSession(call, true) == null) return@post
             val request = call.receive<ContentRequest>(); val source = database.getSource(request.sourceId) ?: run { call.respond(HttpStatusCode.NotFound, ApiError("not_found", "书源不存在")); return@post }
-            call.respondCatching { runner.content(source.json, request.chapterUrl) }
+            val cached = request.bookUrl?.let { database.cachedContent(request.sourceId, it, request.chapterUrl) }
+            if (cached != null) call.respond(cached)
+            else call.respondCatching {
+                runner.content(source.json, request.chapterUrl).also { content -> request.bookUrl?.let { database.cacheBookContent(request.sourceId, it, request.chapterUrl, content) } }
+            }
         }
         get("/bookshelf") {
             if (auth.requireSession(call) == null) return@get
@@ -144,14 +148,37 @@ fun Route.apiRoutes(database: Database, auth: AuthService, runner: RuleRunner, c
             val request = call.receive<BookshelfWriteRequest>()
             if (request.sourceId.isBlank() || request.bookUrl.isBlank() || request.name.isBlank() || request.tocUrl.isBlank()) { call.respond(HttpStatusCode.BadRequest, ApiError("invalid_bookshelf", "书架数据无效")); return@post }
             val cover = request.coverUrl?.takeIf { it.isNotBlank() }?.let { url -> runCatching { coverCache.cache(url) }.getOrNull() }
-            call.respond(database.saveBookshelf(request, cover))
+            val item = database.saveBookshelf(request, cover)
+            bookCache.enqueue(CachedBookRequest(request.sourceId, request.bookUrl, request.tocUrl))
+            call.respond(item)
         }
         delete("/bookshelf") {
             if (auth.requireSession(call, true) == null) return@delete
             val sourceId = call.request.queryParameters["sourceId"]; val bookUrl = call.request.queryParameters["bookUrl"]
             if (sourceId.isNullOrBlank() || bookUrl.isNullOrBlank()) { call.respond(HttpStatusCode.BadRequest, ApiError("invalid_bookshelf", "缺少书籍标识")); return@delete }
+            bookCache.cancel(sourceId, bookUrl)
             database.removeBookshelf(sourceId, bookUrl)?.let(coverCache::delete)
             call.respond(HttpStatusCode.NoContent)
+        }
+        post("/bookshelf/cache") {
+            if (auth.requireSession(call, true) == null) return@post
+            val request = call.receive<BookRequest>()
+            val item = database.listBookshelf().firstOrNull { it.sourceId == request.sourceId && it.bookUrl == request.bookUrl }
+                ?: return@post call.respond(HttpStatusCode.NotFound, ApiError("not_found", "书籍不在书架中"))
+            bookCache.enqueue(CachedBookRequest(item.sourceId, item.bookUrl, item.tocUrl))
+            call.respond(HttpStatusCode.Accepted, mapOf("status" to "queued"))
+        }
+        post("/bookshelf/switch-source") {
+            if (auth.requireSession(call, true) == null) return@post
+            val request = call.receive<BookshelfSourceSwitchRequest>()
+            val book = request.book
+            if (request.oldSourceId.isBlank() || request.oldBookUrl.isBlank() || book.sourceId.isBlank() || book.bookUrl.isBlank() || book.name.isBlank() || book.tocUrl.isBlank()) { call.respond(HttpStatusCode.BadRequest, ApiError("invalid_bookshelf", "书架数据无效")); return@post }
+            val cover = book.coverUrl?.takeIf { it.isNotBlank() }?.let { url -> runCatching { coverCache.cache(url) }.getOrNull() }
+            bookCache.cancel(request.oldSourceId, request.oldBookUrl)
+            val (item, orphan) = database.switchBookshelf(request.oldSourceId, request.oldBookUrl, book, cover)
+            orphan?.let(coverCache::delete)
+            bookCache.enqueue(CachedBookRequest(book.sourceId, book.bookUrl, book.tocUrl))
+            call.respond(item)
         }
         get("/covers/{key}") {
             if (auth.requireSession(call) == null) return@get

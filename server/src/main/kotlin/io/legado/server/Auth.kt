@@ -25,6 +25,10 @@ class AuthService(val database: Database, private val secureCookies: Boolean) {
     }
 
     fun csrf(session: UserSession): String? = database.csrfFor(session)
+    fun hasWebSocketSession(call: ApplicationCall, csrfToken: String?): Boolean {
+        val session = call.sessions.get<UserSession>() ?: return false
+        return csrfToken != null && csrf(session) == csrfToken
+    }
 
     fun canAttempt(remoteHost: String): Boolean = attempts[remoteHost]?.let { it.until > System.currentTimeMillis() } != true
     fun failure(remoteHost: String) {

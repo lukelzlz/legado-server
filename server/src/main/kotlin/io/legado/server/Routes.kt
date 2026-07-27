@@ -6,16 +6,23 @@ import io.ktor.server.http.content.LocalFileContent
 import io.ktor.server.request.*
 import io.ktor.server.response.*
 import io.ktor.server.routing.*
+import io.ktor.server.websocket.*
+import io.ktor.websocket.*
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.Json
+import java.util.concurrent.atomic.AtomicInteger
 
 fun Route.apiRoutes(database: Database, auth: AuthService, runner: RuleRunner, coverCache: CoverCache, subscriptions: SubscriptionService, bookCache: BookCacheService) {
     route("/api") {
@@ -80,14 +87,58 @@ fun Route.apiRoutes(database: Database, auth: AuthService, runner: RuleRunner, c
             if (auth.requireSession(call, true) == null) return@post
             val request = call.receive<SearchRequest>()
             if (request.keyword.isBlank()) { call.respond(HttpStatusCode.BadRequest, ApiError("invalid_keyword", "请输入搜索关键词")); return@post }
-            val sources = database.listSources(null).filter { it.enabled && (request.sourceIds.isNullOrEmpty() || it.id in request.sourceIds) }
-            val sourceRecords = sources.mapNotNull { summary -> database.getSource(summary.id) }
-            val results = boundedConcurrentMap(sourceRecords, sourceSearchConcurrency()) { source ->
-                withTimeoutOrNull(SEARCH_TIMEOUT_MS) {
-                    withContext(Dispatchers.IO) { runCatching { runner.search(source.json, request.keyword) }.getOrElse { emptyList() } }
-                } ?: emptyList()
-            }.flatten()
+            val sourceRecords = database.listSearchSourceRecords(request.sourceIds)
+            val results = boundedConcurrentMap(sourceRecords, sourceSearchConcurrency()) { source -> readableSearchResults(runner, source.json, request.keyword) }.flatten()
             call.respond(results)
+        }
+        webSocket("/search/stream") {
+            val csrf = call.request.queryParameters["csrf"]
+            if (!auth.hasWebSocketSession(call, csrf)) {
+                close(CloseReason(CloseReason.Codes.VIOLATED_POLICY, "请先登录"))
+                return@webSocket
+            }
+            val request = (incoming.receive() as? Frame.Text)?.readText()?.let { text -> runCatching { Json.decodeFromString<SearchRequest>(text) }.getOrNull() }
+            if (request?.keyword.isNullOrBlank()) {
+                send(Frame.Text(Json.encodeToString(SearchStreamEvent("error", message = "请输入搜索关键词"))))
+                close(CloseReason(CloseReason.Codes.CANNOT_ACCEPT, "搜索条件无效"))
+                return@webSocket
+            }
+            val sourceRecords = database.listSearchSourceRecords(request!!.sourceIds)
+            send(Frame.Text(Json.encodeToString(SearchStreamEvent("start", totalSources = sourceRecords.size))))
+            coroutineScope {
+                val events = Channel<SearchStreamEvent>(Channel.BUFFERED)
+                val counters = SearchStreamCounters(sourceRecords.size)
+                val semaphore = Semaphore(sourceSearchConcurrency())
+                val workers = sourceRecords.map { source -> async {
+                    semaphore.withPermit {
+                        val outcome = searchSourceOutcome(runner, source.json, request.keyword)
+                        if (outcome.results.isNotEmpty()) events.send(SearchStreamEvent("results", results = outcome.results))
+                        events.send(counters.complete(outcome))
+                    }
+                } }
+                launch {
+                    workers.awaitAll()
+                    events.send(counters.snapshot("done"))
+                    events.close()
+                }
+                val cancellationMonitor = launch {
+                    try {
+                        for (frame in incoming) {
+                            if (frame is Frame.Text && frame.readText().contains("\"cancel\"")) break
+                        }
+                    } finally {
+                        workers.forEach { it.cancel() }
+                        events.close()
+                    }
+                }
+                try {
+                    for (event in events) send(Frame.Text(Json.encodeToString(event)))
+                } finally {
+                    cancellationMonitor.cancel()
+                    workers.forEach { it.cancel() }
+                    events.close()
+                }
+            }
         }
         get("/subscriptions") {
             if (auth.requireSession(call) == null) return@get
@@ -170,6 +221,13 @@ fun Route.apiRoutes(database: Database, auth: AuthService, runner: RuleRunner, c
             bookCache.enqueue(CachedBookRequest(item.sourceId, item.bookUrl, item.tocUrl))
             call.respond(HttpStatusCode.Accepted, mapOf("status" to "queued"))
         }
+        put("/bookshelf/status") {
+            if (auth.requireSession(call, true) == null) return@put
+            val request = call.receive<BookshelfStatusRequest>()
+            if (request.sourceId.isBlank() || request.bookUrl.isBlank()) return@put call.respond(HttpStatusCode.BadRequest, ApiError("invalid_bookshelf", "缺少书籍标识"))
+            database.setBookshelfCompleted(request.sourceId, request.bookUrl, request.completed)?.let { call.respond(it) }
+                ?: call.respond(HttpStatusCode.NotFound, ApiError("not_found", "书籍不在书架中"))
+        }
         post("/bookshelf/switch-source") {
             if (auth.requireSession(call, true) == null) return@post
             val request = call.receive<BookshelfSourceSwitchRequest>()
@@ -212,6 +270,58 @@ private fun validateSubscriptionUrl(value: String) {
 }
 
 private const val SEARCH_TIMEOUT_MS = 30_000L
+private const val CANDIDATE_VALIDATION_TIMEOUT_MS = 30_000L
+
+private suspend fun readableSearchResults(runner: RuleRunner, sourceJson: String, keyword: String): List<SearchResult> =
+    searchSourceOutcome(runner, sourceJson, keyword).results
+
+internal data class SearchSourceOutcome(val results: List<SearchResult>, val failed: Boolean)
+
+internal class SearchStreamCounters(private val totalSources: Int) {
+    private val completed = AtomicInteger()
+    private val matched = AtomicInteger()
+    private val empty = AtomicInteger()
+    private val failed = AtomicInteger()
+    private val resultCount = AtomicInteger()
+
+    fun complete(outcome: SearchSourceOutcome): SearchStreamEvent {
+        when {
+            outcome.results.isNotEmpty() -> {
+                matched.incrementAndGet()
+                resultCount.addAndGet(outcome.results.size)
+            }
+            outcome.failed -> failed.incrementAndGet()
+            else -> empty.incrementAndGet()
+        }
+        completed.incrementAndGet()
+        return snapshot()
+    }
+
+    fun snapshot(type: String = "progress") = SearchStreamEvent(
+        type = type,
+        totalSources = totalSources,
+        completedSources = completed.get(),
+        matchedSources = matched.get(),
+        emptySources = empty.get(),
+        failedSources = failed.get(),
+        resultCount = resultCount.get(),
+    )
+}
+
+internal suspend fun searchSourceOutcome(runner: RuleRunner, sourceJson: String, keyword: String): SearchSourceOutcome {
+    val candidates = try {
+        withTimeout(SEARCH_TIMEOUT_MS) { withContext(Dispatchers.IO) { runner.search(sourceJson, keyword) } }
+    } catch (error: Throwable) {
+        if (error is CancellationException) throw error
+        return SearchSourceOutcome(emptyList(), failed = true)
+    }
+    val results = candidates.filter { result ->
+        withTimeoutOrNull(CANDIDATE_VALIDATION_TIMEOUT_MS) {
+            withContext(Dispatchers.IO) { runner.isReadableSearchResult(sourceJson, result) }
+        } == true
+    }
+    return SearchSourceOutcome(results, failed = false)
+}
 
 internal fun sourceSearchConcurrency(processors: Int = Runtime.getRuntime().availableProcessors()): Int = minOf(processors.coerceAtLeast(1), 8)
 

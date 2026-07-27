@@ -1,6 +1,7 @@
-import { CSSProperties, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { CSSProperties, PointerEvent as ReactPointerEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { api, BookDetails, Chapter, ReadingProgress } from './api'
 import { Icon } from './icons'
+import { isInteractiveReaderTarget, isTapGesture, mobileTapZone } from './readerInteractions'
 import { clampScrollPosition, ReaderSettings, scrollPosition } from './readerSettings'
 
 export type OpenBook = { details: BookDetails; bookUrl: string; chapters: Chapter[]; progress?: ReadingProgress }
@@ -48,10 +49,19 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
   const [loading, setLoading] = useState(true)
   const [chapterQuery, setChapterQuery] = useState('')
   const [mobilePanel, setMobilePanel] = useState<'toc' | 'settings' | null>(null)
+  const [toolbarsVisible, setToolbarsVisible] = useState(true)
+  const [boundaryMessage, setBoundaryMessage] = useState('')
   const [inShelf, setInShelf] = useState(true)
+  const [speechState, setSpeechState] = useState<'idle' | 'speaking' | 'paused'>('idle')
   const currentRef = useRef<{ chapter: Chapter; position: number } | null>(null)
   const timerRef = useRef<number | null>(null)
   const restoredRef = useRef(false)
+  const speechRef = useRef<SpeechSynthesisUtterance | null>(null)
+  const preloadedContentRef = useRef(new Map<string, string>())
+  const preloadingRef = useRef(new Set<string>())
+  const lastScrollYRef = useRef(0)
+  const pointerStartRef = useRef<{ x: number; y: number; target: EventTarget | null } | null>(null)
+  const boundaryTimerRef = useRef<number | null>(null)
   const chapter = openBook.chapters[chapterIndex]
   const filteredChapters = useMemo(() => openBook.chapters.filter(item => item.title.toLowerCase().includes(chapterQuery.trim().toLowerCase())), [chapterQuery, openBook.chapters])
   const chapterProgress = openBook.chapters.length > 1 ? (chapterIndex / (openBook.chapters.length - 1)) * 100 : 0
@@ -62,12 +72,51 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
     void api.saveProgress(openBook.details.sourceId, openBook.bookUrl, current.chapter.url, current.chapter.index, clampScrollPosition(current.position)).catch(() => undefined)
   }, [openBook.bookUrl, openBook.details.sourceId])
 
+  const stopSpeech = useCallback(() => {
+    if (!('speechSynthesis' in window)) return
+    window.speechSynthesis.cancel()
+    speechRef.current = null
+    setSpeechState('idle')
+  }, [])
+
+  const toggleSpeech = useCallback(() => {
+    if (!content || !chapter || !('speechSynthesis' in window)) return
+    if (speechState === 'speaking') { window.speechSynthesis.pause(); setSpeechState('paused'); return }
+    if (speechState === 'paused') { window.speechSynthesis.resume(); setSpeechState('speaking'); return }
+    const utterance = new SpeechSynthesisUtterance(`${chapter.title}。${content}`)
+    utterance.lang = 'zh-CN'
+    utterance.onend = () => setSpeechState('idle')
+    utterance.onerror = () => setSpeechState('idle')
+    speechRef.current = utterance
+    window.speechSynthesis.speak(utterance)
+    setSpeechState('speaking')
+  }, [chapter, content, speechState])
+
+  const preloadNextChapter = useCallback((index: number) => {
+    const next = openBook.chapters[index + 1]
+    if (!next || preloadedContentRef.current.has(next.url) || preloadingRef.current.has(next.url)) return
+    preloadingRef.current.add(next.url)
+    void api.content(openBook.details.sourceId, next.url, openBook.bookUrl)
+      .then(result => preloadedContentRef.current.set(next.url, result.content))
+      .catch(() => undefined)
+      .finally(() => preloadingRef.current.delete(next.url))
+  }, [openBook.bookUrl, openBook.chapters, openBook.details.sourceId])
+
   const changeChapter = useCallback((nextIndex: number) => {
-    if (nextIndex < 0 || nextIndex >= openBook.chapters.length || nextIndex === chapterIndex) return
+    if (nextIndex < 0 || nextIndex >= openBook.chapters.length || nextIndex === chapterIndex) {
+      if (nextIndex < 0 || nextIndex >= openBook.chapters.length) {
+        setBoundaryMessage(nextIndex < 0 ? '已是第一章' : '已是最后一章')
+        if (boundaryTimerRef.current !== null) window.clearTimeout(boundaryTimerRef.current)
+        boundaryTimerRef.current = window.setTimeout(() => { boundaryTimerRef.current = null; setBoundaryMessage('') }, 1400)
+      }
+      return
+    }
     persist()
+    stopSpeech()
     setChapterIndex(nextIndex)
     setMobilePanel(null)
-  }, [chapterIndex, openBook.chapters.length, persist])
+    setToolbarsVisible(true)
+  }, [chapterIndex, openBook.chapters.length, persist, stopSpeech])
   const toggleShelf = async () => {
     if (inShelf) {
       if (!confirm(`移出“${openBook.details.name}”将清除书架、阅读进度和缓存封面，确定继续吗？`)) return
@@ -79,17 +128,23 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
   useEffect(() => {
     let cancelled = false
     setLoading(true); setMessage(''); setContent('')
-    void api.content(openBook.details.sourceId, chapter.url, openBook.bookUrl).then(result => {
+    const applyContent = (nextContent: string) => {
       if (cancelled) return
-      setContent(result.content)
+      setContent(nextContent)
       const position = !restoredRef.current && chapter.index === startIndex ? openBook.progress?.scrollPosition ?? 0 : 0
       restoredRef.current = true
       currentRef.current = { chapter, position }
       window.requestAnimationFrame(() => {
         const maxScroll = Math.max(0, document.documentElement.scrollHeight - window.innerHeight)
-        window.scrollTo({ top: maxScroll * position, behavior: 'auto' })
+        const targetScroll = maxScroll * position
+        lastScrollYRef.current = targetScroll
+        window.scrollTo({ top: targetScroll, behavior: 'auto' })
       })
-    }).catch(error => { if (!cancelled) setMessage(error instanceof Error ? error.message : '无法读取正文') }).finally(() => { if (!cancelled) setLoading(false) })
+      setLoading(false)
+    }
+    const preloaded = preloadedContentRef.current.get(chapter.url)
+    if (preloaded) applyContent(preloaded)
+    else void api.content(openBook.details.sourceId, chapter.url, openBook.bookUrl).then(result => applyContent(result.content)).catch(error => { if (!cancelled) setMessage(error instanceof Error ? error.message : '无法读取正文') }).finally(() => { if (!cancelled) setLoading(false) })
     return () => { cancelled = true }
   }, [chapter, openBook.details.sourceId, openBook.progress?.scrollPosition, startIndex])
 
@@ -97,14 +152,24 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
     const saveAfterScroll = () => {
       const current = currentRef.current
       if (!current) return
-      current.position = scrollPosition(window.scrollY, document.documentElement.scrollHeight, window.innerHeight)
+      const currentY = window.scrollY
+      const scrollDelta = currentY - lastScrollYRef.current
+      if (currentY > 72 && scrollDelta > 12) setToolbarsVisible(false)
+      else if (scrollDelta < -8) setToolbarsVisible(true)
+      lastScrollYRef.current = currentY
+      current.position = scrollPosition(currentY, document.documentElement.scrollHeight, window.innerHeight)
+      if (current.position >= .7) preloadNextChapter(current.chapter.index)
       if (timerRef.current !== null) return
       timerRef.current = window.setTimeout(() => { timerRef.current = null; persist() }, 1200)
     }
     const onVisibilityChange = () => { if (document.visibilityState === 'hidden') persist() }
     window.addEventListener('scroll', saveAfterScroll, { passive: true }); document.addEventListener('visibilitychange', onVisibilityChange)
     return () => { window.removeEventListener('scroll', saveAfterScroll); document.removeEventListener('visibilitychange', onVisibilityChange); if (timerRef.current !== null) window.clearTimeout(timerRef.current); persist() }
-  }, [persist])
+  }, [persist, preloadNextChapter])
+
+  useEffect(() => () => stopSpeech(), [stopSpeech])
+  useEffect(() => () => { if (boundaryTimerRef.current !== null) window.clearTimeout(boundaryTimerRef.current) }, [])
+  useEffect(() => { if (mobilePanel) setToolbarsVisible(true) }, [mobilePanel])
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -121,9 +186,23 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
     '--reader-font-size': `${settings.fontSize}px`, '--reader-line-height': settings.lineHeight, '--reader-letter-spacing': `${settings.letterSpacing}px`, '--reader-paragraph-spacing': `${settings.paragraphSpacing}em`, '--reader-content-padding': `${settings.contentPadding}px`,
   } as CSSProperties
 
-  return <main className={`reader-workspace theme-${settings.theme}`} style={readerStyle}>
+  const onReadingPointerDown = (event: ReactPointerEvent<HTMLElement>) => {
+    if (window.innerWidth > 720 || loading || mobilePanel || isInteractiveReaderTarget(event.target)) return
+    pointerStartRef.current = { x: event.clientX, y: event.clientY, target: event.target }
+  }
+  const onReadingPointerUp = (event: ReactPointerEvent<HTMLElement>) => {
+    const start = pointerStartRef.current
+    pointerStartRef.current = null
+    if (!start || window.innerWidth > 720 || loading || mobilePanel || isInteractiveReaderTarget(event.target) || isInteractiveReaderTarget(start.target) || !isTapGesture(start.x, start.y, event.clientX, event.clientY) || window.getSelection()?.toString()) return
+    const zone = mobileTapZone(event.clientY, window.innerHeight)
+    if (zone === 'previous') changeChapter(chapterIndex - 1)
+    else if (zone === 'next') changeChapter(chapterIndex + 1)
+    else setToolbarsVisible(visible => !visible)
+  }
+
+  return <main className={`reader-workspace theme-${settings.theme} ${toolbarsVisible ? '' : 'toolbars-hidden'}`} style={readerStyle}>
     <aside className="reader-sidebar"><header className="reader-brand"><strong>{openBook.details.name}</strong><Icon name="chevronDown" /></header><div className="chapter-search"><Icon name="search" /><input value={chapterQuery} onChange={event => setChapterQuery(event.target.value)} placeholder="搜索章节" /></div><div className="reader-side-title"><Icon name="list" /><span>目录</span></div><ChapterList chapters={filteredChapters} chapterIndex={chapterIndex} onSelect={changeChapter} /><footer><button className="shelf-button" onClick={() => void toggleShelf()}><Icon name={inShelf ? 'check' : 'plus'} />{inShelf ? '已加入书架' : '添加到书架'}</button></footer></aside>
-    <section className="reader-main"><header className="reader-header"><div className="reader-header-left"><IconButton label="返回书籍详情" icon="arrowLeft" onClick={() => { persist(); onClose() }} /><IconButton label="目录" icon="list" onClick={() => setMobilePanel('toc')} /></div><strong>{openBook.details.name}</strong><div className="reader-header-actions"><IconButton label="阅读进度" icon="bookmark" onClick={() => window.scrollTo({ top: 0, behavior: 'smooth' })} /><IconButton label="阅读设置" icon="settings" onClick={() => setMobilePanel('settings')} /><IconButton label="更多操作" icon="more" onClick={() => undefined} /></div></header><article className={`reading-content font-${settings.font}`}><h1>{chapter?.title}</h1>{loading && <p className="reader-status">正在加载正文...</p>}{message && <p className="reader-error">{message}</p>}{content && content.split('\n').filter(Boolean).map((line, index) => <p key={index}>{line}</p>)}{content && <footer className="reader-navigation"><button disabled={chapterIndex === 0 || loading} onClick={() => changeChapter(chapterIndex - 1)}><Icon name="arrowLeft" />上一章</button><div className="chapter-progress"><i style={{ width: `${chapterProgress}%` }} /><span>{chapterIndex + 1} / {openBook.chapters.length}</span></div><button disabled={chapterIndex === openBook.chapters.length - 1 || loading} onClick={() => changeChapter(chapterIndex + 1)}>下一章<Icon name="arrowRight" /></button></footer>}</article></section>
+    <section className="reader-main"><header className="reader-header"><div className="reader-header-left"><IconButton label="返回书籍详情" icon="arrowLeft" onClick={() => { persist(); stopSpeech(); onClose() }} /><IconButton label="目录" icon="list" onClick={() => setMobilePanel('toc')} /></div><strong>{openBook.details.name}</strong><div className="reader-header-actions"><IconButton label="阅读进度" icon="bookmark" onClick={() => window.scrollTo({ top: 0, behavior: 'smooth' })} /><IconButton label="阅读设置" icon="settings" onClick={() => setMobilePanel('settings')} /><IconButton label={speechState === 'speaking' ? '暂停朗读' : speechState === 'paused' ? '继续朗读' : '朗读本章'} icon="volume2" onClick={toggleSpeech} /></div></header><article className={`reading-content font-${settings.font}`} onPointerDown={onReadingPointerDown} onPointerUp={onReadingPointerUp}><h1>{chapter?.title}</h1>{loading && <p className="reader-status">正在加载正文...</p>}{message && <p className="reader-error">{message}</p>}{content && content.split('\n').filter(Boolean).map((line, index) => <p key={index}>{line}</p>)}{content && <footer className="reader-navigation"><button disabled={chapterIndex === 0 || loading} onClick={() => changeChapter(chapterIndex - 1)}><Icon name="arrowLeft" />上一章</button><div className="chapter-progress"><i style={{ width: `${chapterProgress}%` }} /><span>{chapterIndex + 1} / {openBook.chapters.length}</span></div><button disabled={chapterIndex === openBook.chapters.length - 1 || loading} onClick={() => changeChapter(chapterIndex + 1)}>下一章<Icon name="arrowRight" /></button></footer>}</article>{boundaryMessage && <p className="reader-boundary-message" role="status">{boundaryMessage}</p>}</section>
     <ReaderSettingsPanel settings={settings} onChange={onSettingsChange} />
     <nav className="mobile-reader-nav"><button onClick={() => setMobilePanel('toc')}><Icon name="list" /><span>目录</span></button><button onClick={() => window.scrollTo({ top: 0, behavior: 'smooth' })}><Icon name="sliders" /><span>进度</span></button><button onClick={() => setMobilePanel('settings')}><span className="aa">Aa</span><span>设置</span></button><button onClick={() => onSettingsChange({ ...settings, theme: settings.theme === 'dark' ? 'light' : 'dark' })}><Icon name="moon" /><span>夜间</span></button></nav>
     {mobilePanel && <><button className="reader-overlay" aria-label="关闭面板" onClick={() => setMobilePanel(null)} /><section className={`mobile-reader-sheet ${mobilePanel}`}><header><strong>{mobilePanel === 'toc' ? '选择章节' : '阅读设置'}</strong><IconButton label="关闭" icon="close" onClick={() => setMobilePanel(null)} /></header>{mobilePanel === 'toc' ? <><div className="sheet-volume">共 {openBook.chapters.length} 章</div><ChapterList chapters={openBook.chapters} chapterIndex={chapterIndex} onSelect={changeChapter} /></> : <ReaderSettingsPanel settings={settings} onChange={onSettingsChange} onClose={() => setMobilePanel(null)} />}</section></>}

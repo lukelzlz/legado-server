@@ -57,12 +57,34 @@ class RuleRunner(private val responseFetcher: ((String) -> String)? = null) {
     fun details(sourceJson: String, bookUrl: String): BookDetails {
         val source = sourceJson.objectValue()
         source.string("mainJs")?.takeIf { it.isNotBlank() }?.let { return JsSourceRunner(this, source).details(bookUrl) }
+        return declarativeDetails(source, bookUrl)
+    }
+
+    /**
+     * Confirms that a search hit can enter the reader without presenting a broken source choice.
+     * This deliberately reads only the first chapter and does not persist any result.
+     */
+    fun isReadableSearchResult(sourceJson: String, result: SearchResult): Boolean = runCatching {
+        val source = sourceJson.objectValue()
+        val details = source.string("mainJs")?.takeIf { it.isNotBlank() }
+            ?.let { JsSourceRunner(this, source).details(result.bookUrl, requireName = true) }
+            ?: declarativeDetails(source, result.bookUrl, requireName = true)
+        requireHttpUrl(details.coverUrl, "封面规则未提取到 HTTP(S) 地址")
+        val firstChapter = chapters(sourceJson, details.tocUrl).firstOrNull()
+            ?: throw RuleExecutionException("目录规则未提取到章节")
+        content(sourceJson, firstChapter.url)
+        true
+    }.getOrDefault(false)
+
+    private fun declarativeDetails(source: JsonObject, bookUrl: String, requireName: Boolean = false): BookDetails {
         val body = fetch(bookUrl)
         val rule = source.objectValue("ruleBookInfo") ?: throw RuleExecutionException("该书源未配置 ruleBookInfo")
         val root = NodeValue.document(body).at(rule.string("init"))
+        val name = root.value(rule.string("name"))?.trim().orEmpty()
+        if (requireName && name.isBlank()) throw RuleExecutionException("详情标题规则未提取到书名")
         return BookDetails(
             sourceId = source.string("bookSourceUrl")!!,
-            name = root.value(rule.string("name")) ?: "未命名书籍",
+            name = name.ifBlank { "未命名书籍" },
             author = root.value(rule.string("author")), intro = root.value(rule.string("intro")),
             coverUrl = root.value(rule.string("coverUrl"))?.absolute(bookUrl),
             tocUrl = root.value(rule.string("tocUrl"))?.absolute(bookUrl) ?: bookUrl,
@@ -119,6 +141,11 @@ class RuleRunner(private val responseFetcher: ((String) -> String)? = null) {
         }
     }
 
+    private fun requireHttpUrl(value: String?, message: String) {
+        val uri = runCatching { value?.trim()?.let(::URI) }.getOrNull()
+        if (uri?.scheme !in setOf("http", "https") || uri?.host.isNullOrBlank()) throw RuleExecutionException(message)
+    }
+
     private fun renderUrl(template: String, keyword: String): String = template
         .replace("{{key}}", URLEncoder.encode(keyword, Charsets.UTF_8))
         .replace("{{keyword}}", URLEncoder.encode(keyword, Charsets.UTF_8))
@@ -147,9 +174,11 @@ private class JsSourceRunner(private val runner: RuleRunner, private val source:
         val url = book.string("bookUrl") ?: return@mapNotNull null
         SearchResult(source.string("bookSourceUrl")!!, book.string("name") ?: return@mapNotNull null, book.string("author"), url, book.string("coverUrl"), book.string("intro"))
     }
-    fun details(bookUrl: String): BookDetails {
+    fun details(bookUrl: String, requireName: Boolean = false): BookDetails {
         val value = callOptional("getBookInfo", arrayOf(bookObject(bookUrl)))?.jsonObjectOrEmpty() ?: JsonObject(emptyMap())
-        return BookDetails(source.string("bookSourceUrl")!!, value.string("name") ?: "未命名书籍", value.string("author"), value.string("intro"), value.string("coverUrl"), value.string("tocUrl") ?: bookUrl)
+        val name = value.string("name")?.trim().orEmpty()
+        if (requireName && name.isBlank()) throw RuleExecutionException("详情标题规则未提取到书名")
+        return BookDetails(source.string("bookSourceUrl")!!, name.ifBlank { "未命名书籍" }, value.string("author"), value.string("intro"), value.string("coverUrl"), value.string("tocUrl") ?: bookUrl)
     }
     fun chapters(tocUrl: String): List<Chapter> = call("getChapters", arrayOf(bookObject(tocUrl))).jsonArray().mapIndexedNotNull { index, value ->
         val chapter = Json.parseToJsonElement(value).jsonObject; val url = chapter.string("url") ?: return@mapIndexedNotNull null; Chapter(index, chapter.string("title") ?: "第 ${index + 1} 章", url)

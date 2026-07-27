@@ -45,6 +45,17 @@ import kotlinx.serialization.Serializable
 @Serializable data class ValidateResponse(val valid: Boolean, val errors: List<String>, val warnings: List<String>)
 @Serializable data class DebugRequest(val keyword: String = "测试")
 @Serializable data class SearchRequest(val keyword: String, val sourceIds: List<String>? = null)
+@Serializable data class SearchStreamEvent(
+    val type: String,
+    val totalSources: Int = 0,
+    val completedSources: Int = 0,
+    val matchedSources: Int = 0,
+    val emptySources: Int = 0,
+    val failedSources: Int = 0,
+    val resultCount: Int = 0,
+    val results: List<SearchResult> = emptyList(),
+    val message: String? = null,
+)
 @Serializable data class SearchResult(
     val sourceId: String,
     val name: String,
@@ -86,6 +97,7 @@ import kotlinx.serialization.Serializable
     val oldBookUrl: String,
     val book: BookshelfWriteRequest,
 )
+@Serializable data class BookshelfStatusRequest(val sourceId: String, val bookUrl: String, val completed: Boolean)
 data class CachedBookRequest(val sourceId: String, val bookUrl: String, val tocUrl: String)
 @Serializable data class BookshelfItem(
     val sourceId: String,
@@ -101,4 +113,5 @@ data class CachedBookRequest(val sourceId: String, val bookUrl: String, val tocU
     val totalChapters: Int = 0,
     val cacheState: String = "idle",
     val cacheError: String? = null,
+    val completed: Boolean = false,
 )

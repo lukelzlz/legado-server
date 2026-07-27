@@ -59,6 +59,25 @@ class DatabaseTest {
     }
 
     @Test
+    fun `shelf completion state persists and old shelves migrate as unread`() {
+        val path = temporaryDatabase()
+        try {
+            DriverManager.getConnection("jdbc:sqlite:$path").use { database ->
+                database.createStatement().use { statement ->
+                    statement.executeUpdate("create table book_shelf (source_id text not null, book_url text not null, name text not null, author text, toc_url text not null, cover_url text, cover_key text, last_read_at integer not null, primary key (source_id, book_url))")
+                    statement.executeUpdate("insert into book_shelf values ('old', 'book', '旧书', null, 'toc', null, null, 1)")
+                }
+            }
+            val database = Database(path); database.initialize("password-for-test")
+            assertEquals(false, database.listBookshelf().single().completed)
+
+            database.saveBookshelf(BookshelfWriteRequest("source", "book", "新书", tocUrl = "toc"), null)
+            assertEquals(true, database.setBookshelfCompleted("source", "book", true)!!.completed)
+            assertEquals(true, database.listBookshelf().first { it.sourceId == "source" }.completed)
+        } finally { Files.deleteIfExists(java.nio.file.Path.of(path)) }
+    }
+
+    @Test
     fun `batch import deduplicates source URLs and overwrites existing sources`() {
         val path = temporaryDatabase()
         try {
@@ -75,6 +94,22 @@ class DatabaseTest {
             assertEquals(0, update.imported)
             assertEquals(1, update.updated)
             assertEquals("初版", database.listSources(null).single().name)
+        } finally { Files.deleteIfExists(java.nio.file.Path.of(path)) }
+    }
+
+    @Test
+    fun `search source records load enabled sources in one filtered query`() {
+        val path = temporaryDatabase()
+        try {
+            val database = Database(path); database.initialize("password-for-test")
+            database.importSources(listOf(
+                """{"bookSourceUrl":"https://enabled.example","bookSourceName":"可用"}""",
+                """{"bookSourceUrl":"https://disabled.example","bookSourceName":"停用","enabled":false}""",
+            ))
+
+            assertEquals(listOf("https://enabled.example"), database.listSearchSourceRecords(null).map { it.id })
+            assertEquals(listOf("https://enabled.example"), database.listSearchSourceRecords(listOf("https://enabled.example")).map { it.id })
+            assertEquals(0, database.listSearchSourceRecords(listOf("https://disabled.example")).size)
         } finally { Files.deleteIfExists(java.nio.file.Path.of(path)) }
     }
 

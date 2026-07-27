@@ -29,6 +29,7 @@ dependencies {
     implementation "io.ktor:ktor-server-content-negotiation:3.4.3"
     implementation "io.ktor:ktor-serialization-kotlinx-json:3.4.3"
     implementation "io.ktor:ktor-server-sessions:3.4.3"
+    implementation "io.ktor:ktor-server-websockets:3.4.3"
     implementation "io.ktor:ktor-server-status-pages:3.4.3"
     implementation "org.xerial:sqlite-jdbc:3.49.1.0"
     implementation "org.jsoup:jsoup:1.18.3"

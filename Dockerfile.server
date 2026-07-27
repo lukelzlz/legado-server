@@ -12,7 +12,8 @@ COPY gradle/ gradle/
 COPY gradle/libs.versions.toml gradle/libs.versions.toml
 COPY server/ server/
 COPY --from=web-build /src/web/dist/ server/src/main/resources/static/
-RUN --mount=type=cache,target=/home/gradle/.gradle gradle -p server installDist --no-daemon
+RUN --mount=type=cache,target=/home/gradle/.gradle gradle -p server clean installDist --no-daemon --no-build-cache \
+    && jar uf server/build/install/legado-server/lib/legado-server-0.1.0.jar -C server/src/main/resources static
 
 FROM docker.m.daocloud.io/library/eclipse-temurin:17-jre-jammy
 RUN apt-get update && apt-get install -y --no-install-recommends gosu && rm -rf /var/lib/apt/lists/* \

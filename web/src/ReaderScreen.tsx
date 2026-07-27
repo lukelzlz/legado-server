@@ -79,7 +79,7 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
   useEffect(() => {
     let cancelled = false
     setLoading(true); setMessage(''); setContent('')
-    void api.content(openBook.details.sourceId, chapter.url).then(result => {
+    void api.content(openBook.details.sourceId, chapter.url, openBook.bookUrl).then(result => {
       if (cancelled) return
       setContent(result.content)
       const position = !restoredRef.current && chapter.index === startIndex ? openBook.progress?.scrollPosition ?? 0 : 0

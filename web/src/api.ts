@@ -4,8 +4,9 @@ export type SearchResult = { sourceId: string; name: string; author?: string; bo
 export type BookDetails = { sourceId: string; name: string; author?: string; intro?: string; coverUrl?: string; tocUrl: string }
 export type Chapter = { index: number; title: string; url: string }
 export type ReadingProgress = { sourceId: string; bookUrl: string; chapterUrl: string; chapterIndex: number; scrollPosition: number; updatedAt: number }
-export type BookshelfItem = { sourceId: string; bookUrl: string; name: string; author?: string; tocUrl: string; coverKey?: string; chapterIndex?: number; scrollPosition?: number; lastReadAt: number }
+export type BookshelfItem = { sourceId: string; bookUrl: string; name: string; author?: string; tocUrl: string; coverKey?: string; chapterIndex?: number; scrollPosition?: number; lastReadAt: number; cachedChapters: number; totalChapters: number; cacheState: 'idle' | 'caching' | 'ready' | 'failed'; cacheError?: string }
 export type BookshelfWrite = { sourceId: string; bookUrl: string; name: string; author?: string; tocUrl: string; coverUrl?: string }
+export type BookshelfSourceSwitch = { oldSourceId: string; oldBookUrl: string; book: BookshelfWrite }
 export type ImportResponse = { imported: number; updated: number; skipped: number; errors: string[] }
 export type SourceSubscription = { id: number; url: string; enabled: boolean; createdAt: number; updatedAt: number; lastSuccessAt?: number; lastAttemptAt?: number; lastError?: string; lastImported: number; contentHash?: string }
 
@@ -42,11 +43,13 @@ export const api = {
   search: (keyword: string, sourceIds?: string[]) => request<SearchResult[]>('/api/search', { method: 'POST', body: JSON.stringify({ keyword, sourceIds }) }),
   details: (sourceId: string, bookUrl: string) => request<BookDetails>('/api/books/details', { method: 'POST', body: JSON.stringify({ sourceId, bookUrl }) }),
   chapters: (sourceId: string, bookUrl: string) => request<Chapter[]>('/api/books/chapters', { method: 'POST', body: JSON.stringify({ sourceId, bookUrl }) }),
-  content: (sourceId: string, chapterUrl: string) => request<{ title?: string; content: string }>('/api/books/content', { method: 'POST', body: JSON.stringify({ sourceId, chapterUrl }) }),
+  content: (sourceId: string, chapterUrl: string, bookUrl?: string) => request<{ title?: string; content: string }>('/api/books/content', { method: 'POST', body: JSON.stringify({ sourceId, chapterUrl, bookUrl }) }),
   progress: (sourceId: string, bookUrl: string) => request<ReadingProgress | undefined>(`/api/reading-progress?sourceId=${encodeURIComponent(sourceId)}&bookUrl=${encodeURIComponent(bookUrl)}`),
   saveProgress: (sourceId: string, bookUrl: string, chapterUrl: string, chapterIndex: number, scrollPosition: number) => request<ReadingProgress>('/api/reading-progress', { method: 'PUT', body: JSON.stringify({ sourceId, bookUrl, chapterUrl, chapterIndex, scrollPosition }) }),
   bookshelf: () => request<BookshelfItem[]>('/api/bookshelf'),
   addToBookshelf: (book: BookshelfWrite) => request<BookshelfItem>('/api/bookshelf', { method: 'POST', body: JSON.stringify(book) }),
   removeFromBookshelf: (sourceId: string, bookUrl: string) => request<void>(`/api/bookshelf?sourceId=${encodeURIComponent(sourceId)}&bookUrl=${encodeURIComponent(bookUrl)}`, { method: 'DELETE' }),
+  cacheBookshelfBook: (sourceId: string, bookUrl: string) => request<{ status: string }>('/api/bookshelf/cache', { method: 'POST', body: JSON.stringify({ sourceId, bookUrl }) }),
+  switchBookshelfSource: (value: BookshelfSourceSwitch) => request<BookshelfItem>('/api/bookshelf/switch-source', { method: 'POST', body: JSON.stringify(value) }),
   cover: (key: string) => `/api/covers/${encodeURIComponent(key)}`,
 }

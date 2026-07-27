@@ -103,5 +103,43 @@ class DatabaseTest {
         } finally { Files.deleteIfExists(java.nio.file.Path.of(path)) }
     }
 
+    @Test
+    fun `book content cache is served and removed with its shelf item`() {
+        val path = temporaryDatabase()
+        try {
+            val database = Database(path); database.initialize("password-for-test")
+            val book = BookshelfWriteRequest("source", "book", "书名", "作者", "toc")
+            database.saveBookshelf(book, null)
+            database.beginBookCache("source", "book", 1)
+            database.cacheBookContent("source", "book", "chapter", ChapterContent("第一章", "已缓存正文"))
+            database.finishBookCache("source", "book")
+
+            assertEquals("已缓存正文", database.cachedContent("source", "book", "chapter")!!.content)
+            assertEquals("ready", database.listBookshelf().single().cacheState)
+            assertEquals(1, database.listBookshelf().single().cachedChapters)
+            database.removeBookshelf("source", "book")
+            assertEquals(null, database.cachedContent("source", "book", "chapter"))
+        } finally { Files.deleteIfExists(java.nio.file.Path.of(path)) }
+    }
+
+    @Test
+    fun `switching a shelf source clears old cached data`() {
+        val path = temporaryDatabase()
+        try {
+            val database = Database(path); database.initialize("password-for-test")
+            database.saveBookshelf(BookshelfWriteRequest("old", "old-book", "书名", "作者", "old-toc"), null)
+            database.saveProgress(ReadingProgress("old", "old-book", "chapter", 2))
+            database.cacheBookContent("old", "old-book", "chapter", ChapterContent(content = "旧缓存"))
+
+            val result = database.switchBookshelf("old", "old-book", BookshelfWriteRequest("new", "new-book", "书名", "作者", "new-toc"), null).first
+
+            assertEquals("new", result.sourceId)
+            assertEquals("new-book", result.bookUrl)
+            assertEquals(null, database.getProgress("old", "old-book"))
+            assertEquals(null, database.cachedContent("old", "old-book", "chapter"))
+            assertEquals(1, database.listBookshelf().size)
+        } finally { Files.deleteIfExists(java.nio.file.Path.of(path)) }
+    }
+
     private fun temporaryDatabase(): String = Files.createTempFile("legado-server-test", ".sqlite").toString()
 }

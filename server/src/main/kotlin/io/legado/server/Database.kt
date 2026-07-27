@@ -59,6 +59,18 @@ class Database(private val path: String) {
                   last_read_at integer not null, primary key (source_id, book_url)
                 );
                 create index if not exists book_shelf_last_read_idx on book_shelf(last_read_at desc);
+                create table if not exists book_content_cache (
+                  source_id text not null, book_url text not null, chapter_url text not null,
+                  title text, content text not null, cached_at integer not null,
+                  primary key (source_id, book_url, chapter_url)
+                );
+                create index if not exists book_content_cache_book_idx on book_content_cache(source_id, book_url);
+                create table if not exists book_cache_status (
+                  source_id text not null, book_url text not null, total_chapters integer not null default 0,
+                  cached_chapters integer not null default 0, state text not null default 'idle',
+                  last_error text, updated_at integer not null,
+                  primary key (source_id, book_url)
+                );
                 create table if not exists source_subscription (
                   id integer primary key autoincrement, url text not null unique,
                   enabled integer not null, created_at integer not null, updated_at integer not null,
@@ -162,19 +174,58 @@ class Database(private val path: String) {
             db.commit(); getBookshelf(db, request.sourceId, request.bookUrl)!!
         } catch (error: Throwable) { db.rollback(); throw error } finally { db.autoCommit = true }
     }
-    fun listBookshelf(): List<BookshelfItem> = connect { db -> db.prepareStatement("""select s.source_id,s.book_url,s.name,s.author,s.toc_url,s.cover_key,p.chapter_index,p.scroll_position,s.last_read_at from book_shelf s left join reading_progress p on p.source_id=s.source_id and p.book_url=s.book_url order by s.last_read_at desc""").use { query -> query.executeQuery().use { rs -> buildList { while (rs.next()) add(rs.toShelf()) } } } }
+    fun listBookshelf(): List<BookshelfItem> = connect { db -> db.prepareStatement("""select s.source_id,s.book_url,s.name,s.author,s.toc_url,s.cover_key,p.chapter_index,p.scroll_position,s.last_read_at,coalesce(c.cached_chapters,0),coalesce(c.total_chapters,0),coalesce(c.state,'idle'),c.last_error from book_shelf s left join reading_progress p on p.source_id=s.source_id and p.book_url=s.book_url left join book_cache_status c on c.source_id=s.source_id and c.book_url=s.book_url order by s.last_read_at desc""").use { query -> query.executeQuery().use { rs -> buildList { while (rs.next()) add(rs.toShelf()) } } } }
     fun removeBookshelf(sourceId: String, bookUrl: String): String? = write { db ->
         db.autoCommit = false
         try {
             val key = db.prepareStatement("select cover_key from book_shelf where source_id=? and book_url=?").use { it.setString(1, sourceId); it.setString(2, bookUrl); it.executeQuery().use { rs -> if (rs.next()) rs.getString(1) else null } }
             db.prepareStatement("delete from book_shelf where source_id=? and book_url=?").use { it.setString(1, sourceId); it.setString(2, bookUrl); it.executeUpdate() }
             db.prepareStatement("delete from reading_progress where source_id=? and book_url=?").use { it.setString(1, sourceId); it.setString(2, bookUrl); it.executeUpdate() }
+            db.prepareStatement("delete from book_content_cache where source_id=? and book_url=?").use { it.setString(1, sourceId); it.setString(2, bookUrl); it.executeUpdate() }
+            db.prepareStatement("delete from book_cache_status where source_id=? and book_url=?").use { it.setString(1, sourceId); it.setString(2, bookUrl); it.executeUpdate() }
             val orphan = key?.takeIf { value -> db.prepareStatement("select 1 from book_shelf where cover_key=?").use { it.setString(1, value); !it.executeQuery().next() } }
             orphan?.let { value -> db.prepareStatement("delete from cover_cache where cache_key=?").use { it.setString(1, value); it.executeUpdate() } }
             db.commit(); orphan
         } catch (error: Throwable) { db.rollback(); throw error } finally { db.autoCommit = true }
     }
+    fun switchBookshelf(oldSourceId: String, oldBookUrl: String, request: BookshelfWriteRequest, cover: CachedCover?): Pair<BookshelfItem, String?> = write { db ->
+        val now = System.currentTimeMillis()
+        db.autoCommit = false
+        try {
+            val oldCover = db.prepareStatement("select cover_key from book_shelf where source_id=? and book_url=?").use { it.setString(1, oldSourceId); it.setString(2, oldBookUrl); it.executeQuery().use { rs -> if (rs.next()) rs.getString(1) else null } }
+            db.prepareStatement("delete from book_shelf where source_id=? and book_url=?").use { it.setString(1, oldSourceId); it.setString(2, oldBookUrl); it.executeUpdate() }
+            db.prepareStatement("delete from reading_progress where source_id=? and book_url=?").use { it.setString(1, oldSourceId); it.setString(2, oldBookUrl); it.executeUpdate() }
+            db.prepareStatement("delete from book_content_cache where source_id=? and book_url=?").use { it.setString(1, oldSourceId); it.setString(2, oldBookUrl); it.executeUpdate() }
+            db.prepareStatement("delete from book_cache_status where source_id=? and book_url=?").use { it.setString(1, oldSourceId); it.setString(2, oldBookUrl); it.executeUpdate() }
+            cover?.let { value -> db.prepareStatement("insert into cover_cache(cache_key,content_type) values(?,?) on conflict(cache_key) do update set content_type=excluded.content_type").use { it.setString(1, value.key); it.setString(2, value.contentType); it.executeUpdate() } }
+            db.prepareStatement("""insert into book_shelf(source_id,book_url,name,author,toc_url,cover_url,cover_key,last_read_at) values(?,?,?,?,?,?,?,?)
+                on conflict(source_id,book_url) do update set name=excluded.name,author=excluded.author,toc_url=excluded.toc_url,cover_url=excluded.cover_url,cover_key=coalesce(excluded.cover_key,book_shelf.cover_key),last_read_at=excluded.last_read_at""").use {
+                it.setString(1, request.sourceId); it.setString(2, request.bookUrl); it.setString(3, request.name); it.setString(4, request.author); it.setString(5, request.tocUrl); it.setString(6, request.coverUrl); it.setString(7, cover?.key); it.setLong(8, now); it.executeUpdate()
+            }
+            val orphan = oldCover?.takeIf { value -> db.prepareStatement("select 1 from book_shelf where cover_key=?").use { it.setString(1, value); !it.executeQuery().next() } }
+            orphan?.let { value -> db.prepareStatement("delete from cover_cache where cache_key=?").use { it.setString(1, value); it.executeUpdate() } }
+            db.commit(); getBookshelf(db, request.sourceId, request.bookUrl)!! to orphan
+        } catch (error: Throwable) { db.rollback(); throw error } finally { db.autoCommit = true }
+    }
     fun coverContentType(key: String): String? = connect { db -> db.prepareStatement("select content_type from cover_cache where cache_key=?").use { it.setString(1, key); it.executeQuery().use { rs -> if (rs.next()) rs.getString(1) else null } } }
+
+    fun cachedContent(sourceId: String, bookUrl: String, chapterUrl: String): ChapterContent? = connect { db -> db.prepareStatement("select title,content from book_content_cache where source_id=? and book_url=? and chapter_url=?").use {
+        it.setString(1, sourceId); it.setString(2, bookUrl); it.setString(3, chapterUrl); it.executeQuery().use { rs -> if (rs.next()) ChapterContent(rs.getString(1), rs.getString(2)) else null }
+    } }
+    fun cacheBookContent(sourceId: String, bookUrl: String, chapterUrl: String, content: ChapterContent): Int = write { db ->
+        db.prepareStatement("insert into book_content_cache(source_id,book_url,chapter_url,title,content,cached_at) values(?,?,?,?,?,?) on conflict(source_id,book_url,chapter_url) do update set title=excluded.title,content=excluded.content,cached_at=excluded.cached_at").use {
+            it.setString(1, sourceId); it.setString(2, bookUrl); it.setString(3, chapterUrl); it.setString(4, content.title); it.setString(5, content.content); it.setLong(6, System.currentTimeMillis()); it.executeUpdate()
+        }
+        db.prepareStatement("select count(*) from book_content_cache where source_id=? and book_url=?").use { it.setString(1, sourceId); it.setString(2, bookUrl); it.executeQuery().use { rs -> rs.next(); rs.getInt(1) } }
+    }
+    fun beginBookCache(sourceId: String, bookUrl: String, total: Int) = write { db -> db.prepareStatement("insert into book_cache_status(source_id,book_url,total_chapters,cached_chapters,state,last_error,updated_at) values(?,?,?,?,?,?,?) on conflict(source_id,book_url) do update set total_chapters=excluded.total_chapters,cached_chapters=excluded.cached_chapters,state=excluded.state,last_error=null,updated_at=excluded.updated_at").use {
+        val count = db.prepareStatement("select count(*) from book_content_cache where source_id=? and book_url=?").use { query -> query.setString(1, sourceId); query.setString(2, bookUrl); query.executeQuery().use { rs -> rs.next(); rs.getInt(1) } }
+        it.setString(1, sourceId); it.setString(2, bookUrl); it.setInt(3, total); it.setInt(4, count); it.setString(5, "caching"); it.setString(6, null); it.setLong(7, System.currentTimeMillis()); it.executeUpdate()
+    } }
+    fun finishBookCache(sourceId: String, bookUrl: String, error: String? = null) = write { db -> db.prepareStatement("update book_cache_status set cached_chapters=(select count(*) from book_content_cache where source_id=? and book_url=?),state=?,last_error=?,updated_at=? where source_id=? and book_url=?").use {
+        it.setString(1, sourceId); it.setString(2, bookUrl); it.setString(3, if (error == null) "ready" else "failed"); it.setString(4, error?.take(500)); it.setLong(5, System.currentTimeMillis()); it.setString(6, sourceId); it.setString(7, bookUrl); it.executeUpdate()
+    } }
+    fun cacheRequests(): List<CachedBookRequest> = connect { db -> db.prepareStatement("select source_id,book_url,toc_url from book_shelf").use { query -> query.executeQuery().use { rs -> buildList { while (rs.next()) add(CachedBookRequest(rs.getString(1), rs.getString(2), rs.getString(3))) } } } }
 
     fun importSources(rawSources: List<String>): ImportResponse {
         val errors = mutableListOf<String>()
@@ -245,8 +296,8 @@ class Database(private val path: String) {
 
     private fun java.sql.ResultSet.toSummary() = SourceSummary(getString("id"), getString("name"), getString("source_url"), getString("source_group"), getInt("enabled") == 1, getInt("is_js") == 1, getLong("updated_at"), getLong("version"))
     private fun java.sql.ResultSet.toSubscription() = SourceSubscription(getLong("id"), getString("url"), getInt("enabled") == 1, getLong("created_at"), getLong("updated_at"), getLong("last_success_at").takeIf { !wasNull() }, getLong("last_attempt_at").takeIf { !wasNull() }, getString("last_error"), getInt("last_imported"), getString("content_hash"))
-    private fun java.sql.ResultSet.toShelf() = BookshelfItem(getString(1), getString(2), getString(3), getString(4), getString(5), getString(6), getObject(7) as? Int, getObject(8) as? Double, getLong(9))
-    private fun getBookshelf(db: Connection, sourceId: String, bookUrl: String): BookshelfItem? = db.prepareStatement("""select s.source_id,s.book_url,s.name,s.author,s.toc_url,s.cover_key,p.chapter_index,p.scroll_position,s.last_read_at from book_shelf s left join reading_progress p on p.source_id=s.source_id and p.book_url=s.book_url where s.source_id=? and s.book_url=?""").use { it.setString(1, sourceId); it.setString(2, bookUrl); it.executeQuery().use { rs -> if (rs.next()) rs.toShelf() else null } }
+    private fun java.sql.ResultSet.toShelf() = BookshelfItem(getString(1), getString(2), getString(3), getString(4), getString(5), getString(6), getObject(7) as? Int, getObject(8) as? Double, getLong(9), getInt(10), getInt(11), getString(12), getString(13))
+    private fun getBookshelf(db: Connection, sourceId: String, bookUrl: String): BookshelfItem? = db.prepareStatement("""select s.source_id,s.book_url,s.name,s.author,s.toc_url,s.cover_key,p.chapter_index,p.scroll_position,s.last_read_at,coalesce(c.cached_chapters,0),coalesce(c.total_chapters,0),coalesce(c.state,'idle'),c.last_error from book_shelf s left join reading_progress p on p.source_id=s.source_id and p.book_url=s.book_url left join book_cache_status c on c.source_id=s.source_id and c.book_url=s.book_url where s.source_id=? and s.book_url=?""").use { it.setString(1, sourceId); it.setString(2, bookUrl); it.executeQuery().use { rs -> if (rs.next()) rs.toShelf() else null } }
     private fun migrateReadingProgress(db: Connection) {
         val columns = db.createStatement().use { statement ->
             statement.executeQuery("pragma table_info(reading_progress)").use { result ->

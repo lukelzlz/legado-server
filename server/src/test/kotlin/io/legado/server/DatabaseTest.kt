@@ -58,5 +58,50 @@ class DatabaseTest {
         } finally { Files.deleteIfExists(java.nio.file.Path.of(path)) }
     }
 
+    @Test
+    fun `batch import deduplicates source URLs and overwrites existing sources`() {
+        val path = temporaryDatabase()
+        try {
+            val database = Database(path); database.initialize("password-for-test")
+            val first = """{"bookSourceUrl":"https://source.example","bookSourceName":"初版"}"""
+            val replacement = """{"bookSourceUrl":"https://source.example","bookSourceName":"更新版"}"""
+
+            val initial = database.importSources(listOf(first, replacement))
+            assertEquals(1, initial.imported)
+            assertEquals(1, initial.skipped)
+            assertEquals("更新版", database.listSources(null).single().name)
+
+            val update = database.importSources(listOf(first))
+            assertEquals(0, update.imported)
+            assertEquals(1, update.updated)
+            assertEquals("初版", database.listSources(null).single().name)
+        } finally { Files.deleteIfExists(java.nio.file.Path.of(path)) }
+    }
+
+    @Test
+    fun `subscription records preserve failure state and can be removed`() {
+        val path = temporaryDatabase()
+        try {
+            val database = Database(path); database.initialize("password-for-test")
+            val subscription = database.saveSubscription(SubscriptionWriteRequest("https://example.com/sources.json"))
+            database.recordSubscriptionFailure(subscription.id, "网络超时")
+            assertEquals("网络超时", database.listSubscriptions().single().lastError)
+            assertEquals(true, database.deleteSubscription(subscription.id))
+            assertEquals(0, database.listSubscriptions().size)
+        } finally { Files.deleteIfExists(java.nio.file.Path.of(path)) }
+    }
+
+    @Test
+    fun `initialization enables WAL mode`() {
+        val path = temporaryDatabase()
+        try {
+            Database(path).initialize("password-for-test")
+            DriverManager.getConnection("jdbc:sqlite:$path").use { database ->
+                val mode = database.createStatement().use { statement -> statement.executeQuery("pragma journal_mode").use { result -> result.next(); result.getString(1) } }
+                assertEquals("wal", mode.lowercase())
+            }
+        } finally { Files.deleteIfExists(java.nio.file.Path.of(path)) }
+    }
+
     private fun temporaryDatabase(): String = Files.createTempFile("legado-server-test", ".sqlite").toString()
 }

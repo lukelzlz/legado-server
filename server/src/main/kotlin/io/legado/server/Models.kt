@@ -28,7 +28,20 @@ import kotlinx.serialization.Serializable
 
 @Serializable data class SourceWriteRequest(val json: String, val version: Long? = null)
 @Serializable data class ImportRequest(val sources: List<String>, val overwrite: Boolean = true)
-@Serializable data class ImportResponse(val imported: Int, val skipped: Int, val errors: List<String>)
+@Serializable data class ImportResponse(val imported: Int, val updated: Int = 0, val skipped: Int, val errors: List<String>)
+@Serializable data class SubscriptionWriteRequest(val url: String, val enabled: Boolean = true)
+@Serializable data class SourceSubscription(
+    val id: Long,
+    val url: String,
+    val enabled: Boolean,
+    val createdAt: Long,
+    val updatedAt: Long,
+    val lastSuccessAt: Long? = null,
+    val lastAttemptAt: Long? = null,
+    val lastError: String? = null,
+    val lastImported: Int = 0,
+    val contentHash: String? = null,
+)
 @Serializable data class ValidateResponse(val valid: Boolean, val errors: List<String>, val warnings: List<String>)
 @Serializable data class DebugRequest(val keyword: String = "测试")
 @Serializable data class SearchRequest(val keyword: String, val sourceIds: List<String>? = null)

@@ -87,6 +87,21 @@ svg { width: 18px; height: 18px; flex: none; }
 .workspace-topbar strong { font-family: Georgia, "Noto Serif SC", serif; font-size: 17px; font-weight: 600; }
 .workspace-scroll { width: min(1120px, 100%); display: grid; gap: 26px; padding: clamp(22px, 4vw, 52px); margin: 0 auto; }
 .source-editor, .reading-desk { background: var(--surface); border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+.subscription-panel { margin-bottom: 22px; padding: 20px 22px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); }
+.subscription-page { max-width: 920px; min-height: calc(100vh - 68px); margin: 0 auto; padding: 54px 32px; }
+.subscription-page .subscription-panel { margin-top: 28px; }
+.subscription-panel > header { display: flex; align-items: start; justify-content: space-between; gap: 16px; }
+.subscription-panel h2 { margin-top: 4px; font-family: Georgia, "Noto Serif SC", serif; font-size: 20px; font-weight: 600; }
+.subscription-panel p { margin-top: 7px; color: var(--muted); font-size: 13px; }
+.subscription-panel form { display: flex; gap: 9px; margin-top: 18px; }
+.subscription-panel form input { flex: 1; min-width: 0; border: 1px solid var(--line); border-radius: 5px; padding: 9px 11px; background: var(--surface-muted); color: var(--ink); outline: none; }
+.subscription-list { display: grid; gap: 1px; margin-top: 13px; border-top: 1px solid var(--line); }
+.subscription-list > p { padding: 14px 0; }
+.subscription-list article { display: flex; align-items: center; justify-content: space-between; gap: 15px; padding: 12px 0; border-bottom: 1px solid var(--line); }
+.subscription-list strong, .subscription-list small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.subscription-list strong { max-width: 540px; font-size: 13px; font-weight: 500; }
+.subscription-list small { margin-top: 5px; color: var(--muted); font-size: 11px; }
+.subscription-actions { display: flex; align-items: center; gap: 7px; flex-shrink: 0; }
 .source-editor { min-height: 420px; display: grid; grid-template-rows: auto minmax(270px, 1fr) auto; }
 .source-editor > header { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 20px 22px; border-bottom: 1px solid var(--line); }
 .source-editor h2, .reading-desk h2 { font-family: Georgia, "Noto Serif SC", serif; font-size: 21px; font-weight: 600; }
@@ -267,6 +282,10 @@ svg { width: 18px; height: 18px; flex: none; }
   .workspace-topbar span { display: none; }
   .workspace-scroll { gap: 18px; padding: 18px; }
   .source-editor { min-height: 380px; }
+  .subscription-panel { margin: 0 0 16px; padding: 16px; }
+  .subscription-page { min-height: calc(100vh - 58px); padding: 28px 18px; }
+  .subscription-panel > header, .subscription-panel form, .subscription-list article { align-items: stretch; flex-direction: column; }
+  .subscription-actions { justify-content: flex-end; }
   .source-editor > header, .desk-header, .book-preview > header { align-items: stretch; flex-direction: column; }
   .desk-header form { width: 100%; }
   .search-results, .preview-chapters { grid-template-columns: 1fr; }

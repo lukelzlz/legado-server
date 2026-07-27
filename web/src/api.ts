@@ -6,6 +6,8 @@ export type Chapter = { index: number; title: string; url: string }
 export type ReadingProgress = { sourceId: string; bookUrl: string; chapterUrl: string; chapterIndex: number; scrollPosition: number; updatedAt: number }
 export type BookshelfItem = { sourceId: string; bookUrl: string; name: string; author?: string; tocUrl: string; coverKey?: string; chapterIndex?: number; scrollPosition?: number; lastReadAt: number }
 export type BookshelfWrite = { sourceId: string; bookUrl: string; name: string; author?: string; tocUrl: string; coverUrl?: string }
+export type ImportResponse = { imported: number; updated: number; skipped: number; errors: string[] }
+export type SourceSubscription = { id: number; url: string; enabled: boolean; createdAt: number; updatedAt: number; lastSuccessAt?: number; lastAttemptAt?: number; lastError?: string; lastImported: number; contentHash?: string }
 
 let csrfToken: string | null = null
 export const setCsrfToken = (token: string | null) => { csrfToken = token }
@@ -31,7 +33,12 @@ export const api = {
   save: (id: string, json: string, version?: number) => request<SourceRecord>(`/api/sources/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify({ json, version }) }),
   remove: (id: string) => request<void>(`/api/sources/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   validate: (id: string) => request<{ valid: boolean; errors: string[]; warnings: string[] }>(`/api/sources/${encodeURIComponent(id)}/validate`, { method: 'POST' }),
-  import: (sources: string[]) => request<{ imported: number; skipped: number; errors: string[] }>('/api/sources/import', { method: 'POST', body: JSON.stringify({ sources }) }),
+  import: (sources: string[]) => request<ImportResponse>('/api/sources/import', { method: 'POST', body: JSON.stringify({ sources }) }),
+  subscriptions: () => request<SourceSubscription[]>('/api/subscriptions'),
+  saveSubscription: (url: string, enabled = true) => request<SourceSubscription>('/api/subscriptions', { method: 'POST', body: JSON.stringify({ url, enabled }) }),
+  removeSubscription: (id: number) => request<void>(`/api/subscriptions/${id}`, { method: 'DELETE' }),
+  updateSubscription: (id: number) => request<ImportResponse>(`/api/subscriptions/${id}/update`, { method: 'POST' }),
+  updateSubscriptions: () => request<{ updated: number; failed: number }>('/api/subscriptions/update', { method: 'POST' }),
   search: (keyword: string, sourceIds?: string[]) => request<SearchResult[]>('/api/search', { method: 'POST', body: JSON.stringify({ keyword, sourceIds }) }),
   details: (sourceId: string, bookUrl: string) => request<BookDetails>('/api/books/details', { method: 'POST', body: JSON.stringify({ sourceId, bookUrl }) }),
   chapters: (sourceId: string, bookUrl: string) => request<Chapter[]>('/api/books/chapters', { method: 'POST', body: JSON.stringify({ sourceId, bookUrl }) }),

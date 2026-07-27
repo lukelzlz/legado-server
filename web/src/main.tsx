@@ -1,14 +1,14 @@
 import { FormEvent, useCallback, useEffect, useState } from 'react'
 import { createRoot } from 'react-dom/client'
-import { api, BookshelfItem, SearchResult, setCsrfToken, SourceRecord, SourceSummary } from './api'
+import { api, BookshelfItem, SearchResult, setCsrfToken, SourceRecord, SourceSubscription, SourceSummary } from './api'
 import { Icon } from './icons'
 import { OpenBook, ReaderScreen } from './ReaderScreen'
 import { loadReaderSettings, ReaderSettings, saveReaderSettings } from './readerSettings'
 import './styles.css'
 
-type Page = 'sources' | 'library' | 'shelf' | 'reader'
+type Page = 'sources' | 'subscriptions' | 'library' | 'shelf' | 'reader'
 const readerStorageKey = 'legado-open-book-v1'
-const pageFromHash = (): Page => location.hash === '#sources' ? 'sources' : location.hash === '#shelf' ? 'shelf' : location.hash === '#reader' ? 'reader' : 'library'
+const pageFromHash = (): Page => location.hash === '#sources' ? 'sources' : location.hash === '#subscriptions' ? 'subscriptions' : location.hash === '#shelf' ? 'shelf' : location.hash === '#reader' ? 'reader' : 'library'
 
 function ToolButton({ label, icon, onClick }: { label: string; icon: Parameters<typeof Icon>[0]['name']; onClick: () => void }) {
   return <button className="tool-button" title={label} aria-label={label} onClick={onClick}><Icon name={icon} /></button>
@@ -21,7 +21,7 @@ function Login({ onLogin }: { onLogin: () => void }) {
 }
 
 function AppHeader({ page, settings, onSettingsChange, onNavigate, onLogout }: { page: Page; settings: ReaderSettings; onSettingsChange: (next: ReaderSettings) => void; onNavigate: (page: Page) => void; onLogout: () => void }) {
-  return <header className="app-page-header"><button className="app-brand" onClick={() => onNavigate('library')}><Icon name="book" /><strong>阅读服务器</strong></button><nav><button className={page === 'library' ? 'active' : ''} onClick={() => onNavigate('library')}>书库</button><button className={page === 'shelf' ? 'active' : ''} onClick={() => onNavigate('shelf')}>书架</button><button className={page === 'sources' ? 'active' : ''} onClick={() => onNavigate('sources')}>书源</button></nav><div className="header-actions"><div className="header-themes" aria-label="全站主题">{(['light', 'paper', 'dark'] as const).map(theme => <button key={theme} className={`theme-${theme} ${settings.theme === theme ? 'selected' : ''}`} aria-label={theme === 'light' ? '晓白' : theme === 'paper' ? '护眼' : '夜读'} onClick={() => onSettingsChange({ ...settings, theme })} />)}</div><ToolButton label="退出登录" icon="more" onClick={onLogout} /></div></header>
+  return <header className="app-page-header"><button className="app-brand" onClick={() => onNavigate('library')}><Icon name="book" /><strong>阅读服务器</strong></button><nav><button className={page === 'library' ? 'active' : ''} onClick={() => onNavigate('library')}>书库</button><button className={page === 'shelf' ? 'active' : ''} onClick={() => onNavigate('shelf')}>书架</button><button className={page === 'sources' ? 'active' : ''} onClick={() => onNavigate('sources')}>书源</button><button className={page === 'subscriptions' ? 'active' : ''} onClick={() => onNavigate('subscriptions')}>订阅</button></nav><div className="header-actions"><div className="header-themes" aria-label="全站主题">{(['light', 'paper', 'dark'] as const).map(theme => <button key={theme} className={`theme-${theme} ${settings.theme === theme ? 'selected' : ''}`} aria-label={theme === 'light' ? '晓白' : theme === 'paper' ? '护眼' : '夜读'} onClick={() => onSettingsChange({ ...settings, theme })} />)}</div><ToolButton label="退出登录" icon="more" onClick={onLogout} /></div></header>
 }
 
 function SourceEditor({ selected, onSaved }: { selected: SourceSummary | null; onSaved: () => void }) {
@@ -33,11 +33,27 @@ function SourceEditor({ selected, onSaved }: { selected: SourceSummary | null; o
   return <section className="source-editor"><header><div><span className="section-kicker">书源编辑</span><h2>{selected.name}</h2><small>{selected.url}</small></div><div className="editor-actions"><button className="subtle-button" onClick={() => void validate}>校验</button><button className="primary-button" onClick={() => void save}>保存</button></div></header><textarea aria-label="书源 JSON 编辑器" value={text} onChange={event => setText(event.target.value)} spellCheck={false} />{status && <footer className={status.includes('失败') || status.includes('错误') ? 'form-error' : ''}>{status}</footer>}</section>
 }
 
+function SubscriptionPanel({ onSourcesChange }: { onSourcesChange: () => void }) {
+  const [items, setItems] = useState<SourceSubscription[]>([]); const [url, setUrl] = useState(''); const [notice, setNotice] = useState(''); const [busy, setBusy] = useState<number | 'all' | null>(null)
+  const load = useCallback(async () => { try { setItems(await api.subscriptions()) } catch (error) { setNotice(error instanceof Error ? error.message : '无法载入订阅') } }, [])
+  useEffect(() => { void load() }, [load])
+  const add = async (event: FormEvent) => { event.preventDefault(); if (!url.trim()) return; setBusy('all'); try { await api.saveSubscription(url.trim()); setUrl(''); setNotice('订阅已保存'); await load() } catch (error) { setNotice(error instanceof Error ? error.message : '保存订阅失败') } finally { setBusy(null) } }
+  const update = async (id: number) => { setBusy(id); try { const result = await api.updateSubscription(id); setNotice(`同步完成：新增 ${result.imported}，更新 ${result.updated}，跳过 ${result.skipped}`); onSourcesChange(); await load() } catch (error) { setNotice(error instanceof Error ? error.message : '同步失败') } finally { setBusy(null) } }
+  const updateAll = async () => { setBusy('all'); try { const result = await api.updateSubscriptions(); setNotice(`全部同步完成：成功 ${result.updated}，失败 ${result.failed}`); onSourcesChange(); await load() } catch (error) { setNotice(error instanceof Error ? error.message : '同步失败') } finally { setBusy(null) } }
+  const toggle = async (item: SourceSubscription) => { setBusy(item.id); try { await api.saveSubscription(item.url, !item.enabled); await load() } catch (error) { setNotice(error instanceof Error ? error.message : '更新失败') } finally { setBusy(null) } }
+  const remove = async (item: SourceSubscription) => { if (!confirm(`删除订阅“${item.url}”？已导入的书源会保留。`)) return; setBusy(item.id); try { await api.removeSubscription(item.id); await load() } catch (error) { setNotice(error instanceof Error ? error.message : '删除失败') } finally { setBusy(null) } }
+  return <section className="subscription-panel"><header><div><span className="section-kicker">自动更新</span><h2>书源订阅</h2><p>每 6 小时自动同步；同一地址的书源会统一覆盖更新。</p></div><button className="subtle-button" onClick={() => void updateAll()} disabled={busy !== null}>{busy === 'all' ? '同步中...' : '全部同步'}</button></header><form onSubmit={add}><input value={url} onChange={event => setUrl(event.target.value)} placeholder="https://example.com/sources.json" inputMode="url" /><button className="primary-button" disabled={busy !== null}>添加订阅</button></form>{notice && <p className="sidebar-notice">{notice}</p>}<div className="subscription-list">{items.length === 0 ? <p>还没有书源订阅。</p> : items.map(item => <article key={item.id}><div><strong>{item.url}</strong><small>{item.lastError ? `最近失败：${item.lastError}` : item.lastSuccessAt ? `最近同步：${new Date(item.lastSuccessAt).toLocaleString()}，处理 ${item.lastImported} 个书源` : '尚未同步'}</small></div><div className="subscription-actions"><button className="subtle-button" onClick={() => void toggle(item)} disabled={busy !== null}>{item.enabled ? '已启用' : '已停用'}</button><button className="subtle-button" onClick={() => void update(item.id)} disabled={busy !== null || !item.enabled}>{busy === item.id ? '同步中...' : '立即同步'}</button><button className="shelf-remove" aria-label="删除订阅" onClick={() => void remove(item)} disabled={busy !== null}><Icon name="close" /></button></div></article>)}</div></section>
+}
+
+function SubscriptionPage({ onSourcesChange }: { onSourcesChange: () => void }) {
+  return <main className="subscription-page"><header className="page-title"><div><span className="section-kicker">自动更新</span><h1>书源订阅</h1><p>从远程 JSON 订阅书源，并定时保持最新。</p></div></header><SubscriptionPanel onSourcesChange={onSourcesChange} /></main>
+}
+
 function SourcesPage({ selected, onSelect, onSourcesChange }: { selected: SourceSummary | null; onSelect: (source: SourceSummary | null) => void; onSourcesChange: (sources: SourceSummary[]) => void }) {
   const [sources, setSources] = useState<SourceSummary[]>([]); const [query, setQuery] = useState(''); const [notice, setNotice] = useState('')
   const load = useCallback(async () => { try { const values = await api.sources(query); setSources(values); onSourcesChange(values) } catch (error) { setNotice(error instanceof Error ? error.message : '无法载入书源') } }, [onSourcesChange, query])
   useEffect(() => { const timer = window.setTimeout(() => { void load() }, 180); return () => window.clearTimeout(timer) }, [load])
-  const importSources = async (file: File | undefined) => { if (!file) return; try { const parsed = JSON.parse(await file.text()); const values = Array.isArray(parsed) ? parsed : [parsed]; const result = await api.import(values.map(value => JSON.stringify(value))); setNotice(`已导入 ${result.imported} 个书源${result.skipped ? `，跳过 ${result.skipped} 个` : ''}`); await load() } catch (error) { setNotice(error instanceof Error ? error.message : '导入失败') } }
+  const importSources = async (file: File | undefined) => { if (!file) return; try { const parsed = JSON.parse(await file.text()); const values = Array.isArray(parsed) ? parsed : [parsed]; const result = await api.import(values.map(value => JSON.stringify(value))); setNotice(`新增 ${result.imported} 个，更新 ${result.updated} 个${result.skipped ? `，跳过 ${result.skipped} 个` : ''}`); await load() } catch (error) { setNotice(error instanceof Error ? error.message : '导入失败') } }
   const remove = async () => { if (!selected || !confirm(`删除“${selected.name}”？`)) return; try { await api.remove(selected.id); onSelect(null); await load() } catch (error) { setNotice(error instanceof Error ? error.message : '删除失败') } }
   return <main className="sources-page"><aside className="source-sidebar"><div className="source-sidebar-heading"><span>书源</span><small>{sources.length}</small></div><div className="source-filter"><Icon name="search" /><input placeholder="筛选书源" value={query} onChange={event => setQuery(event.target.value)} /></div><label className="import-button"><Icon name="upload" />导入 JSON<input type="file" accept="application/json,.json" onChange={event => void importSources(event.target.files?.[0])} /></label>{notice && <p className="sidebar-notice">{notice}</p>}<nav className="source-list">{sources.map(source => <button className={selected?.id === source.id ? 'selected' : ''} key={source.id} onClick={() => onSelect(source)}><span>{source.name}</span><small>{source.group || (source.isJsSource ? 'JS 书源' : '书源')}</small></button>)}</nav></aside><section className="sources-content"><header className="page-title"><div><span className="section-kicker">阅读服务器</span><h1>书源管理</h1><p>导入、校验与维护你的阅读来源。</p></div>{selected && <button className="danger-button" onClick={() => void remove()}>删除书源</button>}</header><SourceEditor selected={selected} onSaved={() => void load()} /></section></main>
 }
@@ -70,7 +86,8 @@ function App() {
   if (!ready) return <main className={`app-loading theme-${settings.theme}`}><span>正在打开阅读空间...</span></main>
   if (!authenticated) return <div className={`app-shell theme-${settings.theme}`}><Login onLogin={() => setAuthenticated(true)} /></div>
   if (page === 'reader' && reader) return <div className={`app-shell theme-${settings.theme}`}><ReaderScreen openBook={reader.book} startIndex={reader.index} settings={settings} onSettingsChange={setSettings} onClose={() => navigate('library')} /></div>
-  return <div className={`app-shell theme-${settings.theme}`}><AppHeader page={page} settings={settings} onSettingsChange={setSettings} onNavigate={navigate} onLogout={() => void logout()} />{page === 'sources' ? <SourcesPage selected={selected} onSelect={setSelected} onSourcesChange={setSources} /> : page === 'shelf' ? <ShelfPage onOpen={item => void openShelfItem(item)} /> : <LibraryPage selected={selected} sources={sources} onSelect={setSelected} onOpen={openReader} />}</div>
+  const refreshSources = () => { void api.sources().then(setSources).catch(() => undefined) }
+  return <div className={`app-shell theme-${settings.theme}`}><AppHeader page={page} settings={settings} onSettingsChange={setSettings} onNavigate={navigate} onLogout={() => void logout()} />{page === 'sources' ? <SourcesPage selected={selected} onSelect={setSelected} onSourcesChange={setSources} /> : page === 'subscriptions' ? <SubscriptionPage onSourcesChange={refreshSources} /> : page === 'shelf' ? <ShelfPage onOpen={item => void openShelfItem(item)} /> : <LibraryPage selected={selected} sources={sources} onSelect={setSelected} onOpen={openReader} />}</div>
 }
 
 createRoot(document.getElementById('root')!).render(<App />)

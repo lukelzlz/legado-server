@@ -2,6 +2,7 @@ package io.legado.server
 
 import io.ktor.http.*
 import io.ktor.server.application.*
+import io.ktor.server.http.content.LocalFileContent
 import io.ktor.server.request.*
 import io.ktor.server.response.*
 import io.ktor.server.routing.*
@@ -120,7 +121,7 @@ fun Route.apiRoutes(database: Database, auth: AuthService, runner: RuleRunner, c
             val file = coverCache.file(key) ?: return@get call.respond(HttpStatusCode.NotFound)
             val type = database.coverContentType(key)?.let(ContentType::parse) ?: ContentType.Application.OctetStream
             call.response.cacheControl(CacheControl.MaxAge(maxAgeSeconds = 7 * 24 * 60 * 60, visibility = CacheControl.Visibility.Private))
-            call.respondFile(file.toFile(), type)
+            call.respond(LocalFileContent(file.toFile(), type))
         }
         get("/reading-progress") {
             if (auth.requireSession(call) == null) return@get

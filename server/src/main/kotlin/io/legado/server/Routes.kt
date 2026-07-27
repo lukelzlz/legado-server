@@ -7,9 +7,17 @@ import io.ktor.server.request.*
 import io.ktor.server.response.*
 import io.ktor.server.routing.*
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.Json
 
-fun Route.apiRoutes(database: Database, auth: AuthService, runner: RuleRunner, coverCache: CoverCache) {
+fun Route.apiRoutes(database: Database, auth: AuthService, runner: RuleRunner, coverCache: CoverCache, subscriptions: SubscriptionService) {
     route("/api") {
         get("/sources") {
             if (auth.requireSession(call) == null) return@get
@@ -24,12 +32,9 @@ fun Route.apiRoutes(database: Database, auth: AuthService, runner: RuleRunner, c
         }
         post("/sources/import") {
             if (auth.requireSession(call, true) == null) return@post
-            val request = call.receive<ImportRequest>(); var imported = 0; var skipped = 0; val errors = mutableListOf<String>()
-            request.sources.forEachIndexed { index, raw ->
-                try { database.saveSource(SourceCodec.parse(raw), null); imported++ } catch (error: IllegalArgumentException) { skipped++; errors += "第 ${index + 1} 项：${error.message}" }
-            }
-            call.application.log.info("source import completed: imported={}, skipped={}", imported, skipped)
-            call.respond(ImportResponse(imported, skipped, errors))
+            val response = database.importSources(call.receive<ImportRequest>().sources)
+            call.application.log.info("source import completed: imported={}, updated={}, skipped={}", response.imported, response.updated, response.skipped)
+            call.respond(response)
         }
         route("/sources/{id}") {
             get {
@@ -76,11 +81,44 @@ fun Route.apiRoutes(database: Database, auth: AuthService, runner: RuleRunner, c
             val request = call.receive<SearchRequest>()
             if (request.keyword.isBlank()) { call.respond(HttpStatusCode.BadRequest, ApiError("invalid_keyword", "请输入搜索关键词")); return@post }
             val sources = database.listSources(null).filter { it.enabled && (request.sourceIds.isNullOrEmpty() || it.id in request.sourceIds) }
-            val results = sources.flatMap { summary ->
-                val source = database.getSource(summary.id) ?: return@flatMap emptyList()
-                runCatching { runner.search(source.json, request.keyword) }.getOrElse { emptyList() }
-            }
+            val sourceRecords = sources.mapNotNull { summary -> database.getSource(summary.id) }
+            val results = boundedConcurrentMap(sourceRecords, sourceSearchConcurrency()) { source ->
+                withTimeoutOrNull(SEARCH_TIMEOUT_MS) {
+                    withContext(Dispatchers.IO) { runCatching { runner.search(source.json, request.keyword) }.getOrElse { emptyList() } }
+                } ?: emptyList()
+            }.flatten()
             call.respond(results)
+        }
+        get("/subscriptions") {
+            if (auth.requireSession(call) == null) return@get
+            call.respond(database.listSubscriptions())
+        }
+        post("/subscriptions") {
+            if (auth.requireSession(call, true) == null) return@post
+            val request = call.receive<SubscriptionWriteRequest>()
+            try {
+                validateSubscriptionUrl(request.url)
+                call.respond(database.saveSubscription(request))
+            } catch (error: IllegalArgumentException) {
+                call.respond(HttpStatusCode.BadRequest, ApiError("invalid_subscription", error.message ?: "订阅地址无效"))
+            }
+        }
+        delete("/subscriptions/{id}") {
+            if (auth.requireSession(call, true) == null) return@delete
+            val id = call.parameters["id"]?.toLongOrNull() ?: return@delete call.respond(HttpStatusCode.BadRequest, ApiError("invalid_subscription", "订阅标识无效"))
+            if (database.deleteSubscription(id)) call.respond(HttpStatusCode.NoContent) else call.respond(HttpStatusCode.NotFound, ApiError("not_found", "订阅不存在"))
+        }
+        post("/subscriptions/{id}/update") {
+            if (auth.requireSession(call, true) == null) return@post
+            val id = call.parameters["id"]?.toLongOrNull() ?: return@post call.respond(HttpStatusCode.BadRequest, ApiError("invalid_subscription", "订阅标识无效"))
+            try { call.respond(subscriptions.updateOne(id)) }
+            catch (_: NoSuchElementException) { call.respond(HttpStatusCode.NotFound, ApiError("not_found", "订阅不存在")) }
+            catch (error: Throwable) { call.respond(HttpStatusCode.BadGateway, ApiError("subscription_update_failed", error.message ?: "订阅更新失败")) }
+        }
+        post("/subscriptions/update") {
+            if (auth.requireSession(call, true) == null) return@post
+            val results = subscriptions.updateAll()
+            call.respond(mapOf("updated" to results.count { it.second.isSuccess }, "failed" to results.count { it.second.isFailure }))
         }
         post("/books/details") {
             if (auth.requireSession(call, true) == null) return@post
@@ -137,6 +175,20 @@ fun Route.apiRoutes(database: Database, auth: AuthService, runner: RuleRunner, c
             call.respond(database.saveProgress(progress))
         }
     }
+}
+
+private fun validateSubscriptionUrl(value: String) {
+    val uri = runCatching { java.net.URI(value) }.getOrNull()
+    require(uri?.scheme in setOf("http", "https") && !uri?.host.isNullOrBlank()) { "仅允许 HTTP(S) 订阅地址" }
+}
+
+private const val SEARCH_TIMEOUT_MS = 30_000L
+
+internal fun sourceSearchConcurrency(processors: Int = Runtime.getRuntime().availableProcessors()): Int = minOf(processors.coerceAtLeast(1), 8)
+
+internal suspend fun <T, R> boundedConcurrentMap(values: List<T>, limit: Int, action: suspend (T) -> R): List<R> = coroutineScope {
+    val semaphore = Semaphore(limit.coerceAtLeast(1))
+    values.map { value -> async { semaphore.withPermit { action(value) } } }.awaitAll()
 }
 
 private suspend fun ApplicationCall.respondCatching(block: () -> Any) {

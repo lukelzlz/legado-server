@@ -1,16 +1,24 @@
 package io.legado.server
 
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
+import kotlinx.coroutines.withContext
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
 
 class BookCacheService(private val database: Database, private val runner: RuleRunner, private val log: (String) -> Unit) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    private val jobs = ConcurrentHashMap<String, Job>()
+    private val jobs = ConcurrentHashMap<String, kotlinx.coroutines.Job>()
 
     fun start() { database.cacheRequests().forEach(::enqueue) }
     fun stop() { scope.cancel() }
@@ -25,27 +33,79 @@ class BookCacheService(private val database: Database, private val runner: RuleR
 
     fun cancel(sourceId: String, bookUrl: String) { jobs.remove("$sourceId\u0000$bookUrl")?.cancel() }
 
-    private fun cache(book: CachedBookRequest) {
+    private suspend fun cache(book: CachedBookRequest) {
         try {
             val source = database.getSource(book.sourceId) ?: throw IllegalArgumentException("书源不存在")
-            val chapters = runner.chapters(source.json, book.tocUrl)
+            val chapters = withContext(Dispatchers.IO) { runner.chapters(source.json, book.tocUrl) }
+            if (chapters.isEmpty()) throw RuleExecutionException("目录规则未提取到章节")
+
+            // Breakpoint resume: skip already-cached chapter URLs
+            val alreadyCached = database.cachedChapterUrls(book.sourceId, book.bookUrl)
+            val remaining = chapters.filter { it.url !in alreadyCached }
+
             database.beginBookCache(book.sourceId, book.bookUrl, chapters.size)
-            var failures = 0
-            chapters.forEach { chapter ->
-                try {
-                    val content = runner.content(source.json, chapter.url)
-                    if (content.content.toByteArray().size <= MAX_CHAPTER_BYTES) database.cacheBookContent(book.sourceId, book.bookUrl, chapter.url, content.copy(title = content.title ?: chapter.title))
-                    else failures++
-                } catch (_: Throwable) { failures++ }
+
+            val failures = AtomicInteger(0)
+            val cachedCount = AtomicInteger(alreadyCached.size)
+            val lastProgressUpdate = AtomicLong(0L)
+            val semaphore = Semaphore(CACHE_CONCURRENCY)
+
+            coroutineScope {
+                remaining.map { chapter ->
+                    async {
+                        semaphore.withPermit {
+                            try {
+                                val content = withContext(Dispatchers.IO) { runner.content(source.json, chapter.url) }
+                                if (content.content.toByteArray().size <= MAX_CHAPTER_BYTES) {
+                                    database.cacheBookContent(
+                                        book.sourceId, book.bookUrl, chapter.url,
+                                        content.copy(title = content.title ?: chapter.title)
+                                    )
+                                    reportProgress(book, cachedCount.incrementAndGet(), lastProgressUpdate)
+                                } else {
+                                    failures.incrementAndGet()
+                                }
+                            } catch (error: Throwable) {
+                                if (error is CancellationException) throw error
+                                failures.incrementAndGet()
+                            }
+                        }
+                    }
+                }.awaitAll()
             }
-            val error = if (failures == 0) null else "$failures 章未缓存"
+
+            val totalFailures = failures.get()
+            val error = if (totalFailures == 0) null else "$totalFailures 章未缓存"
             database.finishBookCache(book.sourceId, book.bookUrl, error)
-            log("book cache completed: ${book.bookUrl}, chapters=${chapters.size}, failures=$failures")
+            log("book cache completed: ${book.bookUrl}, chapters=${chapters.size}, skipped=${alreadyCached.size}, failures=$totalFailures")
         } catch (error: Throwable) {
+            if (error is CancellationException) throw error
             database.finishBookCache(book.sourceId, book.bookUrl, error.message ?: "缓存失败")
             log("book cache failed: ${book.bookUrl}, error=${error.message}")
         }
     }
 
-    private companion object { const val MAX_CHAPTER_BYTES = 2 * 1024 * 1024 }
+    /**
+     * Writes fine-grained cache progress to the database at most once per
+     * [PROGRESS_UPDATE_INTERVAL_MS]. The final `finishBookCache` call remains the
+     * authoritative sync point, so a throttled update failure never corrupts progress.
+     */
+    private fun reportProgress(book: CachedBookRequest, cachedCount: Int, lastProgressUpdate: AtomicLong) {
+        val now = System.currentTimeMillis()
+        while (true) {
+            val last = lastProgressUpdate.get()
+            if (now - last < PROGRESS_UPDATE_INTERVAL_MS) return
+            if (!lastProgressUpdate.compareAndSet(last, now)) continue
+            runCatching {
+                database.updateBookCacheProgress(book.sourceId, book.bookUrl, cachedCount)
+            }
+            return
+        }
+    }
+
+    private companion object {
+        const val MAX_CHAPTER_BYTES = 2 * 1024 * 1024
+        const val CACHE_CONCURRENCY = 8
+        const val PROGRESS_UPDATE_INTERVAL_MS = 1_000L
+    }
 }

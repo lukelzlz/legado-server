@@ -26,4 +26,14 @@ class SourceCodecTest {
         assertFalse(result.valid)
         assertTrue(result.errors.single().contains("HTTP"))
     }
+
+    @Test
+    fun `strips legado annotations from book source urls`() {
+        val legacy = SourceCodec.parse("""{"bookSourceUrl":"https://cn.ttkan.co/##@遇知","bookSourceName":"天天看书","searchUrl":"/novel/search?q={{key}}"}""")
+        assertEquals("https://cn.ttkan.co/", legacy.id)
+        assertTrue(legacy.json.contains(""""bookSourceUrl":"https://cn.ttkan.co/""""))
+
+        val hash = SourceCodec.parse("""{"bookSourceUrl":"https://www.linovel.net#yc1101","searchUrl":"/search/?kw={{key}}"}""")
+        assertEquals("https://www.linovel.net", hash.id)
+    }
 }

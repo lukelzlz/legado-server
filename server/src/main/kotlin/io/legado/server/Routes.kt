@@ -20,7 +20,6 @@ import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
-import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.Json
 import java.util.concurrent.atomic.AtomicInteger
 
@@ -270,7 +269,6 @@ private fun validateSubscriptionUrl(value: String) {
 }
 
 private const val SEARCH_TIMEOUT_MS = 30_000L
-private const val CANDIDATE_VALIDATION_TIMEOUT_MS = 30_000L
 
 private suspend fun readableSearchResults(runner: RuleRunner, sourceJson: String, keyword: String): List<SearchResult> =
     searchSourceOutcome(runner, sourceJson, keyword).results
@@ -309,21 +307,17 @@ internal class SearchStreamCounters(private val totalSources: Int) {
 }
 
 internal suspend fun searchSourceOutcome(runner: RuleRunner, sourceJson: String, keyword: String): SearchSourceOutcome {
-    val candidates = try {
+    val results = try {
         withTimeout(SEARCH_TIMEOUT_MS) { withContext(Dispatchers.IO) { runner.search(sourceJson, keyword) } }
     } catch (error: Throwable) {
         if (error is CancellationException) throw error
         return SearchSourceOutcome(emptyList(), failed = true)
     }
-    val results = candidates.filter { result ->
-        withTimeoutOrNull(CANDIDATE_VALIDATION_TIMEOUT_MS) {
-            withContext(Dispatchers.IO) { runner.isReadableSearchResult(sourceJson, result) }
-        } == true
-    }
     return SearchSourceOutcome(results, failed = false)
 }
 
-internal fun sourceSearchConcurrency(processors: Int = Runtime.getRuntime().availableProcessors()): Int = minOf(processors.coerceAtLeast(1), 8)
+internal fun sourceSearchConcurrency(processors: Int = Runtime.getRuntime().availableProcessors()): Int =
+    processors.coerceIn(16, 32)
 
 internal suspend fun <T, R> boundedConcurrentMap(values: List<T>, limit: Int, action: suspend (T) -> R): List<R> = coroutineScope {
     val semaphore = Semaphore(limit.coerceAtLeast(1))

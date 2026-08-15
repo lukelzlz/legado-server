@@ -1,9 +1,15 @@
 package io.legado.server
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.nio.file.Files
 import java.sql.DriverManager
+import java.util.concurrent.Callable
+import java.util.concurrent.Executors
+import java.util.concurrent.Future
 
 class DatabaseTest {
     @Test
@@ -18,6 +24,7 @@ class DatabaseTest {
             val progress = database.getProgress("source", "book")!!
             assertEquals(3, progress.chapterIndex)
             assertEquals(0.42, progress.scrollPosition, 0.0001)
+            database.close()
         } finally {
             Files.deleteIfExists(java.nio.file.Path.of(path))
         }
@@ -38,6 +45,7 @@ class DatabaseTest {
             database.initialize("password-for-test")
 
             assertEquals(0.0, database.getProgress("source", "book")!!.scrollPosition, 0.0)
+            database.close()
         } finally {
             Files.deleteIfExists(java.nio.file.Path.of(path))
         }
@@ -55,6 +63,7 @@ class DatabaseTest {
             assertEquals("a".repeat(64), database.removeBookshelf("source", "book"))
             assertEquals(0, database.listBookshelf().size)
             assertEquals(null, database.getProgress("source", "book"))
+            database.close()
         } finally { Files.deleteIfExists(java.nio.file.Path.of(path)) }
     }
 
@@ -74,6 +83,7 @@ class DatabaseTest {
             database.saveBookshelf(BookshelfWriteRequest("source", "book", "新书", tocUrl = "toc"), null)
             assertEquals(true, database.setBookshelfCompleted("source", "book", true)!!.completed)
             assertEquals(true, database.listBookshelf().first { it.sourceId == "source" }.completed)
+            database.close()
         } finally { Files.deleteIfExists(java.nio.file.Path.of(path)) }
     }
 
@@ -94,6 +104,7 @@ class DatabaseTest {
             assertEquals(0, update.imported)
             assertEquals(1, update.updated)
             assertEquals("初版", database.listSources(null).single().name)
+            database.close()
         } finally { Files.deleteIfExists(java.nio.file.Path.of(path)) }
     }
 
@@ -110,6 +121,7 @@ class DatabaseTest {
             assertEquals(listOf("https://enabled.example"), database.listSearchSourceRecords(null).map { it.id })
             assertEquals(listOf("https://enabled.example"), database.listSearchSourceRecords(listOf("https://enabled.example")).map { it.id })
             assertEquals(0, database.listSearchSourceRecords(listOf("https://disabled.example")).size)
+            database.close()
         } finally { Files.deleteIfExists(java.nio.file.Path.of(path)) }
     }
 
@@ -123,6 +135,7 @@ class DatabaseTest {
             assertEquals("网络超时", database.listSubscriptions().single().lastError)
             assertEquals(true, database.deleteSubscription(subscription.id))
             assertEquals(0, database.listSubscriptions().size)
+            database.close()
         } finally { Files.deleteIfExists(java.nio.file.Path.of(path)) }
     }
 
@@ -130,11 +143,13 @@ class DatabaseTest {
     fun `initialization enables WAL mode`() {
         val path = temporaryDatabase()
         try {
-            Database(path).initialize("password-for-test")
-            DriverManager.getConnection("jdbc:sqlite:$path").use { database ->
-                val mode = database.createStatement().use { statement -> statement.executeQuery("pragma journal_mode").use { result -> result.next(); result.getString(1) } }
+            val database = Database(path)
+            database.initialize("password-for-test")
+            DriverManager.getConnection("jdbc:sqlite:$path").use { conn ->
+                val mode = conn.createStatement().use { statement -> statement.executeQuery("pragma journal_mode").use { result -> result.next(); result.getString(1) } }
                 assertEquals("wal", mode.lowercase())
             }
+            database.close()
         } finally { Files.deleteIfExists(java.nio.file.Path.of(path)) }
     }
 
@@ -146,7 +161,8 @@ class DatabaseTest {
             val book = BookshelfWriteRequest("source", "book", "书名", "作者", "toc")
             database.saveBookshelf(book, null)
             database.beginBookCache("source", "book", 1)
-            database.cacheBookContent("source", "book", "chapter", ChapterContent("第一章", "已缓存正文"))
+            val cacheResult: Unit = database.cacheBookContent("source", "book", "chapter", ChapterContent("第一章", "已缓存正文"))
+            assertEquals(Unit, cacheResult)
             database.finishBookCache("source", "book")
 
             assertEquals("已缓存正文", database.cachedContent("source", "book", "chapter")!!.content)
@@ -154,6 +170,7 @@ class DatabaseTest {
             assertEquals(1, database.listBookshelf().single().cachedChapters)
             database.removeBookshelf("source", "book")
             assertEquals(null, database.cachedContent("source", "book", "chapter"))
+            database.close()
         } finally { Files.deleteIfExists(java.nio.file.Path.of(path)) }
     }
 
@@ -173,8 +190,199 @@ class DatabaseTest {
             assertEquals(null, database.getProgress("old", "old-book"))
             assertEquals(null, database.cachedContent("old", "old-book", "chapter"))
             assertEquals(1, database.listBookshelf().size)
+            database.close()
         } finally { Files.deleteIfExists(java.nio.file.Path.of(path)) }
+    }
+
+    @Test
+    fun `listSources projects summary fields without loading large payload`() {
+        val path = temporaryDatabase()
+        try {
+            val database = Database(path)
+            database.initialize("password-for-test")
+
+            val largePayload = "{\"bookSourceUrl\":\"https://source.large\",\"bookSourceName\":\"大型书源\",\"bookSourceGroup\":\"精品\",\"customData\":\"" + "X".repeat(20000) + "\"}"
+            database.importSources(listOf(largePayload))
+
+            val summaries = database.listSources(null)
+            assertEquals(1, summaries.size)
+            val summary = summaries.first()
+            assertEquals("https://source.large", summary.id)
+            assertEquals("大型书源", summary.name)
+            assertEquals("https://source.large", summary.url)
+            assertEquals("精品", summary.group)
+            assertEquals(true, summary.enabled)
+            assertEquals(false, summary.isJsSource)
+            assertTrue(summary.updatedAt > 0)
+            assertEquals(1L, summary.version)
+
+            val filtered = database.listSources("大型")
+            assertEquals(1, filtered.size)
+            assertEquals("大型书源", filtered.first().name)
+            database.close()
+        } finally { Files.deleteIfExists(java.nio.file.Path.of(path)) }
+    }
+
+    @Test
+    fun `idx_source_name_nocase index exists and supports case-insensitive ordering`() {
+        val path = temporaryDatabase()
+        try {
+            val database = Database(path)
+            database.initialize("password-for-test")
+
+            database.importSources(listOf(
+                "{\"bookSourceUrl\":\"https://b.com\",\"bookSourceName\":\"b_book\"}",
+                "{\"bookSourceUrl\":\"https://a.com\",\"bookSourceName\":\"A_book\"}",
+                "{\"bookSourceUrl\":\"https://c.com\",\"bookSourceName\":\"c_book\"}",
+            ))
+
+            val names = database.listSources(null).map { it.name }
+            assertEquals(listOf("A_book", "b_book", "c_book"), names)
+
+            DriverManager.getConnection("jdbc:sqlite:$path").use { conn ->
+                val indexExists = conn.createStatement().use { st ->
+                    st.executeQuery("select 1 from sqlite_master where type='index' and name='idx_source_name_nocase'").use { rs ->
+                        rs.next()
+                    }
+                }
+                assertTrue("Index idx_source_name_nocase must exist in schema", indexExists)
+            }
+            database.close()
+        } finally { Files.deleteIfExists(java.nio.file.Path.of(path)) }
+    }
+
+    @Test
+    fun `cachedChapterUrls returns complete set of cached chapter URLs`() {
+        val path = temporaryDatabase()
+        try {
+            val database = Database(path)
+            database.initialize("password-for-test")
+
+            database.cacheBookContent("src-1", "book-1", "https://src.com/c1", ChapterContent("第1章", "内容1"))
+            database.cacheBookContent("src-1", "book-1", "https://src.com/c2", ChapterContent("第2章", "内容2"))
+            database.cacheBookContent("src-1", "book-1", "https://src.com/c3", ChapterContent("第3章", "内容3"))
+            database.cacheBookContent("src-1", "book-2", "https://src.com/other-c1", ChapterContent("第1章", "内容A"))
+
+            val cached = database.cachedChapterUrls("src-1", "book-1")
+            assertEquals(setOf("https://src.com/c1", "https://src.com/c2", "https://src.com/c3"), cached)
+
+            val empty = database.cachedChapterUrls("src-1", "book-non-existent")
+            assertEquals(emptySet<String>(), empty)
+            database.close()
+        } finally { Files.deleteIfExists(java.nio.file.Path.of(path)) }
+    }
+
+    @Test
+    fun `updateBookCacheProgress updates cached count without modifying other state`() {
+        val path = temporaryDatabase()
+        try {
+            val database = Database(path)
+            database.initialize("password-for-test")
+
+            val book = BookshelfWriteRequest("src-1", "book-1", "书名", "作者", "toc")
+            database.saveBookshelf(book, null)
+            database.beginBookCache("src-1", "book-1", 100)
+
+            val initialShelf = database.listBookshelf().single()
+            assertEquals("caching", initialShelf.cacheState)
+            assertEquals(0, initialShelf.cachedChapters)
+            assertEquals(100, initialShelf.totalChapters)
+
+            database.updateBookCacheProgress("src-1", "book-1", 45)
+
+            val updatedShelf = database.listBookshelf().single()
+            assertEquals("caching", updatedShelf.cacheState)
+            assertEquals(45, updatedShelf.cachedChapters)
+            assertEquals(100, updatedShelf.totalChapters)
+            database.close()
+        } finally { Files.deleteIfExists(java.nio.file.Path.of(path)) }
+    }
+
+    @Test
+    fun `finishBookCache preserves previously known chapter total`() {
+        val path = temporaryDatabase()
+        try {
+            val database = Database(path)
+            database.initialize("password-for-test")
+
+            val book = BookshelfWriteRequest("src-1", "book-1", "书名", "作者", "toc")
+            database.saveBookshelf(book, null)
+            database.beginBookCache("src-1", "book-1", 144)
+            database.cacheBookContent("src-1", "book-1", "c1", ChapterContent("第1章", "内容"))
+            database.finishBookCache("src-1", "book-1", "1 章未缓存")
+
+            val failed = database.listBookshelf().single()
+            assertEquals("failed", failed.cacheState)
+            assertEquals(1, failed.cachedChapters)
+            // Total must not be clobbered by the partially cached count.
+            assertEquals(144, failed.totalChapters)
+
+            database.finishBookCache("src-1", "book-1")
+            val ready = database.listBookshelf().single()
+            assertEquals("ready", ready.cacheState)
+            assertEquals(144, ready.totalChapters)
+            database.close()
+        } finally { Files.deleteIfExists(java.nio.file.Path.of(path)) }
+    }
+
+    @Test
+    fun `concurrent multi-threaded read and write connection pooling`() {
+        val path = temporaryDatabase()
+        try {
+            val database = Database(path)
+            database.initialize("password-for-test")
+
+            database.importSources((1..20).map { "{\"bookSourceUrl\":\"https://src$it.com\",\"bookSourceName\":\"书源$it\"}" })
+            database.saveBookshelf(BookshelfWriteRequest("https://src1.com", "https://book1.com", "并发测试", "作者", "toc"), null)
+
+            val executor = Executors.newFixedThreadPool(16)
+            try {
+                val tasks = mutableListOf<Future<Boolean>>()
+                repeat(100) { i ->
+                    tasks.add(executor.submit(Callable {
+                        if (i % 3 == 0) {
+                            database.saveProgress(ReadingProgress("https://src1.com", "https://book1.com", "https://c/$i", i, 0.1 * (i % 10)))
+                        } else if (i % 3 == 1) {
+                            val list = database.listSources(null)
+                            assertEquals(20, list.size)
+                        } else {
+                            val shelf = database.listBookshelf()
+                            assertEquals(1, shelf.size)
+                        }
+                        true
+                    }))
+                }
+
+                for (task in tasks) {
+                    assertTrue(task.get())
+                }
+            } finally {
+                executor.shutdown()
+            }
+            database.close()
+        } finally { Files.deleteIfExists(java.nio.file.Path.of(path)) }
+    }
+
+    @Test
+    fun `database close releases write connection and pooled read connections`() {
+        val path = temporaryDatabase()
+        try {
+            val database = Database(path)
+            database.initialize("password-for-test")
+            database.listSources(null)
+            database.saveBookshelf(BookshelfWriteRequest("s", "b", "n", "a", "t"), null)
+
+            database.close()
+
+            val error = runCatching { database.listSources(null) }.exceptionOrNull()
+            assertNotNull(error)
+            assertTrue(error is IllegalStateException)
+            assertTrue(error?.message?.contains("closed") == true)
+        } finally {
+            Files.deleteIfExists(java.nio.file.Path.of(path))
+        }
     }
 
     private fun temporaryDatabase(): String = Files.createTempFile("legado-server-test", ".sqlite").toString()
 }
+

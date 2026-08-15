@@ -33,7 +33,7 @@ fun Application.legadoApplication(config: ServerConfig = ServerConfig.fromEnviro
     val bookCache = BookCacheService(database, runner) { message -> log.info(message) }
     subscriptions.start()
     bookCache.start()
-    environment.monitor.subscribe(ApplicationStopped) { subscriptions.stop(); bookCache.stop() }
+    environment.monitor.subscribe(ApplicationStopped) { subscriptions.stop(); bookCache.stop(); database.close() }
 
     install(ContentNegotiation) {
         json(Json { ignoreUnknownKeys = true; explicitNulls = false })

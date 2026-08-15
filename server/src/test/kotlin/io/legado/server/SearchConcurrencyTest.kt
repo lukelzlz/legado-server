@@ -43,30 +43,33 @@ class SearchConcurrencyTest {
     }
 
     @Test
-    fun `source search concurrency is capped by CPU and eight`() {
-        assertEquals(1, sourceSearchConcurrency(0))
-        assertEquals(4, sourceSearchConcurrency(4))
-        assertEquals(8, sourceSearchConcurrency(32))
+    fun `source search concurrency scales between 16 and 32 workers`() {
+        assertEquals(16, sourceSearchConcurrency(0))
+        assertEquals(16, sourceSearchConcurrency(4))
+        assertEquals(16, sourceSearchConcurrency(16))
+        assertEquals(24, sourceSearchConcurrency(24))
+        assertEquals(32, sourceSearchConcurrency(32))
+        assertEquals(32, sourceSearchConcurrency(64))
     }
 
     @Test
-    fun `candidate validation stays within the source concurrency cap and isolates failures`() = runBlocking {
-        val running = AtomicInteger()
-        val maximum = AtomicInteger()
-        val results = boundedConcurrentMap((1..6).toList(), 2) { source ->
-            val current = running.incrementAndGet()
-            maximum.getAndUpdate { previous -> maxOf(previous, current) }
-            try {
-                // A source validates each of its search hits before returning its visible hits.
-                (1..3).filter { candidate ->
-                    delay(5)
-                    source != 3 || candidate != 2
-                }.map { "$source-$it" }
-            } finally { running.decrementAndGet() }
-        }.flatten()
+    fun `searchSourceOutcome returns candidates directly upon search completion and isolates failures`() = runBlocking {
+        val source = """{"bookSourceUrl":"https://src.example","searchUrl":"/search?k={{key}}","ruleSearch":{"bookList":"$.data","bookUrl":"/b/{{$.id}}","name":"$.title"}}"""
+        val runner = RuleRunner { url ->
+            if (url.contains("fail")) throw RuntimeException("network down")
+            """{"data":[{"id":"1","title":"书1"},{"id":"2","title":"书2"}]}"""
+        }
 
-        assertTrue(maximum.get() <= 2)
-        assertEquals(17, results.size)
-        assertTrue("3-2" !in results)
+        val successOutcome = searchSourceOutcome(runner, source, "正常")
+        assertEquals(false, successOutcome.failed)
+        assertEquals(2, successOutcome.results.size)
+        assertEquals("书1", successOutcome.results[0].name)
+        assertEquals("书2", successOutcome.results[1].name)
+
+        val failSource = """{"bookSourceUrl":"https://src.example","searchUrl":"/search?k={{key}}&fail=1","ruleSearch":{"bookList":"$.data","bookUrl":"/b/{{$.id}}","name":"$.title"}}"""
+        val failOutcome = searchSourceOutcome(runner, failSource, "失败")
+        assertEquals(true, failOutcome.failed)
+        assertEquals(0, failOutcome.results.size)
     }
 }
+

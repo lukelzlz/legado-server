@@ -182,6 +182,7 @@ svg { width: 18px; height: 18px; flex: none; }
 .source-choice-list > button { display: grid; gap: 5px; padding: 11px 12px; border-top: 1px solid var(--line); color: var(--ink); background: transparent; text-align: left; }
 .source-choice-list > button:hover, .source-choice-list > button.selected { background: var(--accent-soft); }
 .source-choice-list > button:disabled { opacity: .55; }
+.source-choice-list > button.loading { opacity: .75; cursor: wait; }
 .source-choice-list strong { font-size: 12px; font-weight: 650; }
 .source-choice-list small { display: -webkit-box; overflow: hidden; color: var(--muted); font-size: 12px; line-height: 1.55; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
 
@@ -231,12 +232,16 @@ svg { width: 18px; height: 18px; flex: none; }
 .chapter-search svg { width: 15px; }
 .reader-side-title { display: flex; align-items: center; gap: 8px; padding: 11px 19px; color: var(--accent); background: var(--accent-soft); font-size: 13px; font-weight: 650; }
 .reader-side-title svg { width: 16px; }
-.reader-chapters { overflow: auto; display: grid; align-content: start; }
-.reader-chapters button { min-height: 34px; display: flex; align-items: center; gap: 8px; padding: 7px 18px; border-left: 3px solid transparent; background: transparent; color: var(--muted); text-align: left; font-size: 12px; line-height: 1.3; }
-.reader-chapters button:hover { background: var(--surface-muted); color: var(--ink); }
-.reader-chapters button.current { color: var(--accent); border-left-color: var(--accent); background: var(--accent-soft); font-weight: 600; }
-.reader-chapters i { width: 5px; height: 5px; flex: none; border-radius: 50%; background: transparent; }
-.reader-chapters .current i { background: var(--accent); }
+.reader-chapters { position: relative; flex: 1 1 auto; min-height: 0; overflow-y: auto; overflow-x: hidden; display: block; contain: strict; will-change: scroll-position; -webkit-overflow-scrolling: touch; }
+.reader-chapter-item { width: 100%; height: 36px; box-sizing: border-box; display: flex; align-items: center; gap: 8px; padding: 0 18px; border: 0; border-left: 3px solid transparent; background: transparent; color: var(--muted); text-align: left; font-size: 12px; line-height: 1.3; cursor: pointer; user-select: none; }
+.reader-chapter-item:hover { background: var(--surface-muted); color: var(--ink); }
+.reader-chapter-item.current { color: var(--accent); border-left-color: var(--accent); background: var(--accent-soft); font-weight: 600; }
+.reader-chapter-item i { width: 5px; height: 5px; flex: none; border-radius: 50%; background: transparent; }
+.reader-chapter-item.current i { background: var(--accent); }
+.reader-chapter-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+.reader-chapters button:not(.reader-chapter-item) { min-height: 34px; display: flex; align-items: center; gap: 8px; padding: 7px 18px; border-left: 3px solid transparent; background: transparent; color: var(--muted); text-align: left; font-size: 12px; line-height: 1.3; }
+.reader-chapters button:not(.reader-chapter-item):hover { background: var(--surface-muted); color: var(--ink); }
+.reader-chapters button:not(.reader-chapter-item).current { color: var(--accent); border-left-color: var(--accent); background: var(--accent-soft); font-weight: 600; }
 .reader-sidebar footer { margin-top: auto; padding: 15px 16px; border-top: 1px solid var(--line); }
 .shelf-button { width: 100%; height: 34px; display: flex; align-items: center; justify-content: center; gap: 7px; background: transparent; border: 1px solid var(--line); border-radius: 5px; color: var(--ink); font-size: 12px; }
 .reader-main { min-width: 0; background: var(--surface); }
@@ -357,8 +362,9 @@ svg { width: 18px; height: 18px; flex: none; }
   .mobile-reader-sheet { position: fixed; z-index: 13; bottom: 0; left: 0; right: 0; display: block; max-height: min(74vh, 650px); overflow: auto; border-radius: 12px 12px 0 0; background: var(--surface); box-shadow: 0 -14px 32px rgba(0, 0, 0, .12); }
   .mobile-reader-sheet > header { height: 58px; display: flex; align-items: center; justify-content: space-between; padding: 0 15px; border-bottom: 1px solid var(--line); font-size: 14px; }
   .mobile-reader-sheet .sheet-volume { padding: 13px 18px; color: var(--muted); font-size: 12px; }
-  .mobile-reader-sheet .reader-chapters { max-height: 56vh; }
-  .mobile-reader-sheet .reader-chapters button { min-height: 43px; border-bottom: 1px solid var(--line); }
+  .mobile-reader-sheet .reader-chapters { height: 56vh; max-height: 56vh; flex: none; }
+  .mobile-reader-sheet .reader-chapter-item { height: 44px; border-bottom: 1px solid var(--line); font-size: 13px; }
+  .mobile-reader-sheet .reader-chapters button:not(.reader-chapter-item) { min-height: 43px; border-bottom: 1px solid var(--line); }
   .mobile-reader-sheet .reader-settings-panel { position: static; display: block; height: auto; padding-bottom: 14px; border: 0; }
   .mobile-reader-sheet .reader-settings-panel > header { display: none; }
   .library-result-filters { align-items: stretch; }

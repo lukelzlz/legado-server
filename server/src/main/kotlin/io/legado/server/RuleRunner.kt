@@ -17,13 +17,18 @@ import org.mozilla.javascript.NativeJSON
 import org.mozilla.javascript.NativeObject
 import org.mozilla.javascript.Scriptable
 import org.mozilla.javascript.ScriptableObject
+import java.io.ByteArrayOutputStream
+import java.io.InputStream
 import java.net.InetAddress
 import java.net.URI
 import java.net.URLEncoder
 import java.net.http.HttpClient
 import java.net.http.HttpRequest
 import java.net.http.HttpResponse
+import java.nio.charset.Charset
 import java.time.Duration
+import java.util.zip.GZIPInputStream
+import java.util.zip.InflaterInputStream
 
 /**
  * A deliberately small, server-safe subset of Legado's declarative source protocol.
@@ -39,7 +44,9 @@ class RuleRunner(private val responseFetcher: ((String) -> String)? = null) {
         val searchUrl = source.string("searchUrl") ?: throw RuleExecutionException("该书源未配置 searchUrl")
         if (searchUrl.trimStart().startsWith("@js")) throw RuleExecutionException("该书源的 searchUrl JavaScript 尚不受服务器支持")
         val sourceUrl = source.string("bookSourceUrl") ?: throw RuleExecutionException("书源缺少 bookSourceUrl")
-        val body = fetch(renderUrl(searchUrl, keyword).absolute(sourceUrl))
+        val (urlTemplate, options) = splitUrlOptions(searchUrl)
+        val rendered = renderUrl(urlTemplate, keyword, sourceUrl).absolute(sourceUrl)
+        val body = fetchUrl(rendered, options, keyword)
         val rule = source.objectValue("ruleSearch") ?: throw RuleExecutionException("该书源未配置 ruleSearch")
         val items = nodes(body, rule.string("bookList") ?: throw RuleExecutionException("缺少 ruleSearch.bookList"))
         return items.mapNotNull { item ->
@@ -60,34 +67,18 @@ class RuleRunner(private val responseFetcher: ((String) -> String)? = null) {
         return declarativeDetails(source, bookUrl)
     }
 
-    /**
-     * Confirms that a search hit can enter the reader without presenting a broken source choice.
-     * This deliberately reads only the first chapter and does not persist any result.
-     */
-    fun isReadableSearchResult(sourceJson: String, result: SearchResult): Boolean = runCatching {
-        val source = sourceJson.objectValue()
-        val details = source.string("mainJs")?.takeIf { it.isNotBlank() }
-            ?.let { JsSourceRunner(this, source).details(result.bookUrl, requireName = true) }
-            ?: declarativeDetails(source, result.bookUrl, requireName = true)
-        requireHttpUrl(details.coverUrl, "封面规则未提取到 HTTP(S) 地址")
-        val firstChapter = chapters(sourceJson, details.tocUrl).firstOrNull()
-            ?: throw RuleExecutionException("目录规则未提取到章节")
-        content(sourceJson, firstChapter.url)
-        true
-    }.getOrDefault(false)
-
-    private fun declarativeDetails(source: JsonObject, bookUrl: String, requireName: Boolean = false): BookDetails {
+    private fun declarativeDetails(source: JsonObject, bookUrl: String): BookDetails {
         val body = fetch(bookUrl)
         val rule = source.objectValue("ruleBookInfo") ?: throw RuleExecutionException("该书源未配置 ruleBookInfo")
         val root = NodeValue.document(body).at(rule.string("init"))
-        val name = root.value(rule.string("name"))?.trim().orEmpty()
-        if (requireName && name.isBlank()) throw RuleExecutionException("详情标题规则未提取到书名")
+        fun value(key: String): String? = runCatching { root.value(rule.string(key)) }.getOrNull()
+        val name = (value("name") ?: "").trim()
         return BookDetails(
             sourceId = source.string("bookSourceUrl")!!,
             name = name.ifBlank { "未命名书籍" },
-            author = root.value(rule.string("author")), intro = root.value(rule.string("intro")),
-            coverUrl = root.value(rule.string("coverUrl"))?.absolute(bookUrl),
-            tocUrl = root.value(rule.string("tocUrl"))?.absolute(bookUrl) ?: bookUrl,
+            author = value("author"), intro = value("intro"),
+            coverUrl = value("coverUrl")?.absolute(bookUrl),
+            tocUrl = value("tocUrl")?.absolute(bookUrl) ?: bookUrl,
         )
     }
 
@@ -114,22 +105,99 @@ class RuleRunner(private val responseFetcher: ((String) -> String)? = null) {
         return ChapterContent(root.value(rule.string("title")), text)
     }
 
-    internal fun fetch(url: String): String {
+    internal fun fetch(url: String): String = fetchUrl(url, null, null)
+
+    private data class UrlOptions(
+        val method: String = "GET",
+        val body: String? = null,
+        val headers: Map<String, String> = emptyMap(),
+        val charset: Charset = Charsets.UTF_8,
+    )
+
+    /**
+     * Splits a Legado "URL with options" value such as
+     * `https://host/search,{"method":"POST","body":"searchkey={{key}}"}` into its
+     * URL template and option object.
+     */
+    private fun splitUrlOptions(value: String): Pair<String, UrlOptions?> {
+        val jsonStart = value.indexOf(",{")
+        if (jsonStart < 0) return value to null
+        val optionsText = value.substring(jsonStart + 1).trim()
+        val optionsObject = runCatching { Json.parseToJsonElement(optionsText).jsonObject }.getOrNull() ?: return value to null
+        return value.substring(0, jsonStart) to UrlOptions(
+            method = optionsObject.string("method")?.uppercase() ?: "GET",
+            body = optionsObject.string("body"),
+            headers = optionsObject.objectValue("headers")?.entries?.filter { it.value is JsonPrimitive }?.associate { it.key to ((it.value as JsonPrimitive).contentOrNull ?: "") } ?: emptyMap(),
+            charset = runCatching { Charset.forName(optionsObject.string("charset") ?: "UTF-8") }.getOrDefault(Charsets.UTF_8),
+        )
+    }
+
+    private fun fetchUrl(url: String, options: UrlOptions?, keyword: String?): String {
         responseFetcher?.let { return it(url) }
-        val initial = URI(url); validateTarget(initial)
-        var request = HttpRequest.newBuilder(initial).timeout(Duration.ofSeconds(20)).header("User-Agent", "LegadoServer/0.1").GET().build()
+        var request = buildRequest(URI(url), options, keyword)
         repeat(4) {
-            val response = client.send(request, HttpResponse.BodyHandlers.ofString())
+            val response = client.send(request, HttpResponse.BodyHandlers.ofInputStream())
             if (response.statusCode() !in 300..399) {
                 if (response.statusCode() !in 200..299) throw RuleExecutionException("上游返回 HTTP ${response.statusCode()}")
-                if (response.body().toByteArray().size > MAX_BODY_BYTES) throw RuleExecutionException("上游响应超过 2 MiB 限制")
-                return response.body()
+                val bytes = readLimited(response.body())
+                if (bytes.size > MAX_BODY_BYTES) throw RuleExecutionException("上游响应超过 2 MiB 限制")
+                val charset = (options?.charset) ?: Charsets.UTF_8
+                return decodeBody(bytes, response.headers().firstValue("content-encoding").orElse(""), charset)
             }
             val location = response.headers().firstValue("location").orElseThrow { RuleExecutionException("重定向缺少 Location") }
             val redirect = request.uri().resolve(location); validateTarget(redirect)
-            request = HttpRequest.newBuilder(redirect).timeout(Duration.ofSeconds(20)).header("User-Agent", "LegadoServer/0.1").GET().build()
+            request = buildRequest(redirect, options, keyword)
         }
         throw RuleExecutionException("重定向次数超过限制")
+    }
+
+    private fun buildRequest(initial: URI, options: UrlOptions?, keyword: String?): HttpRequest {
+        validateTarget(initial)
+        val builder = HttpRequest.newBuilder(initial)
+            .timeout(Duration.ofSeconds(20))
+            .header("User-Agent", "LegadoServer/0.1")
+            .header("Accept-Encoding", "gzip, deflate")
+        options?.headers?.forEach { (name, value) -> builder.header(name, value) }
+        val method = options?.method?.uppercase() ?: "GET"
+        val body = options?.body
+        if (method != "GET" && body != null) {
+            val rendered = keyword?.let { renderUrl(body, it, initial.toString()) } ?: body
+            builder.method(method, HttpRequest.BodyPublishers.ofString(rendered, options?.charset ?: Charsets.UTF_8))
+        } else {
+            builder.method(method, HttpRequest.BodyPublishers.noBody())
+        }
+        return builder.build()
+    }
+
+    private fun decodeBody(bytes: ByteArray, contentEncoding: String, charset: Charset): String {
+        val encoding = contentEncoding.lowercase()
+        val decoded = when {
+            encoding.contains("gzip") -> GZIPInputStream(bytes.inputStream()).use(::readAll)
+            encoding.contains("deflate") -> InflaterInputStream(bytes.inputStream()).use(::readAll)
+            else -> bytes
+        }
+        return decoded.toString(charset)
+    }
+
+    private fun readAll(input: InputStream): ByteArray {
+        val output = ByteArrayOutputStream()
+        val buffer = ByteArray(8192)
+        while (true) {
+            val count = input.read(buffer)
+            if (count < 0) return output.toByteArray()
+            output.write(buffer, 0, count)
+        }
+    }
+
+    private fun readLimited(input: InputStream): ByteArray {
+        val output = ByteArrayOutputStream()
+        val buffer = ByteArray(8192)
+        while (true) {
+            val count = input.read(buffer)
+            if (count < 0) return output.toByteArray()
+            require(output.size() + count <= MAX_BODY_BYTES) { "上游响应超过 2 MiB 限制" }
+            output.write(buffer, 0, count)
+        }
     }
 
     private fun validateTarget(uri: URI) {
@@ -141,16 +209,14 @@ class RuleRunner(private val responseFetcher: ((String) -> String)? = null) {
         }
     }
 
-    private fun requireHttpUrl(value: String?, message: String) {
-        val uri = runCatching { value?.trim()?.let(::URI) }.getOrNull()
-        if (uri?.scheme !in setOf("http", "https") || uri?.host.isNullOrBlank()) throw RuleExecutionException(message)
-    }
-
-    private fun renderUrl(template: String, keyword: String): String = template
+    private fun renderUrl(template: String, keyword: String, sourceUrl: String): String = template
         .replace("{{key}}", URLEncoder.encode(keyword, Charsets.UTF_8))
         .replace("{{keyword}}", URLEncoder.encode(keyword, Charsets.UTF_8))
         .replace("{{page}}", "1")
         .replace("<key>", URLEncoder.encode(keyword, Charsets.UTF_8))
+        .replace("{{source.key}}", URLEncoder.encode(keyword, Charsets.UTF_8))
+        .replace("{{source.bookSourceUrl}}", sourceUrl)
+        .replace("{{cookie.removeCookie(source.key)}}", "")
 
     private fun nodes(body: String, rule: String): List<NodeValue> = when {
         rule.startsWith("$") -> (JsonPath.read<Any>(body, rule) as? List<*>)?.map { NodeValue.json(it) } ?: emptyList()
@@ -174,10 +240,9 @@ private class JsSourceRunner(private val runner: RuleRunner, private val source:
         val url = book.string("bookUrl") ?: return@mapNotNull null
         SearchResult(source.string("bookSourceUrl")!!, book.string("name") ?: return@mapNotNull null, book.string("author"), url, book.string("coverUrl"), book.string("intro"))
     }
-    fun details(bookUrl: String, requireName: Boolean = false): BookDetails {
+    fun details(bookUrl: String): BookDetails {
         val value = callOptional("getBookInfo", arrayOf(bookObject(bookUrl)))?.jsonObjectOrEmpty() ?: JsonObject(emptyMap())
         val name = value.string("name")?.trim().orEmpty()
-        if (requireName && name.isBlank()) throw RuleExecutionException("详情标题规则未提取到书名")
         return BookDetails(source.string("bookSourceUrl")!!, name.ifBlank { "未命名书籍" }, value.string("author"), value.string("intro"), value.string("coverUrl"), value.string("tocUrl") ?: bookUrl)
     }
     fun chapters(tocUrl: String): List<Chapter> = call("getChapters", arrayOf(bookObject(tocUrl))).jsonArray().mapIndexedNotNull { index, value ->
@@ -228,10 +293,51 @@ private class NodeValue private constructor(private val html: Element?, private 
         if (rule.isNullOrBlank()) return null
         return if (json != null) valueJson(rule)
         else html?.let { element ->
-            val selector = rule.removePrefix("@css:"); val mode = selector.substringAfter("@", "text")
-            val target = element.selectFirst(selector.substringBefore("@")) ?: return null
-            when (mode) { "html" -> target.html(); "text" -> target.text(); else -> target.attr(mode) }
+            val selector = rule.removePrefix("@css:")
+            // Rules follow `selector@mode`. The selector may itself chain `node@node`
+            // segments (e.g. `class.container.1@a` means first `.container`, then its
+            // `a` descendant). The final `@segment` is the read mode; everything before
+            // it forms the selector chain.
+            val segments = selector.split('@')
+            var current = element
+            for (index in 0 until segments.size - 1) {
+                val segment = segments[index]
+                if (segment.isBlank()) continue
+                current = selectLegado(current, segment) ?: return null
+            }
+            val mode = segments.last().substringBefore("##").ifBlank { "text" }
+            when (mode) {
+                "html" -> current.html()
+                "text" -> current.text()
+                "textNodes", "textNode" -> current.ownText()
+                else -> current.attr(mode)
+            }
         }
+    }
+
+    private fun selectLegado(element: Element, selector: String): Element? {
+        // Legado's `class.name` is shorthand for `.name`; index selectors use
+        // `tag.N` (N-th descendant) or `class.name.N` / `.name.N`.
+        val classOnly = Regex("^class\\.([a-zA-Z][a-zA-Z0-9_-]*)$").find(selector)
+        if (classOnly != null) {
+            return element.select(".${classOnly.groupValues[1]}").firstOrNull()
+        }
+        val indexed = Regex("^([a-zA-Z][a-zA-Z0-9-]*)\\.(\\d+)$").find(selector)
+        if (indexed != null) {
+            val tag = indexed.groupValues[1]
+            val ordinal = indexed.groupValues[2].toInt().coerceAtLeast(0)
+            val matches = element.getElementsByTag(tag)
+            return matches.getOrNull(ordinal)
+        }
+        val classIndexed = Regex("^class\\.([a-zA-Z][a-zA-Z0-9_-]*)\\.(\\d+)$").find(selector)
+            ?: Regex("^\\.([a-zA-Z][a-zA-Z0-9_-]*)\\.(\\d+)$").find(selector)
+        if (classIndexed != null) {
+            val className = classIndexed.groupValues[1]
+            val ordinal = classIndexed.groupValues[2].toInt().coerceAtLeast(0)
+            val matches = element.select(".$className")
+            return matches.getOrNull(ordinal)
+        }
+        return element.selectFirst(selector)
     }
     fun at(rule: String?): NodeValue {
         if (json == null || rule.isNullOrBlank() || !rule.trimStart().startsWith("$")) return this
@@ -253,7 +359,7 @@ private class NodeValue private constructor(private val html: Element?, private 
         fun document(body: String) = if (body.trimStart().startsWith("{") || body.trimStart().startsWith("[")) {
             NodeValue(null, JsonPath.parse(body).json<Any>())
         } else {
-            NodeValue(Jsoup.parse(body).body(), null)
+            NodeValue(Jsoup.parse(body), null)
         }
         fun json(value: Any?) = NodeValue(null, value)
     }

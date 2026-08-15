@@ -31,9 +31,16 @@ object SourceCodec {
         require(text.toByteArray().size <= MAX_SOURCE_BYTES) { "书源不能超过 1 MiB" }
         val objectValue = try { json.parseToJsonElement(text) as? JsonObject } catch (_: Exception) { null }
             ?: throw IllegalArgumentException("书源必须是 JSON 对象")
-        val url = objectValue.string("bookSourceUrl") ?: throw IllegalArgumentException("缺少 bookSourceUrl")
-        require(url.startsWith("http://") || url.startsWith("https://")) { "bookSourceUrl 必须是 HTTP(S) 地址" }
-        val name = objectValue.string("bookSourceName")?.takeIf { it.isNotBlank() } ?: url
+        val rawUrl = objectValue.string("bookSourceUrl") ?: throw IllegalArgumentException("缺少 bookSourceUrl")
+        require(rawUrl.startsWith("http://") || rawUrl.startsWith("https://")) { "bookSourceUrl 必须是 HTTP(S) 地址" }
+        // Legado source URLs may carry annotations such as `https://host/##@group` or `https://host/#module`.
+        // The server only needs the reachable origin; annotations are metadata used by the Android client.
+        val url = normalizeSourceUrl(rawUrl)
+        val name = objectValue.string("bookSourceName")?.takeIf { it.isNotBlank() } ?: rawUrl
+        val normalizedJson = json.encodeToString(
+            JsonElement.serializer(),
+            if (url == rawUrl) objectValue else JsonObject(objectValue.toMap() + ("bookSourceUrl" to JsonPrimitive(url))),
+        )
         return ParsedSource(
             id = url,
             name = name,
@@ -41,9 +48,14 @@ object SourceCodec {
             group = objectValue.string("bookSourceGroup"),
             enabled = objectValue.boolean("enabled") ?: true,
             isJs = !objectValue.string("mainJs").isNullOrBlank(),
-            json = json.encodeToString(JsonElement.serializer(), objectValue),
+            json = normalizedJson,
         )
     }
+
+    private fun normalizeSourceUrl(rawUrl: String): String = rawUrl
+        .substringBefore("##")
+        .substringBefore("#")
+        .ifBlank { rawUrl }
 
     private fun JsonObject.string(key: String): String? = (get(key) as? JsonPrimitive)?.contentOrNull
     private fun JsonObject.boolean(key: String): Boolean? = (get(key) as? JsonPrimitive)?.booleanOrNull

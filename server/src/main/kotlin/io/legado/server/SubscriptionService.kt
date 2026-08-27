@@ -17,8 +17,6 @@ import java.net.URI
 import java.net.http.HttpClient
 import java.net.http.HttpRequest
 import java.net.http.HttpResponse
-import java.io.ByteArrayOutputStream
-import java.io.InputStream
 import java.security.MessageDigest
 import java.time.Duration
 
@@ -80,22 +78,10 @@ class SubscriptionService(private val database: Database, private val log: (Stri
                     return@repeat
                 }
                 require(response.statusCode() in 200..299) { "订阅上游返回 HTTP ${response.statusCode()}" }
-                response.headers().firstValue("content-length").map(String::toLongOrNull).orElse(null)?.let { require(it <= MAX_BYTES) { "订阅内容超过 10 MiB 限制" } }
-                return readLimited(body).toString(Charsets.UTF_8)
+                return body.readBytes().toString(Charsets.UTF_8)
             }
         }
         throw IllegalArgumentException("订阅重定向次数超过限制")
-    }
-
-    private fun readLimited(input: InputStream): ByteArray {
-        val output = ByteArrayOutputStream()
-        val buffer = ByteArray(8192)
-        while (true) {
-            val count = input.read(buffer)
-            if (count < 0) return output.toByteArray()
-            require(output.size() + count <= MAX_BYTES) { "订阅内容超过 10 MiB 限制" }
-            output.write(buffer, 0, count)
-        }
     }
 
     private fun parseSources(body: String): List<String> {
@@ -116,6 +102,5 @@ class SubscriptionService(private val database: Database, private val log: (Stri
     private companion object {
         const val UPDATE_INTERVAL_MS = 6 * 60 * 60 * 1000L
         const val MAX_REDIRECTS = 3
-        const val MAX_BYTES = 10 * 1024 * 1024
     }
 }

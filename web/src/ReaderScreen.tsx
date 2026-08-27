@@ -560,7 +560,6 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
       </div>
       <strong className="reader-header-title" title={bookName}>{bookName}</strong>
       <div className="reader-header-actions">
-        <IconButton label="阅读进度" icon="bookmark" onClick={() => { if (settings.pageMode === 'scroll') window.scrollTo({ top: 0, behavior: 'smooth' }); else setPageIndex(0) }} />
         <IconButton label="阅读设置" icon="settings" onClick={() => setActiveDrawer(d => d === 'settings' ? null : 'settings')} />
         <IconButton label={speechState === 'speaking' ? '暂停朗读' : speechState === 'paused' ? '继续朗读' : '朗读本章'} icon="volume2" onClick={toggleSpeech} />
       </div>
@@ -628,7 +627,6 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
     {/* Floating Mobile Bottom Nav */}
     <nav className="mobile-reader-nav">
       <button onClick={() => setActiveDrawer('toc')}><Icon name="list" /><span>目录</span></button>
-      <button onClick={() => { if (settings.pageMode === 'scroll') window.scrollTo({ top: 0, behavior: 'smooth' }); else setPageIndex(0) }}><Icon name="sliders" /><span>进度</span></button>
       <button onClick={() => setActiveDrawer('settings')}><span className="aa">Aa</span><span>设置</span></button>
       <button onClick={() => onSettingsChange({ ...settings, theme: settings.theme === 'dark' ? 'light' : 'dark' })}><Icon name="moon" /><span>夜间</span></button>
     </nav>

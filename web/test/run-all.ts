@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url'
 import './VirtualChapterList.test.ts'
 import './LazySourceLoading.test.ts'
 import './ReaderOptimization.test.ts'
+import './ReaderPagination.test.ts'
 import './TOCPerformanceScenario.test.ts'
 import './ChallengerEmpiricalStress.test.ts'
 

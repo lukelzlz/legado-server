@@ -107,7 +107,17 @@ class RuleRunner(private val responseFetcher: ((String) -> String)? = null) {
         val body = fetchUrl(url, mergedOptions, null)
         val rule = source.objectValue("ruleContent") ?: throw RuleExecutionException("该书源未配置 ruleContent")
         val root = NodeValue.document(body)
-        val text = root.value(rule.string("content"))?.cleanContent().orEmpty()
+        var text = root.value(rule.string("content"))?.cleanContent().orEmpty()
+        if (text.length < 500) {
+            val paragraphs = Regex("(?i)<p[^>]*>([\\s\\S]*?)</p>").findAll(body)
+                .map { it.groupValues[1].cleanContent() }
+                .filter { it.length > 2 && !it.contains("按←键返回") && !it.contains("加入书签") && !it.contains("仅放置最近浏览") }
+                .toList()
+            if (paragraphs.size >= 5) {
+                val candidate = paragraphs.joinToString("\n\n")
+                if (candidate.length > text.length) text = candidate
+            }
+        }
         if (text.isBlank()) throw RuleExecutionException("正文规则未提取到内容")
         return ChapterContent(root.value(rule.string("title")), text)
     }
@@ -138,11 +148,6 @@ class RuleRunner(private val responseFetcher: ((String) -> String)? = null) {
         val charset: Charset = Charsets.UTF_8,
     )
 
-    /**
-     * Splits a Legado "URL with options" value such as
-     * `https://host/search,{"method":"POST","body":"searchkey={{key}}"}` into its
-     * URL template and option object.
-     */
     private fun splitUrlOptions(value: String): Pair<String, UrlOptions?> {
         val jsonStart = value.indexOf(",{")
         if (jsonStart < 0) return value to null
@@ -247,8 +252,54 @@ class RuleRunner(private val responseFetcher: ((String) -> String)? = null) {
         else -> Jsoup.parse(body).select(rule.css()).map(NodeValue::html)
     }
 
-    private fun String.css(): String = removePrefix("@css:").substringBefore("@").trim()
-    private fun String.cleanContent(): String = Jsoup.parseBodyFragment(this).text().replace(Regex("[\\t ]+"), " ").replace(Regex("\\n{3,}"), "\\n\\n").trim()
+    private fun String.css(): String {
+        val clean = removePrefix("@css:").trim()
+        val parts = clean.split("@")
+        val cssParts = mutableListOf<String>()
+        for (part in parts) {
+            val trimmed = part.trim()
+            if (trimmed.isEmpty()) continue
+            if (trimmed in setOf("text", "href", "src", "content", "html", "textNodes", "textNode")) break
+            if (trimmed.startsWith("attr(") || trimmed.startsWith("text(") || trimmed.startsWith("all")) break
+            if ("!" in trimmed) {
+                val (tag, notIndex) = trimmed.split("!", limit = 2)
+                val idx = notIndex.toIntOrNull()
+                if (idx != null) {
+                    cssParts.add("$tag:not(:nth-child(${idx + 1}))")
+                } else {
+                    cssParts.add(tag)
+                }
+            } else if (trimmed.startsWith("class.")) {
+                val cls = trimmed.removePrefix("class.")
+                if ("." in cls) {
+                    val (cName, idxStr) = cls.split(".", limit = 2)
+                    val idx = idxStr.toIntOrNull()
+                    if (idx != null) cssParts.add(".$cName:nth-of-type(${idx + 1})") else cssParts.add(".$cls")
+                } else {
+                    cssParts.add(".$cls")
+                }
+            } else if (trimmed.matches(Regex("^[a-zA-Z0-9-]+\\.\\d+$"))) {
+                val (tag, idxStr) = trimmed.split(".", limit = 2)
+                val idx = idxStr.toIntOrNull()
+                if (idx != null) cssParts.add("$tag:nth-of-type(${idx + 1})") else cssParts.add(trimmed)
+            } else {
+                cssParts.add(trimmed)
+            }
+        }
+        return if (cssParts.isEmpty()) clean else cssParts.joinToString(" ")
+    }
+    private fun String.cleanContent(): String = this
+        .replace(Regex("(?i)<script[\\s\\S]*?</script>"), "")
+        .replace(Regex("(?i)<style[\\s\\S]*?</style>"), "")
+        .replace(Regex("(?i)<div[\\s\\S]*?</div>"), "")
+        .replace(Regex("(?i)<br\\s*/?>"), "\n")
+        .replace(Regex("(?i)</?p[^>]*>"), "\n")
+        .replace(Regex("<[^>]+>"), "")
+        .let { org.jsoup.parser.Parser.unescapeEntities(it, false) }
+        .lines()
+        .map { it.trim() }
+        .filter { it.isNotBlank() }
+        .joinToString("\n\n")
     private fun String.absolute(base: String): String = try { URI(base).resolve(this).toString() } catch (_: Exception) { this }
     private fun String.objectValue(): JsonObject = json.parseToJsonElement(this).jsonObject
     private fun JsonObject.objectValue(key: String): JsonObject? = get(key)?.jsonObject
@@ -318,40 +369,46 @@ private class NodeValue private constructor(private val html: Element?, private 
         return if (json != null) valueJson(rule)
         else html?.let { element ->
             val selector = rule.removePrefix("@css:")
-            // Rules follow `selector@mode`. The selector may itself chain `node@node`
-            // segments (e.g. `class.container.1@a` means first `.container`, then its
-            // `a` descendant). The final `@segment` is the read mode; everything before
-            // it forms the selector chain.
             val segments = selector.split('@')
-            var current = element
-            for (index in 0 until segments.size - 1) {
-                val segment = segments[index]
-                if (segment.isBlank()) continue
-                current = selectLegado(current, segment) ?: return null
-            }
             val mode = segments.last().substringBefore("##").ifBlank { "text" }
-            when (mode) {
-                "html" -> current.html()
-                "text" -> current.text()
-                "textNodes", "textNode" -> current.ownText()
-                else -> current.attr(mode)
+            val selectorChain = segments.subList(0, segments.size - 1).filter { it.isNotBlank() }
+            
+            val elements = if (selectorChain.isEmpty()) listOf(element) else {
+                var currentList = listOf(element)
+                for (segment in selectorChain) {
+                    val nextList = mutableListOf<Element>()
+                    for (curr in currentList) {
+                        nextList.addAll(selectAllLegado(curr, segment))
+                    }
+                    currentList = nextList
+                    if (currentList.isEmpty()) break
+                }
+                currentList
             }
+            if (elements.isEmpty()) return null
+            val texts = elements.mapNotNull { el ->
+                when (mode) {
+                    "html" -> el.html().takeIf { it.isNotBlank() }
+                    "text" -> el.text().takeIf { it.isNotBlank() }
+                    "textNodes", "textNode" -> el.ownText().takeIf { it.isNotBlank() }
+                    else -> el.attr(mode).takeIf { it.isNotBlank() }
+                }
+            }
+            if (texts.isEmpty()) null else texts.joinToString("\n")
         }
     }
 
-    private fun selectLegado(element: Element, selector: String): Element? {
-        // Legado's `class.name` is shorthand for `.name`; index selectors use
-        // `tag.N` (N-th descendant) or `class.name.N` / `.name.N`.
+    private fun selectAllLegado(element: Element, selector: String): List<Element> {
         val classOnly = Regex("^class\\.([a-zA-Z][a-zA-Z0-9_-]*)$").find(selector)
         if (classOnly != null) {
-            return element.select(".${classOnly.groupValues[1]}").firstOrNull()
+            return element.select(".${classOnly.groupValues[1]}")
         }
         val indexed = Regex("^([a-zA-Z][a-zA-Z0-9-]*)\\.(\\d+)$").find(selector)
         if (indexed != null) {
             val tag = indexed.groupValues[1]
             val ordinal = indexed.groupValues[2].toInt().coerceAtLeast(0)
             val matches = element.getElementsByTag(tag)
-            return matches.getOrNull(ordinal)
+            return matches.getOrNull(ordinal)?.let { listOf(it) } ?: emptyList()
         }
         val classIndexed = Regex("^class\\.([a-zA-Z][a-zA-Z0-9_-]*)\\.(\\d+)$").find(selector)
             ?: Regex("^\\.([a-zA-Z][a-zA-Z0-9_-]*)\\.(\\d+)$").find(selector)
@@ -359,10 +416,11 @@ private class NodeValue private constructor(private val html: Element?, private 
             val className = classIndexed.groupValues[1]
             val ordinal = classIndexed.groupValues[2].toInt().coerceAtLeast(0)
             val matches = element.select(".$className")
-            return matches.getOrNull(ordinal)
+            return matches.getOrNull(ordinal)?.let { listOf(it) } ?: emptyList()
         }
-        return element.selectFirst(selector)
+        return element.select(selector)
     }
+
     fun at(rule: String?): NodeValue {
         if (json == null || rule.isNullOrBlank() || !rule.trimStart().startsWith("$")) return this
         return runCatching { NodeValue.json(readJson(rule)) }.getOrDefault(this)

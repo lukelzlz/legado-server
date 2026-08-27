@@ -1,8 +1,8 @@
 import { CSSProperties, PointerEvent as ReactPointerEvent, useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { api, BookDetails, Chapter, ReadingProgress } from './api'
 import { Icon } from './icons'
-import { isInteractiveReaderTarget, isTapGesture, mobileTapZone } from './readerInteractions'
-import { clampScrollPosition, ReaderSettings, scrollPosition } from './readerSettings'
+import { isAtBottomBoundary, isAtTopBoundary, isInteractiveReaderTarget, isTapGesture, paginateTapZone, scrollTapZone, swipeDirection } from './readerInteractions'
+import { clampScrollPosition, defaultReaderSettings, getReaderFontFamily, ReaderSettings, scrollPosition } from './readerSettings'
 
 export type OpenBook = { details: BookDetails; bookUrl: string; chapters: Chapter[]; progress?: ReadingProgress }
 
@@ -26,16 +26,15 @@ function SettingRange({ label, value, min, max, step, onChange, display }: { lab
   return <label className="setting-range"><span>{label}</span><output>{display}</output><input type="range" min={min} max={max} step={step} value={value} onChange={event => onChange(Number(event.target.value))} /></label>
 }
 
-function ReaderSettingsPanel({ settings, onChange, onClose }: { settings: ReaderSettings; onChange: (next: ReaderSettings) => void; onClose?: () => void }) {
+function ReaderSettingsControls({ settings, onChange }: { settings: ReaderSettings; onChange: (next: ReaderSettings) => void }) {
   const update = (value: Partial<ReaderSettings>) => onChange({ ...settings, ...value })
-  return <aside className="reader-settings-panel" aria-label="阅读设置">
-    <header><strong>阅读设置</strong>{onClose && <IconButton label="关闭设置" icon="close" onClick={onClose} />}</header>
+  return <div className="drawer-scroll-content">
     <section className="setting-section"><span className="setting-label">主题</span><div className="theme-grid">{themes.map(([theme, label]) => <button key={theme} className={`theme-choice theme-${theme} ${settings.theme === theme ? 'selected' : ''}`} onClick={() => update({ theme })}><i>{settings.theme === theme && <Icon name="check" />}</i><small>{label}</small></button>)}</div></section>
-    <section className="setting-section"><span className="setting-label">字体</span><label className="font-select"><select value={settings.font} onChange={event => update({ font: event.target.value as ReaderSettings['font'] })}><option value="song">思源宋体</option><option value="serif">经典衬线</option><option value="system">系统字体</option></select><Icon name="chevronDown" /></label></section>
-    <section className="setting-section compact-settings"><div className="font-stepper"><span>字号</span><button aria-label="减小字号" onClick={() => update({ fontSize: Math.max(15, settings.fontSize - 1) })}>−</button><output>{settings.fontSize}</output><button aria-label="增大字号" onClick={() => update({ fontSize: Math.min(28, settings.fontSize + 1) })}>+</button></div><SettingRange label="字间距" value={settings.letterSpacing} min={-.25} max={1.5} step={.05} display={settings.letterSpacing.toFixed(2)} onChange={letterSpacing => update({ letterSpacing })} /><SettingRange label="行间距" value={settings.lineHeight} min={1.45} max={2.4} step={.05} display={settings.lineHeight.toFixed(2)} onChange={lineHeight => update({ lineHeight })} /><SettingRange label="段间距" value={settings.paragraphSpacing} min={.7} max={2} step={.05} display={settings.paragraphSpacing.toFixed(2)} onChange={paragraphSpacing => update({ paragraphSpacing })} /><SettingRange label="左右边距" value={settings.contentPadding} min={36} max={120} step={2} display={`${settings.contentPadding}`} onChange={contentPadding => update({ contentPadding })} /></section>
-    <section className="setting-section"><span className="setting-label">翻页方式</span><div className="page-modes"><button disabled>仿真</button><button className="selected">滚动</button><button disabled>平移</button></div><small className="setting-hint">当前版本支持连续滚动阅读</small></section>
-    <button className="reset-settings" onClick={() => onChange({ ...settings, fontSize: 19, lineHeight: 1.95, letterSpacing: 0, paragraphSpacing: 1.15, contentPadding: 80, font: 'song' })}>恢复默认设置</button>
-  </aside>
+    <section className="setting-section"><span className="setting-label">字体</span><label className="font-select"><select value={settings.font} onChange={event => update({ font: event.target.value as ReaderSettings['font'] })}><option value="song">思源宋体</option><option value="hei">黑体 / 苹方</option><option value="kai">华文楷体</option><option value="fangsong">华文仿宋</option><option value="system">系统字体</option></select><Icon name="chevronDown" /></label></section>
+    <section className="setting-section compact-settings"><div className="font-stepper"><span>字号</span><button aria-label="减小字号" onClick={() => update({ fontSize: Math.max(15, settings.fontSize - 1) })}>−</button><output>{settings.fontSize}</output><button aria-label="增大字号" onClick={() => update({ fontSize: Math.min(28, settings.fontSize + 1) })}>+</button></div><SettingRange label="字间距" value={settings.letterSpacing} min={-.25} max={1.5} step={.05} display={settings.letterSpacing.toFixed(2)} onChange={letterSpacing => update({ letterSpacing })} /><SettingRange label="行间距" value={settings.lineHeight} min={1.45} max={2.4} step={.05} display={settings.lineHeight.toFixed(2)} onChange={lineHeight => update({ lineHeight })} /><SettingRange label="段间距" value={settings.paragraphSpacing} min={.7} max={2} step={.05} display={settings.paragraphSpacing.toFixed(2)} onChange={paragraphSpacing => update({ paragraphSpacing })} /><SettingRange label="左右边距" value={settings.contentPadding} min={20} max={120} step={2} display={`${settings.contentPadding}`} onChange={contentPadding => update({ contentPadding })} /></section>
+    <section className="setting-section"><span className="setting-label">翻页方式</span><div className="page-modes"><button className={settings.pageMode === 'scroll' ? 'selected' : ''} onClick={() => update({ pageMode: 'scroll' })}>连续滚动</button><button className={settings.pageMode === 'paginate' ? 'selected' : ''} onClick={() => update({ pageMode: 'paginate' })}>平移分页</button></div><small className="setting-hint">{settings.pageMode === 'paginate' ? '左右轻扫或点击屏幕两侧平滑翻页' : '垂直滚动阅读，点击上下可快速翻滚'}</small></section>
+    <button className="reset-settings" onClick={() => onChange({ ...defaultReaderSettings, theme: settings.theme })}>恢复默认设置</button>
+  </div>
 }
 
 export interface VirtualChapterListProps {
@@ -52,8 +51,8 @@ export function VirtualChapterList({
   chapters,
   activeChapterIndex,
   onSelect,
-  itemHeight = 36,
-  overscan = 6,
+  itemHeight = 38,
+  overscan = 8,
   className = '',
   autoScrollKey,
 }: VirtualChapterListProps) {
@@ -154,11 +153,18 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
   const [loading, setLoading] = useState(true)
   const [chapterQuery, setChapterQuery] = useState('')
   const deferredQuery = useDeferredValue(chapterQuery)
-  const [mobilePanel, setMobilePanel] = useState<'toc' | 'settings' | null>(null)
-  const [toolbarsVisible, setToolbarsVisible] = useState(true)
+  const [activeDrawer, setActiveDrawer] = useState<'toc' | 'settings' | null>(null)
+  const [toolbarsVisible, setToolbarsVisible] = useState(false)
   const [boundaryMessage, setBoundaryMessage] = useState('')
   const [inShelf, setInShelf] = useState(true)
   const [speechState, setSpeechState] = useState<'idle' | 'speaking' | 'paused'>('idle')
+
+  // Pagination states
+  const [pageIndex, setPageIndex] = useState(0)
+  const [pageCount, setPageCount] = useState(1)
+  const [columnWidth, setColumnWidth] = useState(600)
+  const columnGap = 40
+
   const currentRef = useRef<{ chapter: Chapter; position: number } | null>(null)
   const timerRef = useRef<number | null>(null)
   const restoredRef = useRef(false)
@@ -168,7 +174,23 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
   const lastScrollYRef = useRef(0)
   const pointerStartRef = useRef<{ x: number; y: number; target: EventTarget | null } | null>(null)
   const boundaryTimerRef = useRef<number | null>(null)
+  const targetInitialPageRef = useRef<'first' | 'last' | null>(null)
+  const initialPagePositionRef = useRef<number | null>(null)
+  const wheelTimerRef = useRef<number | null>(null)
+
+  const viewportRef = useRef<HTMLDivElement | null>(null)
+  const bodyRef = useRef<HTMLDivElement | null>(null)
+
   const chapter = openBook.chapters[chapterIndex]
+  const bookName = openBook.details.name || '书籍正文'
+
+  useEffect(() => {
+    const title = chapter?.title ? `${bookName} - ${chapter.title} | 阅读服务器` : `${bookName} | 阅读服务器`
+    document.title = title
+    return () => {
+      document.title = '阅读服务器'
+    }
+  }, [bookName, chapter?.title])
 
   const filteredChapters = useMemo(() => {
     const query = deferredQuery.trim().toLowerCase()
@@ -232,30 +254,38 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
       .finally(() => preloadingRef.current.delete(next.url))
   }, [openBook.bookUrl, openBook.chapters, openBook.details.sourceId])
 
-  const changeChapter = useCallback((nextIndex: number) => {
+  const showBoundaryNotice = useCallback((msg: string) => {
+    setBoundaryMessage(msg)
+    if (boundaryTimerRef.current !== null) window.clearTimeout(boundaryTimerRef.current)
+    boundaryTimerRef.current = window.setTimeout(() => {
+      boundaryTimerRef.current = null
+      setBoundaryMessage('')
+    }, 1400)
+  }, [])
+
+  const changeChapter = useCallback((nextIndex: number, targetPage: 'first' | 'last' | 'auto' = 'auto') => {
     if (nextIndex < 0 || nextIndex >= openBook.chapters.length || nextIndex === chapterIndex) {
       if (nextIndex < 0 || nextIndex >= openBook.chapters.length) {
-        setBoundaryMessage(nextIndex < 0 ? '已是第一章' : '已是最后一章')
-        if (boundaryTimerRef.current !== null) window.clearTimeout(boundaryTimerRef.current)
-        boundaryTimerRef.current = window.setTimeout(() => { boundaryTimerRef.current = null; setBoundaryMessage('') }, 1400)
+        showBoundaryNotice(nextIndex < 0 ? '已是第一章' : '已是最后一章')
       }
       return
     }
     persist()
     stopSpeech()
+    targetInitialPageRef.current = targetPage === 'auto' ? null : targetPage
     setChapterIndex(nextIndex)
-    setMobilePanel(null)
-    setToolbarsVisible(true)
-  }, [chapterIndex, openBook.chapters.length, persist, stopSpeech])
+    setActiveDrawer(null)
+  }, [chapterIndex, openBook.chapters.length, persist, showBoundaryNotice, stopSpeech])
 
   const toggleShelf = async () => {
     if (inShelf) {
-      if (!confirm(`移出“${openBook.details.name}”将清除书架、阅读进度和缓存封面，确定继续吗？`)) return
+      if (!confirm(`移出“${bookName}”将清除书架、阅读进度和缓存封面，确定继续吗？`)) return
       await api.removeFromBookshelf(openBook.details.sourceId, openBook.bookUrl); setInShelf(false); return
     }
-    await api.addToBookshelf({ sourceId: openBook.details.sourceId, bookUrl: openBook.bookUrl, name: openBook.details.name, author: openBook.details.author, tocUrl: openBook.details.tocUrl, coverUrl: openBook.details.coverUrl }); setInShelf(true)
+    await api.addToBookshelf({ sourceId: openBook.details.sourceId, bookUrl: openBook.bookUrl, name: bookName, author: openBook.details.author, tocUrl: openBook.details.tocUrl, coverUrl: openBook.details.coverUrl }); setInShelf(true)
   }
 
+  // Load chapter content
   useEffect(() => {
     let cancelled = false
     setLoading(true); setMessage(''); setContent('')
@@ -265,21 +295,82 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
       const position = !restoredRef.current && chapter.index === startIndex ? openBook.progress?.scrollPosition ?? 0 : 0
       restoredRef.current = true
       currentRef.current = { chapter, position }
-      window.requestAnimationFrame(() => {
-        const maxScroll = Math.max(0, document.documentElement.scrollHeight - window.innerHeight)
-        const targetScroll = maxScroll * position
-        lastScrollYRef.current = targetScroll
-        window.scrollTo({ top: targetScroll, behavior: 'auto' })
-      })
+      initialPagePositionRef.current = position
+
+      if (settings.pageMode === 'scroll') {
+        window.requestAnimationFrame(() => {
+          const maxScroll = Math.max(0, document.documentElement.scrollHeight - window.innerHeight)
+          const targetScroll = targetInitialPageRef.current === 'last' ? maxScroll : targetInitialPageRef.current === 'first' ? 0 : maxScroll * position
+          targetInitialPageRef.current = null
+          lastScrollYRef.current = targetScroll
+          window.scrollTo({ top: targetScroll, behavior: 'auto' })
+        })
+      }
       setLoading(false)
     }
     const preloaded = preloadedContentRef.current.get(chapter.url)
     if (preloaded) applyContent(preloaded)
     else void api.content(openBook.details.sourceId, chapter.url, openBook.bookUrl).then(result => applyContent(result.content)).catch(error => { if (!cancelled) setMessage(error instanceof Error ? error.message : '无法读取正文') }).finally(() => { if (!cancelled) setLoading(false) })
     return () => { cancelled = true }
-  }, [chapter, openBook.details.sourceId, openBook.progress?.scrollPosition, startIndex])
+  }, [chapter, openBook.details.sourceId, openBook.progress?.scrollPosition, settings.pageMode, startIndex])
 
+  // Pagination measurement
+  const measurePagination = useCallback(() => {
+    const viewport = viewportRef.current
+    const body = bodyRef.current
+    if (!viewport || !body) return
+    const w = viewport.clientWidth
+    if (w <= 0) return
+    setColumnWidth(w)
+    const totalScrollWidth = body.scrollWidth
+    const calculatedPages = Math.max(1, Math.round((totalScrollWidth + columnGap) / (w + columnGap)))
+    setPageCount(calculatedPages)
+
+    if (targetInitialPageRef.current === 'last') {
+      targetInitialPageRef.current = null
+      setPageIndex(calculatedPages - 1)
+    } else if (targetInitialPageRef.current === 'first') {
+      targetInitialPageRef.current = null
+      setPageIndex(0)
+    } else if (initialPagePositionRef.current !== null) {
+      const pos = initialPagePositionRef.current
+      initialPagePositionRef.current = null
+      const target = Math.min(calculatedPages - 1, Math.max(0, Math.round(pos * (calculatedPages - 1))))
+      setPageIndex(target)
+    } else {
+      setPageIndex(curr => Math.min(curr, calculatedPages - 1))
+    }
+  }, [columnGap])
+
+  useLayoutEffect(() => {
+    if (settings.pageMode !== 'paginate') return
+    measurePagination()
+    const viewport = viewportRef.current
+    if (!viewport) return
+    const observer = new ResizeObserver(() => measurePagination())
+    observer.observe(viewport)
+    return () => observer.disconnect()
+  }, [settings.pageMode, content, settings.fontSize, settings.lineHeight, settings.letterSpacing, settings.paragraphSpacing, settings.contentPadding, settings.font, measurePagination])
+
+  const goNextPage = useCallback(() => {
+    if (pageIndex < pageCount - 1) {
+      setPageIndex(p => p + 1)
+    } else {
+      changeChapter(chapterIndex + 1, 'first')
+    }
+  }, [chapterIndex, changeChapter, pageCount, pageIndex])
+
+  const goPrevPage = useCallback(() => {
+    if (pageIndex > 0) {
+      setPageIndex(p => p - 1)
+    } else {
+      changeChapter(chapterIndex - 1, 'last')
+    }
+  }, [chapterIndex, changeChapter, pageIndex])
+
+  // Sync scroll / page progress
   useEffect(() => {
+    if (settings.pageMode !== 'scroll') return
     let rafId: number | null = null
     const onScroll = () => {
       if (rafId !== null) return
@@ -290,9 +381,9 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
         const currentY = window.scrollY
         const scrollDelta = currentY - lastScrollYRef.current
         if (currentY > 72 && scrollDelta > 12) {
-          setToolbarsVisible(visible => visible ? false : visible)
+          setToolbarsVisible(false)
         } else if (scrollDelta < -8) {
-          setToolbarsVisible(visible => !visible ? true : visible)
+          setToolbarsVisible(true)
         }
         lastScrollYRef.current = currentY
         const scrollHeight = document.documentElement.scrollHeight
@@ -321,46 +412,226 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
       if (timerRef.current !== null) window.clearTimeout(timerRef.current)
       persist()
     }
-  }, [persist, preloadNextChapter])
+  }, [persist, preloadNextChapter, settings.pageMode])
+
+  useEffect(() => {
+    if (settings.pageMode !== 'paginate') return
+    const position = pageCount > 1 ? pageIndex / (pageCount - 1) : 0
+    const current = currentRef.current
+    if (current && chapter) {
+      current.position = position
+      if (position >= 0.7) {
+        preloadNextChapter(chapter.index)
+      }
+      if (timerRef.current === null) {
+        timerRef.current = window.setTimeout(() => {
+          timerRef.current = null
+          persist()
+        }, 1200)
+      }
+    }
+  }, [chapter, pageCount, pageIndex, persist, preloadNextChapter, settings.pageMode])
 
   useEffect(() => () => stopSpeech(), [stopSpeech])
   useEffect(() => () => { if (boundaryTimerRef.current !== null) window.clearTimeout(boundaryTimerRef.current) }, [])
-  useEffect(() => { if (mobilePanel) setToolbarsVisible(true) }, [mobilePanel])
 
+  // Keyboard navigation
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement | null
       if (target?.closest('input, textarea, select, button')) return
-      if (event.key === 'ArrowLeft') { event.preventDefault(); changeChapter(chapterIndex - 1) }
-      if (event.key === 'ArrowRight') { event.preventDefault(); changeChapter(chapterIndex + 1) }
+      if (event.key === 'Escape') {
+        if (activeDrawer) {
+          setActiveDrawer(null)
+          return
+        }
+      }
+      if (settings.pageMode === 'paginate') {
+        if (event.key === 'ArrowLeft' || event.key === 'PageUp') {
+          event.preventDefault()
+          goPrevPage()
+        } else if (event.key === 'ArrowRight' || event.key === 'PageDown' || event.key === ' ') {
+          event.preventDefault()
+          goNextPage()
+        }
+      } else {
+        if (event.key === 'ArrowLeft') { event.preventDefault(); changeChapter(chapterIndex - 1) }
+        if (event.key === 'ArrowRight') { event.preventDefault(); changeChapter(chapterIndex + 1) }
+        if (event.key === 'PageDown' || event.key === ' ') {
+          event.preventDefault()
+          if (isAtBottomBoundary(window.scrollY, document.documentElement.scrollHeight, window.innerHeight)) {
+            changeChapter(chapterIndex + 1, 'first')
+          } else {
+            window.scrollBy({ top: window.innerHeight * 0.85, behavior: 'smooth' })
+          }
+        }
+        if (event.key === 'PageUp') {
+          event.preventDefault()
+          if (isAtTopBoundary(window.scrollY)) {
+            changeChapter(chapterIndex - 1, 'last')
+          } else {
+            window.scrollBy({ top: -window.innerHeight * 0.85, behavior: 'smooth' })
+          }
+        }
+      }
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [chapterIndex, changeChapter])
+  }, [activeDrawer, chapterIndex, changeChapter, goNextPage, goPrevPage, settings.pageMode])
 
   const readerStyle = {
-    '--reader-font-size': `${settings.fontSize}px`, '--reader-line-height': settings.lineHeight, '--reader-letter-spacing': `${settings.letterSpacing}px`, '--reader-paragraph-spacing': `${settings.paragraphSpacing}em`, '--reader-content-padding': `${settings.contentPadding}px`,
+    '--reader-font-size': `${settings.fontSize}px`,
+    '--reader-line-height': settings.lineHeight,
+    '--reader-letter-spacing': `${settings.letterSpacing}px`,
+    '--reader-paragraph-spacing': `${settings.paragraphSpacing}em`,
+    '--reader-content-padding': `${settings.contentPadding}px`,
+    '--reader-font-family': getReaderFontFamily(settings.font),
   } as CSSProperties
 
-  const onReadingPointerDown = (event: ReactPointerEvent<HTMLElement>) => {
-    if (window.innerWidth > 720 || loading || mobilePanel || isInteractiveReaderTarget(event.target)) return
+  // Pointer & Gesture interactions
+  const onPointerDown = (event: ReactPointerEvent<HTMLElement>) => {
+    if (loading || activeDrawer || isInteractiveReaderTarget(event.target)) return
     pointerStartRef.current = { x: event.clientX, y: event.clientY, target: event.target }
   }
-  const onReadingPointerUp = (event: ReactPointerEvent<HTMLElement>) => {
+
+  const onPointerUp = (event: ReactPointerEvent<HTMLElement>) => {
     const start = pointerStartRef.current
     pointerStartRef.current = null
-    if (!start || window.innerWidth > 720 || loading || mobilePanel || isInteractiveReaderTarget(event.target) || isInteractiveReaderTarget(start.target) || !isTapGesture(start.x, start.y, event.clientX, event.clientY) || window.getSelection()?.toString()) return
-    const zone = mobileTapZone(event.clientY, window.innerHeight)
-    if (zone === 'previous') changeChapter(chapterIndex - 1)
-    else if (zone === 'next') changeChapter(chapterIndex + 1)
-    else setToolbarsVisible(visible => !visible)
+    if (!start || loading || isInteractiveReaderTarget(event.target) || isInteractiveReaderTarget(start.target) || window.getSelection()?.toString()) return
+
+    if (activeDrawer) {
+      setActiveDrawer(null)
+      return
+    }
+
+    if (settings.pageMode === 'paginate') {
+      const swipe = swipeDirection(start.x, start.y, event.clientX, event.clientY)
+      if (swipe === 'left') {
+        goNextPage()
+        return
+      }
+      if (swipe === 'right') {
+        goPrevPage()
+        return
+      }
+      if (isTapGesture(start.x, start.y, event.clientX, event.clientY)) {
+        const zone = paginateTapZone(event.clientX, window.innerWidth)
+        if (zone === 'previous') goPrevPage()
+        else if (zone === 'next') goNextPage()
+        else setToolbarsVisible(visible => !visible)
+      }
+    } else {
+      if (isTapGesture(start.x, start.y, event.clientX, event.clientY)) {
+        const zone = scrollTapZone(event.clientY, window.innerHeight)
+        if (zone === 'previous') {
+          if (isAtTopBoundary(window.scrollY)) {
+            changeChapter(chapterIndex - 1, 'last')
+          } else {
+            window.scrollBy({ top: -window.innerHeight * 0.85, behavior: 'smooth' })
+          }
+        } else if (zone === 'next') {
+          if (isAtBottomBoundary(window.scrollY, document.documentElement.scrollHeight, window.innerHeight)) {
+            changeChapter(chapterIndex + 1, 'first')
+          } else {
+            window.scrollBy({ top: window.innerHeight * 0.85, behavior: 'smooth' })
+          }
+        } else {
+          setToolbarsVisible(visible => !visible)
+        }
+      }
+    }
   }
 
-  return <main className={`reader-workspace theme-${settings.theme} ${toolbarsVisible ? '' : 'toolbars-hidden'}`} style={readerStyle}>
-    <aside className="reader-sidebar"><header className="reader-brand"><strong>{openBook.details.name}</strong><Icon name="chevronDown" /></header><div className="chapter-search"><Icon name="search" /><input value={chapterQuery} onChange={event => setChapterQuery(event.target.value)} placeholder="搜索章节" /></div><div className="reader-side-title"><Icon name="list" /><span>目录</span></div><VirtualChapterList chapters={filteredChapters} activeChapterIndex={chapterIndex} onSelect={changeChapter} itemHeight={36} overscan={6} /><footer><button className="shelf-button" onClick={() => void toggleShelf()}><Icon name={inShelf ? 'check' : 'plus'} />{inShelf ? '已加入书架' : '添加到书架'}</button></footer></aside>
-    <section className="reader-main"><header className="reader-header"><div className="reader-header-left"><IconButton label="返回书籍详情" icon="arrowLeft" onClick={() => { persist(); stopSpeech(); onClose() }} /><IconButton label="目录" icon="list" onClick={() => setMobilePanel('toc')} /></div><strong>{openBook.details.name}</strong><div className="reader-header-actions"><IconButton label="阅读进度" icon="bookmark" onClick={() => window.scrollTo({ top: 0, behavior: 'smooth' })} /><IconButton label="阅读设置" icon="settings" onClick={() => setMobilePanel('settings')} /><IconButton label={speechState === 'speaking' ? '暂停朗读' : speechState === 'paused' ? '继续朗读' : '朗读本章'} icon="volume2" onClick={toggleSpeech} /></div></header><article className={`reading-content font-${settings.font}`} onPointerDown={onReadingPointerDown} onPointerUp={onReadingPointerUp}><h1>{chapter?.title}</h1>{loading && <p className="reader-status">正在加载正文...</p>}{message && <p className="reader-error">{message}</p>}{paragraphs.map((line, index) => <p key={index}>{line}</p>)}{content && <footer className="reader-navigation"><button disabled={chapterIndex === 0 || loading} onClick={() => changeChapter(chapterIndex - 1)}><Icon name="arrowLeft" />上一章</button><div className="chapter-progress"><i style={{ width: `${chapterProgress}%` }} /><span>{chapterIndex + 1} / {openBook.chapters.length}</span></div><button disabled={chapterIndex === openBook.chapters.length - 1 || loading} onClick={() => changeChapter(chapterIndex + 1)}>下一章<Icon name="arrowRight" /></button></footer>}</article>{boundaryMessage && <p className="reader-boundary-message" role="status">{boundaryMessage}</p>}</section>
-    <ReaderSettingsPanel settings={settings} onChange={onSettingsChange} />
-    <nav className="mobile-reader-nav"><button onClick={() => setMobilePanel('toc')}><Icon name="list" /><span>目录</span></button><button onClick={() => window.scrollTo({ top: 0, behavior: 'smooth' })}><Icon name="sliders" /><span>进度</span></button><button onClick={() => setMobilePanel('settings')}><span className="aa">Aa</span><span>设置</span></button><button onClick={() => onSettingsChange({ ...settings, theme: settings.theme === 'dark' ? 'light' : 'dark' })}><Icon name="moon" /><span>夜间</span></button></nav>
-    {mobilePanel && <><button className="reader-overlay" aria-label="关闭面板" onClick={() => setMobilePanel(null)} /><section className={`mobile-reader-sheet ${mobilePanel}`}><header><strong>{mobilePanel === 'toc' ? '选择章节' : '阅读设置'}</strong><IconButton label="关闭" icon="close" onClick={() => setMobilePanel(null)} /></header>{mobilePanel === 'toc' ? <><div className="sheet-volume">共 {openBook.chapters.length} 章</div><div className="chapter-search" style={{ margin: '0 16px 12px' }}><Icon name="search" /><input value={chapterQuery} onChange={event => setChapterQuery(event.target.value)} placeholder="搜索章节" /></div><VirtualChapterList chapters={filteredChapters} activeChapterIndex={chapterIndex} onSelect={changeChapter} itemHeight={44} overscan={6} autoScrollKey={mobilePanel} /></> : <ReaderSettingsPanel settings={settings} onChange={onSettingsChange} onClose={() => setMobilePanel(null)} />}</section></>}
+  const onWheelPaginate = (event: React.WheelEvent) => {
+    if (settings.pageMode !== 'paginate' || activeDrawer || wheelTimerRef.current !== null) return
+    const delta = Math.abs(event.deltaX) > Math.abs(event.deltaY) ? event.deltaX : event.deltaY
+    if (Math.abs(delta) < 25) return
+    wheelTimerRef.current = window.setTimeout(() => { wheelTimerRef.current = null }, 220)
+    if (delta > 0) goNextPage()
+    else goPrevPage()
+  }
+
+  return <main className={`reader-workspace theme-${settings.theme} ${toolbarsVisible ? 'toolbars-open' : 'toolbars-hidden'}`} style={readerStyle}>
+    {/* Floating Header */}
+    <header className="reader-header">
+      <div className="reader-header-left">
+        <IconButton label="返回书架" icon="arrowLeft" onClick={() => { persist(); stopSpeech(); onClose() }} />
+        <IconButton label="目录" icon="list" onClick={() => setActiveDrawer(d => d === 'toc' ? null : 'toc')} />
+      </div>
+      <strong className="reader-header-title" title={bookName}>{bookName}</strong>
+      <div className="reader-header-actions">
+        <IconButton label="阅读进度" icon="bookmark" onClick={() => { if (settings.pageMode === 'scroll') window.scrollTo({ top: 0, behavior: 'smooth' }); else setPageIndex(0) }} />
+        <IconButton label="阅读设置" icon="settings" onClick={() => setActiveDrawer(d => d === 'settings' ? null : 'settings')} />
+        <IconButton label={speechState === 'speaking' ? '暂停朗读' : speechState === 'paused' ? '继续朗读' : '朗读本章'} icon="volume2" onClick={toggleSpeech} />
+      </div>
+    </header>
+
+    {/* TOC Drawer (Left) */}
+    <aside className={`reader-drawer reader-drawer-left ${activeDrawer === 'toc' ? 'open' : ''}`} aria-label="目录抽屉">
+      <header className="drawer-header">
+        <div className="drawer-title"><Icon name="list" /><strong>目录</strong><small>共 {openBook.chapters.length} 章</small></div>
+        <IconButton label="关闭目录" icon="close" onClick={() => setActiveDrawer(null)} />
+      </header>
+      <div className="chapter-search">
+        <Icon name="search" />
+        <input value={chapterQuery} onChange={event => setChapterQuery(event.target.value)} placeholder="搜索章节" />
+      </div>
+      <VirtualChapterList chapters={filteredChapters} activeChapterIndex={chapterIndex} onSelect={index => { changeChapter(index); setActiveDrawer(null) }} itemHeight={40} overscan={8} autoScrollKey={activeDrawer === 'toc' ? 1 : 0} />
+      <footer className="drawer-footer">
+        <button className="shelf-button" onClick={() => void toggleShelf()}><Icon name={inShelf ? 'check' : 'plus'} />{inShelf ? '已在书架' : '添加到书架'}</button>
+      </footer>
+    </aside>
+
+    {/* Settings Drawer (Right) */}
+    <aside className={`reader-drawer reader-drawer-right ${activeDrawer === 'settings' ? 'open' : ''}`} aria-label="阅读设置">
+      <header className="drawer-header">
+        <div className="drawer-title"><Icon name="settings" /><strong>阅读设置</strong></div>
+        <IconButton label="关闭设置" icon="close" onClick={() => setActiveDrawer(null)} />
+      </header>
+      <ReaderSettingsControls settings={settings} onChange={onSettingsChange} />
+    </aside>
+
+    {/* Backdrop for Drawers */}
+    {activeDrawer && <div className="reader-drawer-backdrop" onClick={() => setActiveDrawer(null)} aria-hidden="true" />}
+
+    {/* Central Reading Canvas */}
+    <section className="reader-main">
+      {settings.pageMode === 'paginate' ? (
+        <div className="reader-paginated-wrap" onPointerDown={onPointerDown} onPointerUp={onPointerUp} onWheel={onWheelPaginate}>
+          <div ref={viewportRef} className="reader-paginated-viewport">
+            <div className="reader-paginated-track" style={{ transform: `translateX(-${pageIndex * (columnWidth + columnGap)}px)` }}>
+              <article ref={bodyRef} className={`reader-paginated-column-body font-${settings.font}`} style={{ columnWidth: `${columnWidth}px`, columnGap: `${columnGap}px` }}>
+                <h1>{chapter?.title}</h1>
+                {loading && <p className="reader-status">正在加载正文...</p>}
+                {message && <p className="reader-error">{message}</p>}
+                {paragraphs.map((line, index) => <p key={index}>{line}</p>)}
+              </article>
+            </div>
+          </div>
+          <footer className="reader-paginated-footer">
+            <span>{chapter?.title || ''}</span>
+            <span>{pageIndex + 1} / {pageCount}</span>
+          </footer>
+        </div>
+      ) : (
+        <article className={`reading-content font-${settings.font}`} onPointerDown={onPointerDown} onPointerUp={onPointerUp}>
+          <h1>{chapter?.title}</h1>
+          {loading && <p className="reader-status">正在加载正文...</p>}
+          {message && <p className="reader-error">{message}</p>}
+          {paragraphs.map((line, index) => <p key={index}>{line}</p>)}
+          {content && <footer className="reader-navigation"><button disabled={chapterIndex === 0 || loading} onClick={() => changeChapter(chapterIndex - 1)}><Icon name="arrowLeft" />上一章</button><div className="chapter-progress"><i style={{ width: `${chapterProgress}%` }} /><span>{chapterIndex + 1} / {openBook.chapters.length}</span></div><button disabled={chapterIndex === openBook.chapters.length - 1 || loading} onClick={() => changeChapter(chapterIndex + 1)}>下一章<Icon name="arrowRight" /></button></footer>}
+        </article>
+      )}
+      {boundaryMessage && <p className="reader-boundary-message" role="status">{boundaryMessage}</p>}
+    </section>
+
+    {/* Floating Mobile Bottom Nav */}
+    <nav className="mobile-reader-nav">
+      <button onClick={() => setActiveDrawer('toc')}><Icon name="list" /><span>目录</span></button>
+      <button onClick={() => { if (settings.pageMode === 'scroll') window.scrollTo({ top: 0, behavior: 'smooth' }); else setPageIndex(0) }}><Icon name="sliders" /><span>进度</span></button>
+      <button onClick={() => setActiveDrawer('settings')}><span className="aa">Aa</span><span>设置</span></button>
+      <button onClick={() => onSettingsChange({ ...settings, theme: settings.theme === 'dark' ? 'light' : 'dark' })}><Icon name="moon" /><span>夜间</span></button>
+    </nav>
   </main>
 }
+

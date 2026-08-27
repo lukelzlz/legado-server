@@ -1,6 +1,6 @@
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
-import { api, BookshelfItem, SearchResult, SearchStreamEvent, setCsrfToken, SourceRecord, SourceSubscription, SourceSummary, streamSearch } from './api'
+import { api, BookDetails, BookshelfItem, SearchResult, SearchStreamEvent, setCsrfToken, SourceRecord, SourceSubscription, SourceSummary, streamSearch } from './api'
 import { Icon } from './icons'
 import { OpenBook, ReaderScreen } from './ReaderScreen'
 import { loadReaderSettings, ReaderSettings, saveReaderSettings } from './readerSettings'
@@ -16,8 +16,15 @@ const bookKey = (name: string, author?: string) => `${name.replace(/[\s\p{P}]/gu
 const groupSearchResults = (results: SearchResult[]): SearchGroup[] => Array.from(results.reduce((groups, result) => { const key = bookKey(result.name, result.author); const current = groups.get(key) ?? { key, name: result.name, author: result.author, sources: [] }; current.sources.push(result); groups.set(key, current); return groups }, new Map<string, SearchGroup>()).values())
 const loadSourceBook = async (result: SearchResult): Promise<OpenBook> => {
   const details = await api.details(result.sourceId, result.bookUrl)
-  const [chapters, progress] = await Promise.all([api.chapters(details.sourceId, details.tocUrl), api.progress(details.sourceId, result.bookUrl)])
-  return { details, bookUrl: result.bookUrl, chapters, progress }
+  const safeDetails: BookDetails = {
+    ...details,
+    name: details.name?.trim() || result.name || '未知书名',
+    author: details.author?.trim() || result.author,
+    coverUrl: details.coverUrl || result.coverUrl,
+    intro: details.intro || result.intro,
+  }
+  const [chapters, progress] = await Promise.all([api.chapters(safeDetails.sourceId, safeDetails.tocUrl), api.progress(safeDetails.sourceId, result.bookUrl)])
+  return { details: safeDetails, bookUrl: result.bookUrl, chapters, progress }
 }
 
 function SourceChoiceList({ choices, active, onChoose }: { choices: SourceChoice[]; active?: string; onChoose: (choice: SourceChoice) => void }) {
@@ -54,7 +61,7 @@ function ToolButton({ label, icon, onClick }: { label: string; icon: Parameters<
 function Login({ onLogin }: { onLogin: () => void }) {
   const [password, setPassword] = useState(''); const [error, setError] = useState(''); const [busy, setBusy] = useState(false)
   const submit = async (event: FormEvent) => { event.preventDefault(); setBusy(true); setError(''); try { const result = await api.login(password); setCsrfToken(result.csrfToken); onLogin() } catch (cause) { setError(cause instanceof Error ? cause.message : '登录失败') } finally { setBusy(false) } }
-  return <main className="login-shell"><form className="login-panel" onSubmit={submit}><div className="login-mark"><Icon name="book" /><strong>阅读服务器</strong></div><h1>回到你的阅读空间</h1><p>输入部署时设置的单用户密码继续。</p><label>密码<input autoFocus type="password" value={password} onChange={event => setPassword(event.target.value)} minLength={12} required /></label>{error && <p className="form-error" role="alert">{error}</p>}<button className="primary-button" disabled={busy}>{busy ? '正在验证...' : '登录'}</button></form></main>
+  return <main className="login-shell"><form className="login-panel" onSubmit={submit}><div className="login-mark"><Icon name="book" /><strong>阅读服务器</strong></div><h1>回到你的阅读空间</h1><p>输入部署时设置的单用户密码继续。</p><label>密码<input autoFocus type="password" value={password} onChange={event => setPassword(event.target.value)} required /></label>{error && <p className="form-error" role="alert">{error}</p>}<button className="primary-button" disabled={busy}>{busy ? '正在验证...' : '登录'}</button></form></main>
 }
 
 function AppHeader({ page, settings, onSettingsChange, onNavigate, onLogout }: { page: Page; settings: ReaderSettings; onSettingsChange: (next: ReaderSettings) => void; onNavigate: (page: Page) => void; onLogout: () => void }) {
@@ -166,14 +173,119 @@ function LibraryPage({ selected, sources, onSelect, onOpen }: { selected: Source
   return <main className="library-page"><section className="library-hero"><span className="section-kicker">在线书库</span><h1>找一本书，安静地读下去。</h1><p>从已配置的书源搜索并继续上次阅读。</p><form onSubmit={search}><Icon name="search" /><input value={keyword} onChange={event => setKeyword(event.target.value)} placeholder="输入书名或作者" />{loading ? <button type="button" className="primary-button" onClick={stopSearch}>停止搜索</button> : <button type="submit" className="primary-button">搜索</button>}</form><label className="library-source-select">搜索范围<select value={selected?.id ?? ''} onChange={event => onSelect(sources.find(source => source.id === event.target.value) ?? null)}><option value="">全部书源</option>{sources.map(source => <option key={source.id} value={source.id}>{source.name}</option>)}</select></label>{(loading || stopped) && <p className="library-search-status">{stopped ? `已停止，已获得 ${groups.length} 本书。` : `已获得 ${groups.length} 本书，已检查 ${completed} / ${total} 个书源${failures || empty ? `，失败 ${failures} 个、无结果 ${empty} 个` : ''}。`}</p>}</section>{message && <p className="form-error library-message">{message}</p>}{groups.length > 0 && <><section className="library-result-filters" aria-label="筛选搜索结果"><label><Icon name="search" /><input value={filters.query} onChange={event => setFilters(current => ({ ...current, query: event.target.value }))} placeholder="筛选书名或作者" /></label><label>书源<select value={filters.minimumSources} onChange={event => setFilters(current => ({ ...current, minimumSources: Number(event.target.value) as SearchFilters['minimumSources'] }))}><option value={1}>全部</option><option value={2}>2 个及以上</option><option value={3}>3 个及以上</option></select></label><label><input type="checkbox" checked={filters.withIntro} onChange={event => setFilters(current => ({ ...current, withIntro: event.target.checked }))} />有简介</label><label><input type="checkbox" checked={filters.withCover} onChange={event => setFilters(current => ({ ...current, withCover: event.target.checked }))} />有封面</label></section><section className="library-results"><header><h2>搜索结果</h2><small>{visibleGroups.length} 本书{hasFilters && ` / ${groups.length}`}</small></header><div>{visibleGroups.map(group => <button key={group.key} onClick={() => void open(group)}><span className="result-mark"><Icon name="book" /></span><span><strong>{group.name}</strong><small>{group.author || '未知作者'} · {group.sources.length} 个书源</small></span><Icon name="arrowRight" /></button>)}</div>{visibleGroups.length === 0 && <p className="library-filter-empty">没有符合当前筛选条件的书籍。</p>}</section></>}{openBook && <BookInfoSummary book={openBook} choices={choices} resumeIndex={resumeIndex} onOpen={index => onOpen(openBook, index)} onChooseSource={choice => void handleChooseSource(choice)} />}</main>
 }
 
+function BookManageModal({
+  item,
+  onClose,
+  onSwitchSource,
+  onCache,
+  onToggleCompleted,
+  onRemove,
+}: {
+  item: BookshelfItem
+  onClose: () => void
+  onSwitchSource: () => void
+  onCache: () => void
+  onToggleCompleted: () => void
+  onRemove: () => void
+}) {
+  const cacheLabel = item.cacheState === 'caching' ? `正在缓存 ${item.cachedChapters} / ${item.totalChapters || '?'}` : item.cacheState === 'ready' ? `已离线缓存 ${item.cachedChapters} 章` : item.cacheState === 'failed' ? item.cacheError || '缓存失败' : '下载全本离线缓存'
+
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <div className="book-manage-sheet" onClick={e => e.stopPropagation()} role="dialog" aria-modal="true" aria-label={`书籍管理: ${item.name}`}>
+        <header className="manage-sheet-header">
+          <div className="manage-sheet-cover">
+            {item.coverKey ? <img src={api.cover(item.coverKey)} alt="" /> : <span>{item.name.slice(0, 1)}</span>}
+          </div>
+          <div className="manage-sheet-info">
+            <h3>{item.name}</h3>
+            <p>{item.author || '未知作者'}</p>
+            <small>{item.completed ? '已读完' : item.chapterIndex === undefined ? '刚加入书架' : `阅读至第 ${item.chapterIndex + 1} 章`}</small>
+          </div>
+          <button className="subtle-button close-btn" onClick={onClose} aria-label="关闭"><Icon name="close" /></button>
+        </header>
+
+        <div className="manage-sheet-actions">
+          <button className="manage-action-row" onClick={() => { onClose(); onSwitchSource() }}>
+            <div className="action-icon"><Icon name="sliders" /></div>
+            <div className="action-text">
+              <strong>切换书源</strong>
+              <small>在其他书源中搜索匹配并无缝替换</small>
+            </div>
+            <Icon name="arrowRight" />
+          </button>
+
+          <button className="manage-action-row" disabled={item.cacheState === 'caching'} onClick={() => { onCache() }}>
+            <div className="action-icon"><Icon name="download" /></div>
+            <div className="action-text">
+              <strong>{item.cacheState === 'caching' ? '正在离线缓存' : '离线缓存全本'}</strong>
+              <small>{cacheLabel}</small>
+            </div>
+            <Icon name="arrowRight" />
+          </button>
+
+          <button className="manage-action-row" onClick={() => { onClose(); onToggleCompleted() }}>
+            <div className="action-icon"><Icon name="check" /></div>
+            <div className="action-text">
+              <strong>{item.completed ? '恢复为正在阅读' : '标记为已读完'}</strong>
+              <small>{item.completed ? '移回「正在阅读」分组' : '移至「已读完」分组'}</small>
+            </div>
+            <Icon name="arrowRight" />
+          </button>
+
+          <button className="manage-action-row danger" onClick={() => { onClose(); onRemove() }}>
+            <div className="action-icon"><Icon name="close" /></div>
+            <div className="action-text">
+              <strong>移出书架</strong>
+              <small>清除阅读进度与离线封面</small>
+            </div>
+            <Icon name="arrowRight" />
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function ShelfPage({ onOpen }: { onOpen: (item: BookshelfItem) => void }) {
-  const [items, setItems] = useState<BookshelfItem[]>([]); const [message, setMessage] = useState(''); const [switching, setSwitching] = useState<{ item: BookshelfItem; choices: SourceChoice[] } | null>(null); const [view, setView] = useState<'reading' | 'completed' | 'all'>('reading')
-  const load = useCallback(() => { void api.bookshelf().then(setItems).catch(error => setMessage(error instanceof Error ? error.message : '无法载入书架')) }, [])
+  const [items, setItems] = useState<BookshelfItem[]>([])
+  const [message, setMessage] = useState('')
+  const [switching, setSwitching] = useState<{ item: BookshelfItem; choices: SourceChoice[] } | null>(null)
+  const [managingItem, setManagingItem] = useState<BookshelfItem | null>(null)
+  const [view, setView] = useState<'reading' | 'completed' | 'all'>('reading')
+
+  const load = useCallback(() => {
+    void api.bookshelf().then(setItems).catch(error => setMessage(error instanceof Error ? error.message : '无法载入书架'))
+  }, [])
+
   useEffect(load, [load])
+
   const caching = items.some(item => item.cacheState === 'caching')
-  useEffect(() => { if (!caching) return; const timer = window.setInterval(load, 5000); return () => window.clearInterval(timer) }, [caching, load])
-  const remove = async (item: BookshelfItem) => { if (!confirm(`移出“${item.name}”将清除书架、阅读进度和缓存封面，确定继续吗？`)) return; try { await api.removeFromBookshelf(item.sourceId, item.bookUrl); setItems(values => values.filter(value => value.sourceId !== item.sourceId || value.bookUrl !== item.bookUrl)) } catch (error) { setMessage(error instanceof Error ? error.message : '移出失败') } }
-  const cache = async (item: BookshelfItem) => { try { await api.cacheBookshelfBook(item.sourceId, item.bookUrl); setItems(values => values.map(value => value.sourceId === item.sourceId && value.bookUrl === item.bookUrl ? { ...value, cacheState: 'caching', cacheError: undefined } : value)) } catch (error) { setMessage(error instanceof Error ? error.message : '无法开始缓存') } }
+  useEffect(() => {
+    if (!caching) return
+    const timer = window.setInterval(load, 5000)
+    return () => window.clearInterval(timer)
+  }, [caching, load])
+
+  const remove = async (item: BookshelfItem) => {
+    if (!confirm(`移出“${item.name}”将清除书架、阅读进度和缓存封面，确定继续吗？`)) return
+    try {
+      await api.removeFromBookshelf(item.sourceId, item.bookUrl)
+      setItems(values => values.filter(value => value.sourceId !== item.sourceId || value.bookUrl !== item.bookUrl))
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : '移出失败')
+    }
+  }
+
+  const cache = async (item: BookshelfItem) => {
+    try {
+      await api.cacheBookshelfBook(item.sourceId, item.bookUrl)
+      setItems(values => values.map(value => value.sourceId === item.sourceId && value.bookUrl === item.bookUrl ? { ...value, cacheState: 'caching', cacheError: undefined } : value))
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : '无法开始缓存')
+    }
+  }
+
   const chooseSource = async (item: BookshelfItem) => {
     setMessage('')
     try {
@@ -191,6 +303,7 @@ function ShelfPage({ onOpen }: { onOpen: (item: BookshelfItem) => void }) {
       setMessage(error instanceof Error ? error.message : '无法搜索替代书源')
     }
   }
+
   const switchSource = async (choice: SourceChoice) => {
     if (!switching) return
     let book = choice.book
@@ -234,11 +347,133 @@ function ShelfPage({ onOpen }: { onOpen: (item: BookshelfItem) => void }) {
       setMessage(error instanceof Error ? error.message : '切换书源失败')
     }
   }
-  const setCompleted = async (item: BookshelfItem, completed: boolean) => { try { const updated = await api.setBookshelfCompleted(item.sourceId, item.bookUrl, completed); setItems(values => values.map(value => value.sourceId === item.sourceId && value.bookUrl === item.bookUrl ? updated : value)) } catch (error) { setMessage(error instanceof Error ? error.message : '更新阅读状态失败') } }
-  const cacheLabel = (item: BookshelfItem) => item.cacheState === 'caching' ? `正在缓存 ${item.cachedChapters} / ${item.totalChapters || '?'}` : item.cacheState === 'ready' ? `已缓存 ${item.cachedChapters} 章` : item.cacheState === 'failed' ? item.cacheError || '缓存不完整' : '等待缓存'
+
+  const setCompleted = async (item: BookshelfItem, completed: boolean) => {
+    try {
+      const updated = await api.setBookshelfCompleted(item.sourceId, item.bookUrl, completed)
+      setItems(values => values.map(value => value.sourceId === item.sourceId && value.bookUrl === item.bookUrl ? updated : value))
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : '更新阅读状态失败')
+    }
+  }
+
+  const cacheBadge = (item: BookshelfItem) => {
+    if (item.cacheState === 'caching') return '缓存中...'
+    if (item.cacheState === 'ready') return `${item.cachedChapters}章已缓存`
+    if (item.cacheState === 'failed') return '缓存异常'
+    return null
+  }
+
   const visibleItems = useMemo(() => view === 'all' ? items : items.filter(item => view === 'completed' ? item.completed : !item.completed), [items, view])
   const counts = { reading: items.filter(item => !item.completed).length, completed: items.filter(item => item.completed).length, all: items.length }
-  return <main className="shelf-page"><header className="page-title"><div><span className="section-kicker">我的阅读</span><h1>书架</h1><p>继续上次未读完的故事。</p></div><small>{visibleItems.length} 本书</small></header><nav className="shelf-tabs" aria-label="书架分组">{([['reading', '正在阅读'], ['completed', '已读完'], ['all', '全部']] as const).map(([key, label]) => <button key={key} className={view === key ? 'active' : ''} onClick={() => setView(key)}>{label}<small>{counts[key]}</small></button>)}</nav>{message && <p className="form-error">{message}</p>}{switching && <section className="source-switcher"><header><div><span className="section-kicker">切换书源</span><h2>{switching.item.name}</h2></div><button className="subtle-button" onClick={() => setSwitching(null)}>关闭</button></header><SourceChoiceList choices={switching.choices} active={switching.item.bookUrl} onChoose={choice => void switchSource(choice)} /></section>}{items.length === 0 && !message ? <section className="shelf-empty"><Icon name="book" /><h2>书架还是空的</h2><p>打开一本书开始阅读，它会自动出现在这里。</p></section> : visibleItems.length === 0 ? <section className="shelf-empty"><Icon name="book" /><h2>这个分组还是空的</h2></section> : <section className="shelf-grid">{visibleItems.map(item => <article key={`${item.sourceId}-${item.bookUrl}`}><button className="shelf-cover" onClick={() => onOpen(item)} aria-label={`继续阅读 ${item.name}`}>{item.coverKey ? <img src={api.cover(item.coverKey)} alt="" /> : <span>{item.name.slice(0, 1)}</span>}</button><div className="shelf-card-body"><button className="shelf-title" onClick={() => onOpen(item)}>{item.name}</button><p>{item.author || '未知作者'}</p><small>{item.completed ? '已读完' : item.chapterIndex === undefined ? '刚加入书架' : `第 ${item.chapterIndex + 1} 章`}</small><small className={`shelf-cache ${item.cacheState}`}>{cacheLabel(item)}</small><div><button className="subtle-button" onClick={() => onOpen(item)}>{item.completed ? '重新阅读' : '继续阅读'}</button><div className="shelf-actions"><button className="shelf-cache-button" onClick={() => void setCompleted(item, !item.completed)}>{item.completed ? '恢复' : '完成'}</button><button className="shelf-cache-button" onClick={() => void chooseSource(item)}>书源</button><button className="shelf-cache-button" disabled={item.cacheState === 'caching'} onClick={() => void cache(item)}>{item.cacheState === 'caching' ? '缓存中' : '缓存'}</button><button className="shelf-remove" onClick={() => void remove(item)} aria-label={`移出 ${item.name}`}><Icon name="close" /></button></div></div></div></article>)}</section>}</main>
+
+  return (
+    <main className="shelf-page">
+      <header className="page-title">
+        <div>
+          <span className="section-kicker">我的阅读</span>
+          <h1>书架</h1>
+          <p>继续上次未读完的故事。</p>
+        </div>
+        <small>{visibleItems.length} 本书</small>
+      </header>
+
+      <nav className="shelf-tabs" aria-label="书架分组">
+        {([['reading', '正在阅读'], ['completed', '已读完'], ['all', '全部']] as const).map(([key, label]) => (
+          <button key={key} className={view === key ? 'active' : ''} onClick={() => setView(key)}>
+            {label}<small>{counts[key]}</small>
+          </button>
+        ))}
+      </nav>
+
+      {message && <p className="form-error">{message}</p>}
+
+      {switching && (
+        <section className="source-switcher">
+          <header>
+            <div>
+              <span className="section-kicker">切换书源</span>
+              <h2>{switching.item.name}</h2>
+            </div>
+            <button className="subtle-button" onClick={() => setSwitching(null)}>关闭</button>
+          </header>
+          <SourceChoiceList choices={switching.choices} active={switching.item.bookUrl} onChoose={choice => void switchSource(choice)} />
+        </section>
+      )}
+
+      {items.length === 0 && !message ? (
+        <section className="shelf-empty">
+          <Icon name="book" />
+          <h2>书架还是空的</h2>
+          <p>打开一本书开始阅读，它会自动出现在这里。</p>
+        </section>
+      ) : visibleItems.length === 0 ? (
+        <section className="shelf-empty">
+          <Icon name="book" />
+          <h2>这个分组还是空的</h2>
+        </section>
+      ) : (
+        <section className="shelf-grid">
+          {visibleItems.map(item => {
+            const badge = cacheBadge(item)
+            return (
+              <article key={`${item.sourceId}-${item.bookUrl}`} className="shelf-card">
+                {/* Upper Half: Large Cover directly opens reader */}
+                <div
+                  className="shelf-card-cover"
+                  onClick={() => onOpen(item)}
+                  role="button"
+                  tabIndex={0}
+                  aria-label={`继续阅读 ${item.name}`}
+                >
+                  {item.coverKey ? <img src={api.cover(item.coverKey)} alt="" /> : <span className="cover-fallback">{item.name.slice(0, 1)}</span>}
+                  {badge && <span className={`shelf-card-badge ${item.cacheState}`}>{badge}</span>}
+                </div>
+
+                {/* Middle: Title, Author, Reading Progress */}
+                <div className="shelf-card-info">
+                  <h3 className="shelf-card-name" onClick={() => onOpen(item)} title={item.name}>{item.name}</h3>
+                  <p className="shelf-card-author">{item.author || '未知作者'}</p>
+                  <div className="shelf-card-meta">
+                    <span className={`shelf-meta-chapter ${item.completed ? 'completed' : ''}`}>
+                      {item.completed ? '已读完' : item.chapterIndex === undefined ? '刚加入书架' : `第 ${item.chapterIndex + 1} 章`}
+                    </span>
+                  </div>
+                </div>
+
+                {/* Bottom Action Section: Clear Read Button & Manage Button */}
+                <div className="shelf-card-footer">
+                  <button className="shelf-btn-read" onClick={() => onOpen(item)}>
+                    {item.completed ? '重新阅读' : '继续阅读'}
+                  </button>
+                  <button
+                    className="shelf-btn-manage"
+                    onClick={() => setManagingItem(item)}
+                    aria-label={`管理 ${item.name}`}
+                    title="书籍管理"
+                  >
+                    <Icon name="more" />
+                  </button>
+                </div>
+              </article>
+            )
+          })}
+        </section>
+      )}
+
+      {/* Book Management Modal */}
+      {managingItem && (
+        <BookManageModal
+          item={managingItem}
+          onClose={() => setManagingItem(null)}
+          onSwitchSource={() => chooseSource(managingItem)}
+          onCache={() => cache(managingItem)}
+          onToggleCompleted={() => setCompleted(managingItem, !managingItem.completed)}
+          onRemove={() => remove(managingItem)}
+        />
+      )}
+    </main>
+  )
 }
 
 function App() {
@@ -248,11 +483,24 @@ function App() {
   useEffect(() => { const sync = () => setPage(pageFromHash()); addEventListener('hashchange', sync); return () => removeEventListener('hashchange', sync) }, [])
   const navigate = (next: Page) => { if (next === 'reader' && !reader) return; location.hash = `#${next}`; setPage(next) }
   const openReader = (book: OpenBook, index: number) => { void api.addToBookshelf({ sourceId: book.details.sourceId, bookUrl: book.bookUrl, name: book.details.name, author: book.details.author, tocUrl: book.details.tocUrl, coverUrl: book.details.coverUrl }).catch(() => undefined); const value = { book, index }; setReader(value); sessionStorage.setItem(readerStorageKey, JSON.stringify(value)); location.hash = '#reader'; setPage('reader') }
-  const openShelfItem = async (item: BookshelfItem) => { try { const details = await api.details(item.sourceId, item.bookUrl); const [chapters, progress] = await Promise.all([api.chapters(details.sourceId, details.tocUrl), api.progress(details.sourceId, item.bookUrl)]); openReader({ details, bookUrl: item.bookUrl, chapters, progress }, progress?.chapterIndex ?? 0) } catch { navigate('library') } }
+  const openShelfItem = async (item: BookshelfItem) => {
+    try {
+      const details = await api.details(item.sourceId, item.bookUrl)
+      const safeDetails: BookDetails = {
+        ...details,
+        name: details.name?.trim() || item.name || '未知书名',
+        author: details.author?.trim() || item.author,
+      }
+      const [chapters, progress] = await Promise.all([api.chapters(safeDetails.sourceId, safeDetails.tocUrl), api.progress(details.sourceId, item.bookUrl)])
+      openReader({ details: safeDetails, bookUrl: item.bookUrl, chapters, progress }, progress?.chapterIndex ?? 0)
+    } catch {
+      navigate('shelf')
+    }
+  }
   const logout = async () => { try { await api.logout() } finally { setCsrfToken(null); setAuthenticated(false) } }
   if (!ready) return <main className={`app-loading theme-${settings.theme}`}><span>正在打开阅读空间...</span></main>
   if (!authenticated) return <div className={`app-shell theme-${settings.theme}`}><Login onLogin={() => { setAuthenticated(true); void api.sources().then(setSources).catch(() => undefined) }} /></div>
-  if (page === 'reader' && reader) return <div className={`app-shell theme-${settings.theme}`}><ReaderScreen openBook={reader.book} startIndex={reader.index} settings={settings} onSettingsChange={setSettings} onClose={() => navigate('library')} /></div>
+  if (page === 'reader' && reader) return <div className={`app-shell theme-${settings.theme}`}><ReaderScreen openBook={reader.book} startIndex={reader.index} settings={settings} onSettingsChange={setSettings} onClose={() => navigate('shelf')} /></div>
   const refreshSources = () => { void api.sources().then(setSources).catch(() => undefined) }
   return <div className={`app-shell theme-${settings.theme}`}><AppHeader page={page} settings={settings} onSettingsChange={setSettings} onNavigate={navigate} onLogout={() => void logout()} />{page === 'sources' ? <SourcesPage selected={selected} onSelect={setSelected} onSourcesChange={setSources} /> : page === 'subscriptions' ? <SubscriptionPage onSourcesChange={refreshSources} /> : page === 'shelf' ? <ShelfPage onOpen={item => void openShelfItem(item)} /> : <LibraryPage selected={selected} sources={sources} onSelect={setSelected} onOpen={openReader} />}</div>
 }

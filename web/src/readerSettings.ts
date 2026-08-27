@@ -1,5 +1,6 @@
 export type ReaderTheme = 'light' | 'paper' | 'dark'
-export type ReaderFont = 'serif' | 'song' | 'system'
+export type ReaderFont = 'song' | 'hei' | 'kai' | 'fangsong' | 'system'
+export type ReaderPageMode = 'scroll' | 'paginate'
 export type ReaderSettings = {
   theme: ReaderTheme
   fontSize: number
@@ -8,11 +9,12 @@ export type ReaderSettings = {
   paragraphSpacing: number
   contentPadding: number
   font: ReaderFont
+  pageMode: ReaderPageMode
 }
 
-const storageKey = 'legado-reader-settings-v1'
+const storageKey = 'legado-reader-settings-v2'
 export const defaultReaderSettings: ReaderSettings = {
-  theme: 'light', fontSize: 19, lineHeight: 1.95, letterSpacing: 0, paragraphSpacing: 1.15, contentPadding: 80, font: 'song',
+  theme: 'light', fontSize: 19, lineHeight: 1.95, letterSpacing: 0, paragraphSpacing: 1.15, contentPadding: 80, font: 'song', pageMode: 'scroll',
 }
 
 export function clampScrollPosition(value: number): number {
@@ -23,9 +25,19 @@ export function scrollPosition(scrollTop: number, scrollHeight: number, clientHe
   return clampScrollPosition(scrollTop / Math.max(1, scrollHeight - clientHeight))
 }
 
+export function parseReaderFont(font: unknown): ReaderFont {
+  if (font === 'hei' || font === 'kai' || font === 'fangsong' || font === 'system') return font
+  return 'song'
+}
+
+export function parsePageMode(mode: unknown): ReaderPageMode {
+  return mode === 'paginate' ? 'paginate' : 'scroll'
+}
+
 export function loadReaderSettings(): ReaderSettings {
   try {
-    const saved = JSON.parse(window.localStorage.getItem(storageKey) ?? '{}') as Partial<ReaderSettings>
+    const raw = window.localStorage.getItem(storageKey) || window.localStorage.getItem('legado-reader-settings-v1')
+    const saved = JSON.parse(raw ?? '{}') as Partial<ReaderSettings> & { font?: string }
     return {
       theme: saved.theme === 'paper' || saved.theme === 'dark' ? saved.theme : defaultReaderSettings.theme,
       fontSize: typeof saved.fontSize === 'number' ? Math.min(28, Math.max(15, saved.fontSize)) : defaultReaderSettings.fontSize,
@@ -33,13 +45,28 @@ export function loadReaderSettings(): ReaderSettings {
       letterSpacing: typeof saved.letterSpacing === 'number' ? Math.min(1.5, Math.max(-.25, saved.letterSpacing)) : defaultReaderSettings.letterSpacing,
       paragraphSpacing: typeof saved.paragraphSpacing === 'number' ? Math.min(2, Math.max(.7, saved.paragraphSpacing)) : defaultReaderSettings.paragraphSpacing,
       contentPadding: typeof saved.contentPadding === 'number' ? Math.min(120, Math.max(36, saved.contentPadding)) : defaultReaderSettings.contentPadding,
-      font: saved.font === 'serif' || saved.font === 'system' ? saved.font : defaultReaderSettings.font,
+      font: parseReaderFont(saved.font),
+      pageMode: parsePageMode(saved.pageMode),
     }
   } catch {
     return defaultReaderSettings
   }
 }
 
+export const readerFontFamilies: Record<ReaderFont, string> = {
+  song: '"Songti SC", "STSong", "SimSun", "Noto Serif CJK SC", "Noto Serif SC", "Source Han Serif SC", "Songti", STSongti, serif',
+  hei: '"PingFang SC", "Microsoft YaHei", "Hiragino Sans GB", "WenQuanYi Micro Hei", "Noto Sans CJK SC", "Source Han Sans SC", "Heiti SC", sans-serif',
+  kai: '"Kaiti SC", "STKaiti", "KaiTi", "SimKai", "KaiTi_GB2312", "STKaiti-SC-Regular", "BiauKai", "DFKai-SB", 楷体, 楷体_GB2312, serif',
+  fangsong: '"FangSong", "STFangsong", "FangSong_GB2312", "STFangsong-SC-Regular", "SimFang", 仿宋, 仿宋_GB2312, serif',
+  system: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Microsoft YaHei", sans-serif',
+}
+
+export function getReaderFontFamily(font: ReaderFont): string {
+  return readerFontFamilies[font] || readerFontFamilies.song
+}
+
 export function saveReaderSettings(settings: ReaderSettings): void {
   window.localStorage.setItem(storageKey, JSON.stringify(settings))
 }
+
+

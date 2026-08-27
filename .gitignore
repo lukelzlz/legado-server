@@ -20,3 +20,6 @@ package-lock.json
 .vscode
 # local E2E runtime web bundle (copied from web/dist)
 server/src/main/resources/static/
+.env
+.data/
+.agents/

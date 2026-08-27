@@ -45,8 +45,9 @@ class RuleRunner(private val responseFetcher: ((String) -> String)? = null) {
         if (searchUrl.trimStart().startsWith("@js")) throw RuleExecutionException("该书源的 searchUrl JavaScript 尚不受服务器支持")
         val sourceUrl = source.string("bookSourceUrl") ?: throw RuleExecutionException("书源缺少 bookSourceUrl")
         val (urlTemplate, options) = splitUrlOptions(searchUrl)
+        val mergedOptions = mergeOptions(parseSourceHeaders(source), options)
         val rendered = renderUrl(urlTemplate, keyword, sourceUrl).absolute(sourceUrl)
-        val body = fetchUrl(rendered, options, keyword)
+        val body = fetchUrl(rendered, mergedOptions, keyword)
         val rule = source.objectValue("ruleSearch") ?: throw RuleExecutionException("该书源未配置 ruleSearch")
         val items = nodes(body, rule.string("bookList") ?: throw RuleExecutionException("缺少 ruleSearch.bookList"))
         return items.mapNotNull { item ->
@@ -68,7 +69,9 @@ class RuleRunner(private val responseFetcher: ((String) -> String)? = null) {
     }
 
     private fun declarativeDetails(source: JsonObject, bookUrl: String): BookDetails {
-        val body = fetch(bookUrl)
+        val (url, options) = splitUrlOptions(bookUrl)
+        val mergedOptions = mergeOptions(parseSourceHeaders(source), options)
+        val body = fetchUrl(url, mergedOptions, null)
         val rule = source.objectValue("ruleBookInfo") ?: throw RuleExecutionException("该书源未配置 ruleBookInfo")
         val root = NodeValue.document(body).at(rule.string("init"))
         fun value(key: String): String? = runCatching { root.value(rule.string(key)) }.getOrNull()
@@ -85,19 +88,23 @@ class RuleRunner(private val responseFetcher: ((String) -> String)? = null) {
     fun chapters(sourceJson: String, tocUrl: String): List<Chapter> {
         val source = sourceJson.objectValue()
         source.string("mainJs")?.takeIf { it.isNotBlank() }?.let { return JsSourceRunner(this, source).chapters(tocUrl) }
-        val body = fetch(tocUrl)
+        val (url, options) = splitUrlOptions(tocUrl)
+        val mergedOptions = mergeOptions(parseSourceHeaders(source), options)
+        val body = fetchUrl(url, mergedOptions, null)
         val rule = source.objectValue("ruleToc") ?: throw RuleExecutionException("该书源未配置 ruleToc")
         val listRule = rule.string("chapterList") ?: throw RuleExecutionException("缺少 ruleToc.chapterList")
         return nodes(body, listRule).mapIndexedNotNull { index, node ->
-            val url = node.value(rule.string("chapterUrl"))?.absolute(tocUrl) ?: return@mapIndexedNotNull null
-            Chapter(index, node.value(rule.string("chapterName")) ?: "第 ${index + 1} 章", url)
+            val chUrl = node.value(rule.string("chapterUrl"))?.absolute(tocUrl) ?: return@mapIndexedNotNull null
+            Chapter(index, node.value(rule.string("chapterName")) ?: "第 ${index + 1} 章", chUrl)
         }
     }
 
     fun content(sourceJson: String, chapterUrl: String): ChapterContent {
         val source = sourceJson.objectValue()
         source.string("mainJs")?.takeIf { it.isNotBlank() }?.let { return JsSourceRunner(this, source).content(chapterUrl) }
-        val body = fetch(chapterUrl)
+        val (url, options) = splitUrlOptions(chapterUrl)
+        val mergedOptions = mergeOptions(parseSourceHeaders(source), options)
+        val body = fetchUrl(url, mergedOptions, null)
         val rule = source.objectValue("ruleContent") ?: throw RuleExecutionException("该书源未配置 ruleContent")
         val root = NodeValue.document(body)
         val text = root.value(rule.string("content"))?.cleanContent().orEmpty()
@@ -106,6 +113,23 @@ class RuleRunner(private val responseFetcher: ((String) -> String)? = null) {
     }
 
     internal fun fetch(url: String): String = fetchUrl(url, null, null)
+
+    private fun parseSourceHeaders(source: JsonObject): Map<String, String> {
+        val headerStr = source.string("header")?.trim() ?: return emptyMap()
+        return runCatching {
+            val elem = Json.parseToJsonElement(headerStr)
+            if (elem is JsonObject) {
+                elem.entries.filter { it.value is JsonPrimitive }.associate { it.key to ((it.value as JsonPrimitive).contentOrNull ?: "") }
+            } else emptyMap()
+        }.getOrDefault(emptyMap())
+    }
+
+    private fun mergeOptions(sourceHeaders: Map<String, String>, options: UrlOptions?): UrlOptions {
+        if (sourceHeaders.isEmpty()) return options ?: UrlOptions()
+        val combined = sourceHeaders.toMutableMap()
+        options?.headers?.let { combined.putAll(it) }
+        return (options ?: UrlOptions()).copy(headers = combined)
+    }
 
     private data class UrlOptions(
         val method: String = "GET",

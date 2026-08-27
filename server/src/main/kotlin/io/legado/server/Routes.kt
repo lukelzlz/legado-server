@@ -178,7 +178,12 @@ fun Route.apiRoutes(database: Database, auth: AuthService, runner: RuleRunner, c
         post("/books/chapters") {
             if (auth.requireSession(call, true) == null) return@post
             val request = call.receive<BookRequest>(); val source = database.getSource(request.sourceId) ?: run { call.respond(HttpStatusCode.NotFound, ApiError("not_found", "书源不存在")); return@post }
-            call.respondCatching { runner.chapters(source.json, request.bookUrl) }
+            call.respondCatching {
+                runCatching { runner.chapters(source.json, request.bookUrl) }.getOrElse {
+                    val details = runner.details(source.json, request.bookUrl)
+                    runner.chapters(source.json, details.tocUrl)
+                }
+            }
         }
         post("/books/content") {
             if (auth.requireSession(call, true) == null) return@post

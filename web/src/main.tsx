@@ -1,10 +1,12 @@
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
-import { api, BookDetails, BookshelfItem, SearchResult, SearchStreamEvent, setCsrfToken, SourceRecord, SourceSubscription, SourceSummary, streamSearch } from './api'
+import { api, BookDetails, BookshelfItem, Chapter, SearchResult, SearchStreamEvent, setCsrfToken, SourceRecord, SourceSubscription, SourceSummary, streamSearch } from './api'
 import { Icon } from './icons'
 import { OpenBook, ReaderScreen } from './ReaderScreen'
 import { loadReaderSettings, ReaderSettings, saveReaderSettings } from './readerSettings'
 import { defaultSearchFilters, filterSearchGroups, SearchFilters, SearchGroup } from './searchFilters'
+import { SourceSwitchModal } from './SourceSwitchModal'
+import { toast, ToastContainer } from './Toast'
 import './styles.css'
 
 type Page = 'sources' | 'subscriptions' | 'library' | 'shelf' | 'reader'
@@ -14,7 +16,7 @@ export type SourceChoiceStatus = 'idle' | 'loading' | 'loaded' | 'error'
 export type SourceChoice = { result: SearchResult; status: SourceChoiceStatus; book?: OpenBook; error?: string }
 const bookKey = (name: string, author?: string) => `${name.replace(/[\s\p{P}]/gu, '').toLocaleLowerCase()}\u0000${(author ?? '').replace(/[\s\p{P}]/gu, '').toLocaleLowerCase()}`
 const groupSearchResults = (results: SearchResult[]): SearchGroup[] => Array.from(results.reduce((groups, result) => { const key = bookKey(result.name, result.author); const current = groups.get(key) ?? { key, name: result.name, author: result.author, sources: [] }; current.sources.push(result); groups.set(key, current); return groups }, new Map<string, SearchGroup>()).values())
-const loadSourceBook = async (result: SearchResult): Promise<OpenBook> => {
+const loadSourceBook = async (result: SearchResult, alternateSources?: SearchResult[]): Promise<OpenBook> => {
   const details = await api.details(result.sourceId, result.bookUrl)
   const safeDetails: BookDetails = {
     ...details,
@@ -22,6 +24,7 @@ const loadSourceBook = async (result: SearchResult): Promise<OpenBook> => {
     author: details.author?.trim() || result.author,
     coverUrl: details.coverUrl || result.coverUrl,
     intro: details.intro || result.intro,
+    alternateSources: alternateSources?.filter(s => s.sourceId !== result.sourceId || s.bookUrl !== result.bookUrl),
   }
   const [chapters, progress] = await Promise.all([api.chapters(safeDetails.sourceId, safeDetails.tocUrl), api.progress(safeDetails.sourceId, result.bookUrl)])
   return { details: safeDetails, bookUrl: result.bookUrl, chapters, progress }
@@ -131,7 +134,7 @@ function LibraryPage({ selected, sources, onSelect, onOpen }: { selected: Source
       const candidate = group.sources[i]
       setChoices(prev => prev.map((c, idx) => idx === i ? { ...c, status: 'loading' } : c))
       try {
-        const book = await loadSourceBook(candidate)
+        const book = await loadSourceBook(candidate, group.sources)
         setChoices(prev => prev.map((c, idx) => idx === i ? { ...c, book, status: 'loaded' } : c))
         loadedBook = book
         break
@@ -147,14 +150,14 @@ function LibraryPage({ selected, sources, onSelect, onOpen }: { selected: Source
     }
     setLoading(false)
   }
-  const handleChooseSource = async (choice: SourceChoice) => {
+  const handleChooseSource = async (choice: SourceChoice, groupSources?: SearchResult[]) => {
     if (choice.book) {
       setOpenBook(choice.book)
       return
     }
     setChoices(prev => prev.map(c => c.result.sourceId === choice.result.sourceId && c.result.bookUrl === choice.result.bookUrl ? { ...c, status: 'loading', error: undefined } : c))
     try {
-      const book = await loadSourceBook(choice.result)
+      const book = await loadSourceBook(choice.result, groupSources)
       setChoices(prev => prev.map(c => c.result.sourceId === choice.result.sourceId && c.result.bookUrl === choice.result.bookUrl ? { ...c, book, status: 'loaded' } : c))
       setOpenBook(book)
     } catch (err) {
@@ -178,6 +181,7 @@ function BookManageModal({
   onClose,
   onSwitchSource,
   onCache,
+  onCancelCache,
   onToggleCompleted,
   onRemove,
 }: {
@@ -185,10 +189,14 @@ function BookManageModal({
   onClose: () => void
   onSwitchSource: () => void
   onCache: () => void
+  onCancelCache: () => void
   onToggleCompleted: () => void
   onRemove: () => void
 }) {
-  const cacheLabel = item.cacheState === 'caching' ? `正在缓存 ${item.cachedChapters} / ${item.totalChapters || '?'}` : item.cacheState === 'ready' ? `已离线缓存 ${item.cachedChapters} 章` : item.cacheState === 'failed' ? item.cacheError || '缓存失败' : '下载全本离线缓存'
+  const isCaching = item.cacheState === 'caching'
+  const isReady = item.cacheState === 'ready'
+  const isFailed = item.cacheState === 'failed'
+  const percent = Math.min(100, Math.round((item.cachedChapters / Math.max(1, item.totalChapters || 1)) * 100))
 
   return (
     <div className="modal-backdrop" onClick={onClose}>
@@ -210,19 +218,35 @@ function BookManageModal({
             <div className="action-icon"><Icon name="sliders" /></div>
             <div className="action-text">
               <strong>切换书源</strong>
-              <small>在其他书源中搜索匹配并无缝替换</small>
+              <small>{item.alternateSources?.length ? `已有 ${item.alternateSources.length} 个备选书源，可全网检索` : '在其他书源中搜索匹配并无缝替换'}</small>
             </div>
             <Icon name="arrowRight" />
           </button>
 
-          <button className="manage-action-row" disabled={item.cacheState === 'caching'} onClick={() => { onCache() }}>
-            <div className="action-icon"><Icon name="download" /></div>
-            <div className="action-text">
-              <strong>{item.cacheState === 'caching' ? '正在离线缓存' : '离线缓存全本'}</strong>
-              <small>{cacheLabel}</small>
+          {isCaching ? (
+            <div className="manage-cache-box">
+              <div className="manage-cache-info-row">
+                <div className="action-icon"><Icon name="download" /></div>
+                <div className="action-text">
+                  <strong>正在离线缓存全本</strong>
+                  <small>{percent}% ({item.cachedChapters} / {item.totalChapters || '?'}) 章</small>
+                </div>
+                <button className="subtle-button cancel-cache-link" onClick={onCancelCache}>取消缓存</button>
+              </div>
+              <div className="manage-cache-bar-track">
+                <div className="manage-cache-bar-fill" style={{ width: `${percent}%` }} />
+              </div>
             </div>
-            <Icon name="arrowRight" />
-          </button>
+          ) : (
+            <button className="manage-action-row" onClick={() => onCache()}>
+              <div className="action-icon"><Icon name="download" /></div>
+              <div className="action-text">
+                <strong>{isReady ? '重新缓存 / 校验全本' : isFailed ? '重试离线缓存' : '离线缓存全本'}</strong>
+                <small>{isReady ? `已离线缓存 ${item.cachedChapters} 章 ✓` : isFailed ? (item.cacheError || '部分章节未缓存，点击重试') : '预先下载全书正文以供离线阅读'}</small>
+              </div>
+              <Icon name="arrowRight" />
+            </button>
+          )}
 
           <button className="manage-action-row" onClick={() => { onClose(); onToggleCompleted() }}>
             <div className="action-icon"><Icon name="check" /></div>
@@ -237,7 +261,7 @@ function BookManageModal({
             <div className="action-icon"><Icon name="close" /></div>
             <div className="action-text">
               <strong>移出书架</strong>
-              <small>清除阅读进度与离线封面</small>
+              <small>清除阅读进度与离线缓存</small>
             </div>
             <Icon name="arrowRight" />
           </button>
@@ -250,20 +274,38 @@ function BookManageModal({
 function ShelfPage({ onOpen }: { onOpen: (item: BookshelfItem) => void }) {
   const [items, setItems] = useState<BookshelfItem[]>([])
   const [message, setMessage] = useState('')
-  const [switching, setSwitching] = useState<{ item: BookshelfItem; choices: SourceChoice[] } | null>(null)
+  const [switchingItem, setSwitchingItem] = useState<BookshelfItem | null>(null)
   const [managingItem, setManagingItem] = useState<BookshelfItem | null>(null)
   const [view, setView] = useState<'reading' | 'completed' | 'all'>('reading')
+  const previousStateRef = useRef<Map<string, string>>(new Map())
 
-  const load = useCallback(() => {
-    void api.bookshelf().then(setItems).catch(error => setMessage(error instanceof Error ? error.message : '无法载入书架'))
+  const load = useCallback(async () => {
+    try {
+      const list = await api.bookshelf()
+      list.forEach(curr => {
+        const key = `${curr.sourceId}\u0000${curr.bookUrl}`
+        const prevState = previousStateRef.current.get(key)
+        if (prevState === 'caching' && curr.cacheState === 'ready') {
+          toast.success(`《${curr.name}》全本离线缓存完成（共 ${curr.cachedChapters} 章）`)
+        } else if (prevState === 'caching' && curr.cacheState === 'failed') {
+          toast.warning(`《${curr.name}》缓存中断：${curr.cacheError || '未全部完成'}`)
+        }
+        previousStateRef.current.set(key, curr.cacheState)
+      })
+      setItems(list)
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : '无法载入书架')
+    }
   }, [])
 
-  useEffect(load, [load])
+  useEffect(() => {
+    void load()
+  }, [load])
 
   const caching = items.some(item => item.cacheState === 'caching')
   useEffect(() => {
     if (!caching) return
-    const timer = window.setInterval(load, 5000)
+    const timer = window.setInterval(load, 1200)
     return () => window.clearInterval(timer)
   }, [caching, load])
 
@@ -272,8 +314,9 @@ function ShelfPage({ onOpen }: { onOpen: (item: BookshelfItem) => void }) {
     try {
       await api.removeFromBookshelf(item.sourceId, item.bookUrl)
       setItems(values => values.filter(value => value.sourceId !== item.sourceId || value.bookUrl !== item.bookUrl))
+      toast.info(`《${item.name}》已移出书架`)
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : '移出失败')
+      toast.error(error instanceof Error ? error.message : '移出失败')
     }
   }
 
@@ -281,86 +324,58 @@ function ShelfPage({ onOpen }: { onOpen: (item: BookshelfItem) => void }) {
     try {
       await api.cacheBookshelfBook(item.sourceId, item.bookUrl)
       setItems(values => values.map(value => value.sourceId === item.sourceId && value.bookUrl === item.bookUrl ? { ...value, cacheState: 'caching', cacheError: undefined } : value))
+      previousStateRef.current.set(`${item.sourceId}\u0000${item.bookUrl}`, 'caching')
+      toast.info(`已加入离线缓存队列，正在下载《${item.name}》...`)
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : '无法开始缓存')
+      toast.error(error instanceof Error ? error.message : '无法开始缓存')
     }
   }
 
-  const chooseSource = async (item: BookshelfItem) => {
-    setMessage('')
+  const cancelCache = async (item: BookshelfItem) => {
     try {
-      const matches = (await api.search(item.name)).filter(result => bookKey(result.name, result.author) === bookKey(item.name, item.author))
-      if (matches.length === 0) {
-        setMessage('未搜索到替代书源')
-        return
-      }
-      const initialChoices: SourceChoice[] = matches.map(result => ({
-        result,
-        status: result.sourceId === item.sourceId && result.bookUrl === item.bookUrl ? 'loaded' : 'idle',
-      }))
-      setSwitching({ item, choices: initialChoices })
+      await api.cancelBookCache(item.sourceId, item.bookUrl)
+      setItems(values => values.map(value => value.sourceId === item.sourceId && value.bookUrl === item.bookUrl ? { ...value, cacheState: 'failed', cacheError: '已取消缓存' } : value))
+      previousStateRef.current.set(`${item.sourceId}\u0000${item.bookUrl}`, 'failed')
+      toast.info(`已取消《${item.name}》的离线缓存`)
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : '无法搜索替代书源')
+      toast.error(error instanceof Error ? error.message : '取消缓存失败')
     }
   }
 
-  const switchSource = async (choice: SourceChoice) => {
-    if (!switching) return
-    let book = choice.book
-    if (!book) {
-      setSwitching(prev => prev ? {
-        ...prev,
-        choices: prev.choices.map(c => c.result.sourceId === choice.result.sourceId && c.result.bookUrl === choice.result.bookUrl ? { ...c, status: 'loading', error: undefined } : c),
-      } : null)
-      try {
-        book = await loadSourceBook(choice.result)
-        setSwitching(prev => prev ? {
-          ...prev,
-          choices: prev.choices.map(c => c.result.sourceId === choice.result.sourceId && c.result.bookUrl === choice.result.bookUrl ? { ...c, book, status: 'loaded' } : c),
-        } : null)
-      } catch (err) {
-        const errMsg = err instanceof Error ? err.message : '无法读取此书源'
-        setSwitching(prev => prev ? {
-          ...prev,
-          choices: prev.choices.map(c => c.result.sourceId === choice.result.sourceId && c.result.bookUrl === choice.result.bookUrl ? { ...c, status: 'error', error: errMsg } : c),
-        } : null)
-        return
-      }
-    }
-    if (!book) return
-    try {
-      await api.switchBookshelfSource({
-        oldSourceId: switching.item.sourceId,
-        oldBookUrl: switching.item.bookUrl,
-        book: {
-          sourceId: book.details.sourceId,
-          bookUrl: book.bookUrl,
-          name: book.details.name,
-          author: book.details.author,
-          tocUrl: book.details.tocUrl,
-          coverUrl: book.details.coverUrl,
-        },
-      })
-      setSwitching(null)
-      load()
-    } catch (error) {
-      setMessage(error instanceof Error ? error.message : '切换书源失败')
-    }
+  const handleSwitchShelfSource = async (chosen: { result: SearchResult; chapters: Chapter[]; targetChapterIndex: number }) => {
+    if (!switchingItem) return
+    const details = await api.details(chosen.result.sourceId, chosen.result.bookUrl)
+    await api.switchBookshelfSource({
+      oldSourceId: switchingItem.sourceId,
+      oldBookUrl: switchingItem.bookUrl,
+      book: {
+        sourceId: details.sourceId,
+        bookUrl: chosen.result.bookUrl,
+        name: details.name?.trim() || switchingItem.name,
+        author: details.author?.trim() || switchingItem.author,
+        tocUrl: details.tocUrl,
+        coverUrl: details.coverUrl,
+      },
+      alternateSources: switchingItem.alternateSources,
+    })
+    setSwitchingItem(null)
+    await load()
   }
 
   const setCompleted = async (item: BookshelfItem, completed: boolean) => {
     try {
       const updated = await api.setBookshelfCompleted(item.sourceId, item.bookUrl, completed)
       setItems(values => values.map(value => value.sourceId === item.sourceId && value.bookUrl === item.bookUrl ? updated : value))
+      toast.success(completed ? `已将《${item.name}》标记为已读完` : `已将《${item.name}》恢复为正在阅读`)
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : '更新阅读状态失败')
+      toast.error(error instanceof Error ? error.message : '更新阅读状态失败')
     }
   }
 
   const cacheBadge = (item: BookshelfItem) => {
-    if (item.cacheState === 'caching') return '缓存中...'
+    if (item.cacheState === 'caching') return `${Math.min(100, Math.round((item.cachedChapters / Math.max(1, item.totalChapters || 1)) * 100))}% 缓存中`
     if (item.cacheState === 'ready') return `${item.cachedChapters}章已缓存`
-    if (item.cacheState === 'failed') return '缓存异常'
+    if (item.cacheState === 'failed') return '缓存中断'
     return null
   }
 
@@ -388,19 +403,6 @@ function ShelfPage({ onOpen }: { onOpen: (item: BookshelfItem) => void }) {
 
       {message && <p className="form-error">{message}</p>}
 
-      {switching && (
-        <section className="source-switcher">
-          <header>
-            <div>
-              <span className="section-kicker">切换书源</span>
-              <h2>{switching.item.name}</h2>
-            </div>
-            <button className="subtle-button" onClick={() => setSwitching(null)}>关闭</button>
-          </header>
-          <SourceChoiceList choices={switching.choices} active={switching.item.bookUrl} onChoose={choice => void switchSource(choice)} />
-        </section>
-      )}
-
       {items.length === 0 && !message ? (
         <section className="shelf-empty">
           <Icon name="book" />
@@ -416,6 +418,9 @@ function ShelfPage({ onOpen }: { onOpen: (item: BookshelfItem) => void }) {
         <section className="shelf-grid">
           {visibleItems.map(item => {
             const badge = cacheBadge(item)
+            const isCaching = item.cacheState === 'caching'
+            const percent = Math.min(100, Math.round((item.cachedChapters / Math.max(1, item.totalChapters || 1)) * 100))
+
             return (
               <article key={`${item.sourceId}-${item.bookUrl}`} className="shelf-card">
                 {/* Upper Half: Large Cover directly opens reader */}
@@ -428,6 +433,11 @@ function ShelfPage({ onOpen }: { onOpen: (item: BookshelfItem) => void }) {
                 >
                   {item.coverKey ? <img src={api.cover(item.coverKey)} alt="" /> : <span className="cover-fallback">{item.name.slice(0, 1)}</span>}
                   {badge && <span className={`shelf-card-badge ${item.cacheState}`}>{badge}</span>}
+                  {isCaching && (
+                    <div className="shelf-card-progress-track">
+                      <div className="shelf-card-progress-fill" style={{ width: `${percent}%` }} />
+                    </div>
+                  )}
                 </div>
 
                 {/* Middle: Title, Author, Reading Progress */}
@@ -466,10 +476,35 @@ function ShelfPage({ onOpen }: { onOpen: (item: BookshelfItem) => void }) {
         <BookManageModal
           item={managingItem}
           onClose={() => setManagingItem(null)}
-          onSwitchSource={() => chooseSource(managingItem)}
-          onCache={() => cache(managingItem)}
+          onSwitchSource={() => {
+            const target = managingItem
+            setManagingItem(null)
+            setSwitchingItem(target)
+          }}
+          onCache={() => {
+            void cache(managingItem)
+            setManagingItem(prev => prev ? { ...prev, cacheState: 'caching' } : null)
+          }}
+          onCancelCache={() => {
+            void cancelCache(managingItem)
+            setManagingItem(prev => prev ? { ...prev, cacheState: 'failed', cacheError: '已取消缓存' } : null)
+          }}
           onToggleCompleted={() => setCompleted(managingItem, !managingItem.completed)}
           onRemove={() => remove(managingItem)}
+        />
+      )}
+
+      {/* Standalone Source Switch Modal for Shelf Book */}
+      {switchingItem && (
+        <SourceSwitchModal
+          bookName={switchingItem.name}
+          author={switchingItem.author}
+          currentSourceId={switchingItem.sourceId}
+          currentBookUrl={switchingItem.bookUrl}
+          currentChapterIndex={switchingItem.chapterIndex}
+          knownAlternateSources={switchingItem.alternateSources}
+          onSwitch={handleSwitchShelfSource}
+          onClose={() => setSwitchingItem(null)}
         />
       )}
     </main>
@@ -482,7 +517,22 @@ function App() {
   useEffect(() => { void api.session().then(result => { setAuthenticated(result.authenticated); setCsrfToken(result.csrfToken ?? null); if (result.authenticated) void api.sources().then(setSources).catch(() => undefined) }).finally(() => setReady(true)) }, [])
   useEffect(() => { const sync = () => setPage(pageFromHash()); addEventListener('hashchange', sync); return () => removeEventListener('hashchange', sync) }, [])
   const navigate = (next: Page) => { if (next === 'reader' && !reader) return; location.hash = `#${next}`; setPage(next) }
-  const openReader = (book: OpenBook, index: number) => { void api.addToBookshelf({ sourceId: book.details.sourceId, bookUrl: book.bookUrl, name: book.details.name, author: book.details.author, tocUrl: book.details.tocUrl, coverUrl: book.details.coverUrl }).catch(() => undefined); const value = { book, index }; setReader(value); sessionStorage.setItem(readerStorageKey, JSON.stringify(value)); location.hash = '#reader'; setPage('reader') }
+  const openReader = (book: OpenBook, index: number) => {
+    void api.addToBookshelf({
+      sourceId: book.details.sourceId,
+      bookUrl: book.bookUrl,
+      name: book.details.name,
+      author: book.details.author,
+      tocUrl: book.details.tocUrl,
+      coverUrl: book.details.coverUrl,
+      alternateSources: book.details.alternateSources,
+    }).catch(() => undefined)
+    const value = { book, index }
+    setReader(value)
+    sessionStorage.setItem(readerStorageKey, JSON.stringify(value))
+    location.hash = '#reader'
+    setPage('reader')
+  }
   const openShelfItem = async (item: BookshelfItem) => {
     try {
       const details = await api.details(item.sourceId, item.bookUrl)
@@ -490,6 +540,7 @@ function App() {
         ...details,
         name: details.name?.trim() || item.name || '未知书名',
         author: details.author?.trim() || item.author,
+        alternateSources: item.alternateSources,
       }
       const [chapters, progress] = await Promise.all([api.chapters(safeDetails.sourceId, safeDetails.tocUrl), api.progress(details.sourceId, item.bookUrl)])
       openReader({ details: safeDetails, bookUrl: item.bookUrl, chapters, progress }, progress?.chapterIndex ?? 0)
@@ -499,10 +550,16 @@ function App() {
   }
   const logout = async () => { try { await api.logout() } finally { setCsrfToken(null); setAuthenticated(false) } }
   if (!ready) return <main className={`app-loading theme-${settings.theme}`}><span>正在打开阅读空间...</span></main>
-  if (!authenticated) return <div className={`app-shell theme-${settings.theme}`}><Login onLogin={() => { setAuthenticated(true); void api.sources().then(setSources).catch(() => undefined) }} /></div>
-  if (page === 'reader' && reader) return <div className={`app-shell theme-${settings.theme}`}><ReaderScreen openBook={reader.book} startIndex={reader.index} settings={settings} onSettingsChange={setSettings} onClose={() => navigate('shelf')} /></div>
+  if (!authenticated) return <div className={`app-shell theme-${settings.theme}`}><ToastContainer /><Login onLogin={() => { setAuthenticated(true); void api.sources().then(setSources).catch(() => undefined) }} /></div>
+  if (page === 'reader' && reader) return <div className={`app-shell theme-${settings.theme}`}><ToastContainer /><ReaderScreen openBook={reader.book} startIndex={reader.index} settings={settings} onSettingsChange={setSettings} onClose={() => navigate('shelf')} /></div>
   const refreshSources = () => { void api.sources().then(setSources).catch(() => undefined) }
-  return <div className={`app-shell theme-${settings.theme}`}><AppHeader page={page} settings={settings} onSettingsChange={setSettings} onNavigate={navigate} onLogout={() => void logout()} />{page === 'sources' ? <SourcesPage selected={selected} onSelect={setSelected} onSourcesChange={setSources} /> : page === 'subscriptions' ? <SubscriptionPage onSourcesChange={refreshSources} /> : page === 'shelf' ? <ShelfPage onOpen={item => void openShelfItem(item)} /> : <LibraryPage selected={selected} sources={sources} onSelect={setSelected} onOpen={openReader} />}</div>
+  return (
+    <div className={`app-shell theme-${settings.theme}`}>
+      <ToastContainer />
+      <AppHeader page={page} settings={settings} onSettingsChange={setSettings} onNavigate={navigate} onLogout={() => void logout()} />
+      {page === 'sources' ? <SourcesPage selected={selected} onSelect={setSelected} onSourcesChange={setSources} /> : page === 'subscriptions' ? <SubscriptionPage onSourcesChange={refreshSources} /> : page === 'shelf' ? <ShelfPage onOpen={item => void openShelfItem(item)} /> : <LibraryPage selected={selected} sources={sources} onSelect={setSelected} onOpen={openReader} />}
+    </div>
+  )
 }
 
 createRoot(document.getElementById('root')!).render(<App />)

@@ -68,6 +68,32 @@ class DatabaseTest {
     }
 
     @Test
+    fun `alternate sources persist on save and update on switch`() {
+        val path = temporaryDatabase()
+        try {
+            val database = Database(path); database.initialize("password-for-test")
+            val alt1 = SearchResult("alt-source-1", "测试书", "测试作者", "https://alt1.com/book")
+            val alt2 = SearchResult("alt-source-2", "测试书", "测试作者", "https://alt2.com/book")
+            val book = BookshelfWriteRequest("main-source", "https://main.com/book", "测试书", "测试作者", "toc", alternateSources = listOf(alt1, alt2))
+            database.saveBookshelf(book, null)
+
+            val shelf = database.listBookshelf().single()
+            assertEquals(2, shelf.alternateSources.size)
+            assertEquals("alt-source-1", shelf.alternateSources[0].sourceId)
+            assertEquals("alt-source-2", shelf.alternateSources[1].sourceId)
+
+            // Switch source to alt1
+            val switched = database.switchBookshelf("main-source", "https://main.com/book", BookshelfWriteRequest("alt-source-1", "https://alt1.com/book", "测试书", "测试作者", "toc"), null).first
+            assertEquals("alt-source-1", switched.sourceId)
+            val altSourceIds = switched.alternateSources.map { it.sourceId }
+            assertTrue(altSourceIds.contains("main-source"))
+            assertTrue(altSourceIds.contains("alt-source-2"))
+            org.junit.Assert.assertFalse(altSourceIds.contains("alt-source-1"))
+            database.close()
+        } finally { Files.deleteIfExists(java.nio.file.Path.of(path)) }
+    }
+
+    @Test
     fun `shelf completion state persists and old shelves migrate as unread`() {
         val path = temporaryDatabase()
         try {

@@ -225,6 +225,17 @@ fun Route.apiRoutes(database: Database, auth: AuthService, runner: RuleRunner, c
             bookCache.enqueue(CachedBookRequest(item.sourceId, item.bookUrl, item.tocUrl))
             call.respond(HttpStatusCode.Accepted, mapOf("status" to "queued"))
         }
+        delete("/bookshelf/cache") {
+            if (auth.requireSession(call, true) == null) return@delete
+            val sourceId = call.request.queryParameters["sourceId"]
+            val bookUrl = call.request.queryParameters["bookUrl"]
+            if (sourceId.isNullOrBlank() || bookUrl.isNullOrBlank()) {
+                call.respond(HttpStatusCode.BadRequest, ApiError("invalid_bookshelf", "缺少书籍标识"))
+                return@delete
+            }
+            bookCache.cancel(sourceId, bookUrl)
+            call.respond(HttpStatusCode.NoContent)
+        }
         put("/bookshelf/status") {
             if (auth.requireSession(call, true) == null) return@put
             val request = call.receive<BookshelfStatusRequest>()
@@ -239,7 +250,7 @@ fun Route.apiRoutes(database: Database, auth: AuthService, runner: RuleRunner, c
             if (request.oldSourceId.isBlank() || request.oldBookUrl.isBlank() || book.sourceId.isBlank() || book.bookUrl.isBlank() || book.name.isBlank() || book.tocUrl.isBlank()) { call.respond(HttpStatusCode.BadRequest, ApiError("invalid_bookshelf", "书架数据无效")); return@post }
             val cover = book.coverUrl?.takeIf { it.isNotBlank() }?.let { url -> runCatching { coverCache.cache(url) }.getOrNull() }
             bookCache.cancel(request.oldSourceId, request.oldBookUrl)
-            val (item, orphan) = database.switchBookshelf(request.oldSourceId, request.oldBookUrl, book, cover)
+            val (item, orphan) = database.switchBookshelf(request.oldSourceId, request.oldBookUrl, book, cover, request.alternateSources)
             orphan?.let(coverCache::delete)
             bookCache.enqueue(CachedBookRequest(book.sourceId, book.bookUrl, book.tocUrl))
             call.respond(item)

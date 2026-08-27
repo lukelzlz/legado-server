@@ -31,7 +31,11 @@ class BookCacheService(private val database: Database, private val runner: RuleR
         }
     }
 
-    fun cancel(sourceId: String, bookUrl: String) { jobs.remove("$sourceId\u0000$bookUrl")?.cancel() }
+    fun cancel(sourceId: String, bookUrl: String) {
+        val job = jobs.remove("$sourceId\u0000$bookUrl")
+        job?.cancel()
+        database.finishBookCache(sourceId, bookUrl, "已取消缓存")
+    }
 
     private suspend fun cache(book: CachedBookRequest) {
         try {

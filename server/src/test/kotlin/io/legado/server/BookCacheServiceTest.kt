@@ -259,6 +259,8 @@ class BookCacheServiceTest {
 
             val shelf = database.listBookshelf().single()
             assertTrue("Should stop before all 50 chapters download", shelf.cachedChapters < 50)
+            assertEquals("failed", shelf.cacheState)
+            assertEquals("已取消缓存", shelf.cacheError)
             service.stop()
         } finally { Files.deleteIfExists(java.nio.file.Path.of(path)) }
     }

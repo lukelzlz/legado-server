@@ -1,8 +1,10 @@
 import { CSSProperties, PointerEvent as ReactPointerEvent, useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { api, BookDetails, Chapter, ReadingProgress } from './api'
+import { api, BookDetails, Chapter, ReadingProgress, SearchResult } from './api'
 import { Icon } from './icons'
 import { isAtBottomBoundary, isAtTopBoundary, isInteractiveReaderTarget, isTapGesture, paginateTapZone, scrollTapZone, swipeDirection } from './readerInteractions'
 import { clampScrollPosition, defaultReaderSettings, getReaderFontFamily, ReaderSettings, scrollPosition } from './readerSettings'
+import { SourceSwitchModal } from './SourceSwitchModal'
+import { toast } from './Toast'
 
 export type OpenBook = { details: BookDetails; bookUrl: string; chapters: Chapter[]; progress?: ReadingProgress }
 
@@ -147,6 +149,7 @@ export function VirtualChapterList({
 }
 
 export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange, onClose }: ReaderScreenProps) {
+  const [currentBook, setCurrentBook] = useState<OpenBook>(openBook)
   const [chapterIndex, setChapterIndex] = useState(startIndex)
   const [content, setContent] = useState('')
   const [message, setMessage] = useState('')
@@ -158,6 +161,12 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
   const [boundaryMessage, setBoundaryMessage] = useState('')
   const [inShelf, setInShelf] = useState(true)
   const [speechState, setSpeechState] = useState<'idle' | 'speaking' | 'paused'>('idle')
+  const [showSourceSwitch, setShowSourceSwitch] = useState(false)
+  const [cacheStatus, setCacheStatus] = useState<{ state: string; cached: number; total: number; error?: string }>({
+    state: 'idle',
+    cached: 0,
+    total: openBook.chapters.length,
+  })
 
   // Pagination states
   const [pageIndex, setPageIndex] = useState(0)
@@ -181,8 +190,47 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
   const viewportRef = useRef<HTMLDivElement | null>(null)
   const bodyRef = useRef<HTMLDivElement | null>(null)
 
-  const chapter = openBook.chapters[chapterIndex]
-  const bookName = openBook.details.name || '书籍正文'
+  const chapter = currentBook.chapters[chapterIndex]
+  const bookName = currentBook.details.name || '书籍正文'
+
+  // Sync cache status with bookshelf
+  const syncCacheStatus = useCallback(async () => {
+    try {
+      const shelf = await api.bookshelf()
+      const item = shelf.find(s => s.sourceId === currentBook.details.sourceId && s.bookUrl === currentBook.bookUrl)
+      if (item) {
+        setInShelf(true)
+        setCacheStatus(prev => {
+          // If state changed to ready or failed, show notification
+          if (prev.state === 'caching' && item.cacheState === 'ready') {
+            toast.success(`《${bookName}》全本离线缓存完成（共 ${item.cachedChapters} 章）`)
+          } else if (prev.state === 'caching' && item.cacheState === 'failed') {
+            toast.warning(`《${bookName}》缓存中断：${item.cacheError || '部分章节未下载'}`)
+          }
+          return {
+            state: item.cacheState,
+            cached: item.cachedChapters,
+            total: item.totalChapters || currentBook.chapters.length,
+            error: item.cacheError,
+          }
+        })
+      } else {
+        setInShelf(false)
+      }
+    } catch {
+      // ignore
+    }
+  }, [bookName, currentBook.bookUrl, currentBook.chapters.length, currentBook.details.sourceId])
+
+  useEffect(() => {
+    void syncCacheStatus()
+  }, [syncCacheStatus])
+
+  useEffect(() => {
+    if (cacheStatus.state !== 'caching') return
+    const timer = window.setInterval(syncCacheStatus, 1200)
+    return () => window.clearInterval(timer)
+  }, [cacheStatus.state, syncCacheStatus])
 
   useEffect(() => {
     const title = chapter?.title ? `${bookName} - ${chapter.title} | 阅读服务器` : `${bookName} | 阅读服务器`
@@ -194,16 +242,16 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
 
   const filteredChapters = useMemo(() => {
     const query = deferredQuery.trim().toLowerCase()
-    if (!query) return openBook.chapters
+    if (!query) return currentBook.chapters
     const numQuery = /^\d+$/.test(query) ? parseInt(query, 10) : null
-    return openBook.chapters.filter(item => {
+    return currentBook.chapters.filter(item => {
       if (item.title.toLowerCase().includes(query)) return true
       if (numQuery !== null && (item.index === numQuery - 1 || item.index === numQuery)) return true
       return false
     })
-  }, [deferredQuery, openBook.chapters])
+  }, [deferredQuery, currentBook.chapters])
 
-  const chapterProgress = openBook.chapters.length > 1 ? (chapterIndex / (openBook.chapters.length - 1)) * 100 : 0
+  const chapterProgress = currentBook.chapters.length > 1 ? (chapterIndex / (currentBook.chapters.length - 1)) * 100 : 0
 
   const paragraphs = useMemo(() => {
     if (!content) return []
@@ -221,8 +269,8 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
   const persist = useCallback(() => {
     const current = currentRef.current
     if (!current) return
-    void api.saveProgress(openBook.details.sourceId, openBook.bookUrl, current.chapter.url, current.chapter.index, clampScrollPosition(current.position)).catch(() => undefined)
-  }, [openBook.bookUrl, openBook.details.sourceId])
+    void api.saveProgress(currentBook.details.sourceId, currentBook.bookUrl, current.chapter.url, current.chapter.index, clampScrollPosition(current.position)).catch(() => undefined)
+  }, [currentBook.bookUrl, currentBook.details.sourceId])
 
   const stopSpeech = useCallback(() => {
     if (!('speechSynthesis' in window)) return
@@ -245,14 +293,14 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
   }, [chapter, content, speechState])
 
   const preloadNextChapter = useCallback((index: number) => {
-    const next = openBook.chapters[index + 1]
+    const next = currentBook.chapters[index + 1]
     if (!next || preloadedContentRef.current.has(next.url) || preloadingRef.current.has(next.url)) return
     preloadingRef.current.add(next.url)
-    void api.content(openBook.details.sourceId, next.url, openBook.bookUrl)
+    void api.content(currentBook.details.sourceId, next.url, currentBook.bookUrl)
       .then(result => preloadedContentRef.current.set(next.url, result.content))
       .catch(() => undefined)
       .finally(() => preloadingRef.current.delete(next.url))
-  }, [openBook.bookUrl, openBook.chapters, openBook.details.sourceId])
+  }, [currentBook.bookUrl, currentBook.chapters, currentBook.details.sourceId])
 
   const showBoundaryNotice = useCallback((msg: string) => {
     setBoundaryMessage(msg)
@@ -264,8 +312,8 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
   }, [])
 
   const changeChapter = useCallback((nextIndex: number, targetPage: 'first' | 'last' | 'auto' = 'auto') => {
-    if (nextIndex < 0 || nextIndex >= openBook.chapters.length || nextIndex === chapterIndex) {
-      if (nextIndex < 0 || nextIndex >= openBook.chapters.length) {
+    if (nextIndex < 0 || nextIndex >= currentBook.chapters.length || nextIndex === chapterIndex) {
+      if (nextIndex < 0 || nextIndex >= currentBook.chapters.length) {
         showBoundaryNotice(nextIndex < 0 ? '已是第一章' : '已是最后一章')
       }
       return
@@ -275,24 +323,103 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
     targetInitialPageRef.current = targetPage === 'auto' ? null : targetPage
     setChapterIndex(nextIndex)
     setActiveDrawer(null)
-  }, [chapterIndex, openBook.chapters.length, persist, showBoundaryNotice, stopSpeech])
+  }, [chapterIndex, currentBook.chapters.length, persist, showBoundaryNotice, stopSpeech])
 
   const toggleShelf = async () => {
     if (inShelf) {
       if (!confirm(`移出“${bookName}”将清除书架、阅读进度和缓存封面，确定继续吗？`)) return
-      await api.removeFromBookshelf(openBook.details.sourceId, openBook.bookUrl); setInShelf(false); return
+      await api.removeFromBookshelf(currentBook.details.sourceId, currentBook.bookUrl)
+      setInShelf(false)
+      toast.info(`《${bookName}》已移出书架`)
+      return
     }
-    await api.addToBookshelf({ sourceId: openBook.details.sourceId, bookUrl: openBook.bookUrl, name: bookName, author: openBook.details.author, tocUrl: openBook.details.tocUrl, coverUrl: openBook.details.coverUrl }); setInShelf(true)
+    await api.addToBookshelf({
+      sourceId: currentBook.details.sourceId,
+      bookUrl: currentBook.bookUrl,
+      name: bookName,
+      author: currentBook.details.author,
+      tocUrl: currentBook.details.tocUrl,
+      coverUrl: currentBook.details.coverUrl,
+      alternateSources: currentBook.details.alternateSources,
+    })
+    setInShelf(true)
+    toast.success(`《${bookName}》已加入书架`)
+  }
+
+  const handleCacheBook = async () => {
+    try {
+      await api.cacheBookshelfBook(currentBook.details.sourceId, currentBook.bookUrl)
+      setCacheStatus(prev => ({ ...prev, state: 'caching', error: undefined, total: currentBook.chapters.length }))
+      toast.info(`已加入离线缓存队列，正在下载《${bookName}》...`)
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : '无法开始缓存')
+    }
+  }
+
+  const handleCancelCache = async () => {
+    try {
+      await api.cancelBookCache(currentBook.details.sourceId, currentBook.bookUrl)
+      setCacheStatus(prev => ({ ...prev, state: 'failed', error: '已取消缓存' }))
+      toast.info(`已取消《${bookName}》的离线缓存`)
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : '无法取消缓存')
+    }
+  }
+
+  const handleSwitchSource = async (chosen: { result: SearchResult; chapters: Chapter[]; targetChapterIndex: number }) => {
+    const details = await api.details(chosen.result.sourceId, chosen.result.bookUrl)
+    const safeDetails: BookDetails = {
+      ...details,
+      name: details.name?.trim() || currentBook.details.name || '未知书名',
+      author: details.author?.trim() || currentBook.details.author,
+      coverUrl: details.coverUrl || currentBook.details.coverUrl,
+      intro: details.intro || currentBook.details.intro,
+      alternateSources: currentBook.details.alternateSources,
+    }
+
+    await api.switchBookshelfSource({
+      oldSourceId: currentBook.details.sourceId,
+      oldBookUrl: currentBook.bookUrl,
+      book: {
+        sourceId: safeDetails.sourceId,
+        bookUrl: chosen.result.bookUrl,
+        name: safeDetails.name,
+        author: safeDetails.author,
+        tocUrl: safeDetails.tocUrl,
+        coverUrl: safeDetails.coverUrl,
+      },
+    })
+
+    const newOpenBook: OpenBook = {
+      details: safeDetails,
+      bookUrl: chosen.result.bookUrl,
+      chapters: chosen.chapters,
+      progress: {
+        sourceId: safeDetails.sourceId,
+        bookUrl: chosen.result.bookUrl,
+        chapterUrl: chosen.chapters[chosen.targetChapterIndex]?.url || '',
+        chapterIndex: chosen.targetChapterIndex,
+        scrollPosition: 0,
+        updatedAt: Date.now(),
+      },
+    }
+
+    setCurrentBook(newOpenBook)
+    setChapterIndex(chosen.targetChapterIndex)
+    preloadedContentRef.current.clear()
+    sessionStorage.setItem('legado-open-book-v1', JSON.stringify({ book: newOpenBook, index: chosen.targetChapterIndex }))
   }
 
   // Load chapter content
   useEffect(() => {
     let cancelled = false
-    setLoading(true); setMessage(''); setContent('')
+    setLoading(true)
+    setMessage('')
+    setContent('')
     const applyContent = (nextContent: string) => {
       if (cancelled) return
       setContent(nextContent)
-      const position = !restoredRef.current && chapter.index === startIndex ? openBook.progress?.scrollPosition ?? 0 : 0
+      const position = !restoredRef.current && chapter.index === startIndex ? currentBook.progress?.scrollPosition ?? 0 : 0
       restoredRef.current = true
       currentRef.current = { chapter, position }
       initialPagePositionRef.current = position
@@ -309,10 +436,22 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
       setLoading(false)
     }
     const preloaded = preloadedContentRef.current.get(chapter.url)
-    if (preloaded) applyContent(preloaded)
-    else void api.content(openBook.details.sourceId, chapter.url, openBook.bookUrl).then(result => applyContent(result.content)).catch(error => { if (!cancelled) setMessage(error instanceof Error ? error.message : '无法读取正文') }).finally(() => { if (!cancelled) setLoading(false) })
-    return () => { cancelled = true }
-  }, [chapter, openBook.details.sourceId, openBook.progress?.scrollPosition, settings.pageMode, startIndex])
+    if (preloaded) {
+      applyContent(preloaded)
+    } else {
+      void api.content(currentBook.details.sourceId, chapter.url, currentBook.bookUrl)
+        .then(result => applyContent(result.content))
+        .catch(error => {
+          if (!cancelled) setMessage(error instanceof Error ? error.message : '无法读取正文')
+        })
+        .finally(() => {
+          if (!cancelled) setLoading(false)
+        })
+    }
+    return () => {
+      cancelled = true
+    }
+  }, [chapter, currentBook.bookUrl, currentBook.details.sourceId, currentBook.progress?.scrollPosition, settings.pageMode, startIndex])
 
   // Pagination measurement
   const measurePagination = useCallback(() => {
@@ -551,6 +690,8 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
     else goPrevPage()
   }
 
+  const cachePercent = Math.min(100, Math.round((cacheStatus.cached / Math.max(1, cacheStatus.total || currentBook.chapters.length)) * 100))
+
   return <main className={`reader-workspace theme-${settings.theme} ${toolbarsVisible ? 'toolbars-open' : 'toolbars-hidden'}`} style={readerStyle}>
     {/* Floating Header */}
     <header className="reader-header">
@@ -560,6 +701,7 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
       </div>
       <strong className="reader-header-title" title={bookName}>{bookName}</strong>
       <div className="reader-header-actions">
+        <IconButton label="切换书源" icon="sliders" onClick={() => setShowSourceSwitch(true)} />
         <IconButton label="阅读设置" icon="settings" onClick={() => setActiveDrawer(d => d === 'settings' ? null : 'settings')} />
         <IconButton label={speechState === 'speaking' ? '暂停朗读' : speechState === 'paused' ? '继续朗读' : '朗读本章'} icon="volume2" onClick={toggleSpeech} />
       </div>
@@ -568,7 +710,7 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
     {/* TOC Drawer (Left) */}
     <aside className={`reader-drawer reader-drawer-left ${activeDrawer === 'toc' ? 'open' : ''}`} aria-label="目录抽屉">
       <header className="drawer-header">
-        <div className="drawer-title"><Icon name="list" /><strong>目录</strong><small>共 {openBook.chapters.length} 章</small></div>
+        <div className="drawer-title"><Icon name="list" /><strong>目录</strong><small>共 {currentBook.chapters.length} 章</small></div>
         <IconButton label="关闭目录" icon="close" onClick={() => setActiveDrawer(null)} />
       </header>
       <div className="chapter-search">
@@ -577,7 +719,44 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
       </div>
       <VirtualChapterList chapters={filteredChapters} activeChapterIndex={chapterIndex} onSelect={index => { changeChapter(index); setActiveDrawer(null) }} itemHeight={40} overscan={8} autoScrollKey={activeDrawer === 'toc' ? 1 : 0} />
       <footer className="drawer-footer">
-        <button className="shelf-button" onClick={() => void toggleShelf()}><Icon name={inShelf ? 'check' : 'plus'} />{inShelf ? '已在书架' : '添加到书架'}</button>
+        {/* Cache Control Section */}
+        <div className="drawer-cache-section">
+          {cacheStatus.state === 'caching' ? (
+            <div className="drawer-cache-progress">
+              <div className="cache-progress-text">
+                <span>正在离线缓存</span>
+                <strong>{cachePercent}% ({cacheStatus.cached}/{cacheStatus.total || currentBook.chapters.length}章)</strong>
+              </div>
+              <div className="cache-progress-bar-track">
+                <div className="cache-progress-bar-fill" style={{ width: `${cachePercent}%` }} />
+              </div>
+              <button className="cache-cancel-btn" onClick={() => void handleCancelCache()}>取消缓存</button>
+            </div>
+          ) : (
+            <div className="drawer-cache-idle">
+              <button className="cache-action-btn" onClick={() => void handleCacheBook()}>
+                <Icon name="download" />
+                <span>
+                  {cacheStatus.state === 'ready'
+                    ? `已离线缓存 ${cacheStatus.cached} 章 (重新缓存)`
+                    : cacheStatus.state === 'failed'
+                    ? `重试离线缓存 (${cacheStatus.cached}/${cacheStatus.total || currentBook.chapters.length})`
+                    : '下载全本离线缓存'}
+                </span>
+              </button>
+            </div>
+          )}
+        </div>
+
+        {/* Action Buttons */}
+        <div className="drawer-footer-actions">
+          <button className="shelf-button switch-source-btn" onClick={() => { setActiveDrawer(null); setShowSourceSwitch(true) }}>
+            <Icon name="sliders" />换源
+          </button>
+          <button className="shelf-button" onClick={() => void toggleShelf()}>
+            <Icon name={inShelf ? 'check' : 'plus'} />{inShelf ? '已在书架' : '加书架'}
+          </button>
+        </div>
       </footer>
     </aside>
 
@@ -618,7 +797,7 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
           {loading && <p className="reader-status">正在加载正文...</p>}
           {message && <p className="reader-error">{message}</p>}
           {paragraphs.map((line, index) => <p key={index}>{line}</p>)}
-          {content && <footer className="reader-navigation"><button disabled={chapterIndex === 0 || loading} onClick={() => changeChapter(chapterIndex - 1)}><Icon name="arrowLeft" />上一章</button><div className="chapter-progress"><i style={{ width: `${chapterProgress}%` }} /><span>{chapterIndex + 1} / {openBook.chapters.length}</span></div><button disabled={chapterIndex === openBook.chapters.length - 1 || loading} onClick={() => changeChapter(chapterIndex + 1)}>下一章<Icon name="arrowRight" /></button></footer>}
+          {content && <footer className="reader-navigation"><button disabled={chapterIndex === 0 || loading} onClick={() => changeChapter(chapterIndex - 1)}><Icon name="arrowLeft" />上一章</button><div className="chapter-progress"><i style={{ width: `${chapterProgress}%` }} /><span>{chapterIndex + 1} / {currentBook.chapters.length}</span></div><button disabled={chapterIndex === currentBook.chapters.length - 1 || loading} onClick={() => changeChapter(chapterIndex + 1)}>下一章<Icon name="arrowRight" /></button></footer>}
         </article>
       )}
       {boundaryMessage && <p className="reader-boundary-message" role="status">{boundaryMessage}</p>}
@@ -627,9 +806,24 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
     {/* Floating Mobile Bottom Nav */}
     <nav className="mobile-reader-nav">
       <button onClick={() => setActiveDrawer('toc')}><Icon name="list" /><span>目录</span></button>
+      <button onClick={() => setShowSourceSwitch(true)}><Icon name="sliders" /><span>换源</span></button>
       <button onClick={() => setActiveDrawer('settings')}><span className="aa">Aa</span><span>设置</span></button>
       <button onClick={() => onSettingsChange({ ...settings, theme: settings.theme === 'dark' ? 'light' : 'dark' })}><Icon name="moon" /><span>夜间</span></button>
     </nav>
+
+    {/* In-reader Source Switch Modal */}
+    {showSourceSwitch && (
+      <SourceSwitchModal
+        bookName={bookName}
+        author={currentBook.details.author}
+        currentSourceId={currentBook.details.sourceId}
+        currentBookUrl={currentBook.bookUrl}
+        currentChapterTitle={chapter?.title}
+        currentChapterIndex={chapterIndex}
+        knownAlternateSources={currentBook.details.alternateSources}
+        onSwitch={handleSwitchSource}
+        onClose={() => setShowSourceSwitch(false)}
+      />
+    )}
   </main>
 }
-

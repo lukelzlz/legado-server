@@ -91,11 +91,13 @@ import kotlinx.serialization.Serializable
     val author: String? = null,
     val tocUrl: String,
     val coverUrl: String? = null,
+    val alternateSources: List<SearchResult>? = null,
 )
 @Serializable data class BookshelfSourceSwitchRequest(
     val oldSourceId: String,
     val oldBookUrl: String,
     val book: BookshelfWriteRequest,
+    val alternateSources: List<SearchResult>? = null,
 )
 @Serializable data class BookshelfStatusRequest(val sourceId: String, val bookUrl: String, val completed: Boolean)
 data class CachedBookRequest(val sourceId: String, val bookUrl: String, val tocUrl: String)
@@ -114,4 +116,5 @@ data class CachedBookRequest(val sourceId: String, val bookUrl: String, val tocU
     val cacheState: String = "idle",
     val cacheError: String? = null,
     val completed: Boolean = false,
+    val alternateSources: List<SearchResult> = emptyList(),
 )

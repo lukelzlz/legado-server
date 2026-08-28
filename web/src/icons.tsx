@@ -11,6 +11,8 @@ type IconName =
   | 'columns'
   | 'download'
   | 'list'
+  | 'logOut'
+  | 'menu'
   | 'more'
   | 'moon'
   | 'pin'
@@ -33,6 +35,8 @@ const paths: Record<IconName, ReactNode> = {
   columns: <><rect width="18" height="18" x="3" y="3" rx="2" /><path d="M12 3v18" /></>,
   download: <><path d="M12 3v12" /><path d="m7 10 5 5 5-5" /><path d="M5 21h14" /></>,
   list: <><path d="M9 6h11M9 12h11M9 18h11" /><path d="M4 6h.01M4 12h.01M4 18h.01" /></>,
+  logOut: <><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" /><polyline points="16 17 21 12 16 7" /><line x1="21" y1="12" x2="9" y2="12" /></>,
+  menu: <path d="M4 6h16M4 12h16M4 18h16" />,
   more: <path d="M5 12h.01M12 12h.01M19 12h.01" />,
   moon: <path d="M20.4 15.4A8.8 8.8 0 0 1 8.6 3.6 9 9 0 1 0 20.4 15.4Z" />,
   pin: <><line x1="12" y1="17" x2="12" y2="22" /><path d="M5 17h14l-2-6V4H7v7l-2 6Z" /></>,

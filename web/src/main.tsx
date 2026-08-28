@@ -4,7 +4,8 @@ import { api, BookDetails, BookshelfItem, Chapter, SearchResult, SearchStreamEve
 import { Icon } from './icons'
 import { OpenBook, ReaderScreen } from './ReaderScreen'
 import { loadReaderSettings, ReaderSettings, saveReaderSettings } from './readerSettings'
-import { filterSearchGroups, SearchFilters, SearchGroup } from './searchFilters'
+import { AppHeader } from './AppHeader'
+import { defaultSearchFilters, filterSearchGroups, SearchFilters, SearchGroup } from './searchFilters'
 import { groupSearchResults, SourceChoice, SourceChoiceStatus, useSearchStore } from './searchStore'
 import { SourceSwitchModal } from './SourceSwitchModal'
 import { toast, ToastContainer } from './Toast'
@@ -43,19 +44,12 @@ function BookInfoSummary({ book, choices, resumeIndex, onOpen, onChooseSource }:
   return <section className="library-book-detail"><header><div className="book-detail-heading">{book.details.coverUrl && <img className="book-detail-cover" src={book.details.coverUrl} alt="" referrerPolicy="no-referrer" />}<div><span className="section-kicker">书籍详情</span><h2>{book.details.name}</h2><p>{book.details.author || '未知作者'}</p><div className="book-detail-stats"><span>{book.chapters.length} 章</span><span>{availableSources || 1} 个可用书源</span>{latestChapter && <span>最新：{latestChapter.title}</span>}</div></div></div><button className="primary-button" onClick={() => onOpen(resumeIndex)}>{book.progress ? '继续阅读' : '开始阅读'}<Icon name="arrowRight" /></button></header>{choices.length > 1 && <SourceChoiceList choices={choices} active={book.bookUrl} onChoose={onChooseSource} />}{book.details.intro && <div className={`book-intro ${introExpanded ? 'expanded' : ''}`}><p>{book.details.intro}</p>{book.details.intro.length > 120 && <button className="intro-toggle" onClick={() => setIntroExpanded(value => !value)}>{introExpanded ? '收起简介' : '展开简介'}</button>}</div>}<div className="preview-chapters">{book.chapters.slice(0, 16).map(item => <button className={item.index === resumeIndex ? 'resume-chapter' : ''} key={item.url} onClick={() => onOpen(item.index)}><span>{item.title}</span>{item.index === resumeIndex && book.progress && <small>上次阅读</small>}</button>)}</div>{book.chapters.length > 16 && <p className="chapter-count">共 {book.chapters.length} 章，进入阅读器查看完整目录</p>}</section>
 }
 
-function ToolButton({ label, icon, onClick }: { label: string; icon: Parameters<typeof Icon>[0]['name']; onClick: () => void }) {
-  return <button className="tool-button" title={label} aria-label={label} onClick={onClick}><Icon name={icon} /></button>
-}
-
 function Login({ onLogin }: { onLogin: () => void }) {
   const [password, setPassword] = useState(''); const [error, setError] = useState(''); const [busy, setBusy] = useState(false)
   const submit = async (event: FormEvent) => { event.preventDefault(); setBusy(true); setError(''); try { const result = await api.login(password); setCsrfToken(result.csrfToken); onLogin() } catch (cause) { setError(cause instanceof Error ? cause.message : '登录失败') } finally { setBusy(false) } }
   return <main className="login-shell"><form className="login-panel" onSubmit={submit}><div className="login-mark"><Icon name="book" /><strong>阅读服务器</strong></div><h1>回到你的阅读空间</h1><p>输入部署时设置的单用户密码继续。</p><label>密码<input autoFocus type="password" value={password} onChange={event => setPassword(event.target.value)} required /></label>{error && <p className="form-error" role="alert">{error}</p>}<button className="primary-button" disabled={busy}>{busy ? '正在验证...' : '登录'}</button></form></main>
 }
 
-function AppHeader({ page, settings, searching, onSettingsChange, onNavigate, onLogout }: { page: Page; settings: ReaderSettings; searching?: boolean; onSettingsChange: (next: ReaderSettings) => void; onNavigate: (page: Page) => void; onLogout: () => void }) {
-  return <header className="app-page-header"><button className="app-brand" onClick={() => onNavigate('library')}><Icon name="book" /><strong>阅读服务器</strong></button><nav><button className={page === 'library' ? 'active' : ''} onClick={() => onNavigate('library')}>书库{searching && <span className="nav-search-indicator" title="后台正在搜索..." aria-label="后台正在搜索" />}</button><button className={page === 'shelf' ? 'active' : ''} onClick={() => onNavigate('shelf')}>书架</button><button className={page === 'sources' ? 'active' : ''} onClick={() => onNavigate('sources')}>书源</button><button className={page === 'subscriptions' ? 'active' : ''} onClick={() => onNavigate('subscriptions')}>订阅</button></nav><div className="header-actions"><div className="header-themes" aria-label="全站主题">{(['light', 'paper', 'dark'] as const).map(theme => <button key={theme} className={`theme-${theme} ${settings.theme === theme ? 'selected' : ''}`} aria-label={theme === 'light' ? '晓白' : theme === 'paper' ? '护眼' : '夜读'} onClick={() => onSettingsChange({ ...settings, theme })} />)}</div><ToolButton label="退出登录" icon="more" onClick={onLogout} /></div></header>
-}
 
 function SourceEditor({ selected, onSaved }: { selected: SourceSummary | null; onSaved: () => void }) {
   const [record, setRecord] = useState<SourceRecord | null>(null); const [text, setText] = useState(''); const [status, setStatus] = useState('')

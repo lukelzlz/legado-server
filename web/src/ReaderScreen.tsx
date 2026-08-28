@@ -1,7 +1,7 @@
 import { CSSProperties, PointerEvent as ReactPointerEvent, useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { api, BookDetails, Chapter, ReadingProgress, SearchResult } from './api'
 import { Icon } from './icons'
-import { isAtBottomBoundary, isAtTopBoundary, isInteractiveReaderTarget, isTapGesture, paginateTapZone, scrollTapZone, swipeDirection } from './readerInteractions'
+import { calculatePaginationLayout, isAtBottomBoundary, isAtTopBoundary, isInteractiveReaderTarget, isTapGesture, paginateTapZone, scrollTapZone, swipeDirection } from './readerInteractions'
 import { clampScrollPosition, defaultReaderSettings, getReaderFontFamily, ReaderSettings, scrollPosition } from './readerSettings'
 import { SourceSwitchModal } from './SourceSwitchModal'
 import { toast } from './Toast'
@@ -33,8 +33,9 @@ function ReaderSettingsControls({ settings, onChange }: { settings: ReaderSettin
   return <div className="drawer-scroll-content">
     <section className="setting-section"><span className="setting-label">主题</span><div className="theme-grid">{themes.map(([theme, label]) => <button key={theme} className={`theme-choice theme-${theme} ${settings.theme === theme ? 'selected' : ''}`} onClick={() => update({ theme })}><i>{settings.theme === theme && <Icon name="check" />}</i><small>{label}</small></button>)}</div></section>
     <section className="setting-section"><span className="setting-label">字体</span><label className="font-select"><select value={settings.font} onChange={event => update({ font: event.target.value as ReaderSettings['font'] })}><option value="song">思源宋体</option><option value="hei">黑体 / 苹方</option><option value="kai">华文楷体</option><option value="fangsong">华文仿宋</option><option value="system">系统字体</option></select><Icon name="chevronDown" /></label></section>
-    <section className="setting-section compact-settings"><div className="font-stepper"><span>字号</span><button aria-label="减小字号" onClick={() => update({ fontSize: Math.max(15, settings.fontSize - 1) })}>−</button><output>{settings.fontSize}</output><button aria-label="增大字号" onClick={() => update({ fontSize: Math.min(28, settings.fontSize + 1) })}>+</button></div><SettingRange label="字间距" value={settings.letterSpacing} min={-.25} max={1.5} step={.05} display={settings.letterSpacing.toFixed(2)} onChange={letterSpacing => update({ letterSpacing })} /><SettingRange label="行间距" value={settings.lineHeight} min={1.45} max={2.4} step={.05} display={settings.lineHeight.toFixed(2)} onChange={lineHeight => update({ lineHeight })} /><SettingRange label="段间距" value={settings.paragraphSpacing} min={.7} max={2} step={.05} display={settings.paragraphSpacing.toFixed(2)} onChange={paragraphSpacing => update({ paragraphSpacing })} /><SettingRange label="左右边距" value={settings.contentPadding} min={20} max={120} step={2} display={`${settings.contentPadding}`} onChange={contentPadding => update({ contentPadding })} /></section>
+    <section className="setting-section compact-settings"><div className="font-stepper"><span>字号</span><button aria-label="减小字号" onClick={() => update({ fontSize: Math.max(15, settings.fontSize - 1) })}>−</button><output>{settings.fontSize}</output><button aria-label="增大字号" onClick={() => update({ fontSize: Math.min(28, settings.fontSize + 1) })}>+</button></div><SettingRange label="字间距" value={settings.letterSpacing} min={-.25} max={1.5} step={.05} display={settings.letterSpacing.toFixed(2)} onChange={letterSpacing => update({ letterSpacing })} /><SettingRange label="行间距" value={settings.lineHeight} min={1.45} max={2.4} step={.05} display={settings.lineHeight.toFixed(2)} onChange={lineHeight => update({ lineHeight })} /><SettingRange label="段间距" value={settings.paragraphSpacing} min={.7} max={2} step={.05} display={settings.paragraphSpacing.toFixed(2)} onChange={paragraphSpacing => update({ paragraphSpacing })} /><SettingRange label="左右边距" value={settings.contentPadding} min={20} max={120} step={2} display={`${settings.contentPadding}`} onChange={contentPadding => update({ contentPadding })} /><SettingRange label="版心宽度" value={settings.maxWidth} min={560} max={1400} step={20} display={`${settings.maxWidth}px`} onChange={maxWidth => update({ maxWidth })} /></section>
     <section className="setting-section"><span className="setting-label">翻页方式</span><div className="page-modes"><button className={settings.pageMode === 'scroll' ? 'selected' : ''} onClick={() => update({ pageMode: 'scroll' })}>连续滚动</button><button className={settings.pageMode === 'paginate' ? 'selected' : ''} onClick={() => update({ pageMode: 'paginate' })}>平移分页</button></div><small className="setting-hint">{settings.pageMode === 'paginate' ? '左右轻扫或点击屏幕两侧平滑翻页' : '垂直滚动阅读，点击上下可快速翻滚'}</small></section>
+    <section className="setting-section"><span className="setting-label">分栏排版</span><div className="page-modes column-modes"><button className={settings.columnMode === 'auto' ? 'selected' : ''} onClick={() => update({ columnMode: 'auto' })}>自适应</button><button className={settings.columnMode === 'single' ? 'selected' : ''} onClick={() => update({ columnMode: 'single' })}>单栏</button><button className={settings.columnMode === 'double' ? 'selected' : ''} onClick={() => update({ columnMode: 'double' })}>双栏</button></div><small className="setting-hint">{settings.columnMode === 'auto' ? '宽屏 (≥800px) 自动开启双页分栏' : settings.columnMode === 'double' ? '固定双栏双页排版' : '固定单栏排版'}</small></section>
     <button className="reset-settings" onClick={() => onChange({ ...defaultReaderSettings, theme: settings.theme })}>恢复默认设置</button>
   </div>
 }
@@ -172,6 +173,8 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
   const [pageIndex, setPageIndex] = useState(0)
   const [pageCount, setPageCount] = useState(1)
   const [columnWidth, setColumnWidth] = useState(600)
+  const [stride, setStride] = useState(640)
+  const [isDoubleColumn, setIsDoubleColumn] = useState(false)
   const columnGap = 40
 
   const currentRef = useRef<{ chapter: Chapter; position: number } | null>(null)
@@ -460,26 +463,35 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
     if (!viewport || !body) return
     const w = viewport.clientWidth
     if (w <= 0) return
-    setColumnWidth(w)
+
     const totalScrollWidth = body.scrollWidth
-    const calculatedPages = Math.max(1, Math.round((totalScrollWidth + columnGap) / (w + columnGap)))
-    setPageCount(calculatedPages)
+    const layout = calculatePaginationLayout({
+      viewportWidth: w,
+      totalScrollWidth,
+      columnGap,
+      columnMode: settings.columnMode,
+    })
+
+    setColumnWidth(layout.columnWidth)
+    setStride(layout.stride)
+    setIsDoubleColumn(layout.isDoubleColumn)
+    setPageCount(layout.pageCount)
 
     if (targetInitialPageRef.current === 'last') {
       targetInitialPageRef.current = null
-      setPageIndex(calculatedPages - 1)
+      setPageIndex(layout.pageCount - 1)
     } else if (targetInitialPageRef.current === 'first') {
       targetInitialPageRef.current = null
       setPageIndex(0)
     } else if (initialPagePositionRef.current !== null) {
       const pos = initialPagePositionRef.current
       initialPagePositionRef.current = null
-      const target = Math.min(calculatedPages - 1, Math.max(0, Math.round(pos * (calculatedPages - 1))))
+      const target = Math.min(layout.pageCount - 1, Math.max(0, Math.round(pos * (layout.pageCount - 1))))
       setPageIndex(target)
     } else {
-      setPageIndex(curr => Math.min(curr, calculatedPages - 1))
+      setPageIndex(curr => Math.min(curr, layout.pageCount - 1))
     }
-  }, [columnGap])
+  }, [columnGap, settings.columnMode])
 
   useLayoutEffect(() => {
     if (settings.pageMode !== 'paginate') return
@@ -489,7 +501,20 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
     const observer = new ResizeObserver(() => measurePagination())
     observer.observe(viewport)
     return () => observer.disconnect()
-  }, [settings.pageMode, content, settings.fontSize, settings.lineHeight, settings.letterSpacing, settings.paragraphSpacing, settings.contentPadding, settings.font, measurePagination])
+  }, [
+    settings.pageMode,
+    content,
+    settings.fontSize,
+    settings.lineHeight,
+    settings.letterSpacing,
+    settings.paragraphSpacing,
+    settings.contentPadding,
+    settings.maxWidth,
+    settings.columnMode,
+    settings.sidebarPinned,
+    settings.font,
+    measurePagination,
+  ])
 
   const goNextPage = useCallback(() => {
     if (pageIndex < pageCount - 1) {
@@ -624,6 +649,7 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
     '--reader-letter-spacing': `${settings.letterSpacing}px`,
     '--reader-paragraph-spacing': `${settings.paragraphSpacing}em`,
     '--reader-content-padding': `${settings.contentPadding}px`,
+    '--reader-max-width': `${settings.maxWidth}px`,
     '--reader-font-family': getReaderFontFamily(settings.font),
   } as CSSProperties
 
@@ -692,12 +718,23 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
 
   const cachePercent = Math.min(100, Math.round((cacheStatus.cached / Math.max(1, cacheStatus.total || currentBook.chapters.length)) * 100))
 
-  return <main className={`reader-workspace theme-${settings.theme} ${toolbarsVisible ? 'toolbars-open' : 'toolbars-hidden'}`} style={readerStyle}>
+  return <main className={`reader-workspace theme-${settings.theme} ${toolbarsVisible ? 'toolbars-open' : 'toolbars-hidden'} ${settings.sidebarPinned ? 'sidebar-pinned' : ''}`} style={readerStyle}>
     {/* Floating Header */}
     <header className="reader-header">
       <div className="reader-header-left">
         <IconButton label="返回书架" icon="arrowLeft" onClick={() => { persist(); stopSpeech(); onClose() }} />
-        <IconButton label="目录" icon="list" onClick={() => setActiveDrawer(d => d === 'toc' ? null : 'toc')} />
+        <IconButton
+          label="目录"
+          icon="list"
+          onClick={() => {
+            if (settings.sidebarPinned) {
+              onSettingsChange({ ...settings, sidebarPinned: false })
+              setActiveDrawer(null)
+            } else {
+              setActiveDrawer(d => d === 'toc' ? null : 'toc')
+            }
+          }}
+        />
       </div>
       <strong className="reader-header-title" title={bookName}>{bookName}</strong>
       <div className="reader-header-actions">
@@ -708,16 +745,45 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
     </header>
 
     {/* TOC Drawer (Left) */}
-    <aside className={`reader-drawer reader-drawer-left ${activeDrawer === 'toc' ? 'open' : ''}`} aria-label="目录抽屉">
+    <aside className={`reader-drawer reader-drawer-left ${activeDrawer === 'toc' ? 'open' : ''} ${settings.sidebarPinned ? 'pinned' : ''}`} aria-label="目录抽屉">
       <header className="drawer-header">
         <div className="drawer-title"><Icon name="list" /><strong>目录</strong><small>共 {currentBook.chapters.length} 章</small></div>
-        <IconButton label="关闭目录" icon="close" onClick={() => setActiveDrawer(null)} />
+        <div className="drawer-header-actions">
+          <IconButton
+            className={`desktop-pin-btn ${settings.sidebarPinned ? 'pinned' : ''}`}
+            label={settings.sidebarPinned ? '取消固定目录' : '固定目录到侧边栏'}
+            icon={settings.sidebarPinned ? 'pinOff' : 'pin'}
+            onClick={() => onSettingsChange({ ...settings, sidebarPinned: !settings.sidebarPinned })}
+          />
+          <IconButton
+            label="关闭目录"
+            icon="close"
+            onClick={() => {
+              if (settings.sidebarPinned) {
+                onSettingsChange({ ...settings, sidebarPinned: false })
+              }
+              setActiveDrawer(null)
+            }}
+          />
+        </div>
       </header>
       <div className="chapter-search">
         <Icon name="search" />
         <input value={chapterQuery} onChange={event => setChapterQuery(event.target.value)} placeholder="搜索章节" />
       </div>
-      <VirtualChapterList chapters={filteredChapters} activeChapterIndex={chapterIndex} onSelect={index => { changeChapter(index); setActiveDrawer(null) }} itemHeight={40} overscan={8} autoScrollKey={activeDrawer === 'toc' ? 1 : 0} />
+      <VirtualChapterList
+        chapters={filteredChapters}
+        activeChapterIndex={chapterIndex}
+        onSelect={index => {
+          changeChapter(index)
+          if (!settings.sidebarPinned) {
+            setActiveDrawer(null)
+          }
+        }}
+        itemHeight={40}
+        overscan={8}
+        autoScrollKey={activeDrawer === 'toc' || settings.sidebarPinned ? 1 : 0}
+      />
       <footer className="drawer-footer">
         {/* Cache Control Section */}
         <div className="drawer-cache-section">
@@ -770,14 +836,16 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
     </aside>
 
     {/* Backdrop for Drawers */}
-    {activeDrawer && <div className="reader-drawer-backdrop" onClick={() => setActiveDrawer(null)} aria-hidden="true" />}
+    {activeDrawer && (activeDrawer !== 'toc' || !settings.sidebarPinned) && (
+      <div className="reader-drawer-backdrop" onClick={() => setActiveDrawer(null)} aria-hidden="true" />
+    )}
 
     {/* Central Reading Canvas */}
     <section className="reader-main">
       {settings.pageMode === 'paginate' ? (
         <div className="reader-paginated-wrap" onPointerDown={onPointerDown} onPointerUp={onPointerUp} onWheel={onWheelPaginate}>
-          <div ref={viewportRef} className="reader-paginated-viewport">
-            <div className="reader-paginated-track" style={{ transform: `translateX(-${pageIndex * (columnWidth + columnGap)}px)` }}>
+          <div ref={viewportRef} className={`reader-paginated-viewport ${isDoubleColumn ? 'is-double-column' : ''}`}>
+            <div className="reader-paginated-track" style={{ transform: `translateX(-${pageIndex * stride}px)` }}>
               <article ref={bodyRef} className={`reader-paginated-column-body font-${settings.font}`} style={{ columnWidth: `${columnWidth}px`, columnGap: `${columnGap}px` }}>
                 <h1>{chapter?.title}</h1>
                 {loading && <p className="reader-status">正在加载正文...</p>}

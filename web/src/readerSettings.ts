@@ -1,6 +1,7 @@
 export type ReaderTheme = 'light' | 'paper' | 'dark'
 export type ReaderFont = 'song' | 'hei' | 'kai' | 'fangsong' | 'system'
 export type ReaderPageMode = 'scroll' | 'paginate'
+export type ReaderColumnMode = 'auto' | 'single' | 'double'
 export type ReaderSettings = {
   theme: ReaderTheme
   fontSize: number
@@ -10,11 +11,24 @@ export type ReaderSettings = {
   contentPadding: number
   font: ReaderFont
   pageMode: ReaderPageMode
+  maxWidth: number
+  columnMode: ReaderColumnMode
+  sidebarPinned: boolean
 }
 
 const storageKey = 'legado-reader-settings-v2'
 export const defaultReaderSettings: ReaderSettings = {
-  theme: 'light', fontSize: 19, lineHeight: 1.95, letterSpacing: 0, paragraphSpacing: 1.15, contentPadding: 80, font: 'song', pageMode: 'scroll',
+  theme: 'light',
+  fontSize: 19,
+  lineHeight: 1.95,
+  letterSpacing: 0,
+  paragraphSpacing: 1.15,
+  contentPadding: 80,
+  font: 'song',
+  pageMode: 'scroll',
+  maxWidth: 860,
+  columnMode: 'auto',
+  sidebarPinned: false,
 }
 
 export function clampScrollPosition(value: number): number {
@@ -34,6 +48,18 @@ export function parsePageMode(mode: unknown): ReaderPageMode {
   return mode === 'paginate' ? 'paginate' : 'scroll'
 }
 
+export function parseColumnMode(mode: unknown): ReaderColumnMode {
+  if (mode === 'single' || mode === 'double' || mode === 'auto') return mode
+  return 'auto'
+}
+
+export function parseMaxWidth(width: unknown): number {
+  if (typeof width === 'number' && Number.isFinite(width)) {
+    return Math.min(1400, Math.max(560, Math.round(width)))
+  }
+  return defaultReaderSettings.maxWidth
+}
+
 export function loadReaderSettings(): ReaderSettings {
   try {
     const raw = window.localStorage.getItem(storageKey) || window.localStorage.getItem('legado-reader-settings-v1')
@@ -44,9 +70,12 @@ export function loadReaderSettings(): ReaderSettings {
       lineHeight: typeof saved.lineHeight === 'number' ? Math.min(2.4, Math.max(1.45, saved.lineHeight)) : defaultReaderSettings.lineHeight,
       letterSpacing: typeof saved.letterSpacing === 'number' ? Math.min(1.5, Math.max(-.25, saved.letterSpacing)) : defaultReaderSettings.letterSpacing,
       paragraphSpacing: typeof saved.paragraphSpacing === 'number' ? Math.min(2, Math.max(.7, saved.paragraphSpacing)) : defaultReaderSettings.paragraphSpacing,
-      contentPadding: typeof saved.contentPadding === 'number' ? Math.min(120, Math.max(36, saved.contentPadding)) : defaultReaderSettings.contentPadding,
+      contentPadding: typeof saved.contentPadding === 'number' ? Math.min(120, Math.max(20, saved.contentPadding)) : defaultReaderSettings.contentPadding,
       font: parseReaderFont(saved.font),
       pageMode: parsePageMode(saved.pageMode),
+      maxWidth: parseMaxWidth(saved.maxWidth),
+      columnMode: parseColumnMode(saved.columnMode),
+      sidebarPinned: typeof saved.sidebarPinned === 'boolean' ? saved.sidebarPinned : defaultReaderSettings.sidebarPinned,
     }
   } catch {
     return defaultReaderSettings
@@ -68,5 +97,6 @@ export function getReaderFontFamily(font: ReaderFont): string {
 export function saveReaderSettings(settings: ReaderSettings): void {
   window.localStorage.setItem(storageKey, JSON.stringify(settings))
 }
+
 
 

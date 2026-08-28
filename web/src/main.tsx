@@ -1,34 +1,20 @@
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
-import { api, BookDetails, BookshelfItem, Chapter, SearchResult, SearchStreamEvent, setCsrfToken, SourceRecord, SourceSubscription, SourceSummary, streamSearch } from './api'
+import { api, BookDetails, BookshelfItem, Chapter, SearchResult, SearchStreamEvent, setCsrfToken, SourceRecord, SourceSubscription, SourceSummary } from './api'
 import { Icon } from './icons'
 import { OpenBook, ReaderScreen } from './ReaderScreen'
 import { loadReaderSettings, ReaderSettings, saveReaderSettings } from './readerSettings'
-import { defaultSearchFilters, filterSearchGroups, SearchFilters, SearchGroup } from './searchFilters'
+import { filterSearchGroups, SearchFilters, SearchGroup } from './searchFilters'
+import { groupSearchResults, SourceChoice, SourceChoiceStatus, useSearchStore } from './searchStore'
 import { SourceSwitchModal } from './SourceSwitchModal'
 import { toast, ToastContainer } from './Toast'
 import './styles.css'
 
+export type { SourceChoice, SourceChoiceStatus }
+
 type Page = 'sources' | 'subscriptions' | 'library' | 'shelf' | 'reader'
 const readerStorageKey = 'legado-open-book-v1'
 const pageFromHash = (): Page => location.hash === '#sources' ? 'sources' : location.hash === '#subscriptions' ? 'subscriptions' : location.hash === '#shelf' ? 'shelf' : location.hash === '#reader' ? 'reader' : 'library'
-export type SourceChoiceStatus = 'idle' | 'loading' | 'loaded' | 'error'
-export type SourceChoice = { result: SearchResult; status: SourceChoiceStatus; book?: OpenBook; error?: string }
-const bookKey = (name: string, author?: string) => `${name.replace(/[\s\p{P}]/gu, '').toLocaleLowerCase()}\u0000${(author ?? '').replace(/[\s\p{P}]/gu, '').toLocaleLowerCase()}`
-const groupSearchResults = (results: SearchResult[]): SearchGroup[] => Array.from(results.reduce((groups, result) => { const key = bookKey(result.name, result.author); const current = groups.get(key) ?? { key, name: result.name, author: result.author, sources: [] }; current.sources.push(result); groups.set(key, current); return groups }, new Map<string, SearchGroup>()).values())
-const loadSourceBook = async (result: SearchResult, alternateSources?: SearchResult[]): Promise<OpenBook> => {
-  const details = await api.details(result.sourceId, result.bookUrl)
-  const safeDetails: BookDetails = {
-    ...details,
-    name: details.name?.trim() || result.name || '未知书名',
-    author: details.author?.trim() || result.author,
-    coverUrl: details.coverUrl || result.coverUrl,
-    intro: details.intro || result.intro,
-    alternateSources: alternateSources?.filter(s => s.sourceId !== result.sourceId || s.bookUrl !== result.bookUrl),
-  }
-  const [chapters, progress] = await Promise.all([api.chapters(safeDetails.sourceId, safeDetails.tocUrl), api.progress(safeDetails.sourceId, result.bookUrl)])
-  return { details: safeDetails, bookUrl: result.bookUrl, chapters, progress }
-}
 
 function SourceChoiceList({ choices, active, onChoose }: { choices: SourceChoice[]; active?: string; onChoose: (choice: SourceChoice) => void }) {
   return <section className="source-choice-list"><header><span>选择书源</span><small>{choices.length} 个可用来源</small></header>{choices.map(choice => {
@@ -67,8 +53,8 @@ function Login({ onLogin }: { onLogin: () => void }) {
   return <main className="login-shell"><form className="login-panel" onSubmit={submit}><div className="login-mark"><Icon name="book" /><strong>阅读服务器</strong></div><h1>回到你的阅读空间</h1><p>输入部署时设置的单用户密码继续。</p><label>密码<input autoFocus type="password" value={password} onChange={event => setPassword(event.target.value)} required /></label>{error && <p className="form-error" role="alert">{error}</p>}<button className="primary-button" disabled={busy}>{busy ? '正在验证...' : '登录'}</button></form></main>
 }
 
-function AppHeader({ page, settings, onSettingsChange, onNavigate, onLogout }: { page: Page; settings: ReaderSettings; onSettingsChange: (next: ReaderSettings) => void; onNavigate: (page: Page) => void; onLogout: () => void }) {
-  return <header className="app-page-header"><button className="app-brand" onClick={() => onNavigate('library')}><Icon name="book" /><strong>阅读服务器</strong></button><nav><button className={page === 'library' ? 'active' : ''} onClick={() => onNavigate('library')}>书库</button><button className={page === 'shelf' ? 'active' : ''} onClick={() => onNavigate('shelf')}>书架</button><button className={page === 'sources' ? 'active' : ''} onClick={() => onNavigate('sources')}>书源</button><button className={page === 'subscriptions' ? 'active' : ''} onClick={() => onNavigate('subscriptions')}>订阅</button></nav><div className="header-actions"><div className="header-themes" aria-label="全站主题">{(['light', 'paper', 'dark'] as const).map(theme => <button key={theme} className={`theme-${theme} ${settings.theme === theme ? 'selected' : ''}`} aria-label={theme === 'light' ? '晓白' : theme === 'paper' ? '护眼' : '夜读'} onClick={() => onSettingsChange({ ...settings, theme })} />)}</div><ToolButton label="退出登录" icon="more" onClick={onLogout} /></div></header>
+function AppHeader({ page, settings, searching, onSettingsChange, onNavigate, onLogout }: { page: Page; settings: ReaderSettings; searching?: boolean; onSettingsChange: (next: ReaderSettings) => void; onNavigate: (page: Page) => void; onLogout: () => void }) {
+  return <header className="app-page-header"><button className="app-brand" onClick={() => onNavigate('library')}><Icon name="book" /><strong>阅读服务器</strong></button><nav><button className={page === 'library' ? 'active' : ''} onClick={() => onNavigate('library')}>书库{searching && <span className="nav-search-indicator" title="后台正在搜索..." aria-label="后台正在搜索" />}</button><button className={page === 'shelf' ? 'active' : ''} onClick={() => onNavigate('shelf')}>书架</button><button className={page === 'sources' ? 'active' : ''} onClick={() => onNavigate('sources')}>书源</button><button className={page === 'subscriptions' ? 'active' : ''} onClick={() => onNavigate('subscriptions')}>订阅</button></nav><div className="header-actions"><div className="header-themes" aria-label="全站主题">{(['light', 'paper', 'dark'] as const).map(theme => <button key={theme} className={`theme-${theme} ${settings.theme === theme ? 'selected' : ''}`} aria-label={theme === 'light' ? '晓白' : theme === 'paper' ? '护眼' : '夜读'} onClick={() => onSettingsChange({ ...settings, theme })} />)}</div><ToolButton label="退出登录" icon="more" onClick={onLogout} /></div></header>
 }
 
 function SourceEditor({ selected, onSaved }: { selected: SourceSummary | null; onSaved: () => void }) {
@@ -105,75 +91,129 @@ function SourcesPage({ selected, onSelect, onSourcesChange }: { selected: Source
   return <main className="sources-page"><aside className="source-sidebar"><div className="source-sidebar-heading"><span>书源</span><small>{sources.length}</small></div><div className="source-filter"><Icon name="search" /><input placeholder="筛选书源" value={query} onChange={event => setQuery(event.target.value)} /></div><label className="import-button"><Icon name="upload" />导入 JSON<input type="file" accept="application/json,.json" onChange={event => void importSources(event.target.files?.[0])} /></label>{notice && <p className="sidebar-notice">{notice}</p>}<nav className="source-list">{sources.map(source => <button className={selected?.id === source.id ? 'selected' : ''} key={source.id} onClick={() => onSelect(source)}><span>{source.name}</span><small>{source.group || (source.isJsSource ? 'JS 书源' : '书源')}</small></button>)}</nav></aside><section className="sources-content"><header className="page-title"><div><span className="section-kicker">阅读服务器</span><h1>书源管理</h1><p>导入、校验与维护你的阅读来源。</p></div>{selected && <button className="danger-button" onClick={() => void remove()}>删除书源</button>}</header><SourceEditor selected={selected} onSaved={() => void load()} /></section></main>
 }
 
-function LibraryPage({ selected, sources, onSelect, onOpen }: { selected: SourceSummary | null; sources: SourceSummary[]; onSelect: (source: SourceSummary | null) => void; onOpen: (book: OpenBook, index: number) => void }) {
-  const [keyword, setKeyword] = useState(''); const [results, setResults] = useState<SearchResult[]>([]); const [choices, setChoices] = useState<SourceChoice[]>([]); const [openBook, setOpenBook] = useState<OpenBook | null>(null); const [message, setMessage] = useState(''); const [loading, setLoading] = useState(false); const [stopped, setStopped] = useState(false); const [progress, setProgress] = useState<SearchStreamEvent | null>(null); const [filters, setFilters] = useState<SearchFilters>(defaultSearchFilters)
-  const socketRef = useRef<WebSocket | null>(null)
-  const stopSearch = useCallback(() => {
-    const socket = socketRef.current
-    if (!socket) return
-    socketRef.current = null
-    setStopped(true)
-    setLoading(false)
-    if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: 'cancel' }))
-    window.setTimeout(() => socket.close(), 100)
-  }, [])
-  useEffect(() => () => { socketRef.current?.close(); socketRef.current = null }, [])
-  const search = (event: FormEvent) => { event.preventDefault(); const value = keyword.trim(); if (!value) return; socketRef.current?.close(); setLoading(true); setStopped(false); setMessage(''); setProgress(null); setOpenBook(null); setChoices([]); setResults([]); setFilters(defaultSearchFilters); const socket = streamSearch(value, selected ? [selected.id] : undefined, packet => {
-    if (socketRef.current !== socket) return
-    if (packet.type === 'start' || packet.type === 'progress' || packet.type === 'done') setProgress(packet)
-    if (packet.type === 'results') setResults(previous => { const known = new Set(previous.map(item => `${item.sourceId}\u0000${item.bookUrl}`)); const additions = packet.results.filter(item => !known.has(`${item.sourceId}\u0000${item.bookUrl}`)); return additions.length ? [...previous, ...additions] : previous })
-    if (packet.type === 'error') { setMessage(packet.message || '搜索失败'); setLoading(false); socketRef.current = null }
-    if (packet.type === 'done') { setProgress(packet); setLoading(false); socketRef.current = null }
-  }, error => { if (socketRef.current === socket) { setMessage(error); setLoading(false); socketRef.current = null } }, () => { if (socketRef.current === socket) { setMessage('搜索连接已关闭'); setLoading(false); socketRef.current = null } }); socketRef.current = socket }
-  const open = async (group: SearchGroup) => {
-    setLoading(true); setMessage(''); setOpenBook(null)
-    const initialChoices: SourceChoice[] = group.sources.map(result => ({ result, status: 'idle' }))
-    setChoices(initialChoices)
-    let loadedBook: OpenBook | null = null
-    for (let i = 0; i < group.sources.length; i++) {
-      const candidate = group.sources[i]
-      setChoices(prev => prev.map((c, idx) => idx === i ? { ...c, status: 'loading' } : c))
-      try {
-        const book = await loadSourceBook(candidate, group.sources)
-        setChoices(prev => prev.map((c, idx) => idx === i ? { ...c, book, status: 'loaded' } : c))
-        loadedBook = book
-        break
-      } catch (err) {
-        const errMsg = err instanceof Error ? err.message : '无法读取此书源'
-        setChoices(prev => prev.map((c, idx) => idx === i ? { ...c, status: 'error', error: errMsg } : c))
-      }
-    }
-    if (loadedBook) {
-      setOpenBook(loadedBook)
-    } else {
-      setMessage('所有书源均无法读取')
-    }
-    setLoading(false)
+function LibraryPage({ sources, onOpen }: { sources: SourceSummary[]; onOpen: (book: OpenBook, index: number) => void }) {
+  const search = useSearchStore()
+  const handleSearch = (event: FormEvent) => {
+    event.preventDefault()
+    search.startSearch()
   }
-  const handleChooseSource = async (choice: SourceChoice, groupSources?: SearchResult[]) => {
-    if (choice.book) {
-      setOpenBook(choice.book)
-      return
-    }
-    setChoices(prev => prev.map(c => c.result.sourceId === choice.result.sourceId && c.result.bookUrl === choice.result.bookUrl ? { ...c, status: 'loading', error: undefined } : c))
-    try {
-      const book = await loadSourceBook(choice.result, groupSources)
-      setChoices(prev => prev.map(c => c.result.sourceId === choice.result.sourceId && c.result.bookUrl === choice.result.bookUrl ? { ...c, book, status: 'loaded' } : c))
-      setOpenBook(book)
-    } catch (err) {
-      const errMsg = err instanceof Error ? err.message : '无法读取此书源'
-      setChoices(prev => prev.map(c => c.result.sourceId === choice.result.sourceId && c.result.bookUrl === choice.result.bookUrl ? { ...c, status: 'error', error: errMsg } : c))
-    }
-  }
-  const resumeIndex = openBook?.progress ? Math.min(Math.max(openBook.progress.chapterIndex, 0), Math.max(0, openBook.chapters.length - 1)) : 0
-  const groups = useMemo(() => groupSearchResults(results), [results])
-  const visibleGroups = useMemo(() => filterSearchGroups(groups, filters), [filters, groups])
-  const hasFilters = filters.query || filters.minimumSources > 1 || filters.withIntro || filters.withCover
-  const completed = progress?.completedSources ?? 0
-  const total = progress?.totalSources ?? 0
-  const failures = progress?.failedSources ?? 0
-  const empty = progress?.emptySources ?? 0
-  return <main className="library-page"><section className="library-hero"><span className="section-kicker">在线书库</span><h1>找一本书，安静地读下去。</h1><p>从已配置的书源搜索并继续上次阅读。</p><form onSubmit={search}><Icon name="search" /><input value={keyword} onChange={event => setKeyword(event.target.value)} placeholder="输入书名或作者" />{loading ? <button type="button" className="primary-button" onClick={stopSearch}>停止搜索</button> : <button type="submit" className="primary-button">搜索</button>}</form><label className="library-source-select">搜索范围<select value={selected?.id ?? ''} onChange={event => onSelect(sources.find(source => source.id === event.target.value) ?? null)}><option value="">全部书源</option>{sources.map(source => <option key={source.id} value={source.id}>{source.name}</option>)}</select></label>{(loading || stopped) && <p className="library-search-status">{stopped ? `已停止，已获得 ${groups.length} 本书。` : `已获得 ${groups.length} 本书，已检查 ${completed} / ${total} 个书源${failures || empty ? `，失败 ${failures} 个、无结果 ${empty} 个` : ''}。`}</p>}</section>{message && <p className="form-error library-message">{message}</p>}{groups.length > 0 && <><section className="library-result-filters" aria-label="筛选搜索结果"><label><Icon name="search" /><input value={filters.query} onChange={event => setFilters(current => ({ ...current, query: event.target.value }))} placeholder="筛选书名或作者" /></label><label>书源<select value={filters.minimumSources} onChange={event => setFilters(current => ({ ...current, minimumSources: Number(event.target.value) as SearchFilters['minimumSources'] }))}><option value={1}>全部</option><option value={2}>2 个及以上</option><option value={3}>3 个及以上</option></select></label><label><input type="checkbox" checked={filters.withIntro} onChange={event => setFilters(current => ({ ...current, withIntro: event.target.checked }))} />有简介</label><label><input type="checkbox" checked={filters.withCover} onChange={event => setFilters(current => ({ ...current, withCover: event.target.checked }))} />有封面</label></section><section className="library-results"><header><h2>搜索结果</h2><small>{visibleGroups.length} 本书{hasFilters && ` / ${groups.length}`}</small></header><div>{visibleGroups.map(group => <button key={group.key} onClick={() => void open(group)}><span className="result-mark"><Icon name="book" /></span><span><strong>{group.name}</strong><small>{group.author || '未知作者'} · {group.sources.length} 个书源</small></span><Icon name="arrowRight" /></button>)}</div>{visibleGroups.length === 0 && <p className="library-filter-empty">没有符合当前筛选条件的书籍。</p>}</section></>}{openBook && <BookInfoSummary book={openBook} choices={choices} resumeIndex={resumeIndex} onOpen={index => onOpen(openBook, index)} onChooseSource={choice => void handleChooseSource(choice)} />}</main>
+  const resumeIndex = search.openBook?.progress ? Math.min(Math.max(search.openBook.progress.chapterIndex, 0), Math.max(0, search.openBook.chapters.length - 1)) : 0
+  const groups = useMemo(() => groupSearchResults(search.results), [search.results])
+  const visibleGroups = useMemo(() => filterSearchGroups(groups, search.filters), [groups, search.filters])
+  const hasFilters = search.filters.query || search.filters.minimumSources > 1 || search.filters.withIntro || search.filters.withCover
+  const completed = search.progress?.completedSources ?? 0
+  const total = search.progress?.totalSources ?? 0
+  const failures = search.progress?.failedSources ?? 0
+  const empty = search.progress?.emptySources ?? 0
+
+  return (
+    <main className="library-page">
+      <section className="library-hero">
+        <span className="section-kicker">在线书库</span>
+        <h1>找一本书，安静地读下去。</h1>
+        <p>从已配置的书源搜索并继续上次阅读。</p>
+        <form onSubmit={handleSearch}>
+          <Icon name="search" />
+          <input
+            value={search.keyword}
+            onChange={event => search.setKeyword(event.target.value)}
+            placeholder="输入书名或作者"
+          />
+          {search.loading ? (
+            <button type="button" className="primary-button" onClick={search.stopSearch}>停止搜索</button>
+          ) : (
+            <button type="submit" className="primary-button">搜索</button>
+          )}
+        </form>
+        <label className="library-source-select">
+          搜索范围
+          <select
+            value={search.selectedSourceId}
+            onChange={event => search.setSelectedSourceId(event.target.value)}
+          >
+            <option value="">全部书源</option>
+            {sources.map(source => (
+              <option key={source.id} value={source.id}>{source.name}</option>
+            ))}
+          </select>
+        </label>
+        {(search.loading || search.stopped) && (
+          <p className="library-search-status">
+            {search.stopped
+              ? `已停止，已获得 ${groups.length} 本书。`
+              : `已获得 ${groups.length} 本书，已检查 ${completed} / ${total} 个书源${failures || empty ? `，失败 ${failures} 个、无结果 ${empty} 个` : ''}。`}
+          </p>
+        )}
+      </section>
+      {search.message && <p className="form-error library-message">{search.message}</p>}
+      {groups.length > 0 && (
+        <>
+          <section className="library-result-filters" aria-label="筛选搜索结果">
+            <label>
+              <Icon name="search" />
+              <input
+                value={search.filters.query}
+                onChange={event => search.setFilters(current => ({ ...current, query: event.target.value }))}
+                placeholder="筛选书名或作者"
+              />
+            </label>
+            <label>
+              书源
+              <select
+                value={search.filters.minimumSources}
+                onChange={event => search.setFilters(current => ({ ...current, minimumSources: Number(event.target.value) as SearchFilters['minimumSources'] }))}
+              >
+                <option value={1}>全部</option>
+                <option value={2}>2 个及以上</option>
+                <option value={3}>3 个及以上</option>
+              </select>
+            </label>
+            <label>
+              <input
+                type="checkbox"
+                checked={search.filters.withIntro}
+                onChange={event => search.setFilters(current => ({ ...current, withIntro: event.target.checked }))}
+              />
+              有简介
+            </label>
+            <label>
+              <input
+                type="checkbox"
+                checked={search.filters.withCover}
+                onChange={event => search.setFilters(current => ({ ...current, withCover: event.target.checked }))}
+              />
+              有封面
+            </label>
+          </section>
+          <section className="library-results">
+            <header>
+              <h2>搜索结果</h2>
+              <small>{visibleGroups.length} 本书{hasFilters && ` / ${groups.length}`}</small>
+            </header>
+            <div>
+              {visibleGroups.map(group => (
+                <button key={group.key} onClick={() => void search.openGroup(group)}>
+                  <span className="result-mark"><Icon name="book" /></span>
+                  <span><strong>{group.name}</strong><small>{group.author || '未知作者'} · {group.sources.length} 个书源</small></span>
+                  <Icon name="arrowRight" />
+                </button>
+              ))}
+            </div>
+            {visibleGroups.length === 0 && <p className="library-filter-empty">没有符合当前筛选条件的书籍。</p>}
+          </section>
+        </>
+      )}
+      {search.openBook && (
+        <BookInfoSummary
+          book={search.openBook}
+          choices={search.choices}
+          resumeIndex={resumeIndex}
+          onOpen={index => onOpen(search.openBook!, index)}
+          onChooseSource={choice => void search.chooseSource(choice)}
+        />
+      )}
+    </main>
+  )
 }
 
 function BookManageModal({
@@ -512,12 +552,47 @@ function ShelfPage({ onOpen }: { onOpen: (item: BookshelfItem) => void }) {
 }
 
 function App() {
-  const [ready, setReady] = useState(false); const [authenticated, setAuthenticated] = useState(false); const [settings, setSettings] = useState<ReaderSettings>(loadReaderSettings); const [page, setPage] = useState<Page>(pageFromHash); const [sources, setSources] = useState<SourceSummary[]>([]); const [selected, setSelected] = useState<SourceSummary | null>(null); const [reader, setReader] = useState<{ book: OpenBook; index: number } | null>(() => { try { return JSON.parse(sessionStorage.getItem(readerStorageKey) ?? 'null') } catch { return null } })
-  useEffect(() => { saveReaderSettings(settings) }, [settings])
-  useEffect(() => { void api.session().then(result => { setAuthenticated(result.authenticated); setCsrfToken(result.csrfToken ?? null); if (result.authenticated) void api.sources().then(setSources).catch(() => undefined) }).finally(() => setReady(true)) }, [])
-  useEffect(() => { const sync = () => setPage(pageFromHash()); addEventListener('hashchange', sync); return () => removeEventListener('hashchange', sync) }, [])
-  const navigate = (next: Page) => { if (next === 'reader' && !reader) return; location.hash = `#${next}`; setPage(next) }
-  const openReader = (book: OpenBook, index: number) => {
+  const [ready, setReady] = useState(false)
+  const [authenticated, setAuthenticated] = useState(false)
+  const [settings, setSettings] = useState<ReaderSettings>(loadReaderSettings)
+  const [page, setPage] = useState<Page>(pageFromHash)
+  const [readerReturnPage, setReaderReturnPage] = useState<Page>('shelf')
+  const [sources, setSources] = useState<SourceSummary[]>([])
+  const [selected, setSelected] = useState<SourceSummary | null>(null)
+  const [reader, setReader] = useState<{ book: OpenBook; index: number } | null>(() => {
+    try {
+      return JSON.parse(sessionStorage.getItem(readerStorageKey) ?? 'null')
+    } catch {
+      return null
+    }
+  })
+  const search = useSearchStore()
+
+  useEffect(() => {
+    saveReaderSettings(settings)
+  }, [settings])
+
+  useEffect(() => {
+    void api.session().then(result => {
+      setAuthenticated(result.authenticated)
+      setCsrfToken(result.csrfToken ?? null)
+      if (result.authenticated) void api.sources().then(setSources).catch(() => undefined)
+    }).finally(() => setReady(true))
+  }, [])
+
+  useEffect(() => {
+    const sync = () => setPage(pageFromHash())
+    addEventListener('hashchange', sync)
+    return () => removeEventListener('hashchange', sync)
+  }, [])
+
+  const navigate = (next: Page) => {
+    if (next === 'reader' && !reader) return
+    location.hash = `#${next}`
+    setPage(next)
+  }
+
+  const openReader = (book: OpenBook, index: number, origin: Page = 'library') => {
     void api.addToBookshelf({
       sourceId: book.details.sourceId,
       bookUrl: book.bookUrl,
@@ -529,10 +604,12 @@ function App() {
     }).catch(() => undefined)
     const value = { book, index }
     setReader(value)
+    setReaderReturnPage(origin)
     sessionStorage.setItem(readerStorageKey, JSON.stringify(value))
     location.hash = '#reader'
     setPage('reader')
   }
+
   const openShelfItem = async (item: BookshelfItem) => {
     try {
       const details = await api.details(item.sourceId, item.bookUrl)
@@ -542,22 +619,67 @@ function App() {
         author: details.author?.trim() || item.author,
         alternateSources: item.alternateSources,
       }
-      const [chapters, progress] = await Promise.all([api.chapters(safeDetails.sourceId, safeDetails.tocUrl), api.progress(details.sourceId, item.bookUrl)])
-      openReader({ details: safeDetails, bookUrl: item.bookUrl, chapters, progress }, progress?.chapterIndex ?? 0)
+      const [chapters, progress] = await Promise.all([
+        api.chapters(safeDetails.sourceId, safeDetails.tocUrl),
+        api.progress(details.sourceId, item.bookUrl),
+      ])
+      openReader({ details: safeDetails, bookUrl: item.bookUrl, chapters, progress }, progress?.chapterIndex ?? 0, 'shelf')
     } catch {
       navigate('shelf')
     }
   }
-  const logout = async () => { try { await api.logout() } finally { setCsrfToken(null); setAuthenticated(false) } }
+
+  const logout = async () => {
+    try {
+      await api.logout()
+    } finally {
+      setCsrfToken(null)
+      setAuthenticated(false)
+    }
+  }
+
   if (!ready) return <main className={`app-loading theme-${settings.theme}`}><span>正在打开阅读空间...</span></main>
   if (!authenticated) return <div className={`app-shell theme-${settings.theme}`}><ToastContainer /><Login onLogin={() => { setAuthenticated(true); void api.sources().then(setSources).catch(() => undefined) }} /></div>
-  if (page === 'reader' && reader) return <div className={`app-shell theme-${settings.theme}`}><ToastContainer /><ReaderScreen openBook={reader.book} startIndex={reader.index} settings={settings} onSettingsChange={setSettings} onClose={() => navigate('shelf')} /></div>
-  const refreshSources = () => { void api.sources().then(setSources).catch(() => undefined) }
+
+  if (page === 'reader' && reader) {
+    return (
+      <div className={`app-shell theme-${settings.theme}`}>
+        <ToastContainer />
+        <ReaderScreen
+          openBook={reader.book}
+          startIndex={reader.index}
+          settings={settings}
+          onSettingsChange={setSettings}
+          onClose={() => navigate(readerReturnPage)}
+        />
+      </div>
+    )
+  }
+
+  const refreshSources = () => {
+    void api.sources().then(setSources).catch(() => undefined)
+  }
+
   return (
     <div className={`app-shell theme-${settings.theme}`}>
       <ToastContainer />
-      <AppHeader page={page} settings={settings} onSettingsChange={setSettings} onNavigate={navigate} onLogout={() => void logout()} />
-      {page === 'sources' ? <SourcesPage selected={selected} onSelect={setSelected} onSourcesChange={setSources} /> : page === 'subscriptions' ? <SubscriptionPage onSourcesChange={refreshSources} /> : page === 'shelf' ? <ShelfPage onOpen={item => void openShelfItem(item)} /> : <LibraryPage selected={selected} sources={sources} onSelect={setSelected} onOpen={openReader} />}
+      <AppHeader
+        page={page}
+        settings={settings}
+        searching={search.loading}
+        onSettingsChange={setSettings}
+        onNavigate={navigate}
+        onLogout={() => void logout()}
+      />
+      {page === 'sources' ? (
+        <SourcesPage selected={selected} onSelect={setSelected} onSourcesChange={setSources} />
+      ) : page === 'subscriptions' ? (
+        <SubscriptionPage onSourcesChange={refreshSources} />
+      ) : page === 'shelf' ? (
+        <ShelfPage onOpen={item => void openShelfItem(item)} />
+      ) : (
+        <LibraryPage sources={sources} onOpen={(book, index) => openReader(book, index, 'library')} />
+      )}
     </div>
   )
 }

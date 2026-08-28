@@ -12,5 +12,6 @@ import './ReaderPagination.test.ts'
 import './TOCPerformanceScenario.test.ts'
 import './ChallengerEmpiricalStress.test.ts'
 import './SourceSwitchAndCache.test.ts'
+import './HeaderMenu.test.ts'
 
 console.log('🚀 Running Legado Web Frontend Comprehensive Test Suite (Tier 1, 2, 4 + Challenger Stress)...\n')

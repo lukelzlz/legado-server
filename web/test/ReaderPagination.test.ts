@@ -1,7 +1,25 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { isAtBottomBoundary, isAtTopBoundary, isTapGesture, paginateTapZone, scrollTapZone, swipeDirection } from '../src/readerInteractions'
-import { defaultReaderSettings, getReaderFontFamily, parsePageMode, parseReaderFont } from '../src/readerSettings'
+import {
+  calculatePaginationLayout,
+  isAtBottomBoundary,
+  isAtTopBoundary,
+  isDoubleColumnActive,
+  isTapGesture,
+  paginateTapZone,
+  scrollTapZone,
+  swipeDirection,
+} from '../src/readerInteractions'
+import {
+  defaultReaderSettings,
+  getReaderFontFamily,
+  loadReaderSettings,
+  parseColumnMode,
+  parseMaxWidth,
+  parsePageMode,
+  parseReaderFont,
+  saveReaderSettings,
+} from '../src/readerSettings'
 
 test('ReaderPagination - Tap Zones: Scroll reading mode tap zone partitions (top 30%, bottom 30%, middle 40%)', () => {
   const vh = 1000
@@ -71,6 +89,98 @@ test('ReaderPagination - Settings: Font type and pageMode parsing safety', () =>
 
   assert.equal(defaultReaderSettings.pageMode, 'scroll')
   assert.equal(defaultReaderSettings.font, 'song')
+  assert.equal(defaultReaderSettings.maxWidth, 860)
+  assert.equal(defaultReaderSettings.columnMode, 'auto')
+  assert.equal(defaultReaderSettings.sidebarPinned, false)
+})
+
+test('ReaderPagination - Settings: Max width and column mode parsing safety', () => {
+  assert.equal(parseMaxWidth(860), 860)
+  assert.equal(parseMaxWidth(560), 560)
+  assert.equal(parseMaxWidth(1400), 1400)
+  assert.equal(parseMaxWidth(300), 560, 'Clamps below 560 to 560')
+  assert.equal(parseMaxWidth(2000), 1400, 'Clamps above 1400 to 1400')
+  assert.equal(parseMaxWidth('invalid'), 860, 'Fallback to default 860')
+  assert.equal(parseMaxWidth(null), 860, 'Fallback to default 860')
+  assert.equal(parseMaxWidth(undefined), 860, 'Fallback to default 860')
+
+  assert.equal(parseColumnMode('auto'), 'auto')
+  assert.equal(parseColumnMode('single'), 'single')
+  assert.equal(parseColumnMode('double'), 'double')
+  assert.equal(parseColumnMode('triple'), 'auto', 'Fallback invalid mode to auto')
+  assert.equal(parseColumnMode(null), 'auto', 'Fallback null to auto')
+})
+
+test('ReaderPagination - MultiColumn: isDoubleColumnActive condition evaluation', () => {
+  // Auto mode: active only when viewport >= 800
+  assert.equal(isDoubleColumnActive('auto', 799), false, 'Auto mode < 800px should be single column')
+  assert.equal(isDoubleColumnActive('auto', 800), true, 'Auto mode >= 800px should be double column')
+  assert.equal(isDoubleColumnActive('auto', 1200), true, 'Auto mode wide screen should be double column')
+
+  // Single mode: always false regardless of viewport
+  assert.equal(isDoubleColumnActive('single', 500), false)
+  assert.equal(isDoubleColumnActive('single', 800), false)
+  assert.equal(isDoubleColumnActive('single', 1400), false)
+
+  // Double mode: always true
+  assert.equal(isDoubleColumnActive('double', 600), true)
+  assert.equal(isDoubleColumnActive('double', 1000), true)
+})
+
+test('ReaderPagination - MultiColumn: calculatePaginationLayout single column layout', () => {
+  const layout = calculatePaginationLayout({
+    viewportWidth: 600,
+    totalScrollWidth: 1880,
+    columnGap: 40,
+    columnMode: 'single',
+  })
+
+  assert.equal(layout.isDoubleColumn, false)
+  assert.equal(layout.columnWidth, 600)
+  assert.equal(layout.stride, 640) // 600 + 40
+  // (1880 + 40) / 640 = 3 pages
+  assert.equal(layout.pageCount, 3)
+})
+
+test('ReaderPagination - MultiColumn: calculatePaginationLayout double column layout', () => {
+  // Viewport 840px, columnGap 40px => columnWidth = floor((840-40)/2) = 400px
+  // Stride = 2 * (400 + 40) = 880px
+  const layout = calculatePaginationLayout({
+    viewportWidth: 840,
+    totalScrollWidth: 2600,
+    columnGap: 40,
+    columnMode: 'double',
+  })
+
+  assert.equal(layout.isDoubleColumn, true)
+  assert.equal(layout.columnWidth, 400)
+  assert.equal(layout.stride, 880)
+  // (2600 + 40) / 880 = 3.0 => 3 spreads
+  assert.equal(layout.pageCount, 3)
+})
+
+test('ReaderPagination - MultiColumn: calculatePaginationLayout auto mode transition', () => {
+  // Narrow viewport 700px in auto mode
+  const narrowLayout = calculatePaginationLayout({
+    viewportWidth: 700,
+    totalScrollWidth: 1440,
+    columnGap: 40,
+    columnMode: 'auto',
+  })
+  assert.equal(narrowLayout.isDoubleColumn, false)
+  assert.equal(narrowLayout.columnWidth, 700)
+  assert.equal(narrowLayout.stride, 740)
+
+  // Wide viewport 900px in auto mode
+  const wideLayout = calculatePaginationLayout({
+    viewportWidth: 900,
+    totalScrollWidth: 2660,
+    columnGap: 40,
+    columnMode: 'auto',
+  })
+  assert.equal(wideLayout.isDoubleColumn, true)
+  assert.equal(wideLayout.columnWidth, 430) // floor((900-40)/2)
+  assert.equal(wideLayout.stride, 940) // 2 * (430 + 40) = 940
 })
 
 test('ReaderPagination - Math: Page progress calculation and restoration mapping', () => {
@@ -111,5 +221,60 @@ test('ReaderPagination - Fonts: getReaderFontFamily returns font stacks with fal
   // Fallback to song
   assert.match(getReaderFontFamily('unknown' as any), /Songti/i)
 })
+
+test('ReaderPagination - Persistence: loadReaderSettings and saveReaderSettings with localStorage', () => {
+  const store = new Map<string, string>()
+  const mockStorage = {
+    getItem: (key: string) => store.get(key) ?? null,
+    setItem: (key: string, val: string) => { store.set(key, val) },
+    removeItem: (key: string) => { store.delete(key) },
+    clear: () => store.clear(),
+  }
+
+  const prevWindow = (globalThis as any).window
+  ;(globalThis as any).window = { localStorage: mockStorage }
+
+  try {
+    // Initial load returns default settings
+    const initial = loadReaderSettings()
+    assert.equal(initial.maxWidth, 860)
+    assert.equal(initial.columnMode, 'auto')
+    assert.equal(initial.sidebarPinned, false)
+
+    // Save customized settings
+    saveReaderSettings({
+      ...initial,
+      maxWidth: 1100,
+      columnMode: 'double',
+      sidebarPinned: true,
+      fontSize: 22,
+    })
+
+    // Load customized settings
+    const loaded = loadReaderSettings()
+    assert.equal(loaded.maxWidth, 1100)
+    assert.equal(loaded.columnMode, 'double')
+    assert.equal(loaded.sidebarPinned, true)
+    assert.equal(loaded.fontSize, 22)
+
+    // Clamping invalid / out-of-range values
+    mockStorage.setItem('legado-reader-settings-v2', JSON.stringify({
+      maxWidth: 9999,
+      columnMode: 'invalid',
+      sidebarPinned: 'yes',
+      fontSize: 999,
+    }))
+
+    const clamped = loadReaderSettings()
+    assert.equal(clamped.maxWidth, 1400, 'Max width clamped to 1400')
+    assert.equal(clamped.columnMode, 'auto', 'Column mode fallback to auto')
+    assert.equal(clamped.sidebarPinned, false, 'Invalid sidebarPinned fallback to false')
+    assert.equal(clamped.fontSize, 28, 'Font size clamped to 28')
+  } finally {
+    ;(globalThis as any).window = prevWindow
+  }
+})
+
+
 
 

@@ -37,11 +37,118 @@ function SourceChoiceList({ choices, active, onChoose }: { choices: SourceChoice
   })}</section>
 }
 
-function BookInfoSummary({ book, choices, resumeIndex, onOpen, onChooseSource }: { book: OpenBook; choices: SourceChoice[]; resumeIndex: number; onOpen: (index: number) => void; onChooseSource: (choice: SourceChoice) => void }) {
+function BookDetailModal({
+  book,
+  choices,
+  resumeIndex,
+  onOpen,
+  onChooseSource,
+  onClose,
+}: {
+  book: OpenBook
+  choices: SourceChoice[]
+  resumeIndex: number
+  onOpen: (index: number) => void
+  onChooseSource: (choice: SourceChoice) => void
+  onClose: () => void
+}) {
   const [introExpanded, setIntroExpanded] = useState(false)
   const latestChapter = book.chapters.at(-1)
   const availableSources = choices.length
-  return <section className="library-book-detail"><header><div className="book-detail-heading">{book.details.coverUrl && <img className="book-detail-cover" src={book.details.coverUrl} alt="" referrerPolicy="no-referrer" />}<div><span className="section-kicker">书籍详情</span><h2>{book.details.name}</h2><p>{book.details.author || '未知作者'}</p><div className="book-detail-stats"><span>{book.chapters.length} 章</span><span>{availableSources || 1} 个可用书源</span>{latestChapter && <span>最新：{latestChapter.title}</span>}</div></div></div><button className="primary-button" onClick={() => onOpen(resumeIndex)}>{book.progress ? '继续阅读' : '开始阅读'}<Icon name="arrowRight" /></button></header>{choices.length > 1 && <SourceChoiceList choices={choices} active={book.bookUrl} onChoose={onChooseSource} />}{book.details.intro && <div className={`book-intro ${introExpanded ? 'expanded' : ''}`}><p>{book.details.intro}</p>{book.details.intro.length > 120 && <button className="intro-toggle" onClick={() => setIntroExpanded(value => !value)}>{introExpanded ? '收起简介' : '展开简介'}</button>}</div>}<div className="preview-chapters">{book.chapters.slice(0, 16).map(item => <button className={item.index === resumeIndex ? 'resume-chapter' : ''} key={item.url} onClick={() => onOpen(item.index)}><span>{item.title}</span>{item.index === resumeIndex && book.progress && <small>上次阅读</small>}</button>)}</div>{book.chapters.length > 16 && <p className="chapter-count">共 {book.chapters.length} 章，进入阅读器查看完整目录</p>}</section>
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        onClose()
+      }
+    }
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [onClose])
+
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <div
+        className="book-detail-modal"
+        onClick={e => e.stopPropagation()}
+        role="dialog"
+        aria-modal="true"
+        aria-label={`书籍详情: ${book.details.name}`}
+      >
+        <header className="book-detail-modal-header">
+          <div className="book-detail-heading">
+            {book.details.coverUrl ? (
+              <img className="book-detail-cover" src={book.details.coverUrl} alt="" referrerPolicy="no-referrer" />
+            ) : (
+              <div className="book-detail-cover-placeholder">{book.details.name.slice(0, 1)}</div>
+            )}
+            <div className="book-detail-info">
+              <span className="section-kicker">书籍详情</span>
+              <h2>{book.details.name}</h2>
+              <p>{book.details.author || '未知作者'}</p>
+              <div className="book-detail-stats">
+                <span>{book.chapters.length} 章</span>
+                <span>{availableSources || 1} 个可用书源</span>
+                {latestChapter && <span>最新：{latestChapter.title}</span>}
+              </div>
+            </div>
+          </div>
+          <div className="book-detail-header-actions">
+            <button className="primary-button read-btn" onClick={() => onOpen(resumeIndex)}>
+              {book.progress ? '继续阅读' : '开始阅读'}
+              <Icon name="arrowRight" />
+            </button>
+            <button className="subtle-button close-btn" onClick={onClose} aria-label="关闭">
+              <Icon name="close" />
+            </button>
+          </div>
+        </header>
+
+        <div className="book-detail-modal-body">
+          {choices.length > 1 && (
+            <div className="book-detail-section">
+              <SourceChoiceList choices={choices} active={book.bookUrl} onChoose={onChooseSource} />
+            </div>
+          )}
+
+          {book.details.intro && (
+            <div className="book-detail-section">
+              <div className={`book-intro ${introExpanded ? 'expanded' : ''}`}>
+                <p>{book.details.intro}</p>
+                {book.details.intro.length > 120 && (
+                  <button className="intro-toggle" onClick={() => setIntroExpanded(value => !value)}>
+                    {introExpanded ? '收起简介' : '展开简介'}
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
+
+          <div className="book-detail-section">
+            <div className="book-detail-section-title">
+              <span>目录预览</span>
+              <small>共 {book.chapters.length} 章</small>
+            </div>
+            <div className="preview-chapters">
+              {book.chapters.slice(0, 16).map(item => (
+                <button
+                  className={item.index === resumeIndex ? 'resume-chapter' : ''}
+                  key={item.url}
+                  onClick={() => onOpen(item.index)}
+                >
+                  <span>{item.title}</span>
+                  {item.index === resumeIndex && book.progress && <small>上次阅读</small>}
+                </button>
+              ))}
+            </div>
+            {book.chapters.length > 16 && (
+              <p className="chapter-count">共 {book.chapters.length} 章，进入阅读器查看完整目录</p>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  )
 }
 
 function Login({ onLogin }: { onLogin: () => void }) {
@@ -248,12 +355,13 @@ function LibraryPage({ sources, onOpen }: { sources: SourceSummary[]; onOpen: (b
         </>
       )}
       {search.openBook && (
-        <BookInfoSummary
+        <BookDetailModal
           book={search.openBook}
           choices={search.choices}
           resumeIndex={resumeIndex}
           onOpen={index => onOpen(search.openBook!, index)}
           onChooseSource={choice => void search.chooseSource(choice)}
+          onClose={() => search.setOpenBook(null)}
         />
       )}
     </main>

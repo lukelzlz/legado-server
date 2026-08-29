@@ -27,7 +27,7 @@ class Database(private val path: String) : Closeable, AutoCloseable {
     private val sqliteConfig = SQLiteConfig().apply {
         setJournalMode(SQLiteConfig.JournalMode.WAL)
         setSynchronous(SQLiteConfig.SynchronousMode.NORMAL)
-        setBusyTimeout(5000)
+        setBusyTimeout(10000)
         enforceForeignKeys(true)
     }
 
@@ -46,14 +46,33 @@ class Database(private val path: String) : Closeable, AutoCloseable {
 
     private fun <T> connect(block: (Connection) -> T): T {
         check(!isClosed) { "Database is closed" }
-        val connection = readPool.poll()?.takeIf { !it.isClosed } ?: createConnection()
+        var connection = readPool.poll()?.takeIf { !it.isClosed } ?: createConnection()
         return try {
-            block(connection)
-        } finally {
+            val result = block(connection)
             if (!isClosed && !connection.isClosed && readPool.size < maxPoolSize) {
                 readPool.offer(connection)
             } else {
                 runCatching { connection.close() }
+            }
+            result
+        } catch (error: Throwable) {
+            runCatching { connection.close() }
+            if (error is java.sql.SQLException && !isClosed) {
+                val fresh = createConnection()
+                try {
+                    val result = block(fresh)
+                    if (!isClosed && !fresh.isClosed && readPool.size < maxPoolSize) {
+                        readPool.offer(fresh)
+                    } else {
+                        runCatching { fresh.close() }
+                    }
+                    result
+                } catch (retryError: Throwable) {
+                    runCatching { fresh.close() }
+                    throw retryError
+                }
+            } else {
+                throw error
             }
         }
     }

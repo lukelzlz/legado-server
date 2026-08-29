@@ -94,7 +94,34 @@ flowchart TD
 
 ## 🚀 快速开始与部署
 
-### 方式一：Docker Compose 一键部署（推荐）
+### ⚡ 方式一：一行命令极速启动（Docker CLI）
+
+无需克隆代码仓库，直接运行以下命令即可拉取官方多架构镜像（支持 x86_64 / ARM64）并启动服务：
+
+```bash
+docker run -d \
+  --name legado-server \
+  --restart unless-stopped \
+  -p 8080:8080 \
+  -v ./data:/data \
+  -e ADMIN_PASSWORD='your_password_at_least_12_chars' \
+  ghcr.io/lukelzlz/legado-server:latest
+```
+
+> **单行复制版：**
+> ```bash
+> docker run -d --name legado-server --restart unless-stopped -p 8080:8080 -v ./data:/data -e ADMIN_PASSWORD='your_password_at_least_12_chars' ghcr.io/lukelzlz/legado-server:latest
+> ```
+
+- **访问 Web 端**：浏览器打开 `http://127.0.0.1:8080`，输入您设置的 `ADMIN_PASSWORD` 登录。
+- **重置密码（如遗忘）**：
+  ```bash
+  docker exec -it legado-server /app/bin/legado-server reset-password 'new_password_at_least_12_chars'
+  ```
+
+---
+
+### 📦 方式二：Docker Compose 编排部署
 
 1. **克隆代码仓库**
    ```bash
@@ -129,7 +156,7 @@ flowchart TD
 
 ---
 
-### 方式二：本地编译与开发运行
+### 🛠️ 方式三：本地源码编译与开发运行
 
 #### 环境要求
 - **Java**: JDK 17+（推荐 JDK 21）

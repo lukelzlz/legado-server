@@ -5,7 +5,7 @@ import { Icon } from './icons'
 import { OpenBook, ReaderScreen } from './ReaderScreen'
 import { loadReaderSettings, ReaderSettings, saveReaderSettings } from './readerSettings'
 import { AppHeader } from './AppHeader'
-import { defaultSearchFilters, filterSearchGroups, SearchFilters, SearchGroup } from './searchFilters'
+import { cleanTitle, defaultSearchFilters, filterSearchGroups, isExactMatch, isPopularMatch, SearchFilters, SearchGroup, SortMode } from './searchFilters'
 import { groupSearchResults, SourceChoice, SourceChoiceStatus, useSearchStore } from './searchStore'
 import { SourceSwitchModal } from './SourceSwitchModal'
 import { toast, ToastContainer } from './Toast'
@@ -85,6 +85,26 @@ function SourcesPage({ selected, onSelect, onSourcesChange }: { selected: Source
   return <main className="sources-page"><aside className="source-sidebar"><div className="source-sidebar-heading"><span>书源</span><small>{sources.length}</small></div><div className="source-filter"><Icon name="search" /><input placeholder="筛选书源" value={query} onChange={event => setQuery(event.target.value)} /></div><label className="import-button"><Icon name="upload" />导入 JSON<input type="file" accept="application/json,.json" onChange={event => void importSources(event.target.files?.[0])} /></label>{notice && <p className="sidebar-notice">{notice}</p>}<nav className="source-list">{sources.map(source => <button className={selected?.id === source.id ? 'selected' : ''} key={source.id} onClick={() => onSelect(source)}><span>{source.name}</span><small>{source.group || (source.isJsSource ? 'JS 书源' : '书源')}</small></button>)}</nav></aside><section className="sources-content"><header className="page-title"><div><span className="section-kicker">阅读服务器</span><h1>书源管理</h1><p>导入、校验与维护你的阅读来源。</p></div>{selected && <button className="danger-button" onClick={() => void remove()}>删除书源</button>}</header><SourceEditor selected={selected} onSaved={() => void load()} /></section></main>
 }
 
+function HighlightText({ text, keyword }: { text: string; keyword: string }) {
+  const cleanK = cleanTitle(keyword).trim()
+  if (!cleanK || !text) return <>{text}</>
+
+  const escaped = cleanK.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const parts = text.split(new RegExp(`(${escaped})`, 'gi'))
+
+  return (
+    <>
+      {parts.map((part, i) =>
+        part.toLowerCase() === cleanK.toLowerCase() ? (
+          <mark key={i} className="search-highlight">{part}</mark>
+        ) : (
+          part
+        )
+      )}
+    </>
+  )
+}
+
 function LibraryPage({ sources, onOpen }: { sources: SourceSummary[]; onOpen: (book: OpenBook, index: number) => void }) {
   const search = useSearchStore()
   const handleSearch = (event: FormEvent) => {
@@ -93,8 +113,8 @@ function LibraryPage({ sources, onOpen }: { sources: SourceSummary[]; onOpen: (b
   }
   const resumeIndex = search.openBook?.progress ? Math.min(Math.max(search.openBook.progress.chapterIndex, 0), Math.max(0, search.openBook.chapters.length - 1)) : 0
   const groups = useMemo(() => groupSearchResults(search.results), [search.results])
-  const visibleGroups = useMemo(() => filterSearchGroups(groups, search.filters), [groups, search.filters])
-  const hasFilters = search.filters.query || search.filters.minimumSources > 1 || search.filters.withIntro || search.filters.withCover
+  const visibleGroups = useMemo(() => filterSearchGroups(groups, search.filters, search.keyword), [groups, search.filters, search.keyword])
+  const hasFilters = search.filters.query || search.filters.minimumSources > 1 || search.filters.withIntro || search.filters.withCover || search.filters.sortMode !== 'smart'
   const completed = search.progress?.completedSources ?? 0
   const total = search.progress?.totalSources ?? 0
   const failures = search.progress?.failedSources ?? 0
@@ -152,6 +172,18 @@ function LibraryPage({ sources, onOpen }: { sources: SourceSummary[]; onOpen: (b
               />
             </label>
             <label>
+              排序
+              <select
+                value={search.filters.sortMode}
+                onChange={event => search.setFilters(current => ({ ...current, sortMode: event.target.value as SortMode }))}
+              >
+                <option value="smart">智能推荐</option>
+                <option value="sources">书源最多</option>
+                <option value="exact">精准优先</option>
+                <option value="name">书名 A-Z</option>
+              </select>
+            </label>
+            <label>
               书源
               <select
                 value={search.filters.minimumSources}
@@ -184,14 +216,32 @@ function LibraryPage({ sources, onOpen }: { sources: SourceSummary[]; onOpen: (b
               <h2>搜索结果</h2>
               <small>{visibleGroups.length} 本书{hasFilters && ` / ${groups.length}`}</small>
             </header>
-            <div>
-              {visibleGroups.map(group => (
-                <button key={group.key} onClick={() => void search.openGroup(group)}>
-                  <span className="result-mark"><Icon name="book" /></span>
-                  <span><strong>{group.name}</strong><small>{group.author || '未知作者'} · {group.sources.length} 个书源</small></span>
-                  <Icon name="arrowRight" />
-                </button>
-              ))}
+            <div className="library-results-grid">
+              {visibleGroups.map(group => {
+                const isExact = isExactMatch(group, search.keyword)
+                const isPopular = isPopularMatch(group)
+                return (
+                  <button
+                    key={group.key}
+                    className={`search-result-item ${isExact ? 'exact-match' : ''}`}
+                    onClick={() => void search.openGroup(group)}
+                  >
+                    <span className="result-mark"><Icon name="book" /></span>
+                    <span className="result-main-info">
+                      <div className="result-title-row">
+                        <strong><HighlightText text={group.name} keyword={search.keyword} /></strong>
+                        {isExact && <span className="result-badge result-badge-exact">精准匹配</span>}
+                        {isPopular && <span className="result-badge result-badge-popular">{group.sources.length} 源</span>}
+                      </div>
+                      <small>
+                        <HighlightText text={group.author || '未知作者'} keyword={search.keyword} />
+                        {!isPopular && ` · ${group.sources.length} 个书源`}
+                      </small>
+                    </span>
+                    <Icon name="arrowRight" />
+                  </button>
+                )
+              })}
             </div>
             {visibleGroups.length === 0 && <p className="library-filter-empty">没有符合当前筛选条件的书籍。</p>}
           </section>

@@ -1,7 +1,7 @@
 import { useSyncExternalStore } from 'react'
 import { api, BookDetails, SearchResult, SearchStreamEvent, streamSearch } from './api'
 import { OpenBook } from './ReaderScreen'
-import { defaultSearchFilters, SearchFilters, SearchGroup } from './searchFilters'
+import { cleanAuthor, cleanTitle, defaultSearchFilters, SearchFilters, SearchGroup } from './searchFilters'
 
 export type SourceChoiceStatus = 'idle' | 'loading' | 'loaded' | 'error'
 
@@ -26,19 +26,72 @@ export interface SearchStoreState {
   filters: SearchFilters
 }
 
-export const bookKey = (name: string, author?: string): string =>
-  `${name.replace(/[\s\p{P}]/gu, '').toLocaleLowerCase()}\u0000${(author ?? '').replace(/[\s\p{P}]/gu, '').toLocaleLowerCase()}`
+export const bookKey = (name: string, author?: string): string => {
+  const cleanN = cleanTitle(name).toLowerCase()
+  const cleanA = (cleanAuthor(author) ?? '').toLowerCase()
+  return `${cleanN}\u0000${cleanA}`
+}
 
-export const groupSearchResults = (results: SearchResult[]): SearchGroup[] =>
-  Array.from(
-    results.reduce((groups, result) => {
-      const key = bookKey(result.name, result.author)
-      const current = groups.get(key) ?? { key, name: result.name, author: result.author, sources: [] }
-      current.sources.push(result)
-      groups.set(key, current)
-      return groups
-    }, new Map<string, SearchGroup>()).values()
-  )
+export const groupSearchResults = (results: SearchResult[]): SearchGroup[] => {
+  const groupsByKey = new Map<string, SearchGroup>()
+  const titleToKnownAuthorKeys = new Map<string, string[]>()
+  const titleToUnknownAuthorKey = new Map<string, string>()
+
+  for (const result of results) {
+    const rawCleanName = cleanTitle(result.name) || result.name.trim() || '未知书名'
+    const rawCleanAuthor = cleanAuthor(result.author)
+    const titleKey = rawCleanName.toLowerCase()
+
+    if (rawCleanAuthor) {
+      const key = `${titleKey}\u0000${rawCleanAuthor.toLowerCase()}`
+      let group = groupsByKey.get(key)
+      if (!group) {
+        group = { key, name: rawCleanName, author: rawCleanAuthor, sources: [] }
+        groupsByKey.set(key, group)
+        const list = titleToKnownAuthorKeys.get(titleKey) ?? []
+        list.push(key)
+        titleToKnownAuthorKeys.set(titleKey, list)
+      } else {
+        if (group.name.includes('[') || group.name.includes('“') || group.name.length < rawCleanName.length) {
+          group.name = rawCleanName
+        }
+      }
+      group.sources.push(result)
+    } else {
+      const knownKeys = titleToKnownAuthorKeys.get(titleKey)
+      if (knownKeys && knownKeys.length === 1) {
+        const targetGroup = groupsByKey.get(knownKeys[0])!
+        targetGroup.sources.push(result)
+      } else {
+        const unknownKey = `${titleKey}\u0000`
+        let group = groupsByKey.get(unknownKey)
+        if (!group) {
+          group = { key: unknownKey, name: rawCleanName, author: undefined, sources: [] }
+          groupsByKey.set(unknownKey, group)
+          titleToUnknownAuthorKey.set(titleKey, unknownKey)
+        } else {
+          if (group.name.includes('[') || group.name.includes('“') || group.name.length < rawCleanName.length) {
+            group.name = rawCleanName
+          }
+        }
+        group.sources.push(result)
+      }
+    }
+  }
+
+  for (const [titleKey, unknownKey] of titleToUnknownAuthorKey.entries()) {
+    const unknownGroup = groupsByKey.get(unknownKey)
+    if (!unknownGroup) continue
+    const knownKeys = titleToKnownAuthorKeys.get(titleKey)
+    if (knownKeys && knownKeys.length === 1) {
+      const targetGroup = groupsByKey.get(knownKeys[0])!
+      targetGroup.sources.push(...unknownGroup.sources)
+      groupsByKey.delete(unknownKey)
+    }
+  }
+
+  return Array.from(groupsByKey.values())
+}
 
 export const loadSourceBook = async (result: SearchResult, alternateSources?: SearchResult[]): Promise<OpenBook> => {
   const details = await api.details(result.sourceId, result.bookUrl)

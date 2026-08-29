@@ -415,13 +415,22 @@ svg { width: 18px; height: 18px; flex: none; }
 .library-results > header { display: flex; align-items: center; justify-content: space-between; padding: 17px 20px; border-bottom: 1px solid var(--line); }
 .library-results h2, .library-book-detail h2 { font-family: Georgia, "Noto Serif SC", serif; font-size: 19px; font-weight: 600; }
 .library-results header small { color: var(--muted); font-size: 12px; }
-.library-results > div { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); }
-.library-results button { min-height: 82px; display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 12px; padding: 13px 17px; color: var(--ink); background: var(--surface); border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); text-align: left; }
+.library-results > div, .library-results-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); }
+.library-results button.search-result-item, .library-results button { min-height: 82px; display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 12px; padding: 13px 17px; color: var(--ink); background: var(--surface); border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); text-align: left; transition: background 0.15s ease, transform 0.2s cubic-bezier(0.2, 0, 0, 1); }
 .library-results button:hover { background: var(--surface-muted); }
-.library-results strong, .library-results small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.library-results strong { font-size: 14px; }
-.library-results small { margin-top: 6px; color: var(--muted); font-size: 12px; }
-.library-results > div > button > svg { width: 16px; color: var(--muted); }
+.library-results button.exact-match { background: rgba(33, 115, 70, 0.04); }
+.library-results button.exact-match:hover { background: rgba(33, 115, 70, 0.08); }
+.library-results .result-main-info { min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.library-results .result-title-row { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.library-results .result-title-row strong { flex: 0 1 auto; font-size: 14px; display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.library-results small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: 12px; }
+.library-results > div > button > svg, .library-results-grid > button > svg { width: 16px; color: var(--muted); flex-shrink: 0; }
+
+mark.search-highlight { background: var(--accent-soft); color: var(--accent); font-weight: 600; padding: 0 2px; border-radius: 2px; }
+
+.result-badge { flex-shrink: 0; display: inline-flex; align-items: center; padding: 1px 6px; border-radius: 3px; font-size: 10px; font-weight: 500; line-height: 1.4; letter-spacing: 0.2px; }
+.result-badge-exact { background: var(--accent); color: #ffffff; }
+.result-badge-popular { background: var(--accent-soft); color: var(--accent); border: 1px solid rgba(33, 115, 70, 0.2); }
 .library-book-detail > header { display: flex; justify-content: space-between; align-items: center; gap: 18px; padding: 24px 22px 18px; }
 .library-book-detail header p { margin-top: 7px; color: var(--muted); font-size: 13px; }
 .source-choice-list { display: grid; margin: 0 22px 18px; border: 1px solid var(--line); border-radius: 5px; overflow: hidden; }

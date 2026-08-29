@@ -22,4 +22,42 @@ class CoverCacheTest {
         val directory = Files.createTempDirectory("legado-cover-cache")
         try { CoverCache(directory) { "text/html" to byteArrayOf(1) }.cache("https://example.com/not-image") } finally { Files.deleteIfExists(directory) }
     }
+
+    @Test
+    fun `tryCacheCover falls back to alternate sources when primary cover fails`() {
+        val directory = Files.createTempDirectory("legado-cover-cache")
+        try {
+            val cache = CoverCache(directory) { url ->
+                if (url.contains("broken")) throw RuntimeException("404 Not Found")
+                "image/jpeg" to byteArrayOf(10, 20, 30)
+            }
+            val alts = listOf(
+                SearchResult("s1", "书名", "作者", "https://s1/book", "https://example.com/broken.jpg"),
+                SearchResult("s2", "书名", "作者", "https://s2/book", "https://example.com/valid.jpg")
+            )
+            val result = tryCacheCover(cache, "https://example.com/primary-broken.jpg", alts)
+            assertTrue(result != null)
+            assertEquals("image/jpeg", result!!.contentType)
+            assertTrue(cache.file(result.key) != null)
+            cache.delete(result.key)
+        } finally {
+            Files.deleteIfExists(directory)
+        }
+    }
+
+    @Test
+    fun `tryCacheCover returns null when no candidate covers succeed`() {
+        val directory = Files.createTempDirectory("legado-cover-cache")
+        try {
+            val cache = CoverCache(directory) { throw RuntimeException("failed") }
+            val alts = listOf(
+                SearchResult("s1", "书名", "作者", "https://s1/book", "https://example.com/broken.jpg")
+            )
+            val result = tryCacheCover(cache, null, alts)
+            assertTrue(result == null)
+        } finally {
+            Files.deleteIfExists(directory)
+        }
+    }
 }
+

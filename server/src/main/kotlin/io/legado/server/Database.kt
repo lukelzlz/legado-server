@@ -267,6 +267,46 @@ class Database(private val path: String) : Closeable, AutoCloseable {
         }
         getBookshelf(db, sourceId, bookUrl)
     }
+    fun updateBookshelfInfo(request: BookshelfInfoUpdateRequest, cover: CachedCover?): BookshelfItem? = write { db ->
+        db.autoCommit = false
+        try {
+            val oldCover = db.prepareStatement("select cover_key from book_shelf where source_id=? and book_url=?").use {
+                it.setString(1, request.sourceId); it.setString(2, request.bookUrl)
+                it.executeQuery().use { rs -> if (rs.next()) rs.getString(1) else null }
+            } ?: return@write null
+
+            cover?.let { value ->
+                db.prepareStatement("insert into cover_cache(cache_key,content_type) values(?,?) on conflict(cache_key) do update set content_type=excluded.content_type").use {
+                    it.setString(1, value.key); it.setString(2, value.contentType); it.executeUpdate()
+                }
+            }
+
+            val newCoverKey = cover?.key ?: (if (request.coverUrl != null && request.coverUrl.isBlank()) null else oldCover)
+
+            db.prepareStatement("update book_shelf set name=?, author=?, cover_url=?, cover_key=? where source_id=? and book_url=?").use {
+                it.setString(1, request.name)
+                it.setString(2, request.author)
+                it.setString(3, request.coverUrl)
+                it.setString(4, newCoverKey)
+                it.setString(5, request.sourceId)
+                it.setString(6, request.bookUrl)
+                it.executeUpdate()
+            }
+
+            val orphan = oldCover.takeIf { value ->
+                value != newCoverKey && db.prepareStatement("select 1 from book_shelf where cover_key=?").use {
+                    it.setString(1, value); !it.executeQuery().next()
+                }
+            }
+            orphan?.let { value -> db.prepareStatement("delete from cover_cache where cache_key=?").use { it.setString(1, value); it.executeUpdate() } }
+            db.commit()
+            getBookshelf(db, request.sourceId, request.bookUrl)
+        } catch (error: Throwable) {
+            db.rollback(); throw error
+        } finally {
+            db.autoCommit = true
+        }
+    }
     fun removeBookshelf(sourceId: String, bookUrl: String): String? = write { db ->
         db.autoCommit = false
         try {
@@ -303,11 +343,12 @@ class Database(private val path: String) : Closeable, AutoCloseable {
             db.prepareStatement("delete from book_content_cache where source_id=? and book_url=?").use { it.setString(1, oldSourceId); it.setString(2, oldBookUrl); it.executeUpdate() }
             db.prepareStatement("delete from book_cache_status where source_id=? and book_url=?").use { it.setString(1, oldSourceId); it.setString(2, oldBookUrl); it.executeUpdate() }
             cover?.let { value -> db.prepareStatement("insert into cover_cache(cache_key,content_type) values(?,?) on conflict(cache_key) do update set content_type=excluded.content_type").use { it.setString(1, value.key); it.setString(2, value.contentType); it.executeUpdate() } }
+            val newCoverKey = cover?.key ?: oldCover
             db.prepareStatement("""insert into book_shelf(source_id,book_url,name,author,toc_url,cover_url,cover_key,last_read_at,alternate_sources) values(?,?,?,?,?,?,?,?,?)
-                on conflict(source_id,book_url) do update set name=excluded.name,author=excluded.author,toc_url=excluded.toc_url,cover_url=excluded.cover_url,cover_key=coalesce(excluded.cover_key,book_shelf.cover_key),last_read_at=excluded.last_read_at,alternate_sources=excluded.alternate_sources""").use {
-                it.setString(1, request.sourceId); it.setString(2, request.bookUrl); it.setString(3, request.name); it.setString(4, request.author); it.setString(5, request.tocUrl); it.setString(6, request.coverUrl); it.setString(7, cover?.key); it.setLong(8, now); it.setString(9, altJson); it.executeUpdate()
+                on conflict(source_id,book_url) do update set name=excluded.name,author=excluded.author,toc_url=excluded.toc_url,cover_url=coalesce(excluded.cover_url,book_shelf.cover_url),cover_key=coalesce(excluded.cover_key,book_shelf.cover_key),last_read_at=excluded.last_read_at,alternate_sources=excluded.alternate_sources""").use {
+                it.setString(1, request.sourceId); it.setString(2, request.bookUrl); it.setString(3, request.name); it.setString(4, request.author); it.setString(5, request.tocUrl); it.setString(6, request.coverUrl); it.setString(7, newCoverKey); it.setLong(8, now); it.setString(9, altJson); it.executeUpdate()
             }
-            val orphan = oldCover?.takeIf { value -> db.prepareStatement("select 1 from book_shelf where cover_key=?").use { it.setString(1, value); !it.executeQuery().next() } }
+            val orphan = oldCover?.takeIf { value -> value != newCoverKey && db.prepareStatement("select 1 from book_shelf where cover_key=?").use { it.setString(1, value); !it.executeQuery().next() } }
             orphan?.let { value -> db.prepareStatement("delete from cover_cache where cache_key=?").use { it.setString(1, value); it.executeUpdate() } }
             db.commit(); getBookshelf(db, request.sourceId, request.bookUrl)!! to orphan
         } catch (error: Throwable) { db.rollback(); throw error } finally { db.autoCommit = true }

@@ -330,6 +330,29 @@ class DatabaseLifecycleTest {
     }
 
     @Test
+    fun `bookshelf switch retains existing cover when target source has no cover`() {
+        val path = temporaryDatabase()
+        try {
+            val database = Database(path)
+            database.initialize("test-pass")
+
+            val book1 = BookshelfWriteRequest("source-1", "https://book/1", "书名1", "作者1", "https://book/1/toc")
+            database.saveBookshelf(book1, CachedCover("cover-key-1", "image/jpeg"))
+
+            // Switch to source-2 with no new cover (cover is null)
+            val book2 = BookshelfWriteRequest("source-2", "https://book/2", "书名1", "作者1", "https://book/2/toc")
+            val (newItem, orphanCover) = database.switchBookshelf("source-1", "https://book/1", book2, null)
+
+            assertEquals("source-2", newItem.sourceId)
+            assertEquals("https://book/2", newItem.bookUrl)
+            assertEquals("cover-key-1", newItem.coverKey) // Retained old cover key
+            assertNull(orphanCover) // Not orphaned, preserved
+        } finally {
+            Files.deleteIfExists(java.nio.file.Path.of(path))
+        }
+    }
+
+    @Test
     fun `saveSource prevents version conflicts and increments version`() {
         val path = temporaryDatabase()
         try {

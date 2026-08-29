@@ -27,7 +27,7 @@ class Database(private val path: String) : Closeable, AutoCloseable {
     private val sqliteConfig = SQLiteConfig().apply {
         setJournalMode(SQLiteConfig.JournalMode.WAL)
         setSynchronous(SQLiteConfig.SynchronousMode.NORMAL)
-        setBusyTimeout(5000)
+        setBusyTimeout(10000)
         enforceForeignKeys(true)
     }
 
@@ -46,14 +46,33 @@ class Database(private val path: String) : Closeable, AutoCloseable {
 
     private fun <T> connect(block: (Connection) -> T): T {
         check(!isClosed) { "Database is closed" }
-        val connection = readPool.poll()?.takeIf { !it.isClosed } ?: createConnection()
+        var connection = readPool.poll()?.takeIf { !it.isClosed } ?: createConnection()
         return try {
-            block(connection)
-        } finally {
+            val result = block(connection)
             if (!isClosed && !connection.isClosed && readPool.size < maxPoolSize) {
                 readPool.offer(connection)
             } else {
                 runCatching { connection.close() }
+            }
+            result
+        } catch (error: Throwable) {
+            runCatching { connection.close() }
+            if (error is java.sql.SQLException && !isClosed) {
+                val fresh = createConnection()
+                try {
+                    val result = block(fresh)
+                    if (!isClosed && !fresh.isClosed && readPool.size < maxPoolSize) {
+                        readPool.offer(fresh)
+                    } else {
+                        runCatching { fresh.close() }
+                    }
+                    result
+                } catch (retryError: Throwable) {
+                    runCatching { fresh.close() }
+                    throw retryError
+                }
+            } else {
+                throw error
             }
         }
     }
@@ -128,6 +147,10 @@ class Database(private val path: String) : Closeable, AutoCloseable {
                   last_imported integer not null default 0, content_hash text
                 );
                 create index if not exists source_subscription_enabled_idx on source_subscription(enabled);
+                create table if not exists book_toc_cache (
+                  source_id text not null, toc_url text not null, chapters_json text not null, updated_at integer not null,
+                  primary key (source_id, toc_url)
+                );
             """.trimIndent())
         }
         migrateReadingProgress(db)
@@ -362,6 +385,55 @@ class Database(private val path: String) : Closeable, AutoCloseable {
         } catch (error: Throwable) { db.rollback(); throw error } finally { db.autoCommit = true }
     }
     fun coverContentType(key: String): String? = connect { db -> db.prepareStatement("select content_type from cover_cache where cache_key=?").use { it.setString(1, key); it.executeQuery().use { rs -> if (rs.next()) rs.getString(1) else null } } }
+
+    fun getTocCache(sourceId: String, tocUrl: String): List<Chapter>? = connect { db ->
+        db.prepareStatement("select chapters_json from book_toc_cache where source_id = ? and toc_url = ?").use { stmt ->
+            stmt.setString(1, sourceId)
+            stmt.setString(2, tocUrl)
+            stmt.executeQuery().use { rs ->
+                if (rs.next()) {
+                    runCatching { Json.decodeFromString<List<Chapter>>(rs.getString(1)) }.getOrNull()
+                } else null
+            }
+        }
+    }
+
+    fun saveTocCache(sourceId: String, tocUrl: String, chapters: List<Chapter>) = write { db ->
+        db.prepareStatement("""
+            insert into book_toc_cache(source_id, toc_url, chapters_json, updated_at)
+            values(?, ?, ?, ?)
+            on conflict(source_id, toc_url) do update set
+                chapters_json = excluded.chapters_json, updated_at = excluded.updated_at
+        """.trimIndent()).use { stmt ->
+            stmt.setString(1, sourceId)
+            stmt.setString(2, tocUrl)
+            stmt.setString(3, Json.encodeToString(chapters))
+            stmt.setLong(4, System.currentTimeMillis())
+            stmt.executeUpdate()
+        }
+    }
+
+    fun getCachedChaptersFallback(sourceId: String, bookUrl: String): List<Chapter> = connect { db ->
+        db.prepareStatement("""
+            select chapter_url, title from book_content_cache
+            where source_id = ? and (book_url = ? or chapter_url like ?)
+            order by rowid asc
+        """.trimIndent()).use { stmt ->
+            stmt.setString(1, sourceId)
+            stmt.setString(2, bookUrl)
+            stmt.setString(3, "%$bookUrl%")
+            stmt.executeQuery().use { rs ->
+                buildList {
+                    var index = 0
+                    while (rs.next()) {
+                        val url = rs.getString(1)
+                        val title = rs.getString(2)?.ifBlank { null } ?: "第 ${index + 1} 章"
+                        add(Chapter(index++, title, url))
+                    }
+                }
+            }
+        }
+    }
 
     fun cachedContent(sourceId: String, bookUrl: String, chapterUrl: String): ChapterContent? = connect { db -> db.prepareStatement("select title,content from book_content_cache where source_id=? and book_url=? and chapter_url=?").use {
         it.setString(1, sourceId); it.setString(2, bookUrl); it.setString(3, chapterUrl); it.executeQuery().use { rs -> if (rs.next()) ChapterContent(rs.getString(1), rs.getString(2)) else null }

@@ -687,6 +687,61 @@ mark.search-highlight { background: var(--accent-soft); color: var(--accent); fo
 .reader-boundary-message { position: fixed; z-index: 25; top: 18px; left: 50%; transform: translateX(-50%); padding: 8px 14px; border: 1px solid var(--line); border-radius: 6px; background: color-mix(in srgb, var(--surface) 96%, transparent); box-shadow: 0 6px 20px rgba(0, 0, 0, .12); color: var(--ink); font-size: 13px; pointer-events: none; }
 .reader-status, .reader-error { color: var(--muted) !important; text-align: center !important; padding: 60px 0; }
 .reader-error { color: var(--danger) !important; }
+
+/* Reader Loading & Skeleton Animation */
+.reader-loading-container {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  padding: 16px 0 40px;
+}
+.reader-loading-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  align-self: flex-start;
+  padding: 6px 14px;
+  background: color-mix(in srgb, var(--accent-soft) 70%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
+  border-radius: 20px;
+  font-size: 12px;
+  color: var(--accent);
+  font-family: Inter, -apple-system, sans-serif !important;
+}
+.reader-loading-spinner-ring {
+  width: 12px;
+  height: 12px;
+  border: 2px solid color-mix(in srgb, var(--accent) 35%, transparent);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: readerSpin 0.75s linear infinite;
+}
+@keyframes readerSpin {
+  to { transform: rotate(360deg); }
+}
+.reader-skeleton-paragraphs {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.skeleton-line {
+  height: 1.15em;
+  border-radius: 4px;
+  background: linear-gradient(90deg, 
+    color-mix(in srgb, var(--line) 45%, transparent) 0%, 
+    color-mix(in srgb, var(--line) 90%, transparent) 50%, 
+    color-mix(in srgb, var(--line) 45%, transparent) 100%
+  );
+  background-size: 200% 100%;
+  animation: readerSkeletonShimmer 1.8s ease-in-out infinite;
+}
+.skeleton-gap {
+  height: 12px;
+}
+@keyframes readerSkeletonShimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
 .reader-navigation { display: grid; grid-template-columns: auto minmax(140px, 1fr) auto; align-items: center; gap: 22px; margin-top: 70px; padding-top: 26px; border-top: 1px solid var(--line); font-family: Inter, "PingFang SC", sans-serif; }
 .reader-navigation button { min-height: 36px; display: inline-flex; align-items: center; gap: 6px; padding: 0 12px; border: 1px solid var(--line); border-radius: 6px; color: var(--ink); background: var(--surface); font-size: 13px; cursor: pointer; }
 .reader-navigation button:last-child { justify-self: end; }

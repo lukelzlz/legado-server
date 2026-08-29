@@ -1199,23 +1199,56 @@ function App() {
   }
 
   const openShelfItem = async (item: BookshelfItem) => {
+    const fallbackCover = item.coverKey ? api.cover(item.coverKey) : (item.alternateSources?.find(s => s.coverUrl?.trim())?.coverUrl?.trim() || undefined)
+    const safeDetails: BookDetails = {
+      sourceId: item.sourceId,
+      name: cleanTitle(item.name) || item.name,
+      author: cleanAuthor(item.author) || item.author,
+      coverUrl: fallbackCover,
+      intro: undefined,
+      tocUrl: item.tocUrl,
+      alternateSources: item.alternateSources,
+    }
+
     try {
-      const details = await api.details(item.sourceId, item.bookUrl)
-      const fallbackCover = details.coverUrl?.trim() || item.alternateSources?.find(s => s.coverUrl?.trim())?.coverUrl?.trim()
-      const safeDetails: BookDetails = {
-        ...details,
-        name: cleanTitle(details.name?.trim() || item.name || '未知书名') || item.name,
-        author: cleanAuthor(details.author?.trim() || item.author) || item.author,
-        coverUrl: fallbackCover || undefined,
-        alternateSources: item.alternateSources,
-      }
       const [chapters, progress] = await Promise.all([
         api.chapters(safeDetails.sourceId, safeDetails.tocUrl),
-        api.progress(details.sourceId, item.bookUrl),
+        api.progress(safeDetails.sourceId, item.bookUrl).catch(() => undefined),
       ])
-      openReader({ details: safeDetails, bookUrl: item.bookUrl, chapters, progress }, progress?.chapterIndex ?? 0, 'shelf')
+      const resumeIdx = progress?.chapterIndex ?? item.chapterIndex ?? 0
+      openReader({
+        details: safeDetails,
+        bookUrl: item.bookUrl,
+        chapters,
+        progress: progress || (item.chapterIndex !== undefined ? {
+          sourceId: item.sourceId,
+          bookUrl: item.bookUrl,
+          chapterUrl: chapters[resumeIdx]?.url || '',
+          chapterIndex: resumeIdx,
+          scrollPosition: item.scrollPosition ?? 0,
+          updatedAt: item.lastReadAt,
+        } : undefined),
+      }, resumeIdx, 'shelf')
     } catch {
-      navigate('shelf')
+      // Offline / network fallback: allow entering reader so user can read local cached chapters
+      const resumeIdx = item.chapterIndex ?? 0
+      const fallbackChapters: Chapter[] = [
+        { index: resumeIdx, title: `第 ${resumeIdx + 1} 章`, url: item.tocUrl }
+      ]
+      openReader({
+        details: safeDetails,
+        bookUrl: item.bookUrl,
+        chapters: fallbackChapters,
+        progress: {
+          sourceId: item.sourceId,
+          bookUrl: item.bookUrl,
+          chapterUrl: item.tocUrl,
+          chapterIndex: resumeIdx,
+          scrollPosition: item.scrollPosition ?? 0,
+          updatedAt: item.lastReadAt,
+        },
+      }, resumeIdx, 'shelf')
+      toast.warning('书源网络较慢，已为您进入离线阅读模式')
     }
   }
 

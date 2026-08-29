@@ -261,9 +261,17 @@ fun Route.apiRoutes(database: Database, auth: AuthService, runner: RuleRunner, c
             if (auth.requireSession(call, true) == null) return@post
             val request = call.receive<BookshelfWriteRequest>()
             if (request.sourceId.isBlank() || request.bookUrl.isBlank() || request.name.isBlank() || request.tocUrl.isBlank()) { call.respond(HttpStatusCode.BadRequest, ApiError("invalid_bookshelf", "书架数据无效")); return@post }
-            val cover = tryCacheCover(coverCache, request.coverUrl, request.alternateSources)
-            val item = database.saveBookshelf(request, cover)
+            val immediateCover = tryFindCachedCover(coverCache, request.coverUrl, request.alternateSources)
+            val item = database.saveBookshelf(request, immediateCover)
             bookCache.enqueue(CachedBookRequest(request.sourceId, request.bookUrl, request.tocUrl))
+            if (immediateCover == null && (!request.coverUrl.isNullOrBlank() || !request.alternateSources.isNullOrEmpty())) {
+                application.launch(Dispatchers.IO) {
+                    val cached = tryCacheCover(coverCache, request.coverUrl, request.alternateSources)
+                    if (cached != null) {
+                        database.updateBookshelfCover(request.sourceId, request.bookUrl, cached.key, cached.contentType)
+                    }
+                }
+            }
             call.respond(item)
         }
         delete("/bookshelf") {
@@ -414,6 +422,20 @@ internal suspend fun <T, R> boundedConcurrentMap(values: List<T>, limit: Int, ac
 private suspend fun ApplicationCall.respondCatching(block: suspend () -> Any) {
     try { respond(block()) }
     catch (error: RuleExecutionException) { respond(HttpStatusCode.BadGateway, ApiError("source_execution_failed", error.message ?: "书源执行失败")) }
+}
+
+internal fun tryFindCachedCover(coverCache: CoverCache, primaryUrl: String?, alternateSources: List<SearchResult>?): CachedCover? {
+    val candidates = buildList {
+        primaryUrl?.takeIf { it.isNotBlank() }?.let { add(it) }
+        alternateSources?.forEach { s ->
+            s.coverUrl?.takeIf { it.isNotBlank() && it !in this }?.let { add(it) }
+        }
+    }
+    for (url in candidates) {
+        val cached = coverCache.getIfCached(url)
+        if (cached != null) return cached
+    }
+    return null
 }
 
 internal fun tryCacheCover(coverCache: CoverCache, primaryUrl: String?, alternateSources: List<SearchResult>?): CachedCover? {

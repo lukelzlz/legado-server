@@ -283,6 +283,26 @@ class Database(private val path: String) : Closeable, AutoCloseable {
             db.commit(); getBookshelf(db, request.sourceId, request.bookUrl)!!
         } catch (error: Throwable) { db.rollback(); throw error } finally { db.autoCommit = true }
     }
+    fun updateBookshelfCover(sourceId: String, bookUrl: String, coverKey: String, contentType: String = "image/*"): Boolean = write { db ->
+        val exists = db.prepareStatement("select 1 from book_shelf where source_id=? and book_url=?").use { stmt ->
+            stmt.setString(1, sourceId)
+            stmt.setString(2, bookUrl)
+            stmt.executeQuery().use { rs -> rs.next() }
+        }
+        if (!exists) return@write false
+
+        db.prepareStatement("insert into cover_cache(cache_key,content_type) values(?,?) on conflict(cache_key) do update set content_type=excluded.content_type").use {
+            it.setString(1, coverKey)
+            it.setString(2, contentType)
+            it.executeUpdate()
+        }
+        db.prepareStatement("update book_shelf set cover_key=? where source_id=? and book_url=?").use {
+            it.setString(1, coverKey)
+            it.setString(2, sourceId)
+            it.setString(3, bookUrl)
+            it.executeUpdate() > 0
+        }
+    }
     fun listBookshelf(): List<BookshelfItem> = connect { db -> db.prepareStatement("""select s.source_id,s.book_url,s.name,s.author,s.toc_url,s.cover_key,p.chapter_index,p.scroll_position,s.last_read_at,coalesce(c.cached_chapters,0),coalesce(c.total_chapters,0),coalesce(c.state,'idle'),c.last_error,s.completed,s.alternate_sources from book_shelf s left join reading_progress p on p.source_id=s.source_id and p.book_url=s.book_url left join book_cache_status c on c.source_id=s.source_id and c.book_url=s.book_url order by s.last_read_at desc""").use { query -> query.executeQuery().use { rs -> buildList { while (rs.next()) add(rs.toShelf()) } } } }
     fun setBookshelfCompleted(sourceId: String, bookUrl: String, completed: Boolean): BookshelfItem? = write { db ->
         db.prepareStatement("update book_shelf set completed=? where source_id=? and book_url=?").use {

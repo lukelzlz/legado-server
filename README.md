@@ -19,7 +19,7 @@
 
 ## 📌 项目定位与愿景
 
-**Legado Server** 是针对流行开源阅读软件 **[Legado（开源阅读 Android 端）](https://github.com/gedoor/legado)** 的独立服务端重构版本。
+**Legado Server** 是针对流行开源阅读软件 **[Legado（开源阅读 Android 端）](https://github.com/LegadoTeam/legado)** 的独立服务端重构版本。
 
 本项目彻底剥离了 Android Framework 原生依赖，在纯 JVM 环境下构建了高性能**无头后端（Headless Server）**，并配套提供了基于 **React 19 + TypeScript + Vite** 的现代化**Web 阅读器与管理控制台**。用户可以在 VPS、家庭 NAS、个人电脑或 Docker 容器中快速部署属于自己的私有化云端书源中心与跨平台阅读平台。
 
@@ -298,7 +298,7 @@ server {
 
 本项目深度依托并致敬以下优秀的开源项目：
 
-- **[Legado (开源阅读 Android 版)](https://github.com/gedoor/legado)**：卓越的书源生态设计与开源贡献。
+- **[Legado (开源阅读 Android 版)](https://github.com/LegadoTeam/legado)**：卓越的书源生态设计与开源贡献。
 - **[Ktor](https://ktor.io/)**：灵活高性能的 Kotlin 异步 Web 框架。
 - **[React](https://react.dev/) & [Vite](https://vitejs.dev/)**：现代高效的前端构建与开发体验。
 - **[Jsoup](https://jsoup.org/) & [JsoupXpath](https://github.com/zhegexiaohuozi/JsoupXpath)**：强大的 HTML/XML 解析与提取器。

@@ -41,6 +41,30 @@ function ReaderSettingsControls({ settings, onChange }: { settings: ReaderSettin
   </div>
 }
 
+function ReaderContentSkeleton() {
+  return (
+    <div className="reader-loading-container" aria-label="正在加载正文">
+      <div className="reader-loading-badge">
+        <span className="reader-loading-spinner-ring" />
+        <span>正在从书源拉取正文...</span>
+      </div>
+      <div className="reader-skeleton-paragraphs">
+        <div className="skeleton-line" style={{ width: '100%' }} />
+        <div className="skeleton-line" style={{ width: '94%' }} />
+        <div className="skeleton-line" style={{ width: '98%' }} />
+        <div className="skeleton-line" style={{ width: '91%' }} />
+        <div className="skeleton-line" style={{ width: '62%' }} />
+        <div className="skeleton-gap" />
+        <div className="skeleton-line" style={{ width: '100%' }} />
+        <div className="skeleton-line" style={{ width: '96%' }} />
+        <div className="skeleton-line" style={{ width: '92%' }} />
+        <div className="skeleton-line" style={{ width: '48%' }} />
+      </div>
+    </div>
+  )
+}
+
+
 export interface VirtualChapterListProps {
   chapters: Chapter[]
   activeChapterIndex: number
@@ -856,7 +880,7 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
             <div className="reader-paginated-track" style={{ transform: `translateX(-${pageIndex * stride}px)` }}>
               <article ref={bodyRef} className={`reader-paginated-column-body font-${settings.font}`} style={{ columnWidth: `${columnWidth}px`, columnGap: `${columnGap}px` }}>
                 <h1>{chapter?.title}</h1>
-                {loading && <p className="reader-status">正在加载正文...</p>}
+                {loading && <ReaderContentSkeleton />}
                 {message && <p className="reader-error">{message}</p>}
                 {paragraphs.map((line, index) => <p key={index}>{line}</p>)}
               </article>
@@ -870,7 +894,7 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
       ) : (
         <article className={`reading-content font-${settings.font}`} onPointerDown={onPointerDown} onPointerUp={onPointerUp}>
           <h1>{chapter?.title}</h1>
-          {loading && <p className="reader-status">正在加载正文...</p>}
+          {loading && <ReaderContentSkeleton />}
           {message && <p className="reader-error">{message}</p>}
           {paragraphs.map((line, index) => <p key={index}>{line}</p>)}
           {content && <footer className="reader-navigation"><button disabled={chapterIndex === 0 || loading} onClick={() => changeChapter(chapterIndex - 1)}><Icon name="arrowLeft" />上一章</button><div className="chapter-progress"><i style={{ width: `${chapterProgress}%` }} /><span>{chapterIndex + 1} / {currentBook.chapters.length}</span></div><button disabled={chapterIndex === currentBook.chapters.length - 1 || loading} onClick={() => changeChapter(chapterIndex + 1)}>下一章<Icon name="arrowRight" /></button></footer>}

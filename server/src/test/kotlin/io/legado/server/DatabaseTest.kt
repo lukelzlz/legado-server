@@ -438,6 +438,34 @@ class DatabaseTest {
         }
     }
 
+    @Test
+    fun `updateBookshelfInfo updates book with null initial cover`() {
+        val path = temporaryDatabase()
+        try {
+            val database = Database(path)
+            database.initialize("password-for-test")
+            database.saveBookshelf(BookshelfWriteRequest("src-1", "https://b1", "未命名书籍", "会说话的肘子", "https://b1/toc"), null)
+
+            val updated = database.updateBookshelfInfo(
+                BookshelfInfoUpdateRequest("src-1", "https://b1", "我是大玩家", "会说话的肘子", "https://example.com/new.jpg"),
+                CachedCover("cover-new", "image/png")
+            )
+
+            assertNotNull(updated)
+            assertEquals("我是大玩家", updated!!.name)
+            assertEquals("会说话的肘子", updated.author)
+            assertEquals("cover-new", updated.coverKey)
+
+            val shelfItem = database.listBookshelf().single()
+            assertEquals("我是大玩家", shelfItem.name)
+            assertEquals("cover-new", shelfItem.coverKey)
+
+            database.close()
+        } finally {
+            Files.deleteIfExists(java.nio.file.Path.of(path))
+        }
+    }
+
     private fun temporaryDatabase(): String = Files.createTempFile("legado-server-test", ".sqlite").toString()
 }
 

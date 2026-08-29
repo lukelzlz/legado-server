@@ -270,10 +270,18 @@ class Database(private val path: String) : Closeable, AutoCloseable {
     fun updateBookshelfInfo(request: BookshelfInfoUpdateRequest, cover: CachedCover?): BookshelfItem? = write { db ->
         db.autoCommit = false
         try {
-            val oldCover = db.prepareStatement("select cover_key from book_shelf where source_id=? and book_url=?").use {
+            var found = false
+            var oldCover: String? = null
+            db.prepareStatement("select cover_key from book_shelf where source_id=? and book_url=?").use {
                 it.setString(1, request.sourceId); it.setString(2, request.bookUrl)
-                it.executeQuery().use { rs -> if (rs.next()) rs.getString(1) else null }
-            } ?: return@write null
+                it.executeQuery().use { rs ->
+                    if (rs.next()) {
+                        found = true
+                        oldCover = rs.getString(1)
+                    }
+                }
+            }
+            if (!found) return@write null
 
             cover?.let { value ->
                 db.prepareStatement("insert into cover_cache(cache_key,content_type) values(?,?) on conflict(cache_key) do update set content_type=excluded.content_type").use {

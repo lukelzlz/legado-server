@@ -9,6 +9,7 @@ export interface ChapterSampleInfo {
   length: number
   isVipKeyword: boolean
   isTruncated: boolean
+  isNotice: boolean
 }
 
 export interface SourceHealthInspection {
@@ -31,11 +32,55 @@ export interface SourceHealthInspection {
 // Regex matching explicit paywall / VIP / anti-crawler / stub patterns
 export const VIP_DETECTION_REGEX = /(?:VIP章节|付费章节|本章为付费章节|需购买后阅读|请前往APP阅读|下载.*(?:APP|客户端).*阅读|试读结束|支持正版|订阅后可阅读|扫码阅读|关注微信公众号|防盗章节|防盗锁|充值.*书币|购买本章|登录后继续阅读|本章字数过少|此章节为付费内容|点此继续阅读下一页)/i
 
+// Regex identifying notice chapters, author notes, leave requests, speeches, extras or non-main announcements
+export const NON_MAIN_CHAPTER_TITLE_REGEX = /(?:请假|请个假|鸽一天|推迟|晚点更|无更|感言|后记|结语|总结|番外说明|重要通知|通知|作者的话|心里话|单章|求月票|求推荐|上架感言|完本感言|完结感言|封推感言|三江感言|设定|附录|公告|推书|读者群|楔子|序言|引言|写在最后)/i
+
+// Regex identifying content text typical of author notices rather than novel story text
+export const NOTICE_CONTENT_REGEX = /(?:请假一天|卡文|明天补上|今天无更|身体不适|阳了|发烧|去医院|加班|祝大家|感谢各位读者|新书已发|新书发布|月票榜|加更规则|读者群|请假说明|完本了|写完了)/i
+
 // Thresholds for novel chapter length & VIP detection
 export const MIN_LEGITIMATE_CHAPTER_LENGTH = 450 // Normal chapters are 1500~4000 chars. Below 450 is almost always a truncated VIP preview/stub.
 export const VIP_DROP_RATIO_THRESHOLD = 0.35 // If late chapter length drops to < 35% of early chapter length, it's considered truncated.
 
+export function isNoticeOrNonMainChapter(title: string, content = ''): boolean {
+  if (NON_MAIN_CHAPTER_TITLE_REGEX.test(title)) return true
+  const trimmed = content.trim()
+  if (trimmed.length < 600 && NOTICE_CONTENT_REGEX.test(trimmed) && !VIP_DETECTION_REGEX.test(trimmed)) {
+    return true
+  }
+  return false
+}
+
+export function findMainChapter(chapters: Chapter[], preferredIndex: number): Chapter | undefined {
+  if (chapters.length === 0) return undefined
+  const safeIdx = Math.max(0, Math.min(preferredIndex, chapters.length - 1))
+
+  // If preferred chapter is not a notice title, use it
+  if (!NON_MAIN_CHAPTER_TITLE_REGEX.test(chapters[safeIdx].title)) {
+    return chapters[safeIdx]
+  }
+
+  // Search backwards first (since leave notes or speeches often appear at the end)
+  for (let offset = 1; offset <= 5; offset++) {
+    const prevIdx = safeIdx - offset
+    if (prevIdx >= 0 && !NON_MAIN_CHAPTER_TITLE_REGEX.test(chapters[prevIdx].title)) {
+      return chapters[prevIdx]
+    }
+  }
+
+  // Search forwards
+  for (let offset = 1; offset <= 5; offset++) {
+    const nextIdx = safeIdx + offset
+    if (nextIdx < chapters.length && !NON_MAIN_CHAPTER_TITLE_REGEX.test(chapters[nextIdx].title)) {
+      return chapters[nextIdx]
+    }
+  }
+
+  return chapters[safeIdx]
+}
+
 export function inspectChapterContent(
+  title: string,
   content: string,
   earlyBaselineLength = 0,
   isLateChapter = false
@@ -43,15 +88,29 @@ export function inspectChapterContent(
   isVip: boolean
   isValid: boolean
   isTruncated: boolean
+  isNotice: boolean
   length: number
 } {
   const trimmed = content.trim()
   const length = trimmed.length
   if (length === 0) {
-    return { isVip: false, isValid: false, isTruncated: true, length: 0 }
+    return { isVip: false, isValid: false, isTruncated: true, isNotice: false, length: 0 }
   }
 
+  const isNotice = isNoticeOrNonMainChapter(title, trimmed)
   const isVipKeyword = VIP_DETECTION_REGEX.test(trimmed)
+
+  // If chapter is an author note / leave note / speech, and does NOT have explicit VIP paywall blocks,
+  // it is valid notice and should not be penalized as VIP truncation
+  if (isNotice && !isVipKeyword) {
+    return {
+      isVip: false,
+      isValid: true,
+      isTruncated: false,
+      isNotice: true,
+      length,
+    }
+  }
 
   let isTruncated = false
   if (isLateChapter) {
@@ -69,7 +128,7 @@ export function inspectChapterContent(
   const isVip = isVipKeyword || (isLateChapter && isTruncated)
   const isValid = !isVip && !isTruncated && length >= (isLateChapter ? MIN_LEGITIMATE_CHAPTER_LENGTH : 200)
 
-  return { isVip, isValid, isTruncated, length }
+  return { isVip, isValid, isTruncated, isNotice, length }
 }
 
 export async function inspectSingleSource(
@@ -108,41 +167,53 @@ export async function inspectSingleSource(
       return errRes
     }
 
-    // 1. Early baseline sample (Chapter 0)
+    // 1. Find early baseline sample (avoiding notice chapters if possible)
+    const earlyChapter = findMainChapter(chapters, 0) || chapters[0]
     let earlyBaselineLength = 0
     try {
-      const earlyRes = await api.content(result.sourceId, chapters[0].url, result.bookUrl)
-      earlyBaselineLength = earlyRes.content ? earlyRes.content.trim().length : 0
+      const earlyRes = await api.content(result.sourceId, earlyChapter.url, result.bookUrl)
+      const checkEarly = inspectChapterContent(earlyChapter.title, earlyRes.content || '', 0, false)
+      if (!checkEarly.isNotice) {
+        earlyBaselineLength = checkEarly.length
+      }
     } catch {
       // Ignore early error
     }
 
-    // 2. Late / VIP zone sampling points
-    const lateSampleIndices = new Set<number>()
-    if (totalChapters > 10) {
-      lateSampleIndices.add(Math.floor(totalChapters * 0.5)) // mid-point
-    }
-    if (totalChapters > 5) {
-      lateSampleIndices.add(Math.max(0, totalChapters - 3)) // near-end
-    }
-    if (totalChapters > 1) {
-      lateSampleIndices.add(totalChapters - 1) // latest chapter
+    // 2. Select late sampling points (automatically filtering out notice/leave chapters)
+    const lateTargetIndices = [
+      totalChapters > 10 ? Math.floor(totalChapters * 0.5) : null,
+      totalChapters > 5 ? Math.max(0, totalChapters - 3) : null,
+      totalChapters > 1 ? totalChapters - 1 : null,
+    ].filter((v): v is number => v !== null)
+
+    const sampledChapterUrls = new Set<string>()
+    if (earlyChapter) sampledChapterUrls.add(earlyChapter.url)
+
+    const lateChaptersToSample: Chapter[] = []
+    for (const targetIdx of lateTargetIndices) {
+      const candidateChapter = findMainChapter(chapters, targetIdx)
+      if (candidateChapter && !sampledChapterUrls.has(candidateChapter.url)) {
+        sampledChapterUrls.add(candidateChapter.url)
+        lateChaptersToSample.push(candidateChapter)
+      }
     }
 
     let validLateCount = 0
     let vipHit = false
     let totalSampleChecked = 1 // including early chapter
-    let lateLengths: number[] = []
+    let lateMainStoryLengths: number[] = []
 
-    for (const lateIdx of lateSampleIndices) {
+    for (const sampleChapter of lateChaptersToSample) {
       totalSampleChecked++
-      const sampleChapter = chapters[lateIdx]
-      if (!sampleChapter) continue
-
       try {
         const contentRes = await api.content(result.sourceId, sampleChapter.url, result.bookUrl)
-        const check = inspectChapterContent(contentRes.content || '', earlyBaselineLength, true)
-        lateLengths.push(check.length)
+        const check = inspectChapterContent(sampleChapter.title, contentRes.content || '', earlyBaselineLength, true)
+        
+        if (!check.isNotice) {
+          lateMainStoryLengths.push(check.length)
+        }
+
         if (check.isVip) {
           vipHit = true
         } else if (check.isValid) {
@@ -150,13 +221,13 @@ export async function inspectSingleSource(
         }
       } catch {
         // Late chapter fetch failed
-        lateLengths.push(0)
+        lateMainStoryLengths.push(0)
         vipHit = true
       }
     }
 
-    const avgLateLength = lateLengths.length > 0
-      ? Math.round(lateLengths.reduce((a, b) => a + b, 0) / lateLengths.length)
+    const avgLateLength = lateMainStoryLengths.length > 0
+      ? Math.round(lateMainStoryLengths.reduce((a, b) => a + b, 0) / lateMainStoryLengths.length)
       : earlyBaselineLength
 
     const progress = await api.progress(result.sourceId, result.bookUrl).catch(() => undefined)

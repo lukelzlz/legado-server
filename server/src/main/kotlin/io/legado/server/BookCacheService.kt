@@ -42,6 +42,10 @@ class BookCacheService(private val database: Database, private val runner: RuleR
             val source = database.getSource(book.sourceId) ?: throw IllegalArgumentException("书源不存在")
             val chapters = withContext(Dispatchers.IO) { runner.chapters(source.json, book.tocUrl) }
             if (chapters.isEmpty()) throw RuleExecutionException("目录规则未提取到章节")
+            database.saveTocCache(book.sourceId, book.tocUrl, chapters)
+            if (book.bookUrl != book.tocUrl) {
+                database.saveTocCache(book.sourceId, book.bookUrl, chapters)
+            }
 
             // Breakpoint resume: skip already-cached chapter URLs
             val alreadyCached = database.cachedChapterUrls(book.sourceId, book.bookUrl)

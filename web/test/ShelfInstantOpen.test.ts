@@ -19,20 +19,21 @@ async function simulateOpenShelfItem(
   onOpenReader: (openBook: OpenBook, resumeIndex: number, origin: string) => void,
   onNavigate: (page: string) => void
 ) {
-  try {
-    const fallbackCover = item.coverKey
-      ? mockApi.cover(item.coverKey)
-      : (item.alternateSources?.find(s => s.coverUrl?.trim())?.coverUrl?.trim() || undefined)
+  const fallbackCover = item.coverKey
+    ? mockApi.cover(item.coverKey)
+    : (item.alternateSources?.find(s => s.coverUrl?.trim())?.coverUrl?.trim() || undefined)
 
-    const safeDetails: BookDetails = {
-      sourceId: item.sourceId,
-      name: cleanTitle(item.name) || item.name,
-      author: cleanAuthor(item.author) || item.author,
-      coverUrl: fallbackCover,
-      intro: undefined,
-      tocUrl: item.tocUrl,
-      alternateSources: item.alternateSources,
-    }
+  const safeDetails: BookDetails = {
+    sourceId: item.sourceId,
+    name: cleanTitle(item.name) || item.name,
+    author: cleanAuthor(item.author) || item.author,
+    coverUrl: fallbackCover,
+    intro: undefined,
+    tocUrl: item.tocUrl,
+    alternateSources: item.alternateSources,
+  }
+
+  try {
 
     const [chapters, progress] = await Promise.all([
       mockApi.chapters(safeDetails.sourceId, safeDetails.tocUrl),
@@ -58,7 +59,27 @@ async function simulateOpenShelfItem(
       'shelf'
     )
   } catch {
-    onNavigate('shelf')
+    const resumeIdx = item.chapterIndex ?? 0
+    const fallbackChapters: Chapter[] = [
+      { index: resumeIdx, title: `第 ${resumeIdx + 1} 章`, url: item.tocUrl }
+    ]
+    onOpenReader(
+      {
+        details: safeDetails,
+        bookUrl: item.bookUrl,
+        chapters: fallbackChapters,
+        progress: {
+          sourceId: item.sourceId,
+          bookUrl: item.bookUrl,
+          chapterUrl: item.tocUrl,
+          chapterIndex: resumeIdx,
+          scrollPosition: item.scrollPosition ?? 0,
+          updatedAt: item.lastReadAt,
+        },
+      },
+      resumeIdx,
+      'shelf'
+    )
   }
 }
 
@@ -236,7 +257,7 @@ test('ShelfInstantOpen - remote reading progress overrides shelf cache when pres
   assert.equal((openedBook as OpenBook).progress?.scrollPosition, 0.8)
 })
 
-test('ShelfInstantOpen - navigation fallback on chapters fetch failure', async () => {
+test('ShelfInstantOpen - offline reading fallback on chapters fetch failure', async () => {
   const mockApi = {
     detailsCallCount: 0,
     details: async () => { throw new Error('should not call') },
@@ -248,23 +269,31 @@ test('ShelfInstantOpen - navigation fallback on chapters fetch failure', async (
   const shelfItem: BookshelfItem = {
     sourceId: 'src-1',
     bookUrl: 'https://example.com/book1',
-    name: '失败的书',
+    name: '离线缓存的书',
     tocUrl: 'https://example.com/toc',
+    chapterIndex: 5,
+    scrollPosition: 0.3,
     lastReadAt: 1700000000,
-    cachedChapters: 0,
-    totalChapters: 0,
-    cacheState: 'idle',
+    cachedChapters: 10,
+    totalChapters: 10,
+    cacheState: 'ready',
     completed: false,
   }
 
-  let navigatedTo = ''
+  let openedBook: OpenBook | null = null
+  let openedIdx = -1
 
   await simulateOpenShelfItem(
     shelfItem,
     mockApi,
-    () => {},
-    (page) => { navigatedTo = page }
+    (book, idx) => {
+      openedBook = book
+      openedIdx = idx
+    },
+    () => {}
   )
 
-  assert.equal(navigatedTo, 'shelf', 'Should navigate back to shelf on failure')
+  assert.ok(openedBook, 'Should open reader even when chapters network call fails')
+  assert.equal(openedIdx, 5, 'Should restore user reading index in offline mode')
+  assert.equal((openedBook as OpenBook).chapters.length, 1)
 })

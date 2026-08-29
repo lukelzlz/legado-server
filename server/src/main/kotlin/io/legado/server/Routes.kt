@@ -194,23 +194,63 @@ fun Route.apiRoutes(database: Database, auth: AuthService, runner: RuleRunner, c
         }
         post("/books/chapters") {
             if (auth.requireSession(call, true) == null) return@post
-            val request = call.receive<BookRequest>(); val source = database.getSource(request.sourceId) ?: run { call.respond(HttpStatusCode.NotFound, ApiError("not_found", "书源不存在")); return@post }
+            val request = call.receive<BookRequest>()
+            val source = database.getSource(request.sourceId) ?: run {
+                call.respond(HttpStatusCode.NotFound, ApiError("not_found", "书源不存在"))
+                return@post
+            }
+            val cachedToc = database.getTocCache(request.sourceId, request.bookUrl)
+            if (cachedToc != null && cachedToc.isNotEmpty()) {
+                call.respond(cachedToc)
+                return@post
+            }
+            val fallbackFromContent = database.getCachedChaptersFallback(request.sourceId, request.bookUrl)
             call.respondCatching {
-                runCatching { runner.chapters(source.json, request.bookUrl) }.getOrElse {
-                    val details = runner.details(source.json, request.bookUrl)
-                    runner.chapters(source.json, details.tocUrl)
+                try {
+                    withTimeout(4000) {
+                        val chapters = runCatching { runner.chapters(source.json, request.bookUrl) }.getOrElse {
+                            val details = runner.details(source.json, request.bookUrl)
+                            val toc = runner.chapters(source.json, details.tocUrl)
+                            database.saveTocCache(request.sourceId, details.tocUrl, toc)
+                            toc
+                        }
+                        if (chapters.isNotEmpty()) {
+                            database.saveTocCache(request.sourceId, request.bookUrl, chapters)
+                        }
+                        chapters
+                    }
+                } catch (error: Throwable) {
+                    if (fallbackFromContent.isNotEmpty()) {
+                        fallbackFromContent
+                    } else {
+                        throw (error as? RuleExecutionException ?: RuleExecutionException(error.message ?: "获取章节列表失败"))
+                    }
                 }
             }
         }
         post("/books/content") {
             if (auth.requireSession(call, true) == null) return@post
             val request = call.receive<ContentRequest>()
-            if (request.sourceId.isBlank() || request.chapterUrl.isBlank()) { call.respond(HttpStatusCode.BadRequest, ApiError("invalid_content", "缺少书源或章节地址")); return@post }
-            val source = database.getSource(request.sourceId) ?: run { call.respond(HttpStatusCode.NotFound, ApiError("not_found", "书源不存在")); return@post }
+            if (request.sourceId.isBlank() || request.chapterUrl.isBlank()) {
+                call.respond(HttpStatusCode.BadRequest, ApiError("invalid_content", "缺少书源或章节地址"))
+                return@post
+            }
+            val source = database.getSource(request.sourceId) ?: run {
+                call.respond(HttpStatusCode.NotFound, ApiError("not_found", "书源不存在"))
+                return@post
+            }
             val cached = request.bookUrl?.let { database.cachedContent(request.sourceId, it, request.chapterUrl) }
-            if (cached != null && cached.content.length >= 500) call.respond(cached)
-            else call.respondCatching {
-                runner.content(source.json, request.chapterUrl).also { content -> request.bookUrl?.let { database.cacheBookContent(request.sourceId, it, request.chapterUrl, content) } }
+            if (cached != null && cached.content.isNotBlank()) {
+                call.respond(cached)
+            } else call.respondCatching {
+                try {
+                    runner.content(source.json, request.chapterUrl).also { content ->
+                        request.bookUrl?.let { database.cacheBookContent(request.sourceId, it, request.chapterUrl, content) }
+                    }
+                } catch (error: Throwable) {
+                    if (cached != null && cached.content.isNotBlank()) cached
+                    else throw error
+                }
             }
         }
         get("/bookshelf") {
@@ -371,7 +411,7 @@ internal suspend fun <T, R> boundedConcurrentMap(values: List<T>, limit: Int, ac
     values.map { value -> async { semaphore.withPermit { action(value) } } }.awaitAll()
 }
 
-private suspend fun ApplicationCall.respondCatching(block: () -> Any) {
+private suspend fun ApplicationCall.respondCatching(block: suspend () -> Any) {
     try { respond(block()) }
     catch (error: RuleExecutionException) { respond(HttpStatusCode.BadGateway, ApiError("source_execution_failed", error.message ?: "书源执行失败")) }
 }

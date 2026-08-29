@@ -1200,20 +1200,22 @@ function App() {
 
   const openShelfItem = async (item: BookshelfItem) => {
     try {
-      const details = await api.details(item.sourceId, item.bookUrl)
-      const fallbackCover = details.coverUrl?.trim() || item.alternateSources?.find(s => s.coverUrl?.trim())?.coverUrl?.trim()
+      const fallbackCover = item.coverKey ? api.cover(item.coverKey) : (item.alternateSources?.find(s => s.coverUrl?.trim())?.coverUrl?.trim() || undefined)
       const safeDetails: BookDetails = {
-        ...details,
-        name: cleanTitle(details.name?.trim() || item.name || '未知书名') || item.name,
-        author: cleanAuthor(details.author?.trim() || item.author) || item.author,
-        coverUrl: fallbackCover || undefined,
+        sourceId: item.sourceId,
+        name: cleanTitle(item.name) || item.name,
+        author: cleanAuthor(item.author) || item.author,
+        coverUrl: fallbackCover,
+        intro: undefined,
+        tocUrl: item.tocUrl,
         alternateSources: item.alternateSources,
       }
       const [chapters, progress] = await Promise.all([
         api.chapters(safeDetails.sourceId, safeDetails.tocUrl),
-        api.progress(details.sourceId, item.bookUrl),
+        api.progress(safeDetails.sourceId, item.bookUrl).catch(() => undefined),
       ])
-      openReader({ details: safeDetails, bookUrl: item.bookUrl, chapters, progress }, progress?.chapterIndex ?? 0, 'shelf')
+      const resumeIdx = progress?.chapterIndex ?? item.chapterIndex ?? 0
+      openReader({ details: safeDetails, bookUrl: item.bookUrl, chapters, progress: progress || (item.chapterIndex !== undefined ? { sourceId: item.sourceId, bookUrl: item.bookUrl, chapterUrl: chapters[resumeIdx]?.url || '', chapterIndex: resumeIdx, scrollPosition: item.scrollPosition ?? 0, updatedAt: item.lastReadAt } : undefined) }, resumeIdx, 'shelf')
     } catch {
       navigate('shelf')
     }

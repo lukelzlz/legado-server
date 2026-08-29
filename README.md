@@ -103,14 +103,14 @@ docker run -d \
   --name legado-server \
   --restart unless-stopped \
   -p 8080:8080 \
-  -v ./data:/data \
+  -v ./ls_data:/data \
   -e ADMIN_PASSWORD='your_password_at_least_12_chars' \
   ghcr.io/lukelzlz/legado-server:latest
 ```
 
 > **单行复制版：**
 > ```bash
-> docker run -d --name legado-server --restart unless-stopped -p 8080:8080 -v ./data:/data -e ADMIN_PASSWORD='your_password_at_least_12_chars' ghcr.io/lukelzlz/legado-server:latest
+> docker run -d --name legado-server --restart unless-stopped -p 8080:8080 -v ./ls_data:/data -e ADMIN_PASSWORD='your_password_at_least_12_chars' ghcr.io/lukelzlz/legado-server:latest
 > ```
 
 - **访问 Web 端**：浏览器打开 `http://127.0.0.1:8080`，输入您设置的 `ADMIN_PASSWORD` 登录。

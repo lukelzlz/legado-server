@@ -14,15 +14,10 @@
 
 ## Project Structure & Module Organization
 
-This repository is a monorepo containing the Legado ecosystem: the standalone backend server, the web client, the Android application, and shared modules.
+This repository is dedicated to the standalone Legado Server ecosystem: the standalone backend server and the web client.
 
 - **`server/`**: Standalone headless backend server built with Ktor (`io.legado.server`), Kotlin JVM, and SQLite. Handles source parsing and execution (`RuleRunner` with Jsoup, JsonPath, and Rhino JS engine), authentication/sessions, book and cover caching, source subscription synchronization, and API routing.
 - **`web/`**: Web reader and management UI (`legado-server-web`) built with React 19, TypeScript, and Vite. Communicates with `server/` APIs to manage sources, search books across sources, debug rules, and read books.
-- **`app/`**: Legado Android application (`io.legado.app`), Room database, Android UI/services, and local embedded Web server.
-- **`modules/`**:
-  - `modules:book`: Core book domain models and rule schemas.
-  - `modules:rhino`: Rhino JavaScript engine integration and custom bindings.
-  - `modules:web`: Web server assets/integration for Android.
 
 ## Build, Test, and Development Commands
 
@@ -40,11 +35,6 @@ This repository is a monorepo containing the Legado ecosystem: the standalone ba
 - `cd web && npm run check`: Run TypeScript type checking without emitting files.
 - `cd web && npm run build`: Typecheck and build static production bundle to `web/dist`.
 - `npx tsx web/test/run-all.ts`: Run frontend comprehensive test suite.
-
-### Android Application (`app/`)
-- `./gradlew assembleAppDebug`: Build installable debug APK.
-- `./gradlew :app:test`: Run local JVM unit tests for Android module.
-- `./gradlew :app:lint`: Run Android Lint checks.
 
 Java 17+ / Kotlin JVM is used across the Gradle build. Use the checked-in Gradle wrapper (`./gradlew`).
 

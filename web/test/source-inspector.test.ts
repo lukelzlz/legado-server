@@ -3,37 +3,38 @@ import assert from 'node:assert/strict'
 import {
   inspectChapterContent,
   VIP_DETECTION_REGEX,
-  inspectSingleSource,
-  inspectAllSourcesConcurrently,
+  MIN_LEGITIMATE_CHAPTER_LENGTH,
   SourceHealthInspection,
 } from '../src/sourceInspector'
-import { SearchResult } from '../src/api'
 
 test('SourceInspector - inspectChapterContent detects valid content vs VIP/paywall stubs', () => {
-  // 1. Valid rich chapter content
-  const validContent = '这是一段正常的正文内容。'.repeat(30)
-  const resultValid = inspectChapterContent(validContent)
+  // 1. Valid rich chapter content (2000 chars)
+  const validContent = '这是一段正常的正文内容，字数充沛，情节完整。'.repeat(50)
+  const resultValid = inspectChapterContent(validContent, 2000, true)
   assert.equal(resultValid.isValid, true)
   assert.equal(resultValid.isVip, false)
-  assert.ok(resultValid.length >= 250)
+  assert.equal(resultValid.isTruncated, false)
+  assert.ok(resultValid.length >= MIN_LEGITIMATE_CHAPTER_LENGTH)
 
   // 2. VIP paywall notice
   const vipContent = '本章为付费章节，请前往APP阅读支持正版。'
-  const resultVip = inspectChapterContent(vipContent)
+  const resultVip = inspectChapterContent(vipContent, 2000, true)
   assert.equal(resultVip.isVip, true)
   assert.equal(resultVip.isValid, false)
 
-  // 3. Download client notice
-  const appNotice = '试读结束，下载客户端继续阅读全文！'
-  const resultApp = inspectChapterContent(appNotice)
-  assert.equal(resultApp.isVip, true)
-  assert.equal(resultApp.isValid, false)
+  // 3. Late chapter with suspicious short length (< 450 chars, no explicit VIP keywords)
+  const shortLateContent = '他看着远处的山峰，心中若有所思。'
+  const resultShortLate = inspectChapterContent(shortLateContent, 2500, true)
+  assert.equal(resultShortLate.isTruncated, true)
+  assert.equal(resultShortLate.isVip, true, 'short late chapter should be flagged as VIP/truncated')
+  assert.equal(resultShortLate.isValid, false)
 
-  // 4. Empty or too short content
-  const shortContent = '正文'
-  const resultShort = inspectChapterContent(shortContent)
-  assert.equal(resultShort.isValid, false)
-  assert.equal(resultShort.isVip, false)
+  // 4. Dramatic drop in late chapter length (e.g. early was 3000 chars, late is 400 chars)
+  const droppedContent = '段落内容。'.repeat(60) // ~300 chars
+  const resultDrop = inspectChapterContent(droppedContent, 3000, true)
+  assert.equal(resultDrop.isTruncated, true)
+  assert.equal(resultDrop.isVip, true)
+  assert.equal(resultDrop.isValid, false)
 })
 
 test('SourceInspector - VIP regex matches common paywall phrasing', () => {
@@ -49,24 +50,26 @@ test('SourceInspector - source ranking scores valid non-vip sources over vip and
     sourceId: 'src-good',
     bookUrl: 'http://good/1',
     status: 'valid',
-    score: 10000 + 1200 * 2 + 3 * 500, // score > 13000
+    score: 12000 + 1200 * 3 + 2800,
     totalChapters: 1200,
-    checkedChaptersCount: 3,
-    validChaptersCount: 3,
+    checkedChaptersCount: 4,
+    validChaptersCount: 4,
     vipBlocked: false,
-    summaryText: '共 1200 章 · 全本可读',
+    avgLateChapterLength: 2800,
+    summaryText: '共 1200 章 · 全本可读 (后段字数充足 均2800字)',
   }
 
-  const vipInspection: SourceHealthInspection = {
-    sourceId: 'src-vip',
+  const vipTruncatedInspection: SourceHealthInspection = {
+    sourceId: 'src-vip-truncated',
     bookUrl: 'http://vip/1',
     status: 'vip_restricted',
-    score: 2000 + 1500, // score = 3500
+    score: 2000 + 1500 + 320,
     totalChapters: 1500,
-    checkedChaptersCount: 3,
+    checkedChaptersCount: 4,
     validChaptersCount: 1,
     vipBlocked: true,
-    summaryText: '存在VIP拦截',
+    avgLateChapterLength: 320,
+    summaryText: '共 1500 章 · 后期章节较短/疑似VIP截断 (抽检均320字)',
   }
 
   const errorInspection: SourceHealthInspection = {
@@ -80,10 +83,10 @@ test('SourceInspector - source ranking scores valid non-vip sources over vip and
     summaryText: '无法连接',
   }
 
-  const list = [errorInspection, vipInspection, validInspection]
+  const list = [errorInspection, vipTruncatedInspection, validInspection]
   list.sort((a, b) => b.score - a.score)
 
-  assert.equal(list[0].sourceId, 'src-good', 'healthy readable source should be sorted first')
-  assert.equal(list[1].sourceId, 'src-vip', 'vip restricted source should be ranked second')
-  assert.equal(list[2].sourceId, 'src-err', 'error source should be ranked last')
+  assert.equal(list[0].sourceId, 'src-good', 'healthy full-text source should rank 1st')
+  assert.equal(list[1].sourceId, 'src-vip-truncated', 'vip truncated source should rank 2nd')
+  assert.equal(list[2].sourceId, 'src-err', 'error source should rank last')
 })

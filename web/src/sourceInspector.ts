@@ -3,6 +3,14 @@ import { OpenBook } from './ReaderScreen'
 
 export type SourceHealthStatus = 'idle' | 'checking' | 'valid' | 'vip_restricted' | 'incomplete' | 'error'
 
+export interface ChapterSampleInfo {
+  index: number
+  title: string
+  length: number
+  isVipKeyword: boolean
+  isTruncated: boolean
+}
+
 export interface SourceHealthInspection {
   sourceId: string
   bookUrl: string
@@ -13,26 +21,55 @@ export interface SourceHealthInspection {
   checkedChaptersCount: number
   validChaptersCount: number
   vipBlocked: boolean
+  avgLateChapterLength?: number
   error?: string
   summaryText: string
   checkedAt?: number
   book?: OpenBook
 }
 
-// Regex matching common paywall / VIP / anti-crawler stub patterns
-export const VIP_DETECTION_REGEX = /(?:VIP章节|付费章节|本章为付费章节|需购买后阅读|请前往APP阅读|下载.*(?:APP|客户端).*阅读|试读结束|支持正版|订阅后可阅读|扫码阅读|关注微信公众号|防盗章节|防盗锁|充值.*书币|购买本章|登录后继续阅读|本章字数过少|此章节为付费内容)/i
+// Regex matching explicit paywall / VIP / anti-crawler / stub patterns
+export const VIP_DETECTION_REGEX = /(?:VIP章节|付费章节|本章为付费章节|需购买后阅读|请前往APP阅读|下载.*(?:APP|客户端).*阅读|试读结束|支持正版|订阅后可阅读|扫码阅读|关注微信公众号|防盗章节|防盗锁|充值.*书币|购买本章|登录后继续阅读|本章字数过少|此章节为付费内容|点此继续阅读下一页)/i
 
-export function inspectChapterContent(content: string): { isVip: boolean; isValid: boolean; length: number } {
+// Thresholds for novel chapter length & VIP detection
+export const MIN_LEGITIMATE_CHAPTER_LENGTH = 450 // Normal chapters are 1500~4000 chars. Below 450 is almost always a truncated VIP preview/stub.
+export const VIP_DROP_RATIO_THRESHOLD = 0.35 // If late chapter length drops to < 35% of early chapter length, it's considered truncated.
+
+export function inspectChapterContent(
+  content: string,
+  earlyBaselineLength = 0,
+  isLateChapter = false
+): {
+  isVip: boolean
+  isValid: boolean
+  isTruncated: boolean
+  length: number
+} {
   const trimmed = content.trim()
   const length = trimmed.length
   if (length === 0) {
-    return { isVip: false, isValid: false, length: 0 }
+    return { isVip: false, isValid: false, isTruncated: true, length: 0 }
   }
 
-  const isVip = VIP_DETECTION_REGEX.test(trimmed)
-  const isValid = !isVip && length >= 250
+  const isVipKeyword = VIP_DETECTION_REGEX.test(trimmed)
 
-  return { isVip, isValid, length }
+  let isTruncated = false
+  if (isLateChapter) {
+    if (length < MIN_LEGITIMATE_CHAPTER_LENGTH) {
+      isTruncated = true
+    } else if (earlyBaselineLength >= 1000 && length < earlyBaselineLength * VIP_DROP_RATIO_THRESHOLD) {
+      isTruncated = true
+    }
+  } else {
+    if (length < 200) {
+      isTruncated = true
+    }
+  }
+
+  const isVip = isVipKeyword || (isLateChapter && isTruncated)
+  const isValid = !isVip && !isTruncated && length >= (isLateChapter ? MIN_LEGITIMATE_CHAPTER_LENGTH : 200)
+
+  return { isVip, isValid, isTruncated, length }
 }
 
 export async function inspectSingleSource(
@@ -71,35 +108,56 @@ export async function inspectSingleSource(
       return errRes
     }
 
-    // Multi-point chapter sampling: early, mid, late/VIP
-    const sampleIndices = new Set<number>()
-    sampleIndices.add(0)
+    // 1. Early baseline sample (Chapter 0)
+    let earlyBaselineLength = 0
+    try {
+      const earlyRes = await api.content(result.sourceId, chapters[0].url, result.bookUrl)
+      earlyBaselineLength = earlyRes.content ? earlyRes.content.trim().length : 0
+    } catch {
+      // Ignore early error
+    }
+
+    // 2. Late / VIP zone sampling points
+    const lateSampleIndices = new Set<number>()
     if (totalChapters > 10) {
-      sampleIndices.add(Math.floor(totalChapters * 0.5))
+      lateSampleIndices.add(Math.floor(totalChapters * 0.5)) // mid-point
     }
-    if (totalChapters > 3) {
-      sampleIndices.add(Math.max(0, totalChapters - 2))
+    if (totalChapters > 5) {
+      lateSampleIndices.add(Math.max(0, totalChapters - 3)) // near-end
     }
-    const sampleArray = Array.from(sampleIndices).map(idx => chapters[idx]).filter(Boolean)
+    if (totalChapters > 1) {
+      lateSampleIndices.add(totalChapters - 1) // latest chapter
+    }
 
-    let validCount = 0
+    let validLateCount = 0
     let vipHit = false
-    let totalSampleChecked = 0
+    let totalSampleChecked = 1 // including early chapter
+    let lateLengths: number[] = []
 
-    for (const sampleChapter of sampleArray) {
+    for (const lateIdx of lateSampleIndices) {
       totalSampleChecked++
+      const sampleChapter = chapters[lateIdx]
+      if (!sampleChapter) continue
+
       try {
         const contentRes = await api.content(result.sourceId, sampleChapter.url, result.bookUrl)
-        const check = inspectChapterContent(contentRes.content || '')
+        const check = inspectChapterContent(contentRes.content || '', earlyBaselineLength, true)
+        lateLengths.push(check.length)
         if (check.isVip) {
           vipHit = true
         } else if (check.isValid) {
-          validCount++
+          validLateCount++
         }
       } catch {
-        // Sample chapter error
+        // Late chapter fetch failed
+        lateLengths.push(0)
+        vipHit = true
       }
     }
+
+    const avgLateLength = lateLengths.length > 0
+      ? Math.round(lateLengths.reduce((a, b) => a + b, 0) / lateLengths.length)
+      : earlyBaselineLength
 
     const progress = await api.progress(result.sourceId, result.bookUrl).catch(() => undefined)
     const loadedBook: OpenBook = {
@@ -117,25 +175,21 @@ export async function inspectSingleSource(
     }
 
     let status: SourceHealthStatus = 'valid'
-    let score = 10000 + (totalChapters * 2) + (validCount * 500)
-    let summaryText = `共 ${totalChapters} 章 · 全本可读 (${validCount}章抽检通过)`
+    let score = 12000 + (totalChapters * 3) + Math.min(3000, avgLateLength)
+    let summaryText = `共 ${totalChapters} 章 · 全本可读 (后段字数充足 均${avgLateLength}字)`
 
     if (vipHit) {
       status = 'vip_restricted'
-      score = 2000 + totalChapters
-      summaryText = `共 ${totalChapters} 章 · 后续含VIP/收费拦截`
-    } else if (validCount === 0) {
+      score = 2000 + totalChapters + Math.min(500, avgLateLength)
+      summaryText = `共 ${totalChapters} 章 · 后期章节较短/疑似VIP截断 (抽检均${avgLateLength}字)`
+    } else if (validLateCount === 0 && totalChapters > 5) {
       status = 'error'
       score = 100
-      summaryText = `正文读取异常`
+      summaryText = `正文读取异常/后期无内容`
     } else if (totalChapters < 15) {
       status = 'incomplete'
       score = 1000 + totalChapters
-      summaryText = `仅 ${totalChapters} 章 · 章节不全`
-    } else if (validCount < totalSampleChecked) {
-      status = 'valid'
-      score = 8000 + totalChapters
-      summaryText = `共 ${totalChapters} 章 · 抽检 ${validCount}/${totalSampleChecked} 章可用`
+      summaryText = `仅 ${totalChapters} 章 · 章节严重缺失`
     }
 
     const finalResult: SourceHealthInspection = {
@@ -146,8 +200,9 @@ export async function inspectSingleSource(
       totalChapters,
       latestChapterTitle,
       checkedChaptersCount: totalSampleChecked,
-      validChaptersCount: validCount,
+      validChaptersCount: validLateCount + (earlyBaselineLength >= 200 ? 1 : 0),
       vipBlocked: vipHit,
+      avgLateChapterLength: avgLateLength,
       summaryText,
       checkedAt: Date.now(),
       book: loadedBook,

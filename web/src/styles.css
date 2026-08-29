@@ -449,14 +449,35 @@ mark.search-highlight { background: var(--accent-soft); color: var(--accent); fo
 .book-detail-section-title small { color: var(--muted); font-weight: normal; }
 .book-detail-section .preview-chapters { border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
 
-.source-choice-list { display: grid; margin: 0 22px 18px; border: 1px solid var(--line); border-radius: 5px; overflow: hidden; }
-.source-choice-list > header { display: flex; justify-content: space-between; padding: 10px 12px; color: var(--muted); background: var(--surface-muted); font-size: 12px; }
-.source-choice-list > button { display: grid; gap: 5px; padding: 11px 12px; border-top: 1px solid var(--line); color: var(--ink); background: transparent; text-align: left; }
-.source-choice-list > button:hover, .source-choice-list > button.selected { background: var(--accent-soft); }
-.source-choice-list > button:disabled { opacity: .55; }
-.source-choice-list > button.loading { opacity: .75; cursor: wait; }
-.source-choice-list strong { font-size: 12px; font-weight: 650; }
-.source-choice-list small { display: -webkit-box; overflow: hidden; color: var(--muted); font-size: 12px; line-height: 1.55; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.source-choice-list { display: grid; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; background: var(--surface); }
+.source-choice-list > header { display: flex; justify-content: space-between; align-items: center; padding: 10px 14px; color: var(--muted); background: var(--surface-muted); font-size: 12px; border-bottom: 1px solid var(--line); }
+.source-choice-header-left { display: flex; flex-direction: column; gap: 2px; }
+.source-choice-header-left span { font-weight: 600; color: var(--ink); }
+.source-choice-header-left small { font-size: 11px; color: var(--muted); }
+.source-recheck-btn { display: inline-flex; align-items: center; gap: 5px; padding: 4px 8px; border-radius: 4px; font-size: 11px; border: 1px solid var(--line); background: var(--surface); color: var(--ink); cursor: pointer; }
+.source-recheck-btn:hover:not(:disabled) { background: var(--accent-soft); color: var(--accent); border-color: var(--accent); }
+.source-recheck-btn:disabled { opacity: 0.6; cursor: wait; }
+.source-recheck-btn svg { width: 13px; height: 13px; }
+.source-recheck-btn svg.spin { animation: spin 1s linear infinite; }
+@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+
+.source-choice-items { display: grid; max-height: 240px; overflow-y: auto; }
+.source-choice-item, .source-choice-list > button { width: 100%; display: grid; gap: 4px; padding: 10px 14px; border: 0; border-top: 1px solid var(--line); color: var(--ink); background: transparent; text-align: left; transition: background 0.15s ease; cursor: pointer; }
+.source-choice-item:first-child, .source-choice-list > button:first-child { border-top: 0; }
+.source-choice-item:hover, .source-choice-item.selected, .source-choice-list > button:hover, .source-choice-list > button.selected { background: var(--accent-soft); }
+.source-choice-item:disabled, .source-choice-list > button:disabled { opacity: .55; }
+.source-choice-item.loading, .source-choice-list > button.loading { opacity: .75; cursor: wait; }
+.source-choice-top { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.source-choice-top strong, .source-choice-list strong { font-size: 13px; font-weight: 650; }
+.source-choice-item small, .source-choice-list small { display: block; overflow: hidden; color: var(--muted); font-size: 11px; line-height: 1.4; text-overflow: ellipsis; white-space: nowrap; }
+
+.source-health-badge { display: inline-flex; align-items: center; gap: 4px; padding: 1px 6px; border-radius: 3px; font-size: 10px; font-weight: 600; line-height: 1.4; }
+.health-valid { background: rgba(36, 140, 72, 0.12); color: #1e7e34; border: 1px solid rgba(36, 140, 72, 0.25); }
+.health-vip { background: rgba(220, 100, 0, 0.12); color: #c85000; border: 1px solid rgba(220, 100, 0, 0.25); }
+.health-incomplete { background: rgba(180, 130, 0, 0.12); color: #996e00; border: 1px solid rgba(180, 130, 0, 0.25); }
+.health-error { background: rgba(210, 45, 45, 0.1); color: #cf2222; border: 1px solid rgba(210, 45, 45, 0.2); }
+.health-checking { background: var(--surface-muted); color: var(--muted); border: 1px solid var(--line); animation: pulse 1.5s ease-in-out infinite; }
+@keyframes pulse { 0%, 100% { opacity: 0.6; } 50% { opacity: 1; } }
 
 /* Shelf */
 .shelf-page { width: min(1080px, 100%); display: grid; gap: 26px; padding: clamp(32px, 6vw, 64px) clamp(18px, 4vw, 48px); margin: 0 auto; }

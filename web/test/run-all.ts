@@ -14,6 +14,7 @@ import './ChallengerEmpiricalStress.test.ts'
 import './SourceSwitchAndCache.test.ts'
 import './SearchStatePersistence.test.ts'
 import './search-sort.test.ts'
+import './source-inspector.test.ts'
 import './HeaderMenu.test.ts'
 
 console.log('🚀 Running Legado Web Frontend Comprehensive Test Suite (Tier 1, 2, 4 + Challenger Stress)...\n')

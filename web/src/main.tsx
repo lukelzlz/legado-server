@@ -11,30 +11,123 @@ import { SourceSwitchModal } from './SourceSwitchModal'
 import { toast, ToastContainer } from './Toast'
 import './styles.css'
 
+import { inspectAllSourcesConcurrently, SourceHealthInspection } from './sourceInspector'
+
 export type { SourceChoice, SourceChoiceStatus }
 
 type Page = 'sources' | 'subscriptions' | 'library' | 'shelf' | 'reader'
 const readerStorageKey = 'legado-open-book-v1'
 const pageFromHash = (): Page => location.hash === '#sources' ? 'sources' : location.hash === '#subscriptions' ? 'subscriptions' : location.hash === '#shelf' ? 'shelf' : location.hash === '#reader' ? 'reader' : 'library'
 
-function SourceChoiceList({ choices, active, onChoose }: { choices: SourceChoice[]; active?: string; onChoose: (choice: SourceChoice) => void }) {
-  return <section className="source-choice-list"><header><span>选择书源</span><small>{choices.length} 个可用来源</small></header>{choices.map(choice => {
-    const isSelected = active === choice.result.bookUrl
-    const isLoading = choice.status === 'loading'
-    const isLoaded = choice.status === 'loaded' && choice.book
-    const isError = choice.status === 'error'
-    let statusText = '点击切换为此书源'
-    if (isLoading) {
-      statusText = '正在读取目录...'
-    } else if (isError) {
-      statusText = choice.error || '无法读取此书源'
-    } else if (isLoaded) {
-      statusText = `已加载 · 共 ${choice.book!.chapters.length} 章`
-    } else if (choice.result.intro) {
-      statusText = choice.result.intro
+function SourceChoiceList({
+  choices,
+  inspections,
+  active,
+  onChoose,
+  onRecheck,
+  checking,
+}: {
+  choices: SourceChoice[]
+  inspections: Map<string, SourceHealthInspection>
+  active?: string
+  onChoose: (choice: SourceChoice) => void
+  onRecheck: () => void
+  checking: boolean
+}) {
+  const sortedChoices = useMemo(() => {
+    return [...choices].sort((a, b) => {
+      const keyA = `${a.result.sourceId}\u0000${a.result.bookUrl}`
+      const keyB = `${b.result.sourceId}\u0000${b.result.bookUrl}`
+      const inspA = inspections.get(keyA)
+      const inspB = inspections.get(keyB)
+      const scoreA = inspA ? inspA.score : (a.status === 'loaded' ? 5000 : 0)
+      const scoreB = inspB ? inspB.score : (b.status === 'loaded' ? 5000 : 0)
+      if (scoreB !== scoreA) return scoreB - scoreA
+      return (inspB?.totalChapters ?? 0) - (inspA?.totalChapters ?? 0)
+    })
+  }, [choices, inspections])
+
+  const checkingCount = useMemo(() => {
+    let count = 0
+    for (const insp of inspections.values()) {
+      if (insp.status === 'checking' || insp.status === 'idle') count++
     }
-    return <button key={`${choice.result.sourceId}-${choice.result.bookUrl}`} className={`${isSelected ? 'selected' : ''} ${isLoading ? 'loading' : ''}`} disabled={isLoading} onClick={() => onChoose(choice)}><strong>{choice.result.sourceId}</strong><small>{statusText}</small></button>
-  })}</section>
+    return count
+  }, [inspections])
+
+  return (
+    <section className="source-choice-list">
+      <header>
+        <div className="source-choice-header-left">
+          <span>书源可用性与质量校验</span>
+          <small>
+            {checking
+              ? `正在校验正文与VIP (${choices.length - checkingCount}/${choices.length})...`
+              : `${choices.length} 个书源已完成质量与VIP检测`}
+          </small>
+        </div>
+        <button
+          type="button"
+          className="subtle-button source-recheck-btn"
+          onClick={onRecheck}
+          disabled={checking}
+          title="重新探测所有书源的章节可用性与VIP限制"
+        >
+          <Icon name="refresh" className={checking ? 'spin' : ''} />
+          <span>{checking ? '探测中' : '重新校验'}</span>
+        </button>
+      </header>
+      <div className="source-choice-items">
+        {sortedChoices.map(choice => {
+          const key = `${choice.result.sourceId}\u0000${choice.result.bookUrl}`
+          const isSelected = active === choice.result.bookUrl
+          const isLoading = choice.status === 'loading'
+          const inspection = inspections.get(key)
+
+          let badge = null
+          let statusText = '点击切换为此书源'
+
+          if (inspection) {
+            if (inspection.status === 'checking') {
+              badge = <span className="source-health-badge health-checking">探测中...</span>
+              statusText = '正在抽检章节正文与VIP限制...'
+            } else if (inspection.status === 'valid') {
+              badge = <span className="source-health-badge health-valid">✓ 完整可读</span>
+              statusText = inspection.summaryText
+            } else if (inspection.status === 'vip_restricted') {
+              badge = <span className="source-health-badge health-vip">⚠ VIP/付费拦截</span>
+              statusText = inspection.summaryText
+            } else if (inspection.status === 'incomplete') {
+              badge = <span className="source-health-badge health-incomplete">疑似残卷</span>
+              statusText = inspection.summaryText
+            } else if (inspection.status === 'error') {
+              badge = <span className="source-health-badge health-error">✕ 无法读取</span>
+              statusText = inspection.summaryText
+            }
+          } else if (isLoading) {
+            statusText = '正在读取目录...'
+          } else if (choice.status === 'loaded' && choice.book) {
+            statusText = `已载入 · 共 ${choice.book.chapters.length} 章`
+          }
+
+          return (
+            <button
+              key={key}
+              className={`source-choice-item ${isSelected ? 'selected' : ''} ${isLoading ? 'loading' : ''}`}
+              disabled={isLoading}
+              onClick={() => onChoose(choice)}
+            >
+              <div className="source-choice-top">
+                <strong>{choice.result.sourceId}</strong>
+                {badge}
+              </div>
+              <small>{statusText}</small>
+            </button>
+          )
+        })}
+      </div>
+    </section>
+  )
 }
 
 function BookDetailModal({
@@ -53,8 +146,35 @@ function BookDetailModal({
   onClose: () => void
 }) {
   const [introExpanded, setIntroExpanded] = useState(false)
+  const [inspections, setInspections] = useState<Map<string, SourceHealthInspection>>(new Map())
+  const [checking, setChecking] = useState(false)
+  const cancelInspectRef = useRef(false)
+
   const latestChapter = book.chapters.at(-1)
   const availableSources = choices.length
+
+  const runInspection = useCallback(() => {
+    cancelInspectRef.current = false
+    setChecking(true)
+    const rawSources = choices.map(c => c.result)
+    void inspectAllSourcesConcurrently(
+      rawSources,
+      3,
+      updated => {
+        setInspections(updated)
+      },
+      () => cancelInspectRef.current
+    ).finally(() => {
+      setChecking(false)
+    })
+  }, [choices])
+
+  useEffect(() => {
+    runInspection()
+    return () => {
+      cancelInspectRef.current = true
+    }
+  }, [runInspection])
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -65,6 +185,16 @@ function BookDetailModal({
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
   }, [onClose])
+
+  const handleSelectChoice = (choice: SourceChoice) => {
+    const key = `${choice.result.sourceId}\u0000${choice.result.bookUrl}`
+    const insp = inspections.get(key)
+    if (insp?.book) {
+      onChooseSource({ ...choice, book: insp.book, status: 'loaded' })
+    } else {
+      onChooseSource(choice)
+    }
+  }
 
   return (
     <div className="modal-backdrop" onClick={onClose}>
@@ -107,7 +237,14 @@ function BookDetailModal({
         <div className="book-detail-modal-body">
           {choices.length > 1 && (
             <div className="book-detail-section">
-              <SourceChoiceList choices={choices} active={book.bookUrl} onChoose={onChooseSource} />
+              <SourceChoiceList
+                choices={choices}
+                inspections={inspections}
+                active={book.bookUrl}
+                onChoose={handleSelectChoice}
+                onRecheck={runInspection}
+                checking={checking}
+              />
             </div>
           )}
 

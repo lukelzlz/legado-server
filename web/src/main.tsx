@@ -5,7 +5,7 @@ import { Icon } from './icons'
 import { OpenBook, ReaderScreen } from './ReaderScreen'
 import { loadReaderSettings, ReaderSettings, saveReaderSettings } from './readerSettings'
 import { AppHeader } from './AppHeader'
-import { cleanAuthor, cleanTitle, defaultSearchFilters, filterSearchGroups, isExactMatch, isPopularMatch, SearchFilters, SearchGroup, SortMode } from './searchFilters'
+import { cleanTitle, defaultSearchFilters, filterSearchGroups, isExactMatch, isPopularMatch, SearchFilters, SearchGroup, SortMode } from './searchFilters'
 import { groupSearchResults, SourceChoice, SourceChoiceStatus, useSearchStore } from './searchStore'
 import { SourceSwitchModal } from './SourceSwitchModal'
 import { toast, ToastContainer } from './Toast'
@@ -148,59 +148,10 @@ function BookDetailModal({
   const [introExpanded, setIntroExpanded] = useState(false)
   const [inspections, setInspections] = useState<Map<string, SourceHealthInspection>>(new Map())
   const [checking, setChecking] = useState(false)
-  const [inShelf, setInShelf] = useState<boolean | null>(null)
-  const [shelfBusy, setShelfBusy] = useState(false)
   const cancelInspectRef = useRef(false)
 
   const latestChapter = book.chapters.at(-1)
   const availableSources = choices.length
-
-  useEffect(() => {
-    let active = true
-    void api.bookshelf().then(items => {
-      if (!active) return
-      const found = items.some(
-        item => (item.sourceId === book.details.sourceId && item.bookUrl === book.bookUrl) ||
-                (cleanTitle(item.name).toLowerCase() === cleanTitle(book.details.name).toLowerCase() &&
-                 (cleanAuthor(item.author) || '').toLowerCase() === (cleanAuthor(book.details.author) || '').toLowerCase())
-      )
-      setInShelf(found)
-    }).catch(() => {
-      if (active) setInShelf(false)
-    })
-    return () => {
-      active = false
-    }
-  }, [book.details.sourceId, book.bookUrl, book.details.name, book.details.author])
-
-  const toggleShelf = async () => {
-    if (shelfBusy) return
-    setShelfBusy(true)
-    try {
-      if (inShelf) {
-        await api.removeFromBookshelf(book.details.sourceId, book.bookUrl)
-        setInShelf(false)
-        toast.info(`《${book.details.name}》已移出书架`)
-      } else {
-        const fallbackCover = book.details.coverUrl || choices.find(c => c.result.coverUrl?.trim())?.result.coverUrl?.trim()
-        await api.addToBookshelf({
-          sourceId: book.details.sourceId,
-          bookUrl: book.bookUrl,
-          name: book.details.name,
-          author: book.details.author,
-          tocUrl: book.details.tocUrl,
-          coverUrl: fallbackCover || undefined,
-          alternateSources: choices.map(c => c.result).filter(s => s.sourceId !== book.details.sourceId || s.bookUrl !== book.bookUrl),
-        })
-        setInShelf(true)
-        toast.success(`《${book.details.name}》已加入书架`)
-      }
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : '操作书架失败')
-    } finally {
-      setShelfBusy(false)
-    }
-  }
 
   const runInspection = useCallback(() => {
     cancelInspectRef.current = false
@@ -238,22 +189,8 @@ function BookDetailModal({
   const handleSelectChoice = (choice: SourceChoice) => {
     const key = `${choice.result.sourceId}\u0000${choice.result.bookUrl}`
     const insp = inspections.get(key)
-    const fallbackCover = book.details.coverUrl || choices.find(c => c.result.coverUrl?.trim())?.result.coverUrl?.trim()
-    const fallbackIntro = book.details.intro || choices.find(c => c.result.intro?.trim())?.result.intro?.trim()
-
     if (insp?.book) {
-      const mergedBook: OpenBook = {
-        ...insp.book,
-        details: {
-          ...insp.book.details,
-          name: cleanTitle(insp.book.details.name) || book.details.name,
-          author: cleanAuthor(insp.book.details.author) || book.details.author,
-          coverUrl: insp.book.details.coverUrl || fallbackCover || undefined,
-          intro: insp.book.details.intro || fallbackIntro || undefined,
-          alternateSources: choices.map(c => c.result).filter(s => s.sourceId !== choice.result.sourceId || s.bookUrl !== choice.result.bookUrl),
-        }
-      }
-      onChooseSource({ ...choice, book: mergedBook, status: 'loaded' })
+      onChooseSource({ ...choice, book: insp.book, status: 'loaded' })
     } else {
       onChooseSource(choice)
     }
@@ -287,16 +224,6 @@ function BookDetailModal({
             </div>
           </div>
           <div className="book-detail-header-actions">
-            <button
-              type="button"
-              className={`subtle-button shelf-toggle-btn ${inShelf ? 'in-shelf' : ''}`}
-              onClick={toggleShelf}
-              disabled={shelfBusy || inShelf === null}
-              title={inShelf ? '从书架中移出' : '加入书架'}
-            >
-              <Icon name="book" />
-              <span>{inShelf ? '已在书架' : '加入书架'}</span>
-            </button>
             <button className="primary-button read-btn" onClick={() => onOpen(resumeIndex)}>
               {book.progress ? '继续阅读' : '开始阅读'}
               <Icon name="arrowRight" />
@@ -578,201 +505,6 @@ function LibraryPage({ sources, onOpen }: { sources: SourceSummary[]; onOpen: (b
   )
 }
 
-function BookInfoEditModal({
-  item,
-  onSaved,
-  onClose,
-}: {
-  item: BookshelfItem
-  onSaved: (updated: BookshelfItem) => void
-  onClose: () => void
-}) {
-  const [name, setName] = useState(item.name)
-  const [author, setAuthor] = useState(item.author || '')
-  const [coverUrl, setCoverUrl] = useState<string | null>(null) // null = keep existing, '' = clear, string = new URL
-  const [saving, setSaving] = useState(false)
-  const [error, setError] = useState('')
-
-  const candidateCovers = useMemo(() => {
-    const map = new Map<string, { sourceId: string; coverUrl: string }>()
-    for (const alt of item.alternateSources || []) {
-      const url = alt.coverUrl?.trim()
-      if (url && !map.has(url)) {
-        map.set(url, { sourceId: alt.sourceId, coverUrl: url })
-      }
-    }
-    return Array.from(map.values())
-  }, [item.alternateSources])
-
-  const previewSrc = useMemo(() => {
-    if (coverUrl === '') return null
-    if (coverUrl) return coverUrl
-    if (item.coverKey) return api.cover(item.coverKey)
-    return null
-  }, [coverUrl, item.coverKey])
-
-  const handleSave = async (e: FormEvent) => {
-    e.preventDefault()
-    const trimmedName = name.trim()
-    if (!trimmedName) {
-      setError('书名不能为空')
-      return
-    }
-
-    setSaving(true)
-    setError('')
-    try {
-      const updated = await api.updateBookshelfInfo({
-        sourceId: item.sourceId,
-        bookUrl: item.bookUrl,
-        name: trimmedName,
-        author: author.trim() || undefined,
-        coverUrl: coverUrl === null ? undefined : coverUrl,
-      })
-      toast.success(`《${updated.name}》信息已更新`)
-      onSaved(updated)
-      onClose()
-    } catch (err) {
-      setError(err instanceof Error ? err.message : '更新书籍信息失败')
-    } finally {
-      setSaving(false)
-    }
-  }
-
-  return (
-    <div className="modal-backdrop top-layer-modal-backdrop" onClick={onClose}>
-      <div
-        className="book-info-edit-modal"
-        onClick={e => e.stopPropagation()}
-        role="dialog"
-        aria-modal="true"
-        aria-label={`编辑书籍信息: ${item.name}`}
-      >
-        <header className="book-info-edit-header">
-          <div>
-            <span className="section-kicker">书籍信息</span>
-            <h2>编辑书籍信息</h2>
-          </div>
-          <button className="subtle-button close-btn" onClick={onClose} aria-label="关闭">
-            <Icon name="close" />
-          </button>
-        </header>
-
-        <form onSubmit={handleSave} className="book-info-edit-form">
-          <div className="book-info-edit-body">
-            {/* Cover Preview & Options */}
-            <div className="edit-cover-section">
-              <div className="edit-cover-preview-box">
-                {previewSrc ? (
-                  <img src={previewSrc} alt="封面预览" referrerPolicy="no-referrer" />
-                ) : (
-                  <div className="edit-cover-fallback">
-                    <span>{name.trim().slice(0, 1) || '书'}</span>
-                  </div>
-                )}
-                {coverUrl !== '' && (item.coverKey || coverUrl) && (
-                  <button
-                    type="button"
-                    className="subtle-button clear-cover-btn"
-                    onClick={() => setCoverUrl('')}
-                    title="清除并使用文字占位封面"
-                  >
-                    清除封面
-                  </button>
-                )}
-                {coverUrl === '' && (
-                  <button
-                    type="button"
-                    className="subtle-button reset-cover-btn"
-                    onClick={() => setCoverUrl(null)}
-                    title="恢复原封面"
-                  >
-                    恢复原封面
-                  </button>
-                )}
-              </div>
-
-              <div className="edit-cover-inputs">
-                <label className="edit-form-label">
-                  <span>封面图片 URL</span>
-                  <div className="input-with-icon">
-                    <Icon name="image" />
-                    <input
-                      type="url"
-                      placeholder="https://example.com/cover.jpg"
-                      value={coverUrl === null ? '' : coverUrl}
-                      onChange={e => setCoverUrl(e.target.value)}
-                    />
-                  </div>
-                  <small>可粘贴图片网络地址，保存时将自动拉取并缓存到服务器</small>
-                </label>
-
-                {candidateCovers.length > 0 && (
-                  <div className="candidate-covers-picker">
-                    <span className="candidate-covers-title">从备选书源选择封面 ({candidateCovers.length})：</span>
-                    <div className="candidate-covers-grid">
-                      {candidateCovers.map(c => {
-                        const isSelected = coverUrl === c.coverUrl
-                        return (
-                          <button
-                            key={c.coverUrl}
-                            type="button"
-                            className={`candidate-cover-card ${isSelected ? 'selected' : ''}`}
-                            onClick={() => setCoverUrl(c.coverUrl)}
-                            title={`使用来自【${c.sourceId}】的封面`}
-                          >
-                            <img src={c.coverUrl} alt={c.sourceId} referrerPolicy="no-referrer" />
-                            <small>{c.sourceId}</small>
-                          </button>
-                        )
-                      })}
-                    </div>
-                  </div>
-                )}
-              </div>
-            </div>
-
-            {/* Title & Author Fields */}
-            <div className="edit-fields-section">
-              <label className="edit-form-label">
-                <span>书名 <span className="required-mark">*</span></span>
-                <input
-                  type="text"
-                  required
-                  value={name}
-                  onChange={e => setName(e.target.value)}
-                  placeholder="请输入书名"
-                />
-              </label>
-
-              <label className="edit-form-label">
-                <span>作者</span>
-                <input
-                  type="text"
-                  value={author}
-                  onChange={e => setAuthor(e.target.value)}
-                  placeholder="作者（可选）"
-                />
-              </label>
-            </div>
-
-            {error && <p className="form-error">{error}</p>}
-          </div>
-
-          <footer className="book-info-edit-footer">
-            <button type="button" className="subtle-button" onClick={onClose} disabled={saving}>
-              取消
-            </button>
-            <button type="submit" className="primary-button" disabled={saving}>
-              {saving ? '保存中...' : '保存修改'}
-            </button>
-          </footer>
-        </form>
-      </div>
-    </div>
-  )
-}
-
 function BookManageModal({
   item,
   onClose,
@@ -780,7 +512,6 @@ function BookManageModal({
   onCache,
   onCancelCache,
   onToggleCompleted,
-  onUpdateInfo,
   onRemove,
 }: {
   item: BookshelfItem
@@ -789,10 +520,8 @@ function BookManageModal({
   onCache: () => void
   onCancelCache: () => void
   onToggleCompleted: () => void
-  onUpdateInfo: (updated: BookshelfItem) => void
   onRemove: () => void
 }) {
-  const [editingInfo, setEditingInfo] = useState(false)
   const isCaching = item.cacheState === 'caching'
   const isReady = item.cacheState === 'ready'
   const isFailed = item.cacheState === 'failed'
@@ -814,15 +543,6 @@ function BookManageModal({
         </header>
 
         <div className="manage-sheet-actions">
-          <button className="manage-action-row" onClick={() => setEditingInfo(true)}>
-            <div className="action-icon"><Icon name="edit" /></div>
-            <div className="action-text">
-              <strong>编辑书籍信息</strong>
-              <small>修改书名、作者或更换封面</small>
-            </div>
-            <Icon name="arrowRight" />
-          </button>
-
           <button className="manage-action-row" onClick={() => { onClose(); onSwitchSource() }}>
             <div className="action-icon"><Icon name="sliders" /></div>
             <div className="action-text">
@@ -876,16 +596,6 @@ function BookManageModal({
           </button>
         </div>
       </div>
-
-      {editingInfo && (
-        <BookInfoEditModal
-          item={item}
-          onSaved={updated => {
-            onUpdateInfo(updated)
-          }}
-          onClose={() => setEditingInfo(false)}
-        />
-      )}
     </div>
   )
 }
@@ -964,20 +674,16 @@ function ShelfPage({ onOpen }: { onOpen: (item: BookshelfItem) => void }) {
   const handleSwitchShelfSource = async (chosen: { result: SearchResult; chapters: Chapter[]; targetChapterIndex: number }) => {
     if (!switchingItem) return
     const details = await api.details(chosen.result.sourceId, chosen.result.bookUrl)
-    const fallbackCover = details.coverUrl?.trim() ||
-      chosen.result.coverUrl?.trim() ||
-      switchingItem.alternateSources?.find(s => s.coverUrl?.trim())?.coverUrl?.trim()
-
     await api.switchBookshelfSource({
       oldSourceId: switchingItem.sourceId,
       oldBookUrl: switchingItem.bookUrl,
       book: {
         sourceId: details.sourceId,
         bookUrl: chosen.result.bookUrl,
-        name: cleanTitle(details.name?.trim() || switchingItem.name) || switchingItem.name,
-        author: cleanAuthor(details.author?.trim() || switchingItem.author) || switchingItem.author,
+        name: details.name?.trim() || switchingItem.name,
+        author: details.author?.trim() || switchingItem.author,
         tocUrl: details.tocUrl,
-        coverUrl: fallbackCover || undefined,
+        coverUrl: details.coverUrl,
       },
       alternateSources: switchingItem.alternateSources,
     })
@@ -1113,10 +819,6 @@ function ShelfPage({ onOpen }: { onOpen: (item: BookshelfItem) => void }) {
             setManagingItem(prev => prev ? { ...prev, cacheState: 'failed', cacheError: '已取消缓存' } : null)
           }}
           onToggleCompleted={() => setCompleted(managingItem, !managingItem.completed)}
-          onUpdateInfo={updated => {
-            setItems(values => values.map(v => v.sourceId === updated.sourceId && v.bookUrl === updated.bookUrl ? updated : v))
-            setManagingItem(updated)
-          }}
           onRemove={() => remove(managingItem)}
         />
       )}
@@ -1180,14 +882,13 @@ function App() {
   }
 
   const openReader = (book: OpenBook, index: number, origin: Page = 'library') => {
-    const fallbackCover = book.details.coverUrl || book.details.alternateSources?.find(s => s.coverUrl?.trim())?.coverUrl?.trim()
     void api.addToBookshelf({
       sourceId: book.details.sourceId,
       bookUrl: book.bookUrl,
       name: book.details.name,
       author: book.details.author,
       tocUrl: book.details.tocUrl,
-      coverUrl: fallbackCover || undefined,
+      coverUrl: book.details.coverUrl,
       alternateSources: book.details.alternateSources,
     }).catch(() => undefined)
     const value = { book, index }
@@ -1201,12 +902,10 @@ function App() {
   const openShelfItem = async (item: BookshelfItem) => {
     try {
       const details = await api.details(item.sourceId, item.bookUrl)
-      const fallbackCover = details.coverUrl?.trim() || item.alternateSources?.find(s => s.coverUrl?.trim())?.coverUrl?.trim()
       const safeDetails: BookDetails = {
         ...details,
-        name: cleanTitle(details.name?.trim() || item.name || '未知书名') || item.name,
-        author: cleanAuthor(details.author?.trim() || item.author) || item.author,
-        coverUrl: fallbackCover || undefined,
+        name: details.name?.trim() || item.name || '未知书名',
+        author: details.author?.trim() || item.author,
         alternateSources: item.alternateSources,
       }
       const [chapters, progress] = await Promise.all([

@@ -221,7 +221,7 @@ fun Route.apiRoutes(database: Database, auth: AuthService, runner: RuleRunner, c
             if (auth.requireSession(call, true) == null) return@post
             val request = call.receive<BookshelfWriteRequest>()
             if (request.sourceId.isBlank() || request.bookUrl.isBlank() || request.name.isBlank() || request.tocUrl.isBlank()) { call.respond(HttpStatusCode.BadRequest, ApiError("invalid_bookshelf", "书架数据无效")); return@post }
-            val cover = tryCacheCover(coverCache, request.coverUrl, request.alternateSources)
+            val cover = request.coverUrl?.takeIf { it.isNotBlank() }?.let { url -> runCatching { coverCache.cache(url) }.getOrNull() }
             val item = database.saveBookshelf(request, cover)
             bookCache.enqueue(CachedBookRequest(request.sourceId, request.bookUrl, request.tocUrl))
             call.respond(item)
@@ -260,26 +260,12 @@ fun Route.apiRoutes(database: Database, auth: AuthService, runner: RuleRunner, c
             database.setBookshelfCompleted(request.sourceId, request.bookUrl, request.completed)?.let { call.respond(it) }
                 ?: call.respond(HttpStatusCode.NotFound, ApiError("not_found", "书籍不在书架中"))
         }
-        put("/bookshelf/info") {
-            if (auth.requireSession(call, true) == null) return@put
-            val request = call.receive<BookshelfInfoUpdateRequest>()
-            if (request.sourceId.isBlank() || request.bookUrl.isBlank() || request.name.isBlank()) {
-                call.respond(HttpStatusCode.BadRequest, ApiError("invalid_bookshelf", "书名不能为空"))
-                return@put
-            }
-            val cover = request.coverUrl?.takeIf { it.isNotBlank() }?.let { url ->
-                runCatching { coverCache.cache(url) }.getOrNull()
-            }
-            database.updateBookshelfInfo(request, cover)?.let { call.respond(it) }
-                ?: call.respond(HttpStatusCode.NotFound, ApiError("not_found", "书籍不在书架中"))
-        }
         post("/bookshelf/switch-source") {
             if (auth.requireSession(call, true) == null) return@post
             val request = call.receive<BookshelfSourceSwitchRequest>()
             val book = request.book
             if (request.oldSourceId.isBlank() || request.oldBookUrl.isBlank() || book.sourceId.isBlank() || book.bookUrl.isBlank() || book.name.isBlank() || book.tocUrl.isBlank()) { call.respond(HttpStatusCode.BadRequest, ApiError("invalid_bookshelf", "书架数据无效")); return@post }
-            val altList = (request.alternateSources ?: emptyList()) + (book.alternateSources ?: emptyList())
-            val cover = tryCacheCover(coverCache, book.coverUrl, altList)
+            val cover = book.coverUrl?.takeIf { it.isNotBlank() }?.let { url -> runCatching { coverCache.cache(url) }.getOrNull() }
             bookCache.cancel(request.oldSourceId, request.oldBookUrl)
             val (item, orphan) = database.switchBookshelf(request.oldSourceId, request.oldBookUrl, book, cover, request.alternateSources)
             orphan?.let(coverCache::delete)
@@ -374,20 +360,6 @@ internal suspend fun <T, R> boundedConcurrentMap(values: List<T>, limit: Int, ac
 private suspend fun ApplicationCall.respondCatching(block: () -> Any) {
     try { respond(block()) }
     catch (error: RuleExecutionException) { respond(HttpStatusCode.BadGateway, ApiError("source_execution_failed", error.message ?: "书源执行失败")) }
-}
-
-internal fun tryCacheCover(coverCache: CoverCache, primaryUrl: String?, alternateSources: List<SearchResult>?): CachedCover? {
-    val candidates = buildList {
-        primaryUrl?.takeIf { it.isNotBlank() }?.let { add(it) }
-        alternateSources?.forEach { s ->
-            s.coverUrl?.takeIf { it.isNotBlank() && it !in this }?.let { add(it) }
-        }
-    }
-    for (url in candidates) {
-        val cached = runCatching { coverCache.cache(url) }.getOrNull()
-        if (cached != null) return cached
-    }
-    return null
 }
 
 private fun jsonEvent(message: String): String = Json.encodeToString(message)

@@ -95,34 +95,12 @@ export const groupSearchResults = (results: SearchResult[]): SearchGroup[] => {
 
 export const loadSourceBook = async (result: SearchResult, alternateSources?: SearchResult[]): Promise<OpenBook> => {
   const details = await api.details(result.sourceId, result.bookUrl)
-  const fallbackSources = alternateSources || []
-
-  // Extract best cover: details cover -> result cover -> first non-empty in alternate sources
-  const bestCover = details.coverUrl?.trim() ||
-    result.coverUrl?.trim() ||
-    fallbackSources.find(s => s.coverUrl?.trim())?.coverUrl?.trim()
-
-  // Extract best intro: details intro -> result intro -> longest intro in alternate sources
-  let bestIntro = details.intro?.trim() || result.intro?.trim()
-  if (!bestIntro) {
-    const candidateIntros = fallbackSources.map(s => s.intro?.trim()).filter((intro): intro is string => Boolean(intro))
-    if (candidateIntros.length > 0) {
-      bestIntro = candidateIntros.reduce((longest, current) => current.length > longest.length ? current : longest, '')
-    }
-  }
-
-  // Clean title & author
-  const rawName = details.name?.trim() || result.name?.trim() || '未知书名'
-  const safeName = cleanTitle(rawName) || rawName
-  const rawAuthor = details.author?.trim() || result.author?.trim()
-  const safeAuthor = cleanAuthor(rawAuthor) || rawAuthor
-
   const safeDetails: BookDetails = {
     ...details,
-    name: safeName,
-    author: safeAuthor,
-    coverUrl: bestCover || undefined,
-    intro: bestIntro || undefined,
+    name: details.name?.trim() || result.name || '未知书名',
+    author: details.author?.trim() || result.author,
+    coverUrl: details.coverUrl || result.coverUrl,
+    intro: details.intro || result.intro,
     alternateSources: alternateSources?.filter(s => s.sourceId !== result.sourceId || s.bookUrl !== result.bookUrl),
   }
   const [chapters, progress] = await Promise.all([
@@ -343,27 +321,8 @@ export class SearchStore {
   }
 
   chooseSource = async (choice: SourceChoice, groupSources?: SearchResult[]) => {
-    const allCandidates = groupSources || this.state.choices.map(c => c.result)
-    const fallbackCover = allCandidates.find(s => s.coverUrl?.trim())?.coverUrl?.trim()
-    const candidateIntros = allCandidates.map(s => s.intro?.trim()).filter((intro): intro is string => Boolean(intro))
-    const fallbackIntro = candidateIntros.length > 0
-      ? candidateIntros.reduce((longest, current) => current.length > longest.length ? current : longest, '')
-      : undefined
-
     if (choice.book) {
-      const current = choice.book
-      const bestCover = current.details.coverUrl?.trim() || fallbackCover
-      const bestIntro = current.details.intro?.trim() || fallbackIntro
-      const updatedBook: OpenBook = {
-        ...current,
-        details: {
-          ...current.details,
-          coverUrl: bestCover || undefined,
-          intro: bestIntro || undefined,
-          alternateSources: allCandidates.filter(s => s.sourceId !== choice.result.sourceId || s.bookUrl !== choice.result.bookUrl),
-        },
-      }
-      this.setState({ openBook: updatedBook })
+      this.setState({ openBook: choice.book })
       return
     }
 
@@ -376,7 +335,7 @@ export class SearchStore {
     }))
 
     try {
-      const book = await loadSourceBook(choice.result, allCandidates)
+      const book = await loadSourceBook(choice.result, groupSources)
       this.setState(prev => ({
         choices: prev.choices.map(c =>
           c.result.sourceId === choice.result.sourceId && c.result.bookUrl === choice.result.bookUrl

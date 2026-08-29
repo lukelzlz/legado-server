@@ -4,7 +4,6 @@ import { Icon } from './icons'
 import { calculatePaginationLayout, isAtBottomBoundary, isAtTopBoundary, isInteractiveReaderTarget, isTapGesture, paginateTapZone, scrollTapZone, swipeDirection } from './readerInteractions'
 import { clampScrollPosition, defaultReaderSettings, getReaderFontFamily, ReaderSettings, scrollPosition } from './readerSettings'
 import { SourceSwitchModal } from './SourceSwitchModal'
-import { cleanAuthor, cleanTitle } from './searchFilters'
 import { toast } from './Toast'
 
 export type OpenBook = { details: BookDetails; bookUrl: string; chapters: Chapter[]; progress?: ReadingProgress }
@@ -337,14 +336,13 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
       toast.info(`《${bookName}》已移出书架`)
       return
     }
-    const fallbackCover = currentBook.details.coverUrl || currentBook.details.alternateSources?.find(s => s.coverUrl?.trim())?.coverUrl?.trim()
     await api.addToBookshelf({
       sourceId: currentBook.details.sourceId,
       bookUrl: currentBook.bookUrl,
       name: bookName,
       author: currentBook.details.author,
       tocUrl: currentBook.details.tocUrl,
-      coverUrl: fallbackCover || undefined,
+      coverUrl: currentBook.details.coverUrl,
       alternateSources: currentBook.details.alternateSources,
     })
     setInShelf(true)
@@ -373,16 +371,11 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
 
   const handleSwitchSource = async (chosen: { result: SearchResult; chapters: Chapter[]; targetChapterIndex: number }) => {
     const details = await api.details(chosen.result.sourceId, chosen.result.bookUrl)
-    const fallbackCover = details.coverUrl?.trim() ||
-      chosen.result.coverUrl?.trim() ||
-      currentBook.details.coverUrl?.trim() ||
-      currentBook.details.alternateSources?.find(s => s.coverUrl?.trim())?.coverUrl?.trim()
-
     const safeDetails: BookDetails = {
       ...details,
-      name: cleanTitle(details.name?.trim() || currentBook.details.name || '未知书名') || currentBook.details.name,
-      author: cleanAuthor(details.author?.trim() || currentBook.details.author) || currentBook.details.author,
-      coverUrl: fallbackCover || undefined,
+      name: details.name?.trim() || currentBook.details.name || '未知书名',
+      author: details.author?.trim() || currentBook.details.author,
+      coverUrl: details.coverUrl || currentBook.details.coverUrl,
       intro: details.intro || currentBook.details.intro,
       alternateSources: currentBook.details.alternateSources,
     }
@@ -398,7 +391,6 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
         tocUrl: safeDetails.tocUrl,
         coverUrl: safeDetails.coverUrl,
       },
-      alternateSources: currentBook.details.alternateSources,
     })
 
     const newOpenBook: OpenBook = {

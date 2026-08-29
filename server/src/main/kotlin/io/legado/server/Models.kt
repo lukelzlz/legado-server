@@ -100,13 +100,6 @@ import kotlinx.serialization.Serializable
     val alternateSources: List<SearchResult>? = null,
 )
 @Serializable data class BookshelfStatusRequest(val sourceId: String, val bookUrl: String, val completed: Boolean)
-@Serializable data class BookshelfInfoUpdateRequest(
-    val sourceId: String,
-    val bookUrl: String,
-    val name: String,
-    val author: String? = null,
-    val coverUrl: String? = null,
-)
 data class CachedBookRequest(val sourceId: String, val bookUrl: String, val tocUrl: String)
 @Serializable data class BookshelfItem(
     val sourceId: String,

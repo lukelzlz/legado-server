@@ -16,5 +16,12 @@ import './SearchStatePersistence.test.ts'
 import './search-sort.test.ts'
 import './source-inspector.test.ts'
 import './HeaderMenu.test.ts'
+import './api-client.test.ts'
+import './source-inspector-concurrent.test.ts'
+import './search-store-lifecycle.test.ts'
+import './reader-interactions-settings.test.ts'
+import './ToastStore.test.ts'
 
 console.log('🚀 Running Legado Web Frontend Comprehensive Test Suite (Tier 1, 2, 4 + Challenger Stress)...\n')
+
+

@@ -172,13 +172,20 @@ export class SearchStore {
     this.setState({ choices })
   }
 
-  startSearch = (keywordOverride?: string, sourceIdOverride?: string) => {
-    const query = (keywordOverride !== undefined ? keywordOverride : this.state.keyword).trim()
+  startSearch = (keyword?: string, sourceId?: string) => {
+    const query = (keyword !== undefined ? keyword : this.state.keyword).trim()
     if (!query) return
 
-    const sourceId = sourceIdOverride !== undefined ? sourceIdOverride : this.state.selectedSourceId
+    const source = sourceId !== undefined ? sourceId : this.state.selectedSourceId
 
     if (this.socket) {
+      try {
+        if (this.socket.readyState === WebSocket.OPEN) {
+          this.socket.send(JSON.stringify({ type: 'cancel' }))
+        }
+      } catch {
+        // ignore
+      }
       try {
         this.socket.close()
       } catch {
@@ -189,7 +196,7 @@ export class SearchStore {
 
     this.setState({
       keyword: query,
-      selectedSourceId: sourceId,
+      selectedSourceId: source,
       loading: true,
       stopped: false,
       message: '',
@@ -202,7 +209,7 @@ export class SearchStore {
 
     const socket = streamSearch(
       query,
-      sourceId ? [sourceId] : undefined,
+      source ? [source] : undefined,
       packet => {
         if (this.socket !== socket) return
         if (packet.type === 'start' || packet.type === 'progress' || packet.type === 'done') {
@@ -260,20 +267,18 @@ export class SearchStore {
       loading: false,
     })
     if (socket) {
-      if (socket.readyState === WebSocket.OPEN) {
-        try {
+      try {
+        if (socket.readyState === WebSocket.OPEN) {
           socket.send(JSON.stringify({ type: 'cancel' }))
-        } catch {
-          // ignore
         }
+      } catch {
+        // ignore
       }
-      window.setTimeout(() => {
-        try {
-          socket.close()
-        } catch {
-          // ignore
-        }
-      }, 100)
+      try {
+        socket.close()
+      } catch {
+        // ignore
+      }
     }
   }
 
@@ -353,6 +358,13 @@ export class SearchStore {
 
   reset = () => {
     if (this.socket) {
+      try {
+        if (this.socket.readyState === WebSocket.OPEN) {
+          this.socket.send(JSON.stringify({ type: 'cancel' }))
+        }
+      } catch {
+        // ignore
+      }
       try {
         this.socket.close()
       } catch {

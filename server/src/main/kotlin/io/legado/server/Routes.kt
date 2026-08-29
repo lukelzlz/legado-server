@@ -15,6 +15,8 @@ import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
@@ -110,30 +112,45 @@ fun Route.apiRoutes(database: Database, auth: AuthService, runner: RuleRunner, c
                 val semaphore = Semaphore(sourceSearchConcurrency())
                 val workers = sourceRecords.map { source -> async {
                     semaphore.withPermit {
+                        if (!isActive) return@async
                         val outcome = searchSourceOutcome(runner, source.json, request.keyword)
-                        if (outcome.results.isNotEmpty()) events.send(SearchStreamEvent("results", results = outcome.results))
-                        events.send(counters.complete(outcome))
+                        if (!isActive) return@async
+                        runCatching {
+                            if (outcome.results.isNotEmpty()) events.send(SearchStreamEvent("results", results = outcome.results))
+                            events.send(counters.complete(outcome))
+                        }
                     }
                 } }
-                launch {
-                    workers.awaitAll()
-                    events.send(counters.snapshot("done"))
-                    events.close()
+                val completionJob = launch {
+                    try {
+                        workers.awaitAll()
+                        runCatching { events.send(counters.snapshot("done")) }
+                    } catch (_: CancellationException) {
+                        // Workers were cancelled
+                    } finally {
+                        events.close()
+                    }
                 }
                 val cancellationMonitor = launch {
                     try {
                         for (frame in incoming) {
                             if (frame is Frame.Text && frame.readText().contains("\"cancel\"")) break
                         }
+                    } catch (_: Throwable) {
+                        // Incoming channel closed
                     } finally {
                         workers.forEach { it.cancel() }
+                        completionJob.cancel()
                         events.close()
                     }
                 }
                 try {
                     for (event in events) send(Frame.Text(Json.encodeToString(event)))
+                } catch (_: Throwable) {
+                    // Socket closed or disconnected
                 } finally {
                     cancellationMonitor.cancel()
+                    completionJob.cancel()
                     workers.forEach { it.cancel() }
                     events.close()
                 }

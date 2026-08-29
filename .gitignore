@@ -22,3 +22,6 @@ server/src/main/resources/static/
 .env
 .data/
 .agents/
+.worktrees/
+coverage/
+web/coverage/

@@ -193,6 +193,14 @@ class Database(private val path: String) : Closeable, AutoCloseable {
         }
     }
 
+    fun hasValidCsrfToken(csrfToken: String, now: Long = System.currentTimeMillis()): Boolean = connect { db ->
+        db.prepareStatement("select 1 from session where csrf_token = ? and expires_at > ?").use { stmt ->
+            stmt.setString(1, csrfToken)
+            stmt.setLong(2, now)
+            stmt.executeQuery().use { rs -> rs.next() }
+        }
+    }
+
     fun deleteSession(session: UserSession) = write { db -> db.prepareStatement("delete from session where id = ?").use { it.setString(1, session.id); it.executeUpdate() } }
 
     fun listSources(query: String?): List<SourceSummary> = connect { db ->

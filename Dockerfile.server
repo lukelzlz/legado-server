@@ -27,7 +27,7 @@ WORKDIR /app
 COPY --from=server-build /src/server/build/install/legado-server/ ./
 COPY server/docker-entrypoint.sh /app/entrypoint.sh
 RUN chmod 755 /app/entrypoint.sh
-ENV LEGADO_DATA_DIR=/data LEGADO_PORT=8080 LEGADO_SECURE_COOKIES=true
+ENV LEGADO_DATA_DIR=/data LEGADO_PORT=8080 LEGADO_SECURE_COOKIES=false
 EXPOSE 8080
 ENTRYPOINT ["/app/entrypoint.sh"]
 CMD ["/app/bin/legado-server"]

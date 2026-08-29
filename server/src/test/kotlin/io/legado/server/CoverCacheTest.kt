@@ -59,5 +59,49 @@ class CoverCacheTest {
             Files.deleteIfExists(directory)
         }
     }
+
+    @Test
+    fun `getIfCached returns cached cover if file exists and null if not downloaded`() {
+        val directory = Files.createTempDirectory("legado-cover-cache")
+        try {
+            val cache = CoverCache(directory) { "image/png" to byteArrayOf(1, 2, 3) }
+            val url = "https://example.com/cover.png"
+            org.junit.Assert.assertNull(cache.getIfCached(url))
+
+            val cached = cache.cache(url)
+            val check = cache.getIfCached(url)
+            org.junit.Assert.assertNotNull(check)
+            assertEquals(cached.key, check!!.key)
+
+            // Test by key directly
+            val checkByKey = cache.getIfCached(cached.key)
+            org.junit.Assert.assertNotNull(checkByKey)
+            assertEquals(cached.key, checkByKey!!.key)
+        } finally {
+            directory.toFile().deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `tryFindCachedCover returns immediate match if candidate is in cache`() {
+        val directory = Files.createTempDirectory("legado-cover-cache")
+        try {
+            val cache = CoverCache(directory) { "image/jpeg" to byteArrayOf(1, 2) }
+            val cached = cache.cache("https://example.com/already-cached.jpg")
+
+            val alts = listOf(
+                SearchResult("s1", "书名", "作者", "https://s1/book", "https://example.com/not-cached.jpg"),
+                SearchResult("s2", "书名", "作者", "https://s2/book", "https://example.com/already-cached.jpg")
+            )
+            val found = tryFindCachedCover(cache, "https://example.com/not-cached.jpg", alts)
+            org.junit.Assert.assertNotNull(found)
+            assertEquals(cached.key, found!!.key)
+
+            val notFound = tryFindCachedCover(cache, "https://example.com/other.jpg", null)
+            org.junit.Assert.assertNull(notFound)
+        } finally {
+            directory.toFile().deleteRecursively()
+        }
+    }
 }
 

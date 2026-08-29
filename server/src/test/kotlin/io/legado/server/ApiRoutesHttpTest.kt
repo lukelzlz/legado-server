@@ -412,5 +412,102 @@ class ApiRoutesHttpTest {
             tempDir.toFile().deleteRecursively()
         }
     }
+
+    @Test
+    fun `adding book to bookshelf returns immediately without blocking and caches cover asynchronously`() = testApplication {
+        val dbPath = Files.createTempFile("legado-routes-bookshelf-async", ".sqlite").toString()
+        val tempDir = Files.createTempDirectory("legado-routes-covers")
+        try {
+            val config = ServerConfig(
+                host = "0.0.0.0", port = 8080, databasePath = dbPath,
+                coverCacheDirectory = tempDir, initialAdminPassword = "test-password-1234", secureCookies = false
+            )
+            application { legadoApplication(config) }
+            val client = createClient {
+                install(ContentNegotiation) { json(Json { ignoreUnknownKeys = true; explicitNulls = false }) }
+                install(HttpCookies)
+            }
+
+            val csrf = setupAuthenticatedClient(client, "test-password-1234")
+
+            val startTime = System.currentTimeMillis()
+            val addResp = client.post("/api/bookshelf") {
+                header(AuthService.CSRF_HEADER, csrf)
+                contentType(ContentType.Application.Json)
+                setBody(
+                    BookshelfWriteRequest(
+                        sourceId = "https://src.com",
+                        bookUrl = "https://src.com/book/async-cover",
+                        name = "异步封面测试",
+                        author = "测试作者",
+                        tocUrl = "https://src.com/toc/1",
+                        coverUrl = "https://src.com/cover.jpg"
+                    )
+                )
+            }
+            val elapsed = System.currentTimeMillis() - startTime
+            assertEquals(HttpStatusCode.OK, addResp.status)
+            val addedItem = addResp.body<BookshelfItem>()
+            assertEquals("异步封面测试", addedItem.name)
+            // Immediately upon post, coverKey is null (non-blocking)
+            assertNull(addedItem.coverKey)
+
+            // Bookshelf list shows the book immediately
+            val shelfResp = client.get("/api/bookshelf")
+            assertEquals(HttpStatusCode.OK, shelfResp.status)
+            val shelfList = shelfResp.body<List<BookshelfItem>>()
+            assertEquals(1, shelfList.size)
+            assertEquals("异步封面测试", shelfList.first().name)
+        } finally {
+            Files.deleteIfExists(Path.of(dbPath))
+            tempDir.toFile().deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `adding book to bookshelf uses locally cached cover immediately`() = testApplication {
+        val dbPath = Files.createTempFile("legado-routes-bookshelf-hit", ".sqlite").toString()
+        val tempDir = Files.createTempDirectory("legado-routes-covers")
+        try {
+            // Pre-seed cover in local cache
+            val coverCache = CoverCache(tempDir) { "image/png" to byteArrayOf(1, 2, 3) }
+            val cachedCover = coverCache.cache("https://src.com/cached-cover.png")
+
+            val config = ServerConfig(
+                host = "0.0.0.0", port = 8080, databasePath = dbPath,
+                coverCacheDirectory = tempDir, initialAdminPassword = "test-password-1234", secureCookies = false
+            )
+            application { legadoApplication(config) }
+            val client = createClient {
+                install(ContentNegotiation) { json(Json { ignoreUnknownKeys = true; explicitNulls = false }) }
+                install(HttpCookies)
+            }
+
+            val csrf = setupAuthenticatedClient(client, "test-password-1234")
+
+            val addResp = client.post("/api/bookshelf") {
+                header(AuthService.CSRF_HEADER, csrf)
+                contentType(ContentType.Application.Json)
+                setBody(
+                    BookshelfWriteRequest(
+                        sourceId = "https://src.com",
+                        bookUrl = "https://src.com/book/cached-cover-book",
+                        name = "秒开封面书",
+                        author = "作者",
+                        tocUrl = "https://src.com/toc/1",
+                        coverUrl = "https://src.com/cached-cover.png"
+                    )
+                )
+            }
+            assertEquals(HttpStatusCode.OK, addResp.status)
+            val addedItem = addResp.body<BookshelfItem>()
+            assertEquals("秒开封面书", addedItem.name)
+            // Immediately returns cached cover key
+            assertEquals(cachedCover.key, addedItem.coverKey)
+        } finally {
+            Files.deleteIfExists(Path.of(dbPath))
+            tempDir.toFile().deleteRecursively()
+        }
+    }
 }
 

@@ -29,6 +29,13 @@ class CoverCache(private val directory: Path, private val fetcher: ((String) -> 
         return CachedCover(key, contentType.substringBefore(';'))
     }
 
+    fun getIfCached(url: String): CachedCover? {
+        if (url.isBlank()) return null
+        val key = if (url.matches(Regex("[0-9a-f]{64}"))) url else sha256(url)
+        val stored = directory.resolve(key)
+        return if (Files.exists(stored)) CachedCover(key, "image/*") else null
+    }
+
     fun file(key: String): Path? = key.takeIf { it.matches(Regex("[0-9a-f]{64}")) }?.let(directory::resolve)?.takeIf(Files::exists)
     fun delete(key: String) { file(key)?.let(Files::deleteIfExists) }
 

@@ -161,9 +161,21 @@ class RuleRunner(private val responseFetcher: ((String) -> String)? = null) {
         )
     }
 
+    private fun parseUri(url: String): URI {
+        val trimmed = url.trim()
+        if (!trimmed.startsWith("http://", ignoreCase = true) && !trimmed.startsWith("https://", ignoreCase = true)) {
+            throw RuleExecutionException("URL 格式无效或包含未解析变量: $url")
+        }
+        return try {
+            URI(trimmed)
+        } catch (e: Throwable) {
+            throw RuleExecutionException("URL 解析失败: $url (${e.message})")
+        }
+    }
+
     private fun fetchUrl(url: String, options: UrlOptions?, keyword: String?): String {
         responseFetcher?.let { return it(url) }
-        var request = buildRequest(URI(url), options, keyword)
+        var request = buildRequest(parseUri(url), options, keyword)
         repeat(4) {
             val response = client.send(request, HttpResponse.BodyHandlers.ofInputStream())
             if (response.statusCode() !in 300..399) {

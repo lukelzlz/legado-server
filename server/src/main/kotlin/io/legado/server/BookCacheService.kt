@@ -8,6 +8,8 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
@@ -59,27 +61,34 @@ class BookCacheService(private val database: Database, private val runner: RuleR
             val semaphore = Semaphore(CACHE_CONCURRENCY)
 
             coroutineScope {
-                remaining.map { chapter ->
-                    async {
-                        semaphore.withPermit {
-                            try {
-                                val content = withContext(Dispatchers.IO) { runner.content(source.json, chapter.url) }
-                                if (content.content.toByteArray().size <= MAX_CHAPTER_BYTES) {
-                                    database.cacheBookContent(
-                                        book.sourceId, book.bookUrl, chapter.url,
-                                        content.copy(title = content.title ?: chapter.title)
-                                    )
-                                    reportProgress(book, cachedCount.incrementAndGet(), lastProgressUpdate)
-                                } else {
+                val batches = remaining.chunked(CACHE_CONCURRENCY)
+                for ((index, batch) in batches.withIndex()) {
+                    if (!isActive) break
+                    batch.map { chapter ->
+                        async {
+                            semaphore.withPermit {
+                                try {
+                                    val content = withContext(Dispatchers.IO) { runner.content(source.json, chapter.url) }
+                                    if (content.content.toByteArray().size <= MAX_CHAPTER_BYTES) {
+                                        database.cacheBookContent(
+                                            book.sourceId, book.bookUrl, chapter.url,
+                                            content.copy(title = content.title ?: chapter.title)
+                                        )
+                                        reportProgress(book, cachedCount.incrementAndGet(), lastProgressUpdate)
+                                    } else {
+                                        failures.incrementAndGet()
+                                    }
+                                } catch (error: Throwable) {
+                                    if (error is CancellationException) throw error
                                     failures.incrementAndGet()
                                 }
-                            } catch (error: Throwable) {
-                                if (error is CancellationException) throw error
-                                failures.incrementAndGet()
                             }
                         }
+                    }.awaitAll()
+                    if (index < batches.size - 1 && BATCH_THROTTLE_DELAY_MS > 0 && isActive) {
+                        delay(BATCH_THROTTLE_DELAY_MS)
                     }
-                }.awaitAll()
+                }
             }
 
             val totalFailures = failures.get()
@@ -113,7 +122,8 @@ class BookCacheService(private val database: Database, private val runner: RuleR
 
     private companion object {
         const val MAX_CHAPTER_BYTES = 2 * 1024 * 1024
-        const val CACHE_CONCURRENCY = 8
+        const val CACHE_CONCURRENCY = 4
+        const val BATCH_THROTTLE_DELAY_MS = 25L
         const val PROGRESS_UPDATE_INTERVAL_MS = 1_000L
     }
 }

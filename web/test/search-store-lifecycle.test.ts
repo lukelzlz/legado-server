@@ -43,6 +43,20 @@ test('searchStore - bookKey and loadSourceBook helper', async () => {
     assert.equal(book.details.name, '凡人修仙传')
     assert.equal(book.chapters.length, 1)
     assert.equal(book.progress?.chapterIndex, 0)
+
+    // Test that placeholder details name "未命名书籍" falls back to search result title
+    api.details = async () => ({
+      sourceId: 'https://src1.com',
+      name: '未命名书籍',
+      author: '爱潜水的乌贼',
+      tocUrl: '/toc',
+    })
+    const bookWithFallback = await loadSourceBook({
+      sourceId: 'https://src1.com',
+      name: '诡秘之主',
+      bookUrl: '/book/2',
+    })
+    assert.equal(bookWithFallback.details.name, '诡秘之主', 'Should fallback to search result title when details.name is 未命名书籍')
   } finally {
     api.details = originalDetails
     api.chapters = originalChapters

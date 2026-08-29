@@ -12,7 +12,6 @@ node_modules/
 /app/app
 /app/google
 /app/gradle.properties
-package-lock.json
 .idea/
 # Kotlin 2.0
 .kotlin/

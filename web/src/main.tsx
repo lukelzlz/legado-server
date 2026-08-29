@@ -246,7 +246,9 @@ function BookDetailModal({
         ...insp.book,
         details: {
           ...insp.book.details,
-          name: cleanTitle(insp.book.details.name) || book.details.name,
+          name: (cleanTitle(insp.book.details.name) && cleanTitle(insp.book.details.name) !== '未命名书籍' && cleanTitle(insp.book.details.name) !== '未知书名')
+            ? cleanTitle(insp.book.details.name)
+            : book.details.name,
           author: cleanAuthor(insp.book.details.author) || book.details.author,
           coverUrl: insp.book.details.coverUrl || fallbackCover || undefined,
           intro: insp.book.details.intro || fallbackIntro || undefined,

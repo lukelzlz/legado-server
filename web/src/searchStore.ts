@@ -93,6 +93,18 @@ export const groupSearchResults = (results: SearchResult[]): SearchGroup[] => {
   return Array.from(groupsByKey.values())
 }
 
+export const isValidBookTitle = (title?: string | null): title is string => {
+  if (!title) return false
+  const t = title.trim()
+  return t.length > 0 && t !== '未命名书籍' && t !== '未知书名' && t !== 'null' && t !== 'undefined'
+}
+
+export const isValidAuthor = (author?: string | null): author is string => {
+  if (!author) return false
+  const a = author.trim()
+  return a.length > 0 && a !== '未知作者' && a !== '未知' && a !== 'null' && a !== 'undefined'
+}
+
 export const loadSourceBook = async (result: SearchResult, alternateSources?: SearchResult[]): Promise<OpenBook> => {
   const details = await api.details(result.sourceId, result.bookUrl)
   const fallbackSources = alternateSources || []
@@ -111,10 +123,20 @@ export const loadSourceBook = async (result: SearchResult, alternateSources?: Se
     }
   }
 
-  // Clean title & author
-  const rawName = details.name?.trim() || result.name?.trim() || '未知书名'
+  // Clean title & author (filter out placeholder strings like "未命名书籍")
+  const rawName = (isValidBookTitle(details.name) ? details.name.trim() : null) ||
+    (isValidBookTitle(result.name) ? result.name.trim() : null) ||
+    fallbackSources.find(s => isValidBookTitle(s.name))?.name?.trim() ||
+    details.name?.trim() ||
+    result.name?.trim() ||
+    '未知书名'
   const safeName = cleanTitle(rawName) || rawName
-  const rawAuthor = details.author?.trim() || result.author?.trim()
+
+  const rawAuthor = (isValidAuthor(details.author) ? details.author.trim() : null) ||
+    (isValidAuthor(result.author) ? result.author.trim() : null) ||
+    fallbackSources.find(s => isValidAuthor(s.author))?.author?.trim() ||
+    details.author?.trim() ||
+    result.author?.trim()
   const safeAuthor = cleanAuthor(rawAuthor) || rawAuthor
 
   const safeDetails: BookDetails = {
@@ -354,10 +376,16 @@ export class SearchStore {
       const current = choice.book
       const bestCover = current.details.coverUrl?.trim() || fallbackCover
       const bestIntro = current.details.intro?.trim() || fallbackIntro
+      const currentName = current.details.name?.trim()
+      const existingName = this.state.openBook?.details.name?.trim()
+      const bestName = isValidBookTitle(currentName)
+        ? currentName
+        : (isValidBookTitle(existingName) ? existingName : (cleanTitle(choice.result.name) || choice.result.name || currentName))
       const updatedBook: OpenBook = {
         ...current,
         details: {
           ...current.details,
+          name: bestName,
           coverUrl: bestCover || undefined,
           intro: bestIntro || undefined,
           alternateSources: allCandidates.filter(s => s.sourceId !== choice.result.sourceId || s.bookUrl !== choice.result.bookUrl),

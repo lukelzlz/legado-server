@@ -861,7 +861,18 @@ mark.search-highlight { background: var(--accent-soft); color: var(--accent); fo
   .library-hero h1 { font-size: 30px; }
   .library-results > div { grid-template-columns: 1fr; }
   .library-book-detail > header { align-items: stretch; flex-direction: column; }
-  .book-detail-cover { width: 58px; height: 78px; }
+  .book-detail-modal { width: min(600px, 94vw); max-height: 88vh; border-radius: 14px; }
+  .book-detail-modal-header { flex-direction: column; align-items: stretch; padding: 16px 16px 14px; gap: 14px; position: relative; }
+  .book-detail-heading { width: 100%; align-items: flex-start; gap: 14px; padding-right: 36px; min-width: 0; flex: 1 1 auto; }
+  .book-detail-cover, .book-detail-cover-placeholder { width: 68px; height: 90px; flex: none; flex-shrink: 0; }
+  .book-detail-info { flex: 1 1 auto; min-width: 0; }
+  .book-detail-info h2 { font-size: 17px; line-height: 1.35; margin-bottom: 2px; word-break: break-word; }
+  .book-detail-stats { margin-top: 6px; gap: 4px 8px; font-size: 11px; }
+  .book-detail-header-actions { width: 100%; display: grid; grid-template-columns: 1fr 1.2fr; gap: 10px; }
+  .book-detail-header-actions .shelf-toggle-btn { width: 100%; justify-content: center; height: 40px; }
+  .book-detail-header-actions .primary-button.read-btn { width: 100%; justify-content: center; height: 40px; }
+  .book-detail-header-actions .close-btn { position: absolute; top: 12px; right: 12px; width: 32px; height: 32px; padding: 0; display: grid; place-items: center; border-radius: 50%; background: var(--surface-muted); }
+  .book-detail-section { padding: 0 16px; }
   .shelf-page { padding: 32px 16px; }
   .shelf-tabs { gap: 16px; margin-top: -10px; }
   .shelf-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }

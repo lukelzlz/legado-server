@@ -275,6 +275,50 @@ test('ReaderPagination - Persistence: loadReaderSettings and saveReaderSettings 
   }
 })
 
+test('ReaderPagination - Chapter Transition: Turning back from chapter beginning lands on the last page/position', () => {
+  // Scenario 1: Paginated mode backward navigation lands on pageCount - 1
+  const resolveTargetPageIndex = (targetMode: 'first' | 'last' | null, initialPos: number | null, pageCount: number, currentPageIndex: number) => {
+    if (targetMode === 'last') {
+      return pageCount - 1
+    } else if (targetMode === 'first') {
+      return 0
+    } else if (initialPos !== null) {
+      return Math.min(pageCount - 1, Math.max(0, Math.round(initialPos * (pageCount - 1))))
+    }
+    return Math.min(currentPageIndex, pageCount - 1)
+  }
+
+  // 6-page chapter when navigating backward
+  assert.equal(resolveTargetPageIndex('last', null, 6, 0), 5, 'Navigating backward must land on last page (index 5)')
+  // 1-page chapter when navigating backward
+  assert.equal(resolveTargetPageIndex('last', null, 1, 0), 0, 'Single page chapter lands on page 0')
+  // Navigating forward to next chapter
+  assert.equal(resolveTargetPageIndex('first', null, 6, 0), 0, 'Navigating forward must land on first page (index 0)')
+  // Resuming saved progress at 50%
+  assert.equal(resolveTargetPageIndex(null, 0.5, 6, 0), 3, 'Resuming 50% on 6-page chapter lands on page 3')
+
+  // Scenario 2: Scroll mode backward navigation lands on maxScroll
+  const resolveTargetScroll = (targetMode: 'first' | 'last' | null, initialPos: number | null, scrollHeight: number, clientHeight: number) => {
+    const maxScroll = Math.max(0, scrollHeight - clientHeight)
+    if (targetMode === 'last') {
+      return maxScroll
+    } else if (targetMode === 'first') {
+      return 0
+    } else if (initialPos !== null) {
+      return Math.round(maxScroll * initialPos)
+    }
+    return 0
+  }
+
+  const scrollHeight = 3500
+  const clientHeight = 800
+  const maxScroll = 2700
+
+  assert.equal(resolveTargetScroll('last', null, scrollHeight, clientHeight), maxScroll, 'Navigating backward in scroll mode must land on maxScroll (chapter bottom)')
+  assert.equal(resolveTargetScroll('first', null, scrollHeight, clientHeight), 0, 'Navigating forward in scroll mode lands on top (0)')
+  assert.equal(resolveTargetScroll(null, 0.4, scrollHeight, clientHeight), 1080, 'Resuming 40% progress lands on 1080px')
+})
+
 
 
 

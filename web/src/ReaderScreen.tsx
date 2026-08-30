@@ -330,6 +330,16 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
       .finally(() => preloadingRef.current.delete(next.url))
   }, [currentBook.bookUrl, currentBook.chapters, currentBook.details.sourceId])
 
+  const preloadPrevChapter = useCallback((index: number) => {
+    const prev = currentBook.chapters[index - 1]
+    if (!prev || preloadedContentRef.current.has(prev.url) || preloadingRef.current.has(prev.url)) return
+    preloadingRef.current.add(prev.url)
+    void api.content(currentBook.details.sourceId, prev.url, currentBook.bookUrl)
+      .then(result => preloadedContentRef.current.set(prev.url, result.content))
+      .catch(() => undefined)
+      .finally(() => preloadingRef.current.delete(prev.url))
+  }, [currentBook.bookUrl, currentBook.chapters, currentBook.details.sourceId])
+
   const showBoundaryNotice = useCallback((msg: string) => {
     setBoundaryMessage(msg)
     if (boundaryTimerRef.current !== null) window.clearTimeout(boundaryTimerRef.current)
@@ -458,16 +468,6 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
       restoredRef.current = true
       currentRef.current = { chapter, position }
       initialPagePositionRef.current = position
-
-      if (settings.pageMode === 'scroll') {
-        window.requestAnimationFrame(() => {
-          const maxScroll = Math.max(0, document.documentElement.scrollHeight - window.innerHeight)
-          const targetScroll = targetInitialPageRef.current === 'last' ? maxScroll : targetInitialPageRef.current === 'first' ? 0 : maxScroll * position
-          targetInitialPageRef.current = null
-          lastScrollYRef.current = targetScroll
-          window.scrollTo({ top: targetScroll, behavior: 'auto' })
-        })
-      }
       setLoading(false)
     }
     const preloaded = preloadedContentRef.current.get(chapter.url)
@@ -486,7 +486,36 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
     return () => {
       cancelled = true
     }
-  }, [chapter, currentBook.bookUrl, currentBook.details.sourceId, currentBook.progress?.scrollPosition, settings.pageMode, startIndex])
+  }, [chapter, currentBook.bookUrl, currentBook.details.sourceId, currentBook.progress?.scrollPosition, startIndex])
+
+  // Scroll mode layout effect to restore position or jump to start/end
+  useLayoutEffect(() => {
+    if (settings.pageMode !== 'scroll' || loading || !content) return
+    const targetMode = targetInitialPageRef.current
+    const initialPos = initialPagePositionRef.current
+    targetInitialPageRef.current = null
+    initialPagePositionRef.current = null
+
+    const scrollToTarget = () => {
+      const maxScroll = Math.max(0, document.documentElement.scrollHeight - window.innerHeight)
+      let targetScroll = 0
+      if (targetMode === 'last') {
+        targetScroll = maxScroll
+      } else if (targetMode === 'first') {
+        targetScroll = 0
+      } else if (initialPos !== null) {
+        targetScroll = Math.round(maxScroll * initialPos)
+      } else {
+        return
+      }
+      lastScrollYRef.current = targetScroll
+      window.scrollTo({ top: targetScroll, behavior: 'auto' })
+    }
+
+    scrollToTarget()
+    const rafId = window.requestAnimationFrame(scrollToTarget)
+    return () => window.cancelAnimationFrame(rafId)
+  }, [content, loading, settings.pageMode])
 
   // Pagination measurement
   const measurePagination = useCallback(() => {
@@ -495,6 +524,7 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
     if (!viewport || !body) return
     const w = viewport.clientWidth
     if (w <= 0) return
+    if (loading || !content) return
 
     const totalScrollWidth = body.scrollWidth
     const layout = calculatePaginationLayout({
@@ -511,9 +541,11 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
 
     if (targetInitialPageRef.current === 'last') {
       targetInitialPageRef.current = null
+      initialPagePositionRef.current = null
       setPageIndex(layout.pageCount - 1)
     } else if (targetInitialPageRef.current === 'first') {
       targetInitialPageRef.current = null
+      initialPagePositionRef.current = null
       setPageIndex(0)
     } else if (initialPagePositionRef.current !== null) {
       const pos = initialPagePositionRef.current
@@ -523,10 +555,11 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
     } else {
       setPageIndex(curr => Math.min(curr, layout.pageCount - 1))
     }
-  }, [columnGap, settings.columnMode])
+  }, [columnGap, content, loading, settings.columnMode])
 
   useLayoutEffect(() => {
     if (settings.pageMode !== 'paginate') return
+    if (loading || !content) return
     measurePagination()
     const viewport = viewportRef.current
     if (!viewport) return
@@ -536,6 +569,7 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
   }, [
     settings.pageMode,
     content,
+    loading,
     settings.fontSize,
     settings.lineHeight,
     settings.letterSpacing,
@@ -587,6 +621,8 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
         current.position = scrollPosition(currentY, scrollHeight, clientHeight)
         if (current.position >= 0.7) {
           preloadNextChapter(current.chapter.index)
+        } else if (current.position <= 0.3) {
+          preloadPrevChapter(current.chapter.index)
         }
         if (timerRef.current === null) {
           timerRef.current = window.setTimeout(() => {
@@ -608,7 +644,7 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
       if (timerRef.current !== null) window.clearTimeout(timerRef.current)
       persist()
     }
-  }, [persist, preloadNextChapter, settings.pageMode])
+  }, [persist, preloadNextChapter, preloadPrevChapter, settings.pageMode])
 
   useEffect(() => {
     if (settings.pageMode !== 'paginate') return
@@ -618,6 +654,8 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
       current.position = position
       if (position >= 0.7) {
         preloadNextChapter(chapter.index)
+      } else if (position <= 0.3) {
+        preloadPrevChapter(chapter.index)
       }
       if (timerRef.current === null) {
         timerRef.current = window.setTimeout(() => {
@@ -626,7 +664,7 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
         }, 1200)
       }
     }
-  }, [chapter, pageCount, pageIndex, persist, preloadNextChapter, settings.pageMode])
+  }, [chapter, pageCount, pageIndex, persist, preloadNextChapter, preloadPrevChapter, settings.pageMode])
 
   useEffect(() => () => stopSpeech(), [stopSpeech])
   useEffect(() => () => { if (boundaryTimerRef.current !== null) window.clearTimeout(boundaryTimerRef.current) }, [])
@@ -651,8 +689,8 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
           goNextPage()
         }
       } else {
-        if (event.key === 'ArrowLeft') { event.preventDefault(); changeChapter(chapterIndex - 1) }
-        if (event.key === 'ArrowRight') { event.preventDefault(); changeChapter(chapterIndex + 1) }
+        if (event.key === 'ArrowLeft') { event.preventDefault(); changeChapter(chapterIndex - 1, 'last') }
+        if (event.key === 'ArrowRight') { event.preventDefault(); changeChapter(chapterIndex + 1, 'first') }
         if (event.key === 'PageDown' || event.key === ' ') {
           event.preventDefault()
           if (isAtBottomBoundary(window.scrollY, document.documentElement.scrollHeight, window.innerHeight)) {

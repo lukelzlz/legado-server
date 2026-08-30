@@ -391,7 +391,21 @@ private class JsSourceRunner(private val runner: RuleRunner, private val source:
 internal class NodeValue private constructor(private val html: Element?, private val json: Any?) {
     fun value(rule: String?, jsSandbox: JsSandbox? = null, rawBody: String? = null, baseUrl: String? = null): String? {
         if (rule.isNullOrBlank()) return null
-        val trimmedRule = rule.trim()
+        var trimmedRule = rule.trim()
+
+        if (trimmedRule.contains("{{") && trimmedRule.contains("}}")) {
+            trimmedRule = Regex("\\{\\{(.*?)}}").replace(trimmedRule) { match ->
+                val inner = match.groupValues[1].trim()
+                if (inner.isBlank()) return@replace ""
+                if (json != null && (inner.startsWith("$") || inner.startsWith(".."))) {
+                    runCatching { unwrapJsonValue(readJson(inner)) ?: "" }.getOrDefault("")
+                } else if (html != null) {
+                    runCatching { valuePlain(inner) ?: "" }.getOrDefault("")
+                } else {
+                    ""
+                }
+            }
+        }
 
         if (trimmedRule.startsWith("@js:") || trimmedRule.startsWith("js:")) {
             val jsCode = trimmedRule.removePrefix("@js:").removePrefix("js:").trim()
@@ -498,15 +512,32 @@ internal class NodeValue private constructor(private val html: Element?, private
         return runCatching { NodeValue.json(readJson(rule)) }.getOrDefault(this)
     }
 
-    private fun valueJson(rule: String): String? {
-        val template = Regex("\\{\\{(.*?)}}").replace(rule) { match ->
-            runCatching { readJson(match.groupValues[1]).toString() }.getOrDefault("")
+    private fun unwrapJsonValue(value: Any?): String? {
+        return when (value) {
+            null -> null
+            is List<*> -> {
+                val nonNull = value.filterNotNull()
+                if (nonNull.size == 1) nonNull[0].toString().takeIf { it.isNotBlank() }
+                else nonNull.joinToString(separator = "\n") { it.toString() }.ifBlank { null }
+            }
+            else -> value.toString().takeIf { it.isNotBlank() }
         }
-        if (!template.startsWith("$")) return template.takeIf { it.isNotBlank() }
-        return runCatching { readJson(template).toString() }.getOrNull()
     }
 
-    private fun readJson(path: String): Any = JsonPath.parse(json).read(path)
+    private fun valueJson(rule: String): String? {
+        val template = Regex("\\{\\{(.*?)}}").replace(rule) { match ->
+            val inner = match.groupValues[1].trim()
+            unwrapJsonValue(readJson(inner)) ?: ""
+        }
+        if (!template.startsWith("$")) return template.takeIf { it.isNotBlank() }
+        return unwrapJsonValue(readJson(template))
+    }
+
+    private fun readJson(path: String): Any? = runCatching {
+        val clean = path.trim()
+        val normalized = if (clean.startsWith("$")) clean else if (clean.startsWith("..")) "$.$clean" else "$.$clean"
+        JsonPath.read<Any>(json, normalized)
+    }.getOrNull()
 
     companion object {
         fun html(element: Element) = NodeValue(element, null)

@@ -253,92 +253,85 @@ test('source inspector - inspectSingleSource respects isCancelled at every netwo
   }
 })
 
-test('source inspector - modal open throttled inspection & on-demand inspection flow', async () => {
+test('source inspector - fast concurrent inspection and modal close AbortSignal cancellation', async () => {
   const originalDetails = api.details
   const originalChapters = api.chapters
   const originalContent = api.content
   const originalProgress = api.progress
 
   try {
-    const networkCallsBySource: Record<string, number> = {}
+    const activeCalls = new Set<string>()
+    let abortedCallCount = 0
 
-    api.details = async (src, book) => {
-      networkCallsBySource[src] = (networkCallsBySource[src] || 0) + 1
-      return { sourceId: src, name: '凡人修仙传', tocUrl: `${book}/toc` }
+    api.details = async (src, book, signal) => {
+      activeCalls.add(`details:${src}`)
+      if (signal?.aborted) {
+        abortedCallCount++
+        throw new DOMException('Aborted', 'AbortError')
+      }
+      return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => {
+          activeCalls.delete(`details:${src}`)
+          resolve({ sourceId: src, name: '凡人修仙传', tocUrl: `${book}/toc` })
+        }, 50)
+        signal?.addEventListener('abort', () => {
+          clearTimeout(timer)
+          activeCalls.delete(`details:${src}`)
+          abortedCallCount++
+          reject(new DOMException('Aborted', 'AbortError'))
+        })
+      })
     }
-    api.chapters = async (src) => {
-      networkCallsBySource[src] = (networkCallsBySource[src] || 0) + 1
+
+    api.chapters = async (src, _book, signal) => {
+      if (signal?.aborted) {
+        abortedCallCount++
+        throw new DOMException('Aborted', 'AbortError')
+      }
       return Array.from({ length: 20 }, (_, i) => ({
         index: i,
         title: `第${i + 1}章 试炼`,
         url: `/c${i + 1}`,
       }))
     }
-    api.content = async (src) => {
-      networkCallsBySource[src] = (networkCallsBySource[src] || 0) + 1
+
+    api.content = async (_src, _ch, _b, signal) => {
+      if (signal?.aborted) {
+        abortedCallCount++
+        throw new DOMException('Aborted', 'AbortError')
+      }
       return { content: '修仙正文字数很多测试内容'.repeat(100) }
     }
-    api.progress = async (src) => {
-      networkCallsBySource[src] = (networkCallsBySource[src] || 0) + 1
-      return undefined
-    }
 
-    const rawSources: SearchResult[] = Array.from({ length: 12 }, (_, i) => ({
+    api.progress = async () => undefined
+
+    const rawSources: SearchResult[] = Array.from({ length: 8 }, (_, i) => ({
       sourceId: `source-${i}`,
       name: '凡人修仙传',
       bookUrl: `https://s${i}.com/book/1`,
     }))
 
-    // 1. Initial modal open state: all 12 initialized to idle
-    const inspections = createInitialInspections(rawSources)
-    assert.equal(inspections.size, 12)
-    for (const s of rawSources) {
-      const key = `${s.sourceId}\u0000${s.bookUrl}`
-      assert.equal(inspections.get(key)?.status, 'idle')
-    }
-    assert.equal(Object.keys(networkCallsBySource).length, 0, 'No network requests on initial map creation')
+    // 1. Fast concurrent inspection on modal open
+    const controller = new AbortController()
+    const promise = inspectAllSourcesConcurrently(
+      rawSources,
+      3,
+      undefined,
+      undefined,
+      undefined,
+      controller.signal
+    )
 
-    // 2. On modal open: ONLY the active source (e.g. source-0) is inspected
-    const activeResult = rawSources[0]
-    const activeKey = `${activeResult.sourceId}\u0000${activeResult.bookUrl}`
-    const singleRes = await inspectSingleSource(activeResult, rawSources, partial => {
-      const existing = inspections.get(activeKey)!
-      inspections.set(activeKey, { ...existing, ...partial })
-    })
-    inspections.set(activeKey, singleRes)
+    // Verify workers started concurrently
+    assert.ok(activeCalls.size > 0, 'Concurrent workers must start immediately')
 
-    assert.equal(inspections.get(activeKey)?.status, 'valid')
-    assert.ok(networkCallsBySource['source-0'] > 0)
-    for (let i = 1; i < 12; i++) {
-      const idleKey = `${rawSources[i].sourceId}\u0000${rawSources[i].bookUrl}`
-      assert.equal(inspections.get(idleKey)?.status, 'idle')
-      assert.equal(networkCallsBySource[`source-${i}`], undefined, `Candidate source-${i} must have zero network calls upfront`)
-    }
+    // 2. User closes modal / enters reader after 10ms -> abort all in-flight requests
+    await new Promise(r => setTimeout(r, 10))
+    controller.abort()
 
-    // 3. User hovers or clicks on candidate source-5 on demand
-    const candResult = rawSources[5]
-    const candKey = `${candResult.sourceId}\u0000${candResult.bookUrl}`
-    assert.equal(inspections.get(candKey)?.status, 'idle')
-
-    const candRes = await inspectSingleSource(candResult, rawSources, partial => {
-      const existing = inspections.get(candKey)!
-      inspections.set(candKey, { ...existing, ...partial })
-    })
-    inspections.set(candKey, candRes)
-
-    assert.equal(inspections.get(candKey)?.status, 'valid')
-    assert.ok(networkCallsBySource['source-5'] > 0)
-    // Other candidate sources still untouched
-    assert.equal(inspections.get(`${rawSources[1].sourceId}\u0000${rawSources[1].bookUrl}`)?.status, 'idle')
-    assert.equal(networkCallsBySource['source-1'], undefined)
-
-    // 4. User clicks full re-check: runs concurrent inspection on all sources
-    const fullMap = await inspectAllSourcesConcurrently(rawSources, 3, undefined, undefined, inspections)
-    assert.equal(fullMap.size, 12)
-    for (let i = 0; i < 12; i++) {
-      const key = `${rawSources[i].sourceId}\u0000${rawSources[i].bookUrl}`
-      assert.equal(fullMap.get(key)?.status, 'valid')
-    }
+    const map = await promise
+    assert.ok(abortedCallCount > 0, 'In-flight HTTP requests must be aborted')
+    assert.equal(activeCalls.size, 0, 'No remaining active network calls after modal close abort')
   } finally {
     api.details = originalDetails
     api.chapters = originalChapters

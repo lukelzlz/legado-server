@@ -71,22 +71,23 @@ function SourceChoiceList({
 
   const completedCount = useMemo(() => {
     let count = 0
-    for (const insp of inspections.values()) {
-      if (insp.status === 'valid' || insp.status === 'vip_restricted' || insp.status === 'incomplete' || insp.status === 'error') {
+    for (const choice of choices) {
+      const insp = inspections.get(`${choice.result.sourceId}\u0000${choice.result.bookUrl}`)
+      if (insp && insp.status !== 'checking' && insp.status !== 'idle') {
         count++
       }
     }
     return count
-  }, [inspections])
+  }, [choices, inspections])
 
   return (
-    <section className="source-choice-list">
+    <section className="source-choice-list" aria-label="可用书源切换列表">
       <header>
         <div className="source-choice-header-left">
-          <span>书源可用性与质量校验</span>
+          <span>可用书源 ({choices.length})</span>
           <small>
             {checking
-              ? `正在校验正文与VIP (${completedCount}/${choices.length})...`
+              ? `正在并发校验书源健康度 (${completedCount}/${choices.length})...`
               : `${completedCount}/${choices.length} 个书源已完成质量检测`}
           </small>
         </div>
@@ -98,7 +99,7 @@ function SourceChoiceList({
           title="探测所有书源的章节可用性与VIP限制"
         >
           <Icon name="refresh" className={checking ? 'spin' : ''} />
-          <span>{checking ? '探测中' : completedCount < choices.length ? '检测健康度' : '重新校验'}</span>
+          <span>{checking ? '探测中' : '重新校验'}</span>
         </button>
       </header>
       <div className="source-choice-items">
@@ -127,9 +128,6 @@ function SourceChoiceList({
             } else if (inspection.status === 'error') {
               badge = <span className="source-health-badge health-error">✕ 无法读取</span>
               statusText = inspection.summaryText
-            } else if (inspection.status === 'idle') {
-              badge = <span className="source-health-badge health-idle">待检测</span>
-              statusText = '未检测 · 悬停或点击即可检测并切换'
             }
           } else if (isLoading) {
             statusText = '正在读取目录...'
@@ -142,14 +140,7 @@ function SourceChoiceList({
               key={key}
               className={`source-choice-item ${isSelected ? 'selected' : ''} ${isLoading ? 'loading' : ''}`}
               disabled={isLoading}
-              onMouseEnter={() => handleMouseEnter(choice)}
-              onMouseLeave={() => handleMouseLeave(choice)}
-              onClick={() => {
-                if (!inspection || inspection.status === 'idle') {
-                  onInspectSingle?.(choice)
-                }
-                onChoose(choice)
-              }}
+              onClick={() => onChoose(choice)}
             >
               <div className="source-choice-top">
                 <strong>{choice.result.sourceId}</strong>
@@ -180,82 +171,20 @@ function BookDetailModal({
   onClose: () => void
 }) {
   const [introExpanded, setIntroExpanded] = useState(false)
-  const [inspections, setInspections] = useState<Map<string, SourceHealthInspection>>(() =>
-    createInitialInspections(choices.map(c => c.result))
-  )
+  const [inspections, setInspections] = useState<Map<string, SourceHealthInspection>>(new Map())
   const [checking, setChecking] = useState(false)
   const [inShelf, setInShelf] = useState<boolean | null>(null)
   const [shelfBusy, setShelfBusy] = useState(false)
+  const abortControllerRef = useRef<AbortController | null>(null)
   const cancelInspectRef = useRef(false)
-  const inspectingKeysRef = useRef<Set<string>>(new Set())
 
   const latestChapter = book.chapters.at(-1)
   const availableSources = choices.length
 
-  useEffect(() => {
-    setInspections(prev => {
-      let changed = false
-      const next = new Map(prev)
-      for (const c of choices) {
-        const key = `${c.result.sourceId}\u0000${c.result.bookUrl}`
-        if (!next.has(key)) {
-          next.set(key, {
-            sourceId: c.result.sourceId,
-            bookUrl: c.result.bookUrl,
-            status: 'idle',
-            score: 0,
-            checkedChaptersCount: 0,
-            validChaptersCount: 0,
-            vipBlocked: false,
-            summaryText: '待校验',
-          })
-          changed = true
-        }
-      }
-      return changed ? next : prev
-    })
-  }, [choices])
-
-  const inspectSingleChoice = useCallback((targetResult: SearchResult) => {
-    const key = `${targetResult.sourceId}\u0000${targetResult.bookUrl}`
-    if (inspectingKeysRef.current.has(key)) return
-
-    const current = inspections.get(key)
-    if (current && (current.status === 'valid' || current.status === 'vip_restricted' || current.status === 'incomplete' || current.status === 'error')) {
-      return
-    }
-
-    inspectingKeysRef.current.add(key)
-    const rawSources = choices.map(c => c.result)
-
-    void inspectSingleSource(
-      targetResult,
-      rawSources,
-      partial => {
-        if (cancelInspectRef.current) return
-        setInspections(prev => {
-          const next = new Map(prev)
-          const existing = next.get(key) || {
-            sourceId: targetResult.sourceId,
-            bookUrl: targetResult.bookUrl,
-            status: 'idle',
-            score: 0,
-            checkedChaptersCount: 0,
-            validChaptersCount: 0,
-            vipBlocked: false,
-            summaryText: '待校验',
-          }
-          next.set(key, { ...existing, ...partial })
-          return next
-        })
-      },
-      () => cancelInspectRef.current
-    ).finally(() => {
-      inspectingKeysRef.current.delete(key)
-    })
-  }, [choices, inspections])
-
-  const runFullInspection = useCallback(() => {
+  const runInspection = useCallback(() => {
+    abortControllerRef.current?.abort()
+    const controller = new AbortController()
+    abortControllerRef.current = controller
     cancelInspectRef.current = false
     setChecking(true)
     const rawSources = choices.map(c => c.result)
@@ -263,37 +192,39 @@ function BookDetailModal({
       rawSources,
       3,
       updated => {
-        if (!cancelInspectRef.current) {
+        if (!cancelInspectRef.current && !controller.signal.aborted) {
           setInspections(updated)
         }
       },
-      () => cancelInspectRef.current,
-      inspections
+      () => cancelInspectRef.current || controller.signal.aborted,
+      undefined,
+      controller.signal
     ).finally(() => {
-      if (!cancelInspectRef.current) {
+      if (!cancelInspectRef.current && !controller.signal.aborted) {
         setChecking(false)
       }
     })
-  }, [choices, inspections])
+  }, [choices])
 
   useEffect(() => {
-    cancelInspectRef.current = false
-    const activeChoice =
-      choices.find(c => c.result.sourceId === book.details.sourceId && c.result.bookUrl === book.bookUrl) ||
-      choices.find(c => c.result.bookUrl === book.bookUrl) ||
-      choices[0]
-    if (activeChoice) {
-      inspectSingleChoice(activeChoice.result)
-    }
+    runInspection()
     return () => {
       cancelInspectRef.current = true
+      abortControllerRef.current?.abort()
     }
-  }, [book.details.sourceId, book.bookUrl, choices, inspectSingleChoice])
+  }, [runInspection])
 
   const handleClose = useCallback(() => {
     cancelInspectRef.current = true
+    abortControllerRef.current?.abort()
     onClose()
   }, [onClose])
+
+  const handleOpenReader = (idx: number) => {
+    cancelInspectRef.current = true
+    abortControllerRef.current?.abort()
+    onOpen(idx)
+  }
 
   useEffect(() => {
     let active = true
@@ -374,9 +305,6 @@ function BookDetailModal({
       }
       onChooseSource({ ...choice, book: mergedBook, status: 'loaded' })
     } else {
-      if (!insp || insp.status === 'idle') {
-        inspectSingleChoice(choice.result)
-      }
       onChooseSource(choice)
     }
   }
@@ -419,7 +347,7 @@ function BookDetailModal({
               <Icon name="book" />
               <span>{inShelf ? '已在书架' : '加入书架'}</span>
             </button>
-            <button className="primary-button read-btn" onClick={() => onOpen(resumeIndex)}>
+            <button className="primary-button read-btn" onClick={() => handleOpenReader(resumeIndex)}>
               {book.progress ? '继续阅读' : '开始阅读'}
               <Icon name="arrowRight" />
             </button>
@@ -437,8 +365,7 @@ function BookDetailModal({
                 inspections={inspections}
                 active={book.bookUrl}
                 onChoose={handleSelectChoice}
-                onRecheck={runFullInspection}
-                onInspectSingle={choice => inspectSingleChoice(choice.result)}
+                onRecheck={runInspection}
                 checking={checking}
               />
             </div>
@@ -467,7 +394,7 @@ function BookDetailModal({
                 <button
                   className={item.index === resumeIndex ? 'resume-chapter' : ''}
                   key={item.url}
-                  onClick={() => onOpen(item.index)}
+                  onClick={() => handleOpenReader(item.index)}
                 >
                   <span>{item.title}</span>
                   {item.index === resumeIndex && book.progress && <small>上次阅读</small>}

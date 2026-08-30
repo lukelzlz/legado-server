@@ -153,7 +153,8 @@ export async function inspectSingleSource(
   result: SearchResult,
   alternateSources?: SearchResult[],
   onProgress?: (partial: Partial<SourceHealthInspection>) => void,
-  isCancelled?: () => boolean
+  isCancelled?: () => boolean,
+  signal?: AbortSignal
 ): Promise<SourceHealthInspection> {
   const base: SourceHealthInspection = {
     sourceId: result.sourceId,
@@ -165,17 +166,17 @@ export async function inspectSingleSource(
     vipBlocked: false,
     summaryText: '正在探测目录与正文...',
   }
-  if (isCancelled?.()) {
+  if (isCancelled?.() || signal?.aborted) {
     return { ...base, status: 'idle', summaryText: '待校验' }
   }
   onProgress?.(base)
 
   try {
-    if (isCancelled?.()) return { ...base, status: 'idle', summaryText: '待校验' }
-    const details = await api.details(result.sourceId, result.bookUrl)
-    if (isCancelled?.()) return { ...base, status: 'idle', summaryText: '待校验' }
-    const chapters = await api.chapters(result.sourceId, details.tocUrl)
-    if (isCancelled?.()) return { ...base, status: 'idle', summaryText: '待校验' }
+    if (isCancelled?.() || signal?.aborted) return { ...base, status: 'idle', summaryText: '待校验' }
+    const details = await api.details(result.sourceId, result.bookUrl, signal)
+    if (isCancelled?.() || signal?.aborted) return { ...base, status: 'idle', summaryText: '待校验' }
+    const chapters = await api.chapters(result.sourceId, details.tocUrl, signal)
+    if (isCancelled?.() || signal?.aborted) return { ...base, status: 'idle', summaryText: '待校验' }
     const totalChapters = chapters.length
     const latestChapterTitle = chapters.at(-1)?.title
 
@@ -188,7 +189,7 @@ export async function inspectSingleSource(
         summaryText: '目录为空',
         error: '目录为空',
       }
-      if (!isCancelled?.()) {
+      if (!isCancelled?.() && !signal?.aborted) {
         onProgress?.(errRes)
       }
       return errRes
@@ -197,18 +198,19 @@ export async function inspectSingleSource(
     // 1. Find early baseline sample (avoiding notice chapters if possible)
     const earlyChapter = findMainChapter(chapters, 0) || chapters[0]
     let earlyBaselineLength = 0
-    if (isCancelled?.()) return { ...base, status: 'idle', summaryText: '待校验' }
+    if (isCancelled?.() || signal?.aborted) return { ...base, status: 'idle', summaryText: '待校验' }
     try {
-      const earlyRes = await api.content(result.sourceId, earlyChapter.url, result.bookUrl)
-      if (isCancelled?.()) return { ...base, status: 'idle', summaryText: '待校验' }
+      const earlyRes = await api.content(result.sourceId, earlyChapter.url, result.bookUrl, signal)
+      if (isCancelled?.() || signal?.aborted) return { ...base, status: 'idle', summaryText: '待校验' }
       const checkEarly = inspectChapterContent(earlyChapter.title, earlyRes.content || '', 0, false)
       if (!checkEarly.isNotice) {
         earlyBaselineLength = checkEarly.length
       }
     } catch {
+      if (signal?.aborted || isCancelled?.()) return { ...base, status: 'idle', summaryText: '待校验' }
       // Ignore early error
     }
-    if (isCancelled?.()) return { ...base, status: 'idle', summaryText: '待校验' }
+    if (isCancelled?.() || signal?.aborted) return { ...base, status: 'idle', summaryText: '待校验' }
 
     // 2. Select late sampling points (automatically filtering out notice/leave chapters)
     const lateTargetIndices = [
@@ -235,11 +237,11 @@ export async function inspectSingleSource(
     let lateMainStoryLengths: number[] = []
 
     for (const sampleChapter of lateChaptersToSample) {
-      if (isCancelled?.()) return { ...base, status: 'idle', summaryText: '待校验' }
+      if (isCancelled?.() || signal?.aborted) return { ...base, status: 'idle', summaryText: '待校验' }
       totalSampleChecked++
       try {
-        const contentRes = await api.content(result.sourceId, sampleChapter.url, result.bookUrl)
-        if (isCancelled?.()) return { ...base, status: 'idle', summaryText: '待校验' }
+        const contentRes = await api.content(result.sourceId, sampleChapter.url, result.bookUrl, signal)
+        if (isCancelled?.() || signal?.aborted) return { ...base, status: 'idle', summaryText: '待校验' }
         const check = inspectChapterContent(sampleChapter.title, contentRes.content || '', earlyBaselineLength, true)
         
         if (!check.isNotice) {
@@ -252,21 +254,21 @@ export async function inspectSingleSource(
           validLateCount++
         }
       } catch {
-        if (isCancelled?.()) return { ...base, status: 'idle', summaryText: '待校验' }
+        if (signal?.aborted || isCancelled?.()) return { ...base, status: 'idle', summaryText: '待校验' }
         // Late chapter fetch failed
         lateMainStoryLengths.push(0)
         vipHit = true
       }
     }
 
-    if (isCancelled?.()) return { ...base, status: 'idle', summaryText: '待校验' }
+    if (isCancelled?.() || signal?.aborted) return { ...base, status: 'idle', summaryText: '待校验' }
 
     const avgLateLength = lateMainStoryLengths.length > 0
       ? Math.round(lateMainStoryLengths.reduce((a, b) => a + b, 0) / lateMainStoryLengths.length)
       : earlyBaselineLength
 
-    const progress = await api.progress(result.sourceId, result.bookUrl).catch(() => undefined)
-    if (isCancelled?.()) return { ...base, status: 'idle', summaryText: '待校验' }
+    const progress = await api.progress(result.sourceId, result.bookUrl, signal).catch(() => undefined)
+    if (isCancelled?.() || signal?.aborted) return { ...base, status: 'idle', summaryText: '待校验' }
 
     const loadedBook: OpenBook = {
       details: {
@@ -315,12 +317,12 @@ export async function inspectSingleSource(
       checkedAt: Date.now(),
       book: loadedBook,
     }
-    if (!isCancelled?.()) {
+    if (!isCancelled?.() && !signal?.aborted) {
       onProgress?.(finalResult)
     }
     return finalResult
   } catch (error) {
-    if (isCancelled?.()) {
+    if (isCancelled?.() || signal?.aborted || (error instanceof DOMException && error.name === 'AbortError')) {
       return { ...base, status: 'idle', summaryText: '待校验' }
     }
     const errorMsg = error instanceof Error ? error.message : '书源连接失败'
@@ -336,7 +338,7 @@ export async function inspectSingleSource(
       summaryText: `书源异常: ${errorMsg}`,
       checkedAt: Date.now(),
     }
-    if (!isCancelled?.()) {
+    if (!isCancelled?.() && !signal?.aborted) {
       onProgress?.(failedResult)
     }
     return failedResult
@@ -348,7 +350,8 @@ export async function inspectAllSourcesConcurrently(
   maxConcurrency = 3,
   onUpdate?: (inspections: Map<string, SourceHealthInspection>) => void,
   isCancelled?: () => boolean,
-  initialInspections?: Map<string, SourceHealthInspection>
+  initialInspections?: Map<string, SourceHealthInspection>,
+  signal?: AbortSignal
 ): Promise<Map<string, SourceHealthInspection>> {
   const map = new Map<string, SourceHealthInspection>(initialInspections)
 
@@ -367,14 +370,14 @@ export async function inspectAllSourcesConcurrently(
       })
     }
   }
-  if (!isCancelled?.()) {
+  if (!isCancelled?.() && !signal?.aborted) {
     onUpdate?.(new Map(map))
   }
 
   let cursor = 0
   const workers = Array.from({ length: Math.min(maxConcurrency, sources.length) }, async () => {
     while (cursor < sources.length) {
-      if (isCancelled?.()) return
+      if (isCancelled?.() || signal?.aborted) return
       const idx = cursor++
       const source = sources[idx]
       const key = `${source.sourceId}\u0000${source.bookUrl}`
@@ -383,16 +386,17 @@ export async function inspectAllSourcesConcurrently(
         source,
         sources,
         partial => {
-          if (isCancelled?.()) return
+          if (isCancelled?.() || signal?.aborted) return
           const existing = map.get(key)
           if (existing) {
             map.set(key, { ...existing, ...partial })
             onUpdate?.(new Map(map))
           }
         },
-        isCancelled
+        isCancelled,
+        signal
       )
-      if (isCancelled?.()) return
+      if (isCancelled?.() || signal?.aborted) return
     }
   })
 

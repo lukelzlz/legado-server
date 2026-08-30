@@ -11,7 +11,7 @@ import { SourceSwitchModal } from './SourceSwitchModal'
 import { toast, ToastContainer } from './Toast'
 import './styles.css'
 
-import { inspectAllSourcesConcurrently, SourceHealthInspection } from './sourceInspector'
+import { createInitialInspections, inspectAllSourcesConcurrently, inspectSingleSource, SourceHealthInspection } from './sourceInspector'
 
 export type { SourceChoice, SourceChoiceStatus }
 
@@ -25,6 +25,7 @@ function SourceChoiceList({
   active,
   onChoose,
   onRecheck,
+  onInspectSingle,
   checking,
 }: {
   choices: SourceChoice[]
@@ -32,8 +33,29 @@ function SourceChoiceList({
   active?: string
   onChoose: (choice: SourceChoice) => void
   onRecheck: () => void
+  onInspectSingle?: (choice: SourceChoice) => void
   checking: boolean
 }) {
+  const hoverTimerRef = useRef<Record<string, number>>({})
+
+  const handleMouseEnter = (choice: SourceChoice) => {
+    const key = `${choice.result.sourceId}\u0000${choice.result.bookUrl}`
+    const insp = inspections.get(key)
+    if (!insp || insp.status === 'idle') {
+      hoverTimerRef.current[key] = window.setTimeout(() => {
+        onInspectSingle?.(choice)
+      }, 100)
+    }
+  }
+
+  const handleMouseLeave = (choice: SourceChoice) => {
+    const key = `${choice.result.sourceId}\u0000${choice.result.bookUrl}`
+    if (hoverTimerRef.current[key]) {
+      clearTimeout(hoverTimerRef.current[key])
+      delete hoverTimerRef.current[key]
+    }
+  }
+
   const sortedChoices = useMemo(() => {
     return [...choices].sort((a, b) => {
       const keyA = `${a.result.sourceId}\u0000${a.result.bookUrl}`
@@ -47,10 +69,12 @@ function SourceChoiceList({
     })
   }, [choices, inspections])
 
-  const checkingCount = useMemo(() => {
+  const completedCount = useMemo(() => {
     let count = 0
     for (const insp of inspections.values()) {
-      if (insp.status === 'checking' || insp.status === 'idle') count++
+      if (insp.status === 'valid' || insp.status === 'vip_restricted' || insp.status === 'incomplete' || insp.status === 'error') {
+        count++
+      }
     }
     return count
   }, [inspections])
@@ -62,8 +86,8 @@ function SourceChoiceList({
           <span>书源可用性与质量校验</span>
           <small>
             {checking
-              ? `正在校验正文与VIP (${choices.length - checkingCount}/${choices.length})...`
-              : `${choices.length} 个书源已完成质量与VIP检测`}
+              ? `正在校验正文与VIP (${completedCount}/${choices.length})...`
+              : `${completedCount}/${choices.length} 个书源已完成质量检测`}
           </small>
         </div>
         <button
@@ -71,10 +95,10 @@ function SourceChoiceList({
           className="subtle-button source-recheck-btn"
           onClick={onRecheck}
           disabled={checking}
-          title="重新探测所有书源的章节可用性与VIP限制"
+          title="探测所有书源的章节可用性与VIP限制"
         >
           <Icon name="refresh" className={checking ? 'spin' : ''} />
-          <span>{checking ? '探测中' : '重新校验'}</span>
+          <span>{checking ? '探测中' : completedCount < choices.length ? '检测健康度' : '重新校验'}</span>
         </button>
       </header>
       <div className="source-choice-items">
@@ -103,6 +127,9 @@ function SourceChoiceList({
             } else if (inspection.status === 'error') {
               badge = <span className="source-health-badge health-error">✕ 无法读取</span>
               statusText = inspection.summaryText
+            } else if (inspection.status === 'idle') {
+              badge = <span className="source-health-badge health-idle">待检测</span>
+              statusText = '未检测 · 悬停或点击即可检测并切换'
             }
           } else if (isLoading) {
             statusText = '正在读取目录...'
@@ -115,7 +142,14 @@ function SourceChoiceList({
               key={key}
               className={`source-choice-item ${isSelected ? 'selected' : ''} ${isLoading ? 'loading' : ''}`}
               disabled={isLoading}
-              onClick={() => onChoose(choice)}
+              onMouseEnter={() => handleMouseEnter(choice)}
+              onMouseLeave={() => handleMouseLeave(choice)}
+              onClick={() => {
+                if (!inspection || inspection.status === 'idle') {
+                  onInspectSingle?.(choice)
+                }
+                onChoose(choice)
+              }}
             >
               <div className="source-choice-top">
                 <strong>{choice.result.sourceId}</strong>
@@ -146,14 +180,120 @@ function BookDetailModal({
   onClose: () => void
 }) {
   const [introExpanded, setIntroExpanded] = useState(false)
-  const [inspections, setInspections] = useState<Map<string, SourceHealthInspection>>(new Map())
+  const [inspections, setInspections] = useState<Map<string, SourceHealthInspection>>(() =>
+    createInitialInspections(choices.map(c => c.result))
+  )
   const [checking, setChecking] = useState(false)
   const [inShelf, setInShelf] = useState<boolean | null>(null)
   const [shelfBusy, setShelfBusy] = useState(false)
   const cancelInspectRef = useRef(false)
+  const inspectingKeysRef = useRef<Set<string>>(new Set())
 
   const latestChapter = book.chapters.at(-1)
   const availableSources = choices.length
+
+  useEffect(() => {
+    setInspections(prev => {
+      let changed = false
+      const next = new Map(prev)
+      for (const c of choices) {
+        const key = `${c.result.sourceId}\u0000${c.result.bookUrl}`
+        if (!next.has(key)) {
+          next.set(key, {
+            sourceId: c.result.sourceId,
+            bookUrl: c.result.bookUrl,
+            status: 'idle',
+            score: 0,
+            checkedChaptersCount: 0,
+            validChaptersCount: 0,
+            vipBlocked: false,
+            summaryText: '待校验',
+          })
+          changed = true
+        }
+      }
+      return changed ? next : prev
+    })
+  }, [choices])
+
+  const inspectSingleChoice = useCallback((targetResult: SearchResult) => {
+    const key = `${targetResult.sourceId}\u0000${targetResult.bookUrl}`
+    if (inspectingKeysRef.current.has(key)) return
+
+    const current = inspections.get(key)
+    if (current && (current.status === 'valid' || current.status === 'vip_restricted' || current.status === 'incomplete' || current.status === 'error')) {
+      return
+    }
+
+    inspectingKeysRef.current.add(key)
+    const rawSources = choices.map(c => c.result)
+
+    void inspectSingleSource(
+      targetResult,
+      rawSources,
+      partial => {
+        if (cancelInspectRef.current) return
+        setInspections(prev => {
+          const next = new Map(prev)
+          const existing = next.get(key) || {
+            sourceId: targetResult.sourceId,
+            bookUrl: targetResult.bookUrl,
+            status: 'idle',
+            score: 0,
+            checkedChaptersCount: 0,
+            validChaptersCount: 0,
+            vipBlocked: false,
+            summaryText: '待校验',
+          }
+          next.set(key, { ...existing, ...partial })
+          return next
+        })
+      },
+      () => cancelInspectRef.current
+    ).finally(() => {
+      inspectingKeysRef.current.delete(key)
+    })
+  }, [choices, inspections])
+
+  const runFullInspection = useCallback(() => {
+    cancelInspectRef.current = false
+    setChecking(true)
+    const rawSources = choices.map(c => c.result)
+    void inspectAllSourcesConcurrently(
+      rawSources,
+      3,
+      updated => {
+        if (!cancelInspectRef.current) {
+          setInspections(updated)
+        }
+      },
+      () => cancelInspectRef.current,
+      inspections
+    ).finally(() => {
+      if (!cancelInspectRef.current) {
+        setChecking(false)
+      }
+    })
+  }, [choices, inspections])
+
+  useEffect(() => {
+    cancelInspectRef.current = false
+    const activeChoice =
+      choices.find(c => c.result.sourceId === book.details.sourceId && c.result.bookUrl === book.bookUrl) ||
+      choices.find(c => c.result.bookUrl === book.bookUrl) ||
+      choices[0]
+    if (activeChoice) {
+      inspectSingleChoice(activeChoice.result)
+    }
+    return () => {
+      cancelInspectRef.current = true
+    }
+  }, [book.details.sourceId, book.bookUrl, choices, inspectSingleChoice])
+
+  const handleClose = useCallback(() => {
+    cancelInspectRef.current = true
+    onClose()
+  }, [onClose])
 
   useEffect(() => {
     let active = true
@@ -202,38 +342,15 @@ function BookDetailModal({
     }
   }
 
-  const runInspection = useCallback(() => {
-    cancelInspectRef.current = false
-    setChecking(true)
-    const rawSources = choices.map(c => c.result)
-    void inspectAllSourcesConcurrently(
-      rawSources,
-      3,
-      updated => {
-        setInspections(updated)
-      },
-      () => cancelInspectRef.current
-    ).finally(() => {
-      setChecking(false)
-    })
-  }, [choices])
-
-  useEffect(() => {
-    runInspection()
-    return () => {
-      cancelInspectRef.current = true
-    }
-  }, [runInspection])
-
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
-        onClose()
+        handleClose()
       }
     }
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [onClose])
+  }, [handleClose])
 
   const handleSelectChoice = (choice: SourceChoice) => {
     const key = `${choice.result.sourceId}\u0000${choice.result.bookUrl}`
@@ -257,12 +374,15 @@ function BookDetailModal({
       }
       onChooseSource({ ...choice, book: mergedBook, status: 'loaded' })
     } else {
+      if (!insp || insp.status === 'idle') {
+        inspectSingleChoice(choice.result)
+      }
       onChooseSource(choice)
     }
   }
 
   return (
-    <div className="modal-backdrop" onClick={onClose}>
+    <div className="modal-backdrop" onClick={handleClose}>
       <div
         className="book-detail-modal"
         onClick={e => e.stopPropagation()}
@@ -303,7 +423,7 @@ function BookDetailModal({
               {book.progress ? '继续阅读' : '开始阅读'}
               <Icon name="arrowRight" />
             </button>
-            <button className="subtle-button close-btn" onClick={onClose} aria-label="关闭">
+            <button className="subtle-button close-btn" onClick={handleClose} aria-label="关闭">
               <Icon name="close" />
             </button>
           </div>
@@ -317,7 +437,8 @@ function BookDetailModal({
                 inspections={inspections}
                 active={book.bookUrl}
                 onChoose={handleSelectChoice}
-                onRecheck={runInspection}
+                onRecheck={runFullInspection}
+                onInspectSingle={choice => inspectSingleChoice(choice.result)}
                 checking={checking}
               />
             </div>

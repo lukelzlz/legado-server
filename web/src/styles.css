@@ -502,6 +502,7 @@ mark.search-highlight { background: var(--accent-soft); color: var(--accent); fo
 .health-vip { background: rgba(220, 100, 0, 0.12); color: #c85000; border: 1px solid rgba(220, 100, 0, 0.25); }
 .health-incomplete { background: rgba(180, 130, 0, 0.12); color: #996e00; border: 1px solid rgba(180, 130, 0, 0.25); }
 .health-error { background: rgba(210, 45, 45, 0.1); color: #cf2222; border: 1px solid rgba(210, 45, 45, 0.2); }
+.health-idle { background: var(--surface-muted); color: var(--muted); border: 1px solid var(--line); }
 .health-checking { background: var(--surface-muted); color: var(--muted); border: 1px solid var(--line); animation: pulse 1.5s ease-in-out infinite; }
 @keyframes pulse { 0%, 100% { opacity: 0.6; } 50% { opacity: 1; } }
 

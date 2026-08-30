@@ -51,8 +51,7 @@ class CoverCache(private val directory: Path, private val fetcher: ((String) -> 
     }
 
     private fun validate(uri: URI) {
-        require(uri.scheme in setOf("http", "https") && !uri.host.isNullOrBlank()) { "仅允许 HTTP(S) 封面地址" }
-        InetAddress.getAllByName(uri.host).forEach { address -> require(!(address.isAnyLocalAddress || address.isLoopbackAddress || address.isLinkLocalAddress || address.isSiteLocalAddress || address.hostAddress == "169.254.169.254")) { "拒绝访问内网或本机地址" } }
+        NetworkSecurity.resolveAndValidateSafeHttpTarget(uri, "封面")
     }
     private fun sha256(value: String) = MessageDigest.getInstance("SHA-256").digest(value.toByteArray()).joinToString("") { "%02x".format(it) }
     private companion object { const val MAX_BYTES = 5 * 1024 * 1024 }

@@ -91,10 +91,7 @@ class SubscriptionService(private val database: Database, private val log: (Stri
     }
 
     private fun validate(uri: URI) {
-        require(uri.scheme in setOf("http", "https") && !uri.host.isNullOrBlank()) { "仅允许 HTTP(S) 订阅地址" }
-        InetAddress.getAllByName(uri.host).forEach { address ->
-            require(!(address.isAnyLocalAddress || address.isLoopbackAddress || address.isLinkLocalAddress || address.isSiteLocalAddress || address.hostAddress == "169.254.169.254")) { "拒绝访问内网或本机地址" }
-        }
+        NetworkSecurity.resolveAndValidateSafeHttpTarget(uri, "订阅")
     }
 
     private fun sha256(value: String) = MessageDigest.getInstance("SHA-256").digest(value.toByteArray()).joinToString("") { "%02x".format(it) }

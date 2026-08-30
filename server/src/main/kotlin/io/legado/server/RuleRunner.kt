@@ -242,11 +242,10 @@ class RuleRunner(private val responseFetcher: ((String) -> String)? = null) {
     }
 
     private fun validateTarget(uri: URI) {
-        if (uri.scheme !in setOf("http", "https") || uri.host.isNullOrBlank()) throw RuleExecutionException("仅允许 HTTP(S) 书源地址")
-        InetAddress.getAllByName(uri.host).forEach { address ->
-            if (address.isAnyLocalAddress || address.isLoopbackAddress || address.isLinkLocalAddress || address.isSiteLocalAddress || address.hostAddress == "169.254.169.254") {
-                throw RuleExecutionException("拒绝访问内网或本机地址")
-            }
+        try {
+            NetworkSecurity.resolveAndValidateSafeHttpTarget(uri, "书源")
+        } catch (e: IllegalArgumentException) {
+            throw RuleExecutionException(e.message ?: "拒绝访问内网或本机地址")
         }
     }
 

@@ -96,7 +96,33 @@ flowchart TD
 
 ### ⚡ 方式一：一行命令极速启动（Docker CLI）
 
-无需克隆代码仓库，直接运行以下命令即可拉取官方多架构镜像（支持 x86_64 / ARM64）并启动服务：
+无需克隆代码仓库，直接运行以下命令即可拉取多架构镜像（支持 x86_64 / ARM64）并启动服务。
+
+> [!TIP]
+> **镜像地址说明：**
+> - 🇨🇳 **国内加速镜像（阿里云容器镜像服务，推荐国内环境使用）**：
+>   `crpi-lup94py5f7l0oclt.cn-beijing.personal.cr.aliyuncs.com/lukelzlz/legado-server:latest`
+> - 🌍 **GitHub 官方镜像（GHCR）**：
+>   `ghcr.io/lukelzlz/legado-server:latest`
+
+#### 🇨🇳 国内环境推荐（阿里云镜像源）
+
+```bash
+docker run -d \
+  --name legado-server \
+  --restart unless-stopped \
+  -p 8080:8080 \
+  -v ./ls_data:/data \
+  -e ADMIN_PASSWORD='your_password_at_least_12_chars' \
+  crpi-lup94py5f7l0oclt.cn-beijing.personal.cr.aliyuncs.com/lukelzlz/legado-server:latest
+```
+
+> **单行复制版：**
+> ```bash
+> docker run -d --name legado-server --restart unless-stopped -p 8080:8080 -v ./ls_data:/data -e ADMIN_PASSWORD='your_password_at_least_12_chars' crpi-lup94py5f7l0oclt.cn-beijing.personal.cr.aliyuncs.com/lukelzlz/legado-server:latest
+> ```
+
+#### 🌍 海外 / 国际环境（GitHub Packages GHCR）
 
 ```bash
 docker run -d \
@@ -122,6 +148,33 @@ docker run -d \
 ---
 
 ### 📦 方式二：Docker Compose 编排部署
+
+#### 选项 A：使用预编译镜像直接部署（无需源码）
+
+新建 `docker-compose.yml` 文件：
+
+```yaml
+services:
+  legado-server:
+    # 国内环境推荐阿里云镜像；海外可替换为 ghcr.io/lukelzlz/legado-server:latest
+    image: crpi-lup94py5f7l0oclt.cn-beijing.personal.cr.aliyuncs.com/lukelzlz/legado-server:latest
+    container_name: legado-server
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      ADMIN_PASSWORD: your_password_at_least_12_chars
+      LEGADO_SECURE_COOKIES: "true"
+    volumes:
+      - ./ls_data:/data
+```
+
+启动服务：
+```bash
+docker compose up -d
+```
+
+#### 选项 B：克隆仓库源码构建
 
 1. **克隆代码仓库**
    ```bash

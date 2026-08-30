@@ -410,17 +410,17 @@ private class NodeValue private constructor(private val html: Element?, private 
         }
     }
 
-    private fun selectAllLegado(element: Element, selector: String): List<Element> {
+    private fun selectAllLegado(element: Element, selector: String): List<Element> = runCatching {
         val classOnly = Regex("^class\\.([a-zA-Z][a-zA-Z0-9_-]*)$").find(selector)
         if (classOnly != null) {
-            return element.select(".${classOnly.groupValues[1]}")
+            return@runCatching element.select(".${classOnly.groupValues[1]}")
         }
         val indexed = Regex("^([a-zA-Z][a-zA-Z0-9-]*)\\.(\\d+)$").find(selector)
         if (indexed != null) {
             val tag = indexed.groupValues[1]
             val ordinal = indexed.groupValues[2].toInt().coerceAtLeast(0)
             val matches = element.getElementsByTag(tag)
-            return matches.getOrNull(ordinal)?.let { listOf(it) } ?: emptyList()
+            return@runCatching matches.getOrNull(ordinal)?.let { listOf(it) } ?: emptyList()
         }
         val classIndexed = Regex("^class\\.([a-zA-Z][a-zA-Z0-9_-]*)\\.(\\d+)$").find(selector)
             ?: Regex("^\\.([a-zA-Z][a-zA-Z0-9_-]*)\\.(\\d+)$").find(selector)
@@ -428,10 +428,10 @@ private class NodeValue private constructor(private val html: Element?, private 
             val className = classIndexed.groupValues[1]
             val ordinal = classIndexed.groupValues[2].toInt().coerceAtLeast(0)
             val matches = element.select(".$className")
-            return matches.getOrNull(ordinal)?.let { listOf(it) } ?: emptyList()
+            return@runCatching matches.getOrNull(ordinal)?.let { listOf(it) } ?: emptyList()
         }
-        return element.select(selector)
-    }
+        element.select(selector)
+    }.getOrDefault(emptyList())
 
     fun at(rule: String?): NodeValue {
         if (json == null || rule.isNullOrBlank() || !rule.trimStart().startsWith("$")) return this

@@ -422,6 +422,7 @@ internal suspend fun <T, R> boundedConcurrentMap(values: List<T>, limit: Int, ac
 private suspend fun ApplicationCall.respondCatching(block: suspend () -> Any) {
     try { respond(block()) }
     catch (error: RuleExecutionException) { respond(HttpStatusCode.BadGateway, ApiError("source_execution_failed", error.message ?: "书源执行失败")) }
+    catch (error: Exception) { respond(HttpStatusCode.BadGateway, ApiError("source_execution_failed", error.message ?: "书源执行失败")) }
 }
 
 internal fun tryFindCachedCover(coverCache: CoverCache, primaryUrl: String?, alternateSources: List<SearchResult>?): CachedCover? {

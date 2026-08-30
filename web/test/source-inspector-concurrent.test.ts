@@ -2,6 +2,8 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { api, Chapter, SearchResult } from '../src/api.ts'
 import {
+  clearStoredInspections,
+  createInitialInspections,
   inspectSingleSource,
   inspectAllSourcesConcurrently,
   findMainChapter,
@@ -141,6 +143,7 @@ test('source inspector - inspectAllSourcesConcurrently executes bounded concurre
     assert.ok(updateCount > 0)
 
     // Test cancellation flag
+    clearStoredInspections(sources)
     let cancelled = false
     const cancelMap = await inspectAllSourcesConcurrently(
       sources,
@@ -153,6 +156,233 @@ test('source inspector - inspectAllSourcesConcurrently executes bounded concurre
     assert.equal(cancelMap.size, 6)
     // First source will be marked idle since worker aborted before processing
     assert.equal(cancelMap.get('https://src1.com\u0000https://src1.com/book/1')?.status, 'idle')
+  } finally {
+    clearStoredInspections()
+    api.details = originalDetails
+    api.chapters = originalChapters
+    api.content = originalContent
+    api.progress = originalProgress
+  }
+})
+
+test('source inspector - createInitialInspections creates idle entries for all sources', () => {
+  const sources: SearchResult[] = [
+    { sourceId: 'src-1', name: '书名', bookUrl: 'http://src1.com/1' },
+    { sourceId: 'src-2', name: '书名', bookUrl: 'http://src2.com/2' },
+  ]
+  const map = createInitialInspections(sources)
+  assert.equal(map.size, 2)
+  const item1 = map.get('src-1\u0000http://src1.com/1')
+  assert.equal(item1?.status, 'idle')
+  assert.equal(item1?.summaryText, '待校验')
+  const item2 = map.get('src-2\u0000http://src2.com/2')
+  assert.equal(item2?.status, 'idle')
+  assert.equal(item2?.summaryText, '待校验')
+})
+
+test('source inspector - inspectSingleSource respects isCancelled at every network hop', async () => {
+  const originalDetails = api.details
+  const originalChapters = api.chapters
+  const originalContent = api.content
+  const originalProgress = api.progress
+
+  try {
+    let detailsCalls = 0
+    let chaptersCalls = 0
+    let contentCalls = 0
+
+    api.details = async () => {
+      detailsCalls++
+      return { sourceId: 'src-1', name: '书名', tocUrl: '/toc' }
+    }
+    api.chapters = async () => {
+      chaptersCalls++
+      return [
+        { index: 0, title: '第1章', url: '/c1' },
+        { index: 1, title: '第2章', url: '/c2' },
+      ]
+    }
+    api.content = async () => {
+      contentCalls++
+      return { content: '正文'.repeat(200) }
+    }
+    api.progress = async () => undefined
+
+    const searchResult: SearchResult = {
+      sourceId: 'src-1',
+      name: '书名',
+      bookUrl: 'http://src1.com/1',
+    }
+
+    // 1. Cancelled immediately before start
+    const res1 = await inspectSingleSource(searchResult, undefined, undefined, () => true)
+    assert.equal(res1.status, 'idle')
+    assert.equal(detailsCalls, 0)
+    assert.equal(chaptersCalls, 0)
+    assert.equal(contentCalls, 0)
+
+    // 2. Cancelled right after details resolves
+    let cancelAfterDetails = false
+    api.details = async () => {
+      detailsCalls++
+      cancelAfterDetails = true
+      return { sourceId: 'src-1', name: '书名', tocUrl: '/toc' }
+    }
+    const res2 = await inspectSingleSource(searchResult, undefined, undefined, () => cancelAfterDetails)
+    assert.equal(res2.status, 'idle')
+    assert.equal(detailsCalls, 1)
+    assert.equal(chaptersCalls, 0)
+    assert.equal(contentCalls, 0)
+
+    // 3. Cancelled right after chapters resolves
+    let cancelAfterChapters = false
+    api.chapters = async () => {
+      chaptersCalls++
+      cancelAfterChapters = true
+      return [
+        { index: 0, title: '第1章', url: '/c1' },
+        { index: 1, title: '第2章', url: '/c2' },
+      ]
+    }
+    const res3 = await inspectSingleSource(searchResult, undefined, undefined, () => cancelAfterChapters)
+    assert.equal(res3.status, 'idle')
+    assert.equal(chaptersCalls, 1)
+    assert.equal(contentCalls, 0)
+  } finally {
+    api.details = originalDetails
+    api.chapters = originalChapters
+    api.content = originalContent
+    api.progress = originalProgress
+  }
+})
+
+test('source inspector - fast concurrent inspection and modal close AbortSignal cancellation', async () => {
+  const originalDetails = api.details
+  const originalChapters = api.chapters
+  const originalContent = api.content
+  const originalProgress = api.progress
+
+  try {
+    const activeCalls = new Set<string>()
+    let abortedCallCount = 0
+
+    api.details = async (src, book, signal) => {
+      activeCalls.add(`details:${src}`)
+      if (signal?.aborted) {
+        abortedCallCount++
+        throw new DOMException('Aborted', 'AbortError')
+      }
+      return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => {
+          activeCalls.delete(`details:${src}`)
+          resolve({ sourceId: src, name: '凡人修仙传', tocUrl: `${book}/toc` })
+        }, 50)
+        signal?.addEventListener('abort', () => {
+          clearTimeout(timer)
+          activeCalls.delete(`details:${src}`)
+          abortedCallCount++
+          reject(new DOMException('Aborted', 'AbortError'))
+        })
+      })
+    }
+
+    api.chapters = async (src, _book, signal) => {
+      if (signal?.aborted) {
+        abortedCallCount++
+        throw new DOMException('Aborted', 'AbortError')
+      }
+      return Array.from({ length: 20 }, (_, i) => ({
+        index: i,
+        title: `第${i + 1}章 试炼`,
+        url: `/c${i + 1}`,
+      }))
+    }
+
+    api.content = async (_src, _ch, _b, signal) => {
+      if (signal?.aborted) {
+        abortedCallCount++
+        throw new DOMException('Aborted', 'AbortError')
+      }
+      return { content: '修仙正文字数很多测试内容'.repeat(100) }
+    }
+
+    api.progress = async () => undefined
+
+    const rawSources: SearchResult[] = Array.from({ length: 8 }, (_, i) => ({
+      sourceId: `source-${i}`,
+      name: '凡人修仙传',
+      bookUrl: `https://s${i}.com/book/1`,
+    }))
+
+    // 1. Fast concurrent inspection on modal open
+    const controller = new AbortController()
+    const promise = inspectAllSourcesConcurrently(
+      rawSources,
+      3,
+      undefined,
+      undefined,
+      undefined,
+      controller.signal
+    )
+
+    // Verify workers started concurrently
+    assert.ok(activeCalls.size > 0, 'Concurrent workers must start immediately')
+
+    // 2. User closes modal / enters reader after 10ms -> abort all in-flight requests
+    await new Promise(r => setTimeout(r, 10))
+    controller.abort()
+
+    const map = await promise
+    assert.ok(abortedCallCount > 0, 'In-flight HTTP requests must be aborted')
+    assert.equal(activeCalls.size, 0, 'No remaining active network calls after modal close abort')
+  } finally {
+    api.details = originalDetails
+    api.chapters = originalChapters
+    api.content = originalContent
+    api.progress = originalProgress
+  }
+})
+
+test('source inspector - resume uncompleted inspection when switching back', async () => {
+  const originalDetails = api.details
+  const originalChapters = api.chapters
+  const originalContent = api.content
+  const originalProgress = api.progress
+
+  try {
+    const inspectedSources: string[] = []
+
+    api.details = async (src, book) => {
+      inspectedSources.push(src)
+      return { sourceId: src, name: '凡人修仙传', tocUrl: `${book}/toc` }
+    }
+    api.chapters = async () => Array.from({ length: 20 }, (_, i) => ({ index: i, title: `第${i + 1}章`, url: `/c${i + 1}` }))
+    api.content = async () => ({ content: '正文测试内容'.repeat(100) })
+    api.progress = async () => undefined
+
+    const rawSources: SearchResult[] = [
+      { sourceId: 'src-alpha', name: '凡人修仙传', bookUrl: 'https://a.com/b1' },
+      { sourceId: 'src-beta', name: '凡人修仙传', bookUrl: 'https://b.com/b1' },
+      { sourceId: 'src-gamma', name: '凡人修仙传', bookUrl: 'https://c.com/b1' },
+    ]
+
+    // Inspect first 2 sources
+    const initialMap = await inspectAllSourcesConcurrently(rawSources.slice(0, 2), 2)
+    assert.equal(initialMap.size, 2)
+    assert.equal(initialMap.get('src-alpha\u0000https://a.com/b1')?.status, 'valid')
+    assert.equal(initialMap.get('src-beta\u0000https://b.com/b1')?.status, 'valid')
+    assert.equal(inspectedSources.length, 2)
+
+    // User switches back / re-opens with all 3 sources
+    inspectedSources.length = 0
+    const resumedMap = await inspectAllSourcesConcurrently(rawSources, 2)
+    assert.equal(resumedMap.size, 3)
+    assert.equal(resumedMap.get('src-alpha\u0000https://a.com/b1')?.status, 'valid')
+    assert.equal(resumedMap.get('src-beta\u0000https://b.com/b1')?.status, 'valid')
+    assert.equal(resumedMap.get('src-gamma\u0000https://c.com/b1')?.status, 'valid')
+
+    // Verify only the missing src-gamma was probed; src-alpha and src-beta were restored from cache!
+    assert.deepEqual(inspectedSources, ['src-gamma'])
   } finally {
     api.details = originalDetails
     api.chapters = originalChapters

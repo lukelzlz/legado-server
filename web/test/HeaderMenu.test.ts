@@ -3,6 +3,8 @@ import assert from 'node:assert/strict'
 import { renderToStaticMarkup } from 'react-dom/server'
 import React from 'react'
 import { AppHeader, APP_THEMES, AppPage } from '../src/AppHeader'
+import { Logo } from '../src/Logo'
+import { Login } from '../src/Login'
 import { defaultReaderSettings, ReaderSettings } from '../src/readerSettings'
 
 test('HeaderMenu - APP_THEMES configuration', () => {
@@ -80,3 +82,22 @@ test('HeaderMenu - Logout confirmation safety', () => {
   confirmLogout(true)
   assert.equal(loggedOut, true, 'Should log out when user accepts confirmation')
 })
+
+test('Logo - SVG rendering with brand gradients and classes', () => {
+  const element = React.createElement(Logo, { size: 28 })
+  const html = renderToStaticMarkup(element)
+  assert.ok(html.includes('app-brand-logo'), 'Logo should have app-brand-logo class')
+  assert.ok(html.includes('logoTealGrad'), 'Logo should contain teal gradient definition')
+  assert.ok(html.includes('logoGoldGrad'), 'Logo should contain gold gradient definition')
+  assert.ok(html.includes('width="28"'), 'Logo should respect size prop')
+})
+
+test('Login - Static rendering contains updated brand Logo', () => {
+  const element = React.createElement(Login, { onLogin: () => {} })
+  const html = renderToStaticMarkup(element)
+  assert.ok(html.includes('login-mark'), 'Login should contain login-mark container')
+  assert.ok(html.includes('app-brand-logo'), 'Login screen should render the new app-brand-logo')
+  assert.ok(html.includes('阅读服务器'), 'Login screen should contain brand title')
+  assert.ok(html.includes('回到你的阅读空间'), 'Login screen should contain welcome text')
+})
+

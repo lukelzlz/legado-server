@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react'
 import { Icon } from './icons'
+import { Logo } from './Logo'
 import type { ReaderSettings } from './readerSettings'
 
 export type AppPage = 'sources' | 'subscriptions' | 'library' | 'shelf' | 'reader'
@@ -73,7 +74,7 @@ export function AppHeader({
         onClick={() => onNavigate('library')}
         aria-label="阅读服务器"
       >
-        <Icon name="book" />
+        <Logo size={22} />
         <strong>阅读服务器</strong>
       </button>
 

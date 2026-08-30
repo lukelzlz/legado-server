@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <defs>
+    <linearGradient id="favTeal" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#14B8A6"/>
+      <stop offset="100%" stop-color="#0F766E"/>
+    </linearGradient>
+    <linearGradient id="favGold" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#FDE68A"/>
+      <stop offset="100%" stop-color="#F59E0B"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Open Book Base -->
+  <path d="M32 54 C23 50 12 51 6 53 L6 18 C12 16 23 17 32 21 C41 17 52 16 58 18 L58 53 C52 51 41 50 32 54 Z" 
+        fill="none" 
+        stroke="url(#favTeal)" 
+        stroke-width="4.5" 
+        stroke-linejoin="round"
+        stroke-linecap="round"/>
+  <line x1="32" y1="21" x2="32" y2="54" stroke="url(#favTeal)" stroke-width="4" stroke-linecap="round"/>
+
+  <!-- Bookmark L Notch -->
+  <path d="M22 10 L28 8 L28 17 L25 15 L22 17 Z" fill="url(#favGold)"/>
+  <path d="M25 17 L25 24" stroke="url(#favTeal)" stroke-width="4.5" stroke-linecap="round"/>
+
+  <!-- Infinity Ribbon -->
+  <path d="M24 38 C17 31 11 38 11 43 C11 48 18 51 24 46 C29 42 35 36 40 32 C45 28 53 30 53 38 C53 45 46 49 40 44 C35 40 29 34 24 38 Z" 
+        fill="none" 
+        stroke="url(#favGold)" 
+        stroke-width="4.5" 
+        stroke-linecap="round" 
+        stroke-linejoin="round"/>
+</svg>

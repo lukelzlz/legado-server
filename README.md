@@ -1,6 +1,8 @@
 <div align="center">
 
-# 📖 Legado Server
+<img src="./web/public/logo.svg" width="96" height="96" alt="Legado Server Logo" />
+
+# Legado Server
 
 **开源阅读（Legado）Headless 服务端与现代化 Web 客户端**
 

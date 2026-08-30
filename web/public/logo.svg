@@ -1,0 +1,86 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="100%" height="100%">
+  <defs>
+    <!-- Teal Palette -->
+    <linearGradient id="tealGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#14B8A6"/>
+      <stop offset="50%" stop-color="#0D9488"/>
+      <stop offset="100%" stop-color="#0F766E"/>
+    </linearGradient>
+
+    <!-- Warm Gold Palette -->
+    <linearGradient id="goldGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#FDE68A"/>
+      <stop offset="40%" stop-color="#F59E0B"/>
+      <stop offset="100%" stop-color="#D97706"/>
+    </linearGradient>
+
+    <!-- Gold Shadow/Back Fold -->
+    <linearGradient id="goldDark" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#D97706"/>
+      <stop offset="100%" stop-color="#B45309"/>
+    </linearGradient>
+
+    <!-- Subtle Drop Shadow -->
+    <filter id="logoShadow" x="-10%" y="-10%" width="120%" height="120%" filterUnits="userSpaceOnUse">
+      <feDropShadow dx="0" dy="2" stdDeviation="3" flood-color="#0F172A" flood-opacity="0.12"/>
+    </filter>
+  </defs>
+
+  <g filter="url(#logoShadow)">
+    <!-- Open Book Outer Pages -->
+    <!-- Left Page Outline -->
+    <path d="M64 104 C48 97 28 98 18 102 C16.5 102.6 15 101.5 15 100 L15 36 C15 34.5 16.5 33.5 18 33 C28 29 48 30 64 37" 
+          fill="none" 
+          stroke="url(#tealGrad)" 
+          stroke-width="5" 
+          stroke-linecap="round" 
+          stroke-linejoin="round"/>
+
+    <!-- Right Page Outline -->
+    <path d="M64 104 C80 97 100 98 110 102 C111.5 102.6 113 101.5 113 100 L113 36 C113 34.5 111.5 33.5 110 33 C100 29 80 30 64 37" 
+          fill="none" 
+          stroke="url(#tealGrad)" 
+          stroke-width="5" 
+          stroke-linecap="round" 
+          stroke-linejoin="round"/>
+
+    <!-- Book Spine -->
+    <line x1="64" y1="37" x2="64" y2="104" stroke="url(#tealGrad)" stroke-width="4.5" stroke-linecap="round"/>
+
+    <!-- Inner Page Margin Lines (Left & Right) -->
+    <path d="M25 41 C36 38 48 39 58 44" fill="none" stroke="url(#tealGrad)" stroke-width="2.5" stroke-linecap="round" opacity="0.65"/>
+    <path d="M103 41 C92 38 80 39 70 44" fill="none" stroke="url(#tealGrad)" stroke-width="2.5" stroke-linecap="round" opacity="0.65"/>
+
+    <!-- Top Hanging Bookmark Ribbon (The 'L' Stem Top) -->
+    <path d="M48 36 L48 18 C48 13.5 53 10 57.5 12.5 C60.5 14 62 17 62 21 L62 30" 
+          fill="none" 
+          stroke="url(#goldDark)" 
+          stroke-width="7" 
+          stroke-linecap="round" 
+          stroke-linejoin="round"/>
+    
+    <path d="M43 38 L43 20 C43 14 48 9.5 53.5 11 C58 12.5 60 16 60 21 L60 36" 
+          fill="none" 
+          stroke="url(#tealGrad)" 
+          stroke-width="6.5" 
+          stroke-linecap="round"/>
+
+    <!-- Swallowtail Ribbon End Tab -->
+    <path d="M38 16 L48 13 L48 29 L43 25 L38 29 Z" fill="url(#goldGrad)"/>
+
+    <!-- Infinity Mobius Loop (∞) intertwined on bottom half -->
+    <path d="M48 64 C35 52 24 64 24 74 C24 84 37 90 49 80 C58 73 70 63 79 56 C88 49 104 53 104 69 C104 82 90 89 78 80 C68 72 58 64 48 56" 
+          fill="none" 
+          stroke="url(#tealGrad)" 
+          stroke-width="8" 
+          stroke-linecap="round" 
+          stroke-linejoin="round"/>
+
+    <path d="M46 66 C35 55 27 64 27 73 C27 80 38 85 48 77 C56 70 71 58 80 52 C89 46 101 51 101 65 C101 77 90 82 80 74 C71 67 56 55 46 66 Z" 
+          fill="none" 
+          stroke="url(#goldGrad)" 
+          stroke-width="4.5" 
+          stroke-linecap="round" 
+          stroke-linejoin="round"/>
+  </g>
+</svg>

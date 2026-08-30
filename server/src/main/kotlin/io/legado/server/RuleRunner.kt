@@ -37,13 +37,19 @@ import java.util.zip.InflaterInputStream
 class RuleRunner(private val responseFetcher: ((String) -> String)? = null) {
     private val client = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(10)).followRedirects(HttpClient.Redirect.NEVER).build()
     private val json = Json { ignoreUnknownKeys = true }
+    private val jsSandbox = JsSandbox(this)
 
     fun search(sourceJson: String, keyword: String): List<SearchResult> {
         val source = sourceJson.objectValue()
         source.string("mainJs")?.takeIf { it.isNotBlank() }?.let { return JsSourceRunner(this, source).search(keyword) }
-        val searchUrl = source.string("searchUrl") ?: throw RuleExecutionException("该书源未配置 searchUrl")
-        if (searchUrl.trimStart().startsWith("@js")) throw RuleExecutionException("该书源的 searchUrl JavaScript 尚不受服务器支持")
+        val rawSearchUrl = source.string("searchUrl") ?: throw RuleExecutionException("该书源未配置 searchUrl")
         val sourceUrl = source.string("bookSourceUrl") ?: throw RuleExecutionException("书源缺少 bookSourceUrl")
+        val searchUrl = if (rawSearchUrl.trimStart().startsWith("@js:") || rawSearchUrl.trimStart().startsWith("js:") || rawSearchUrl.contains("<js>")) {
+            val jsCode = if (rawSearchUrl.contains("<js>")) rawSearchUrl.substringAfter("<js>").substringBefore("</js>") else rawSearchUrl.removePrefix("@js:").removePrefix("js:")
+            jsSandbox.eval(jsCode, mapOf("key" to keyword, "keyword" to keyword, "page" to 1, "baseUrl" to sourceUrl)) ?: throw RuleExecutionException("searchUrl JS 计算未返回有效地址")
+        } else {
+            rawSearchUrl
+        }
         val (urlTemplate, options) = splitUrlOptions(searchUrl)
         val mergedOptions = mergeOptions(parseSourceHeaders(source), options)
         val rendered = renderUrl(urlTemplate, keyword, sourceUrl).absolute(sourceUrl)
@@ -51,13 +57,14 @@ class RuleRunner(private val responseFetcher: ((String) -> String)? = null) {
         val rule = source.objectValue("ruleSearch") ?: throw RuleExecutionException("该书源未配置 ruleSearch")
         val items = nodes(body, rule.string("bookList") ?: throw RuleExecutionException("缺少 ruleSearch.bookList"))
         return items.mapNotNull { item ->
-            val url = item.value(rule.string("bookUrl"))?.absolute(sourceUrl) ?: return@mapNotNull null
+            val url = item.value(rule.string("bookUrl"), jsSandbox, body, sourceUrl)?.absolute(sourceUrl) ?: return@mapNotNull null
             SearchResult(
                 sourceId = sourceUrl,
-                name = item.value(rule.string("name")) ?: return@mapNotNull null,
-                author = item.value(rule.string("author")), bookUrl = url,
-                coverUrl = item.value(rule.string("coverUrl"))?.absolute(sourceUrl),
-                intro = item.value(rule.string("intro")),
+                name = item.value(rule.string("name"), jsSandbox, body, sourceUrl) ?: return@mapNotNull null,
+                author = item.value(rule.string("author"), jsSandbox, body, sourceUrl),
+                bookUrl = url,
+                coverUrl = item.value(rule.string("coverUrl"), jsSandbox, body, sourceUrl)?.absolute(sourceUrl),
+                intro = item.value(rule.string("intro"), jsSandbox, body, sourceUrl),
             )
         }
     }
@@ -74,7 +81,7 @@ class RuleRunner(private val responseFetcher: ((String) -> String)? = null) {
         val body = fetchUrl(url, mergedOptions, null)
         val rule = source.objectValue("ruleBookInfo") ?: throw RuleExecutionException("该书源未配置 ruleBookInfo")
         val root = NodeValue.document(body).at(rule.string("init"))
-        fun value(key: String): String? = runCatching { root.value(rule.string(key)) }.getOrNull()
+        fun value(key: String): String? = runCatching { root.value(rule.string(key), jsSandbox, body, bookUrl) }.getOrNull()
         val name = (value("name") ?: "").trim()
         return BookDetails(
             sourceId = source.string("bookSourceUrl")!!,
@@ -94,8 +101,8 @@ class RuleRunner(private val responseFetcher: ((String) -> String)? = null) {
         val rule = source.objectValue("ruleToc") ?: throw RuleExecutionException("该书源未配置 ruleToc")
         val listRule = rule.string("chapterList") ?: throw RuleExecutionException("缺少 ruleToc.chapterList")
         return nodes(body, listRule).mapIndexedNotNull { index, node ->
-            val chUrl = node.value(rule.string("chapterUrl"))?.absolute(tocUrl) ?: return@mapIndexedNotNull null
-            Chapter(index, node.value(rule.string("chapterName")) ?: "第 ${index + 1} 章", chUrl)
+            val chUrl = node.value(rule.string("chapterUrl"), jsSandbox, body, tocUrl)?.absolute(tocUrl) ?: return@mapIndexedNotNull null
+            Chapter(index, node.value(rule.string("chapterName"), jsSandbox, body, tocUrl) ?: "第 ${index + 1} 章", chUrl)
         }
     }
 
@@ -107,7 +114,7 @@ class RuleRunner(private val responseFetcher: ((String) -> String)? = null) {
         val body = fetchUrl(url, mergedOptions, null)
         val rule = source.objectValue("ruleContent") ?: throw RuleExecutionException("该书源未配置 ruleContent")
         val root = NodeValue.document(body)
-        var text = root.value(rule.string("content"))?.cleanContent().orEmpty()
+        var text = root.value(rule.string("content"), jsSandbox, body, chapterUrl)?.cleanContent().orEmpty()
         if (text.length < 500) {
             val paragraphs = Regex("(?i)<p[^>]*>([\\s\\S]*?)</p>").findAll(body)
                 .map { it.groupValues[1].cleanContent() }
@@ -118,8 +125,15 @@ class RuleRunner(private val responseFetcher: ((String) -> String)? = null) {
                 if (candidate.length > text.length) text = candidate
             }
         }
+        val replaceRegex = rule.string("replaceRegex")
+        if (!replaceRegex.isNullOrBlank()) {
+            val patterns = replaceRegex.split(Regex("[\r\n]+|&&")).map { it.trim() }.filter { it.isNotBlank() }
+            for (pattern in patterns) {
+                text = runCatching { text.replace(Regex(pattern), "") }.getOrDefault(text)
+            }
+        }
         if (text.isBlank()) throw RuleExecutionException("正文规则未提取到内容")
-        return ChapterContent(root.value(rule.string("title")), text)
+        return ChapterContent(root.value(rule.string("title"), jsSandbox, body, chapterUrl), text)
     }
 
     internal fun fetch(url: String): String = fetchUrl(url, null, null)
@@ -374,14 +388,35 @@ private class JsSourceRunner(private val runner: RuleRunner, private val source:
     private fun JsonObject.string(key: String): String? = (get(key) as? JsonPrimitive)?.contentOrNull
 }
 
-private class NodeValue private constructor(private val html: Element?, private val json: Any?) {
-    fun value(rule: String?): String? {
+internal class NodeValue private constructor(private val html: Element?, private val json: Any?) {
+    fun value(rule: String?, jsSandbox: JsSandbox? = null, rawBody: String? = null, baseUrl: String? = null): String? {
         if (rule.isNullOrBlank()) return null
+        val trimmedRule = rule.trim()
+
+        if (trimmedRule.startsWith("@js:") || trimmedRule.startsWith("js:")) {
+            val jsCode = trimmedRule.removePrefix("@js:").removePrefix("js:").trim()
+            val contextVal = html?.html() ?: json?.toString() ?: rawBody ?: ""
+            return jsSandbox?.eval(jsCode, mapOf("result" to contextVal, "src" to (rawBody ?: contextVal), "baseUrl" to (baseUrl ?: ""))) ?: contextVal
+        }
+
+        if (trimmedRule.contains("<js>") && trimmedRule.contains("</js>")) {
+            val preRule = trimmedRule.substringBefore("<js>").trim()
+            val jsCode = trimmedRule.substringAfter("<js>").substringBefore("</js>").trim()
+            val intermediate = if (preRule.isNotBlank()) valuePlain(preRule) ?: "" else (html?.html() ?: json?.toString() ?: rawBody ?: "")
+            return jsSandbox?.eval(jsCode, mapOf("result" to intermediate, "src" to (rawBody ?: intermediate), "baseUrl" to (baseUrl ?: ""))) ?: intermediate
+        }
+
+        return valuePlain(trimmedRule)
+    }
+
+    private fun valuePlain(rule: String): String? {
+        if (rule.isBlank()) return null
         return if (json != null) valueJson(rule)
         else html?.let { element ->
             val selector = rule.removePrefix("@css:")
             val segments = selector.split('@')
-            val mode = segments.last().substringBefore("##").ifBlank { "text" }
+            val lastSegment = segments.last()
+            val rawMode = lastSegment.substringBefore("##").ifBlank { "text" }
             val selectorChain = segments.subList(0, segments.size - 1).filter { it.isNotBlank() }
             
             val elements = if (selectorChain.isEmpty()) listOf(element) else {
@@ -398,38 +433,64 @@ private class NodeValue private constructor(private val html: Element?, private 
             }
             if (elements.isEmpty()) return null
             val texts = elements.mapNotNull { el ->
-                when (mode) {
+                when (rawMode) {
                     "html" -> el.html().takeIf { it.isNotBlank() }
                     "text" -> el.text().takeIf { it.isNotBlank() }
                     "textNodes", "textNode" -> el.ownText().takeIf { it.isNotBlank() }
-                    else -> el.attr(mode).takeIf { it.isNotBlank() }
+                    else -> el.attr(rawMode).takeIf { it.isNotBlank() }
                 }
             }
-            if (texts.isEmpty()) null else texts.joinToString("\n")
+            if (texts.isEmpty()) return null
+            var resultText = texts.joinToString("\n")
+
+            if (lastSegment.contains("##")) {
+                val parts = lastSegment.split("##")
+                var i = 1
+                while (i < parts.size) {
+                    val pattern = parts[i]
+                    val replacement = if (i + 1 < parts.size) parts[i + 1] else ""
+                    if (pattern.isNotBlank()) {
+                        resultText = runCatching { resultText.replace(Regex(pattern), replacement) }.getOrDefault(resultText)
+                    }
+                    i += 2
+                }
+            }
+            resultText.takeIf { it.isNotBlank() }
         }
     }
 
     private fun selectAllLegado(element: Element, selector: String): List<Element> = runCatching {
-        val classOnly = Regex("^class\\.([a-zA-Z][a-zA-Z0-9_-]*)$").find(selector)
+        val trimmed = selector.trim()
+        if (trimmed == "children") return@runCatching element.children().toList()
+        val idOnly = Regex("^id\\.([a-zA-Z0-9_-]+)$").find(trimmed)
+        if (idOnly != null) {
+            val el = element.getElementById(idOnly.groupValues[1])
+            return@runCatching if (el != null) listOf(el) else emptyList()
+        }
+        val tagOnly = Regex("^tag\\.([a-zA-Z0-9_-]+)$").find(trimmed)
+        if (tagOnly != null) {
+            return@runCatching element.getElementsByTag(tagOnly.groupValues[1]).toList()
+        }
+        val classOnly = Regex("^class\\.([a-zA-Z][a-zA-Z0-9_-]*)$").find(trimmed)
         if (classOnly != null) {
             return@runCatching element.select(".${classOnly.groupValues[1]}")
         }
-        val indexed = Regex("^([a-zA-Z][a-zA-Z0-9-]*)\\.(\\d+)$").find(selector)
+        val indexed = Regex("^([a-zA-Z][a-zA-Z0-9-]*)\\.(\\d+)$").find(trimmed)
         if (indexed != null) {
             val tag = indexed.groupValues[1]
             val ordinal = indexed.groupValues[2].toInt().coerceAtLeast(0)
             val matches = element.getElementsByTag(tag)
             return@runCatching matches.getOrNull(ordinal)?.let { listOf(it) } ?: emptyList()
         }
-        val classIndexed = Regex("^class\\.([a-zA-Z][a-zA-Z0-9_-]*)\\.(\\d+)$").find(selector)
-            ?: Regex("^\\.([a-zA-Z][a-zA-Z0-9_-]*)\\.(\\d+)$").find(selector)
+        val classIndexed = Regex("^class\\.([a-zA-Z][a-zA-Z0-9_-]*)\\.(\\d+)$").find(trimmed)
+            ?: Regex("^\\.([a-zA-Z][a-zA-Z0-9_-]*)\\.(\\d+)$").find(trimmed)
         if (classIndexed != null) {
             val className = classIndexed.groupValues[1]
             val ordinal = classIndexed.groupValues[2].toInt().coerceAtLeast(0)
             val matches = element.select(".$className")
             return@runCatching matches.getOrNull(ordinal)?.let { listOf(it) } ?: emptyList()
         }
-        element.select(selector)
+        element.select(trimmed)
     }.getOrDefault(emptyList())
 
     fun at(rule: String?): NodeValue {

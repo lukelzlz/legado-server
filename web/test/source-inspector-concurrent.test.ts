@@ -2,6 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { api, Chapter, SearchResult } from '../src/api.ts'
 import {
+  clearStoredInspections,
   createInitialInspections,
   inspectSingleSource,
   inspectAllSourcesConcurrently,
@@ -142,6 +143,7 @@ test('source inspector - inspectAllSourcesConcurrently executes bounded concurre
     assert.ok(updateCount > 0)
 
     // Test cancellation flag
+    clearStoredInspections(sources)
     let cancelled = false
     const cancelMap = await inspectAllSourcesConcurrently(
       sources,
@@ -155,6 +157,7 @@ test('source inspector - inspectAllSourcesConcurrently executes bounded concurre
     // First source will be marked idle since worker aborted before processing
     assert.equal(cancelMap.get('https://src1.com\u0000https://src1.com/book/1')?.status, 'idle')
   } finally {
+    clearStoredInspections()
     api.details = originalDetails
     api.chapters = originalChapters
     api.content = originalContent
@@ -332,6 +335,54 @@ test('source inspector - fast concurrent inspection and modal close AbortSignal 
     const map = await promise
     assert.ok(abortedCallCount > 0, 'In-flight HTTP requests must be aborted')
     assert.equal(activeCalls.size, 0, 'No remaining active network calls after modal close abort')
+  } finally {
+    api.details = originalDetails
+    api.chapters = originalChapters
+    api.content = originalContent
+    api.progress = originalProgress
+  }
+})
+
+test('source inspector - resume uncompleted inspection when switching back', async () => {
+  const originalDetails = api.details
+  const originalChapters = api.chapters
+  const originalContent = api.content
+  const originalProgress = api.progress
+
+  try {
+    const inspectedSources: string[] = []
+
+    api.details = async (src, book) => {
+      inspectedSources.push(src)
+      return { sourceId: src, name: '凡人修仙传', tocUrl: `${book}/toc` }
+    }
+    api.chapters = async () => Array.from({ length: 20 }, (_, i) => ({ index: i, title: `第${i + 1}章`, url: `/c${i + 1}` }))
+    api.content = async () => ({ content: '正文测试内容'.repeat(100) })
+    api.progress = async () => undefined
+
+    const rawSources: SearchResult[] = [
+      { sourceId: 'src-alpha', name: '凡人修仙传', bookUrl: 'https://a.com/b1' },
+      { sourceId: 'src-beta', name: '凡人修仙传', bookUrl: 'https://b.com/b1' },
+      { sourceId: 'src-gamma', name: '凡人修仙传', bookUrl: 'https://c.com/b1' },
+    ]
+
+    // Inspect first 2 sources
+    const initialMap = await inspectAllSourcesConcurrently(rawSources.slice(0, 2), 2)
+    assert.equal(initialMap.size, 2)
+    assert.equal(initialMap.get('src-alpha\u0000https://a.com/b1')?.status, 'valid')
+    assert.equal(initialMap.get('src-beta\u0000https://b.com/b1')?.status, 'valid')
+    assert.equal(inspectedSources.length, 2)
+
+    // User switches back / re-opens with all 3 sources
+    inspectedSources.length = 0
+    const resumedMap = await inspectAllSourcesConcurrently(rawSources, 2)
+    assert.equal(resumedMap.size, 3)
+    assert.equal(resumedMap.get('src-alpha\u0000https://a.com/b1')?.status, 'valid')
+    assert.equal(resumedMap.get('src-beta\u0000https://b.com/b1')?.status, 'valid')
+    assert.equal(resumedMap.get('src-gamma\u0000https://c.com/b1')?.status, 'valid')
+
+    // Verify only the missing src-gamma was probed; src-alpha and src-beta were restored from cache!
+    assert.deepEqual(inspectedSources, ['src-gamma'])
   } finally {
     api.details = originalDetails
     api.chapters = originalChapters

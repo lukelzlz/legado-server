@@ -11,7 +11,7 @@ import { SourceSwitchModal } from './SourceSwitchModal'
 import { toast, ToastContainer } from './Toast'
 import './styles.css'
 
-import { createInitialInspections, inspectAllSourcesConcurrently, inspectSingleSource, SourceHealthInspection } from './sourceInspector'
+import { clearStoredInspections, getInitialOrStoredInspections, inspectAllSourcesConcurrently, SourceHealthInspection } from './sourceInspector'
 
 export type { SourceChoice, SourceChoiceStatus }
 
@@ -171,7 +171,9 @@ function BookDetailModal({
   onClose: () => void
 }) {
   const [introExpanded, setIntroExpanded] = useState(false)
-  const [inspections, setInspections] = useState<Map<string, SourceHealthInspection>>(new Map())
+  const [inspections, setInspections] = useState<Map<string, SourceHealthInspection>>(() =>
+    getInitialOrStoredInspections(choices.map(c => c.result))
+  )
   const [checking, setChecking] = useState(false)
   const [inShelf, setInShelf] = useState<boolean | null>(null)
   const [shelfBusy, setShelfBusy] = useState(false)
@@ -181,13 +183,17 @@ function BookDetailModal({
   const latestChapter = book.chapters.at(-1)
   const availableSources = choices.length
 
-  const runInspection = useCallback(() => {
+  const runInspection = useCallback((forceRefresh = false) => {
     abortControllerRef.current?.abort()
     const controller = new AbortController()
     abortControllerRef.current = controller
     cancelInspectRef.current = false
-    setChecking(true)
     const rawSources = choices.map(c => c.result)
+    if (forceRefresh) {
+      clearStoredInspections(rawSources)
+      setInspections(getInitialOrStoredInspections(rawSources))
+    }
+    setChecking(true)
     void inspectAllSourcesConcurrently(
       rawSources,
       3,
@@ -365,7 +371,7 @@ function BookDetailModal({
                 inspections={inspections}
                 active={book.bookUrl}
                 onChoose={handleSelectChoice}
-                onRecheck={runInspection}
+                onRecheck={() => runInspection(true)}
                 checking={checking}
               />
             </div>

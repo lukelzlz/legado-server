@@ -1,0 +1,335 @@
+{
+  "ROSTemplateFormatVersion": "2015-09-01",
+  "Description": "Legado 开源阅读服务端（ECI 容器 + NAS 持久化存储一键部署）",
+  "Metadata": {
+    "ALIYUN::ROS::Interface": {
+      "ParameterGroups": [
+        {
+          "Parameters": [
+            "ZoneId"
+          ],
+          "Label": {
+            "default": "基础环境配置"
+          }
+        },
+        {
+          "Parameters": [
+            "AdminPassword"
+          ],
+          "Label": {
+            "default": "服务管理配置"
+          }
+        },
+        {
+          "Parameters": [
+            "ContainerCpu",
+            "ContainerMemory",
+            "EipBandwidth"
+          ],
+          "Label": {
+            "default": "实例规格与带宽"
+          }
+        }
+      ],
+      "TemplateTags": [
+        "Create by Compute Nest"
+      ]
+    }
+  },
+  "Parameters": {
+    "ZoneId": {
+      "Type": "String",
+      "Label": "可用区",
+      "Description": "请选择您希望部署的可用区（系统将自动为您在该可用区创建专有网络 VPC、交换机与文件存储）。",
+      "AssociationProperty": "ZoneId"
+    },
+    "AdminPassword": {
+      "Type": "String",
+      "Label": "管理员初始密码",
+      "Description": "Web 端管理员初始登录密码（必填，首次初始化数据库必需，长度 6-64 位）。",
+      "NoEcho": true,
+      "MinLength": 6,
+      "MaxLength": 64
+    },
+    "ContainerCpu": {
+      "Type": "Number",
+      "Label": "ECI 容器 CPU (核)",
+      "Description": "分配给 Legado 容器的 CPU 核数。",
+      "Default": 1,
+      "AllowedValues": [
+        0.25,
+        0.5,
+        1,
+        2,
+        4
+      ]
+    },
+    "ContainerMemory": {
+      "Type": "Number",
+      "Label": "ECI 容器内存 (GiB)",
+      "Description": "分配给 Legado 容器的内存大小（GiB）。",
+      "Default": 2,
+      "AllowedValues": [
+        0.5,
+        1,
+        2,
+        4,
+        8
+      ]
+    },
+    "EipBandwidth": {
+      "Type": "Number",
+      "Label": "公网带宽 (Mbps)",
+      "Description": "ECI 实例绑定的弹性公网 IP 带宽上限（按流量计费）。",
+      "Default": 5,
+      "MinValue": 1,
+      "MaxValue": 200
+    }
+  },
+  "Resources": {
+    "Vpc": {
+      "Type": "ALIYUN::ECS::VPC",
+      "Properties": {
+        "VpcName": {
+          "Fn::Sub": "legado-vpc-${ALIYUN::StackName}"
+        },
+        "CidrBlock": "192.168.0.0/16",
+        "Description": "legado-vpc"
+      }
+    },
+    "VSwitch": {
+      "Type": "ALIYUN::ECS::VSwitch",
+      "Properties": {
+        "VpcId": {
+          "Ref": "Vpc"
+        },
+        "ZoneId": {
+          "Ref": "ZoneId"
+        },
+        "CidrBlock": "192.168.1.0/24",
+        "VSwitchName": {
+          "Fn::Sub": "legado-vsw-${ALIYUN::StackName}"
+        },
+        "Description": "legado-vsw"
+      }
+    },
+    "Eip": {
+      "Type": "ALIYUN::VPC::EIP",
+      "Properties": {
+        "Name": {
+          "Fn::Sub": "legado-eip-${ALIYUN::StackName}"
+        },
+        "Bandwidth": {
+          "Ref": "EipBandwidth"
+        },
+        "InternetChargeType": "PayByTraffic"
+      }
+    },
+    "SecurityGroup": {
+      "Type": "ALIYUN::ECS::SecurityGroup",
+      "Properties": {
+        "VpcId": {
+          "Ref": "Vpc"
+        },
+        "SecurityGroupName": {
+          "Fn::Sub": "legado-sg-${ALIYUN::StackName}"
+        },
+        "Description": "legado-security-group",
+        "SecurityGroupIngress": [
+          {
+            "IpProtocol": "tcp",
+            "PortRange": "8080/8080",
+            "NicType": "intranet",
+            "SourceCidrIp": "0.0.0.0/0",
+            "Priority": 1,
+            "Description": "allow-legado-web-8080"
+          }
+        ]
+      }
+    },
+    "NasAccessGroup": {
+      "Type": "ALIYUN::NAS::AccessGroup",
+      "Properties": {
+        "AccessGroupName": {
+          "Fn::Sub": "legado_nas_ag_${ALIYUN::StackName}"
+        },
+        "AccessGroupType": "Vpc",
+        "Description": "legado_nas_access_group"
+      }
+    },
+    "NasAccessRule": {
+      "Type": "ALIYUN::NAS::AccessRule",
+      "Properties": {
+        "AccessGroupName": {
+          "Ref": "NasAccessGroup"
+        },
+        "SourceCidrIp": "0.0.0.0/0",
+        "RWAccessType": "RDWR",
+        "UserAccessType": "no_squash",
+        "Priority": 1
+      }
+    },
+    "NasFileSystem": {
+      "Type": "ALIYUN::NAS::FileSystem",
+      "Properties": {
+        "ProtocolType": "NFS",
+        "StorageType": "Performance",
+        "Description": {
+          "Fn::Sub": "legado-nas-${ALIYUN::StackName}"
+        }
+      }
+    },
+    "NasMountTarget": {
+      "Type": "ALIYUN::NAS::MountTarget",
+      "Properties": {
+        "FileSystemId": {
+          "Ref": "NasFileSystem"
+        },
+        "AccessGroupName": {
+          "Ref": "NasAccessGroup"
+        },
+        "NetworkType": "Vpc",
+        "VpcId": {
+          "Ref": "Vpc"
+        },
+        "VSwitchId": {
+          "Ref": "VSwitch"
+        }
+      }
+    },
+    "ContainerGroup": {
+      "Type": "ALIYUN::ECI::ContainerGroup",
+      "DependsOn": [
+        "NasMountTarget",
+        "SecurityGroup",
+        "Eip"
+      ],
+      "Properties": {
+        "ContainerGroupName": {
+          "Fn::Sub": "legado-eci-${ALIYUN::StackName}"
+        },
+        "ZoneId": {
+          "Ref": "ZoneId"
+        },
+        "VSwitchId": {
+          "Ref": "VSwitch"
+        },
+        "SecurityGroupId": {
+          "Ref": "SecurityGroup"
+        },
+        "EipInstanceId": {
+          "Ref": "Eip"
+        },
+        "Cpu": {
+          "Ref": "ContainerCpu"
+        },
+        "Memory": {
+          "Ref": "ContainerMemory"
+        },
+        "RestartPolicy": "Always",
+        "Volume": [
+          {
+            "Name": "legado-data-volume",
+            "Type": "NFSVolume",
+            "NFSVolume.Server": {
+              "Fn::GetAtt": [
+                "NasMountTarget",
+                "MountTargetDomain"
+              ]
+            },
+            "NFSVolume.Path": "/",
+            "NFSVolume.ReadOnly": false
+          }
+        ],
+        "Container": [
+          {
+            "Name": "legado-server",
+            "Image": "crpi-lup94py5f7l0oclt.cn-beijing.personal.cr.aliyuncs.com/lukelzlz/legado-server:latest",
+            "Cpu": {
+              "Ref": "ContainerCpu"
+            },
+            "Memory": {
+              "Ref": "ContainerMemory"
+            },
+            "Command": [
+              "/bin/sh"
+            ],
+            "Arg": [
+              "-c",
+              "mkdir -p /data && (chmod 777 /data 2>/dev/null || true) && exec /app/bin/legado-server"
+            ],
+            "Port": [
+              {
+                "Port": 8080,
+                "Protocol": "TCP"
+              }
+            ],
+            "EnvironmentVar": [
+              {
+                "Key": "ADMIN_PASSWORD",
+                "Value": {
+                  "Ref": "AdminPassword"
+                }
+              },
+              {
+                "Key": "LEGADO_PORT",
+                "Value": "8080"
+              },
+              {
+                "Key": "LEGADO_DATA_DIR",
+                "Value": "/data"
+              },
+              {
+                "Key": "LEGADO_SECURE_COOKIES",
+                "Value": "false"
+              },
+              {
+                "Key": "JAVA_TOOL_OPTIONS",
+                "Value": "-XX:MaxRAMPercentage=75.0 -XX:+UseG1GC"
+              }
+            ],
+            "VolumeMount": [
+              {
+                "Name": "legado-data-volume",
+                "MountPath": "/data",
+                "ReadOnly": false
+              }
+            ]
+          }
+        ]
+      }
+    }
+  },
+  "Outputs": {
+    "WebUrl": {
+      "Description": "Legado 阅读器 Web 界面访问地址",
+      "Value": {
+        "Fn::Sub": "http://${Eip.EipAddress}:8080"
+      }
+    },
+    "InternetIp": {
+      "Description": "实例弹性公网 IP (EIP)",
+      "Value": {
+        "Fn::GetAtt": [
+          "Eip",
+          "EipAddress"
+        ]
+      }
+    },
+    "AdminPassword": {
+      "Description": "管理员密码",
+      "Value": {
+        "Ref": "AdminPassword"
+      }
+    },
+    "ContainerGroupId": {
+      "Description": "ECI 容器组实例 ID",
+      "Value": {
+        "Fn::GetAtt": [
+          "ContainerGroup",
+          "ContainerGroupId"
+        ]
+      }
+    }
+  }
+}

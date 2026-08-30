@@ -507,9 +507,26 @@ function LibraryPage({ sources, onOpen }: { sources: SourceSummary[]; onOpen: (b
             placeholder="输入书名或作者"
           />
           {search.loading ? (
-            <button type="button" className="primary-button" onClick={search.stopSearch}>停止搜索</button>
+            <button
+              key="stop-search-btn"
+              type="button"
+              className="primary-button"
+              onClick={e => {
+                e.preventDefault()
+                e.stopPropagation()
+                search.stopSearch()
+              }}
+            >
+              停止搜索
+            </button>
           ) : (
-            <button type="submit" className="primary-button">搜索</button>
+            <button
+              key="start-search-btn"
+              type="submit"
+              className="primary-button"
+            >
+              搜索
+            </button>
           )}
         </form>
         <label className="library-source-select">

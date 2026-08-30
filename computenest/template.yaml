@@ -1,110 +1,48 @@
 ROSTemplateFormatVersion: '2015-09-01'
-Description:
-  zh-cn: '使用阿里云弹性容器实例 (ECI) 和文件存储 (NAS) 一键部署 Legado 阅读服务端与 Web 端。'
-  en: 'Deploy Legado Server and Web Reader using Alibaba Cloud Elastic Container Instance (ECI) and File Storage (NAS).'
+Description: 'Legado 开源阅读服务端（ECI 容器 + NAS 持久化存储一键部署）'
 
 Metadata:
   ALIYUN::ROS::Interface:
     ParameterGroups:
       - Parameters:
-          - AdminPassword
-          - ContainerImage
-        Label:
-          default:
-            zh-cn: 服务配置
-            en: Service Configuration
-      - Parameters:
           - ZoneId
-          - VpcId
-          - VSwitchId
         Label:
-          default:
-            zh-cn: 网络配置
-            en: Network Configuration
+          default: 基础环境配置
+      - Parameters:
+          - AdminPassword
+        Label:
+          default: 服务管理配置
       - Parameters:
           - ContainerCpu
           - ContainerMemory
           - EipBandwidth
         Label:
-          default:
-            zh-cn: ECI 实例与公网带宽
-            en: ECI Instance & Bandwidth
-      - Parameters:
-          - StorageType
-        Label:
-          default:
-            zh-cn: 持久化存储 (NAS) 配置
-            en: Persistent Storage (NAS)
+          default: 实例规格与带宽
     TemplateTags:
       - 'Create by Compute Nest'
 
 Parameters:
-  AdminPassword:
-    Type: String
-    Label:
-      zh-cn: 管理员初始密码
-      en: Admin Initial Password
-    Description:
-      zh-cn: Legado 服务端 Web 管理员初始登录密码（留空则不开启鉴权，建议设置 8 位以上强密码）。
-      en: Initial login password for the admin account. Leave blank to disable auth (recommend 8+ chars).
-    NoEcho: true
-    Default: ''
-    MinLength: 0
-    MaxLength: 64
-
-  ContainerImage:
-    Type: String
-    Label:
-      zh-cn: 容器镜像地址
-      en: Container Image
-    Description:
-      zh-cn: Legado Server 容器镜像地址（默认使用作者维护的阿里云公网镜像，也支持 ghcr.io/lukelzlz/legado-server:latest 或自定义镜像）。
-      en: Container image URI for Legado Server (defaults to official Aliyun ACR public mirror).
-    Default: 'crpi-lup94py5f7l0oclt.cn-beijing.personal.cr.aliyuncs.com/lukelzlz/legado-server:latest'
-
   ZoneId:
     Type: String
-    Label:
-      zh-cn: 可用区
-      en: Availability Zone
-    Description:
-      zh-cn: 部署 ECI 与 NAS 的可用区。
-      en: Availability Zone for ECI and NAS.
+    Label: 可用区
+    Description: '请选择您希望部署的可用区（系统将自动为您在该可用区创建专有网络 VPC、交换机与文件存储）。'
     AssociationProperty: ZoneId
 
-  VpcId:
+  AdminPassword:
     Type: String
-    Label:
-      zh-cn: 专有网络 (VPC)
-      en: Virtual Private Cloud (VPC)
-    Description:
-      zh-cn: 请选择已有的专有网络 VPC。
-      en: Select an existing VPC.
-    AssociationProperty: ALIYUN::ECS::VPC::VPCId
-
-  VSwitchId:
-    Type: String
-    Label:
-      zh-cn: 交换机 (VSwitch)
-      en: VSwitch
-    Description:
-      zh-cn: 请选择与所选可用区匹配的交换机。
-      en: Select a VSwitch corresponding to the chosen Availability Zone.
-    AssociationProperty: ALIYUN::ECS::VSwitch::VSwitchId
-    AssociationPropertyMetadata:
-      VpcId: ${VpcId}
-      ZoneId: ${ZoneId}
+    Label: 管理员初始密码
+    Description: 'Web 端管理员初始登录密码（必填，首次初始化数据库必需，长度 6-64 位）。'
+    NoEcho: true
+    MinLength: 6
+    MaxLength: 64
 
   ContainerCpu:
     Type: Number
-    Label:
-      zh-cn: ECI 容器 CPU (核)
-      en: ECI Container CPU (Cores)
-    Description:
-      zh-cn: 分配给 Legado 容器的 CPU 核数。
-      en: Number of CPU cores allocated to the container.
+    Label: ECI 容器 CPU (核)
+    Description: '分配给 Legado 容器的 CPU 核数。'
     Default: 1
     AllowedValues:
+      - 0.25
       - 0.5
       - 1
       - 2
@@ -112,14 +50,11 @@ Parameters:
 
   ContainerMemory:
     Type: Number
-    Label:
-      zh-cn: ECI 容器内存 (GiB)
-      en: ECI Container Memory (GiB)
-    Description:
-      zh-cn: 分配给 Legado 容器的内存大小（GiB）。
-      en: Memory allocated to the container in GiB.
+    Label: ECI 容器内存 (GiB)
+    Description: '分配给 Legado 容器的内存大小（GiB）。'
     Default: 2
     AllowedValues:
+      - 0.5
       - 1
       - 2
       - 4
@@ -127,55 +62,71 @@ Parameters:
 
   EipBandwidth:
     Type: Number
-    Label:
-      zh-cn: 公网带宽 (Mbps)
-      en: EIP Bandwidth (Mbps)
-    Description:
-      zh-cn: ECI 实例绑定的弹性公网 IP 带宽上限（按流量计费）。
-      en: Public IP bandwidth limit in Mbps (pay-by-traffic).
+    Label: 公网带宽 (Mbps)
+    Description: 'ECI 实例绑定的弹性公网 IP 带宽上限（按流量计费）。'
     Default: 5
     MinValue: 1
     MaxValue: 200
 
-  StorageType:
-    Type: String
-    Label:
-      zh-cn: NAS 存储类型
-      en: NAS Storage Type
-    Description:
-      zh-cn: 用于持久化存储 SQLite 数据库（书架、书源、阅读进度）和书籍封面的 NAS 文件系统规格。
-      en: NAS storage specification for persisting SQLite database and covers.
-    Default: Performance
-    AllowedValues:
-      - Performance
-      - Capacity
-
 Resources:
+  Vpc:
+    Type: ALIYUN::ECS::VPC
+    Properties:
+      VpcName:
+        Fn::Sub: 'legado-vpc-${ALIYUN::StackName}'
+      CidrBlock: 192.168.0.0/16
+      Description: 'legado-vpc'
+
+  VSwitch:
+    Type: ALIYUN::ECS::VSwitch
+    Properties:
+      VpcId:
+        Ref: Vpc
+      ZoneId:
+        Ref: ZoneId
+      CidrBlock: 192.168.1.0/24
+      VSwitchName:
+        Fn::Sub: 'legado-vsw-${ALIYUN::StackName}'
+      Description: 'legado-vsw'
+
+  Eip:
+    Type: ALIYUN::VPC::EIP
+    Properties:
+      Name:
+        Fn::Sub: 'legado-eip-${ALIYUN::StackName}'
+      Bandwidth:
+        Ref: EipBandwidth
+      InternetChargeType: PayByTraffic
+
   SecurityGroup:
     Type: ALIYUN::ECS::SecurityGroup
     Properties:
-      VpcId: !Ref VpcId
-      SecurityGroupName: !Sub 'legado-sg-${ALIYUN::StackName}'
-      Description: 'Security Group for Legado Server ECI instance'
+      VpcId:
+        Ref: Vpc
+      SecurityGroupName:
+        Fn::Sub: 'legado-sg-${ALIYUN::StackName}'
+      Description: 'legado-security-group'
       SecurityGroupIngress:
         - IpProtocol: tcp
           PortRange: 8080/8080
           NicType: intranet
           SourceCidrIp: 0.0.0.0/0
           Priority: 1
-          Description: 'Allow Legado Web HTTP port 8080'
+          Description: 'allow-legado-web-8080'
 
   NasAccessGroup:
     Type: ALIYUN::NAS::AccessGroup
     Properties:
-      AccessGroupName: !Sub 'legado-nas-ag-${ALIYUN::StackName}'
+      AccessGroupName:
+        Fn::Sub: 'legado_nas_ag_${ALIYUN::StackName}'
       AccessGroupType: Vpc
-      Description: 'Access group for Legado Server NAS'
+      Description: 'legado_nas_access_group'
 
   NasAccessRule:
     Type: ALIYUN::NAS::AccessRule
     Properties:
-      AccessGroupName: !Ref NasAccessGroup
+      AccessGroupName:
+        Ref: NasAccessGroup
       SourceCidrIp: 0.0.0.0/0
       RWAccessType: RDWR
       UserAccessType: no_squash
@@ -185,90 +136,107 @@ Resources:
     Type: ALIYUN::NAS::FileSystem
     Properties:
       ProtocolType: NFS
-      StorageType: !Ref StorageType
-      Description: !Sub 'Legado persistent storage - ${ALIYUN::StackName}'
+      StorageType: Performance
+      Description:
+        Fn::Sub: 'legado-nas-${ALIYUN::StackName}'
 
   NasMountTarget:
     Type: ALIYUN::NAS::MountTarget
     Properties:
-      FileSystemId: !Ref NasFileSystem
-      AccessGroupName: !Ref NasAccessGroup
+      FileSystemId:
+        Ref: NasFileSystem
+      AccessGroupName:
+        Ref: NasAccessGroup
       NetworkType: Vpc
-      VpcId: !Ref VpcId
-      VSwitchId: !Ref VSwitchId
+      VpcId:
+        Ref: Vpc
+      VSwitchId:
+        Ref: VSwitch
 
   ContainerGroup:
     Type: ALIYUN::ECI::ContainerGroup
     DependsOn:
       - NasMountTarget
       - SecurityGroup
+      - Eip
     Properties:
-      ContainerGroupName: !Sub 'legado-eci-${ALIYUN::StackName}'
-      ZoneId: !Ref ZoneId
-      VpcId: !Ref VpcId
-      VSwitchId: !Ref VSwitchId
-      SecurityGroupId: !Ref SecurityGroup
-      Cpu: !Ref ContainerCpu
-      Memory: !Ref ContainerMemory
+      ContainerGroupName:
+        Fn::Sub: 'legado-eci-${ALIYUN::StackName}'
+      ZoneId:
+        Ref: ZoneId
+      VSwitchId:
+        Ref: VSwitch
+      SecurityGroupId:
+        Ref: SecurityGroup
+      EipInstanceId:
+        Ref: Eip
+      Cpu:
+        Ref: ContainerCpu
+      Memory:
+        Ref: ContainerMemory
       RestartPolicy: Always
-      AutoCreateEip: true
-      EipBandwidth: !Ref EipBandwidth
-      Volumes:
+      Volume:
         - Name: legado-data-volume
           Type: NFSVolume
-          NFSVolume:
-            Server: !GetAtt NasMountTarget.MountTargetDomain
-            Path: /
-            ReadOnly: false
-      Containers:
+          NFSVolume.Server:
+            Fn::GetAtt:
+              - NasMountTarget
+              - MountTargetDomain
+          NFSVolume.Path: /
+          NFSVolume.ReadOnly: false
+      Container:
         - Name: legado-server
-          Image: !Ref ContainerImage
-          Cpu: !Ref ContainerCpu
-          Memory: !Ref ContainerMemory
-          Ports:
+          Image: 'crpi-lup94py5f7l0oclt.cn-beijing.personal.cr.aliyuncs.com/lukelzlz/legado-server:latest'
+          Cpu:
+            Ref: ContainerCpu
+          Memory:
+            Ref: ContainerMemory
+          Command:
+            - /bin/sh
+          Arg:
+            - -c
+            - 'mkdir -p /data && (chmod 777 /data 2>/dev/null || true) && exec /app/bin/legado-server'
+          Port:
             - Port: 8080
               Protocol: TCP
-          EnvironmentVars:
+          EnvironmentVar:
             - Key: ADMIN_PASSWORD
-              Value: !Ref AdminPassword
+              Value:
+                Ref: AdminPassword
             - Key: LEGADO_PORT
               Value: '8080'
             - Key: LEGADO_DATA_DIR
               Value: /data
             - Key: LEGADO_SECURE_COOKIES
               Value: 'false'
-          VolumeMounts:
+            - Key: JAVA_TOOL_OPTIONS
+              Value: '-XX:MaxRAMPercentage=75.0 -XX:+UseG1GC'
+          VolumeMount:
             - Name: legado-data-volume
               MountPath: /data
               ReadOnly: false
 
 Outputs:
   WebUrl:
-    Description:
-      zh-cn: Legado 阅读器 Web 界面访问地址
-      en: Legado Web Reader URL
-    Value: !Sub 'http://${ContainerGroup.InternetIp}:8080'
+    Description: 'Legado 阅读器 Web 界面访问地址'
+    Value:
+      Fn::Sub: 'http://${Eip.EipAddress}:8080'
 
   InternetIp:
-    Description:
-      zh-cn: 实例弹性公网 IP (EIP)
-      en: Public IP Address (EIP)
-    Value: !GetAtt ContainerGroup.InternetIp
+    Description: '实例弹性公网 IP (EIP)'
+    Value:
+      Fn::GetAtt:
+        - Eip
+        - EipAddress
 
   AdminPassword:
-    Description:
-      zh-cn: 管理员密码（若未配置则直接登录）
-      en: Admin Password (if configured)
-    Value: !Ref AdminPassword
+    Description: '管理员密码'
+    Value:
+      Ref: AdminPassword
 
   ContainerGroupId:
-    Description:
-      zh-cn: ECI 容器组实例 ID
-      en: ECI Container Group ID
-    Value: !GetAtt ContainerGroup.ContainerGroupId
-
-  NasFileSystemId:
-    Description:
-      zh-cn: NAS 持久化文件系统 ID
-      en: NAS File System ID
-    Value: !Ref NasFileSystem
+    Description: 'ECI 容器组实例 ID'
+    Value:
+      Fn::GetAtt:
+        - ContainerGroup
+        - ContainerGroupId

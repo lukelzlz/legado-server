@@ -139,3 +139,52 @@ test('searchStore - state mutators and reset lifecycle', () => {
   assert.equal(snap.selectedSourceId, '')
   assert.equal(snap.loading, false)
 })
+
+test('searchStore - stopSearch lifecycle and status flag', () => {
+  const originalWebSocket = globalThis.WebSocket
+  const originalLocation = globalThis.location
+
+  class MockWebSocket {
+    static OPEN = 1
+    readyState = 1
+    sentMessages: string[] = []
+    closed = false
+
+    addEventListener(_event: string, _cb: any) {}
+    send(data: string) { this.sentMessages.push(data) }
+    close() { this.closed = true }
+  }
+
+  ;(globalThis as any).WebSocket = MockWebSocket
+  ;(globalThis as any).location = { protocol: 'http:', host: 'localhost:8080' }
+
+  try {
+    searchStore.reset()
+    searchStore.setKeyword('凡人修仙传')
+    
+    // Directly simulate loading state
+    searchStore.startSearch('凡人修仙传')
+    let snap = searchStore.getSnapshot()
+    assert.equal(snap.loading, true)
+    assert.equal(snap.stopped, false)
+
+    // Call stopSearch
+    searchStore.stopSearch()
+    snap = searchStore.getSnapshot()
+    assert.equal(snap.loading, false)
+    assert.equal(snap.stopped, true)
+
+    // Subsequent startSearch resets stopped flag
+    searchStore.startSearch('凡人修仙传')
+    snap = searchStore.getSnapshot()
+    assert.equal(snap.loading, true)
+    assert.equal(snap.stopped, false)
+    
+    searchStore.stopSearch()
+  } finally {
+    globalThis.WebSocket = originalWebSocket
+    globalThis.location = originalLocation
+    searchStore.reset()
+  }
+})
+

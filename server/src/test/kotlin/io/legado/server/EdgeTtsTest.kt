@@ -36,6 +36,13 @@ class EdgeTtsTest {
     }
 
     @Test
+    fun `sec ms gec token generation produces 64-char uppercase hex string`() {
+        val token = EdgeTtsService.generateSecMsGec()
+        assertEquals(64, token.length)
+        assertTrue(token.matches(Regex("^[0-9A-F]{64}$")))
+    }
+
+    @Test
     fun `tts routes provide voice list and reject empty speak requests`() = testApplication {
         val dbPath = Files.createTempFile("legado-tts-test", ".sqlite").toString()
         val tempDir = Files.createTempDirectory("legado-tts-covers")

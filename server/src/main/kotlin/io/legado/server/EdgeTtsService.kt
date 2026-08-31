@@ -9,6 +9,7 @@ import java.net.http.HttpResponse
 import java.net.http.WebSocket
 import java.nio.ByteBuffer
 import java.nio.charset.StandardCharsets
+import java.security.MessageDigest
 import java.time.Duration
 import java.util.UUID
 import java.util.concurrent.CompletableFuture
@@ -29,9 +30,14 @@ class EdgeTtsService(
     private val maxCacheSize = 250
 
     companion object {
-        private const val WSS_URL = "wss://speech.platform.bing.com/consumer/speech/synthesize/readaloud/edge/v1?TrustedClientToken=6A5AA1D4EAFF4E9FB37E23D68491D6F4"
-        private const val USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36 Edg/130.0.0.0"
+        private const val TRUSTED_CLIENT_TOKEN = "6A5AA1D4EAFF4E9FB37E23D68491D6F4"
+        private const val WSS_BASE_URL = "wss://speech.platform.bing.com/consumer/speech/synthesize/readaloud/edge/v1"
+        private const val CHROMIUM_FULL_VERSION = "143.0.3650.75"
+        private const val CHROMIUM_MAJOR_VERSION = "143"
+        private const val USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/$CHROMIUM_MAJOR_VERSION.0.0.0 Safari/537.36 Edg/$CHROMIUM_MAJOR_VERSION.0.0.0"
         private const val ORIGIN = "chrome-extension://jdiccldimpdaibmpdkjnbmckianbfold"
+        private const val WIN_EPOCH = 11644473600L
+        private const val SEC_MS_GEC_VERSION = "1-$CHROMIUM_FULL_VERSION"
 
         val DEFAULT_VOICES = listOf(
             TtsVoice("zh-CN-XiaoxiaoNeural", "晓晓 (女声·温暖自然·推荐)", "zh-CN", "Female", "中文普通话", "edge", "适合小说叙述与日常对话"),
@@ -48,6 +54,23 @@ class EdgeTtsService(
             TtsVoice("en-US-JennyNeural", "Jenny (英文·自然女声)", "en-US", "Female", "English (US)", "edge", "Natural American English Female"),
             TtsVoice("en-US-GuyNeural", "Guy (英文·自然男声)", "en-US", "Male", "English (US)", "edge", "Natural American English Male"),
         )
+
+        fun generateSecMsGec(): String {
+            val nowSeconds = System.currentTimeMillis() / 1000L
+            var ticks = nowSeconds + WIN_EPOCH
+            ticks -= (ticks % 300L)
+            val fileTimeTicks = ticks * 10000000L
+            val strToHash = "$fileTimeTicks$TRUSTED_CLIENT_TOKEN"
+            val md = MessageDigest.getInstance("SHA-256")
+            val digest = md.digest(strToHash.toByteArray(StandardCharsets.US_ASCII))
+            return digest.joinToString("") { b -> "%02X".format(b) }
+        }
+
+        fun generateMuid(): String {
+            val bytes = ByteArray(16)
+            java.util.concurrent.ThreadLocalRandom.current().nextBytes(bytes)
+            return bytes.joinToString("") { b -> "%02X".format(b) }
+        }
     }
 
     fun listVoices(): List<TtsVoice> = DEFAULT_VOICES
@@ -120,10 +143,20 @@ class EdgeTtsService(
             }
         }
 
+        val connectionId = UUID.randomUUID().toString().replace("-", "")
+        val secMsGec = generateSecMsGec()
+        val muid = generateMuid()
+        val wssUrl = "$WSS_BASE_URL?TrustedClientToken=$TRUSTED_CLIENT_TOKEN&Sec-MS-GEC=$secMsGec&Sec-MS-GEC-Version=$SEC_MS_GEC_VERSION&ConnectionId=$connectionId"
+
         val ws = client.newWebSocketBuilder()
             .header("User-Agent", USER_AGENT)
             .header("Origin", ORIGIN)
-            .buildAsync(URI.create(WSS_URL), listener)
+            .header("Pragma", "no-cache")
+            .header("Cache-Control", "no-cache")
+            .header("Accept-Encoding", "gzip, deflate, br, zstd")
+            .header("Accept-Language", "en-US,en;q=0.9")
+            .header("Cookie", "muid=$muid;")
+            .buildAsync(URI.create(wssUrl), listener)
             .get(timeoutSeconds, TimeUnit.SECONDS)
 
         try {

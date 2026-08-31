@@ -3,6 +3,21 @@ import { ReaderSettings, TtsEngineType } from './readerSettings'
 
 export type TtsPlayState = 'idle' | 'buffering' | 'playing' | 'paused'
 
+/**
+ * Guard: returns true only if the text has >= 2 meaningful characters after stripping
+ * punctuation, quotes, and brackets.  Prevents sending bare quotes/punctuation like `"` or `。`
+ * to the TTS backend, which would return 0-byte audio and cause ERR_REQUEST_RANGE_NOT_SATISFIABLE.
+ */
+function isEffectiveText(text: string): boolean {
+  if (!text) return false
+  // Strip all punctuation, CJK brackets, quotes, whitespace
+  const stripped = text.replace(
+    /[\s\u0000-\u002F\u003A-\u0040\u005B-\u0060\u007B-\u00BF\u2000-\u206F\u2018\u2019\u201C\u201D\u3000-\u303F\uFF00-\uFFEF]/g,
+    '',
+  )
+  return stripped.length >= 2
+}
+
 export interface ITtsEngine {
   speak(
     text: string,
@@ -147,12 +162,13 @@ export class HttpAudioTtsEngine implements ITtsEngine {
 
   async prefetch(text: string, settings: ReaderSettings): Promise<void> {
     const clean = text.trim()
-    if (!clean) return
+    if (!isEffectiveText(clean)) return
     const key = this.getCacheKey(clean, settings)
     if (this.preloadedBlobUrls.has(key)) return
 
     try {
       const blob = await this.fetchAudioBlob(clean, settings)
+      if (blob.size === 0) return  // skip empty audio, don't cache dead blob URL
       const url = URL.createObjectURL(blob)
       this.preloadedBlobUrls.set(key, url)
     } catch {
@@ -168,8 +184,9 @@ export class HttpAudioTtsEngine implements ITtsEngine {
   ): void {
     this.stop()
     const clean = text.trim()
-    if (!clean) {
-      onEnd()
+    if (!isEffectiveText(clean)) {
+      // Skip punctuation-only or trivially short chunks without creating a blob
+      setTimeout(onEnd, 0)
       return
     }
 

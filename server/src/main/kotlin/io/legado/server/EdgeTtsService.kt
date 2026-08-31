@@ -85,6 +85,11 @@ class EdgeTtsService(
         val cleanText = text.trim()
         if (cleanText.isEmpty()) return ByteArray(0)
 
+        // Guard: skip synthesis for punctuation-only or trivially short text (e.g. a bare `"` quote)
+        // which would cause Edge-TTS to return 0 bytes, leading to ERR_REQUEST_RANGE_NOT_SATISFIABLE.
+        val strippedForCheck = cleanText.replace(Regex("[\\s\\p{Punct}\\u2000-\\u206F\\u2018\\u2019\\u201C\\u201D\\u3000-\\u303F\\uFF00-\\uFFEF]"), "")
+        if (strippedForCheck.length < 2) return ByteArray(0)
+
         val cacheKey = "$voice:$rate:$pitch:$cleanText"
         cache[cacheKey]?.let { return it }
 

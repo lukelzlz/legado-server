@@ -455,7 +455,7 @@ export const SourceLoginModal: React.FC<SourceLoginModalProps> = ({
               </div>
               <div className="source-login-body" style={{ padding: '16px' }}>
                 <p style={{ margin: '0 0 10px', fontSize: '12px', color: 'var(--muted)' }}>
-                  支持 JSON 格式（如 <code>{"Authorization": "Bearer ...", "Cookie": "..."}</code>）或直接文本。
+                  支持 JSON 格式（如 <code>{`{"Authorization": "Bearer ...", "Cookie": "..."}`}</code>）或直接文本。
                 </p>
                 <textarea
                   className="source-login-textarea"

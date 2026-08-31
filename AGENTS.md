@@ -76,6 +76,8 @@ AI 与人类协作时必须明确当前达到的完成度阶梯，严禁混淆�
 - **[性能] 缓存优先直出与流式防抖**：进入阅读器时优先命中本地 `BookCacheService` 离线缓存分片，避免等待全量远程 TOC；流式搜索推送高频数据时前端需保持批量节流合并渲染。
 - **[凭据/序列化] 万能 Cookie 解析与强类型 DTO**：服务端 CookieJar 存库前必须通过 `parseCookieString` 统一归一化为 `k1=v1; k2=v2` 格式，杜绝存入原始 JSON 数组脏数据；Ktor 路由响应严禁使用非多态的 `Map<String, Any>`，必须使用 `@Serializable data class`。
 - **[TTS/朗读] Edge-TTS 协议与 Chrome 假死守卫**：Edge-TTS WebSocket 通信中 SSML 必须严格做 XML 特殊字符转义（`&`, `<`, `>`, `"`, `'`），并且 WebSocket 通信块必须加 `try-catch(abort)` 彻底规避超时句柄悬挂；浏览器端 `SpeechSynthesis` 在无心跳朗读超过 15 秒时会被 Chrome 自动静默冻结，前端必须保持定时短暂停与恢复的看门狗循环。
+- **[TTS/朗读] Edge-TTS WebSocket 握手版本必须与 Chromium 同步更新**：Edge-TTS 连接头中 `Sec-MS-GEC-Version`（如 `1-143.0.3650.75`）与 `User-Agent` 中的 Chrome 版本号必须保持一致；同时须携带随机 `Cookie: muid=<16字节大写hex>` 头，否则 WebSocket 握手被微软服务端拒绝导致合成静默失败（返回 0 字节音频）。版本信息参考 `edge-tts` Python 包的 `constants.py`。
+- **[TTS/朗读] 孤立标点切片导致 ERR_REQUEST_RANGE_NOT_SATISFIABLE 的三层防御**：TTS 分句正则可能将中文对话引号 `"` 切为孤立碎片，发送空/纯标点文本至 Edge-TTS 会返回 0 字节音频，前端 `URL.createObjectURL(0字节blob)` 后浏览器发出 Range 请求，得到 HTTP 416 崩溃。**必须在三处同时加守卫**：① `splitSentences` 过滤去标点后有效字符 `< 2` 的碎片；② `HttpAudioTtsEngine.speak/prefetch` 调用 `isEffectiveText()` 判断，无效时 `setTimeout(onEnd,0)` 跳过；③ 服务端 `EdgeTtsService.synthesize` 检测去标点后有效字符 `< 2` 直接返回 `ByteArray(0)` 不请求上游。
 - **[容器/云原生] 阿里云计算巢与 ECI 部署**：ROS 模板必须包含完整 VPC/安全组声明、ECI 容器组规格与数据持久化挂载；国内推荐使用阿里云个人镜像加速源。
 
 ---
@@ -115,7 +117,9 @@ AI 与人类协作时必须明确当前达到的完成度阶梯，严禁混淆�
 | 2026-08-31 | Fix | 修复书源导入解析（支持自定义标识/BOM/外层包装），优化交互反馈 | - | Pushed |
 | 2026-08-31 | Feat | 书源全场景凭据获取、Chrome扩展穿透同步与直接填入交互 | [`docs/sessions/SESSION-HIST-005-source-login-and-cookie-extension.md`](file:///Users/zhangran/Documents/antigravity/joyful-galileo/docs/sessions/SESSION-HIST-005-source-login-and-cookie-extension.md) | Pushed |
 | 2026-08-31 | Fix | 修复 Actions Release 滚动发布时 Tag 未同步移动到最新 Commit 的问题 | - | Pushed |
-| 2026-08-31 | Feat | 现代化 TTS 朗读引擎与沉浸式听书体验 | [`docs/sessions/SESSION-HIST-006-tts-engine-and-immersive-reading-experience.md`](file:///Users/zhangran/Documents/antigravity/joyful-galileo/docs/sessions/SESSION-HIST-006-tts-engine-and-immersive-reading-experience.md) | Accepted |
+| 2026-08-31 | Feat | 现代化 TTS 朗读引擎与沉浸式听书体验 | [`docs/sessions/SESSION-HIST-006-tts-engine-and-immersive-reading-experience.md`](file:///Users/zhangran/Documents/antigravity/joyful-galileo/docs/sessions/SESSION-HIST-006-tts-engine-and-immersive-reading-experience.md) | Pushed |
+| 2026-08-31 | Fix | 更新 Edge-TTS 握手协议至 Chrome 143，添加 muid Cookie 修复连接鉴权 | - | Pushed |
+| 2026-08-31 | Fix | 防御后引号切片导致 0 字节 blob 引发 ERR_REQUEST_RANGE_NOT_SATISFIABLE | [`docs/acceptance/ACCEPT-TTS-001.md`](file:///Users/zhangran/Documents/antigravity/joyful-galileo/docs/acceptance/ACCEPT-TTS-001.md) | Pushed |
 
 ---
 

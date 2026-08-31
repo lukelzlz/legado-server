@@ -14,6 +14,7 @@ data class ParsedSource(
     val group: String?,
     val enabled: Boolean,
     val isJs: Boolean,
+    val hasLogin: Boolean = false,
     val json: String,
 )
 
@@ -41,6 +42,9 @@ object SourceCodec {
             JsonElement.serializer(),
             if (url == rawUrl) objectValue else JsonObject(objectValue.toMap() + ("bookSourceUrl" to JsonPrimitive(url))),
         )
+        val hasLogin = !objectValue.string("loginUi").isNullOrBlank() ||
+            !objectValue.string("loginUrl").isNullOrBlank() ||
+            !objectValue.string("loginCheckJs").isNullOrBlank()
         return ParsedSource(
             id = url,
             name = name,
@@ -48,6 +52,7 @@ object SourceCodec {
             group = objectValue.string("bookSourceGroup"),
             enabled = objectValue.boolean("enabled") ?: true,
             isJs = !objectValue.string("mainJs").isNullOrBlank(),
+            hasLogin = hasLogin,
             json = normalizedJson,
         )
     }

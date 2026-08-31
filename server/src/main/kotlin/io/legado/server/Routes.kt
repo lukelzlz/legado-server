@@ -23,6 +23,9 @@ import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.contentOrNull
 import java.util.concurrent.atomic.AtomicInteger
 
 fun Route.apiRoutes(database: Database, auth: AuthService, runner: RuleRunner, coverCache: CoverCache, subscriptions: SubscriptionService, bookCache: BookCacheService) {
@@ -82,6 +85,59 @@ fun Route.apiRoutes(database: Database, auth: AuthService, runner: RuleRunner, c
                     }
                     flush()
                 }
+            }
+            get("/login-ui") {
+                if (auth.requireSession(call) == null) return@get
+                val source = database.getSource(call.parameters["id"]!!) ?: run { call.respond(HttpStatusCode.NotFound, ApiError("not_found", "书源不存在")); return@get }
+                val items = runner.parseLoginUi(source.json)
+                val state = database.getSourceLoginState(source.id)
+                val sourceObj = runCatching { Json.parseToJsonElement(source.json).jsonObject }.getOrNull()
+                val sourceName = (sourceObj?.get("bookSourceName") as? JsonPrimitive)?.contentOrNull ?: source.id
+                val loginUrl = (sourceObj?.get("loginUrl") as? JsonPrimitive)?.contentOrNull
+                call.respond(
+                    SourceLoginUiResponse(
+                        sourceId = source.id,
+                        sourceName = sourceName,
+                        hasLogin = items.isNotEmpty() || !loginUrl.isNullOrBlank() || sourceObj?.get("loginCheckJs") != null,
+                        loginUi = items,
+                        loginUrl = loginUrl,
+                        loginInfo = state?.loginInfo ?: emptyMap(),
+                        loginHeader = state?.loginHeader,
+                        sourceVariable = state?.sourceVariable,
+                    )
+                )
+            }
+            post("/login-info") {
+                if (auth.requireSession(call, true) == null) return@post
+                val sourceId = call.parameters["id"]!!
+                val req = call.receive<SourceLoginInfoUpdateRequest>()
+                database.saveSourceLoginInfo(sourceId, req.loginInfo)
+                call.respond(mapOf("ok" to true))
+            }
+            delete("/login-info") {
+                if (auth.requireSession(call, true) == null) return@delete
+                val sourceId = call.parameters["id"]!!
+                database.removeSourceLoginInfo(sourceId)
+                call.respond(mapOf("ok" to true))
+            }
+            delete("/login-header") {
+                if (auth.requireSession(call, true) == null) return@delete
+                val sourceId = call.parameters["id"]!!
+                database.removeSourceLoginHeader(sourceId)
+                call.respond(mapOf("ok" to true))
+            }
+            post("/login-action") {
+                if (auth.requireSession(call, true) == null) return@post
+                val source = database.getSource(call.parameters["id"]!!) ?: run { call.respond(HttpStatusCode.NotFound, ApiError("not_found", "书源不存在")); return@post }
+                val req = call.receive<SourceLoginActionRequest>()
+                val outcome = runner.executeLoginAction(source.json, req.action, req.loginData, req.isLongClick)
+                call.respond(outcome)
+            }
+            get("/login-check") {
+                if (auth.requireSession(call) == null) return@get
+                val source = database.getSource(call.parameters["id"]!!) ?: run { call.respond(HttpStatusCode.NotFound, ApiError("not_found", "书源不存在")); return@get }
+                val check = runner.checkLoginStatus(source.json)
+                call.respond(check)
             }
         }
         post("/search") {

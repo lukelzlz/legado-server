@@ -34,7 +34,9 @@ import java.util.zip.InflaterInputStream
  * A deliberately small, server-safe subset of Legado's declarative source protocol.
  * It keeps execution away from Android APIs and rejects private-network targets.
  */
-class RuleRunner(private val responseFetcher: ((String) -> String)? = null) {
+class RuleRunner(private val responseFetcher: ((String) -> String)? = null, internal var database: Database? = null) {
+    constructor(database: Database) : this(null, database)
+    constructor(responseFetcher: (String) -> String) : this(responseFetcher, null)
     private val client = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(10)).followRedirects(HttpClient.Redirect.NEVER).build()
     private val json = Json { ignoreUnknownKeys = true }
     private val jsSandbox = JsSandbox(this)
@@ -46,14 +48,15 @@ class RuleRunner(private val responseFetcher: ((String) -> String)? = null) {
         val sourceUrl = source.string("bookSourceUrl") ?: throw RuleExecutionException("书源缺少 bookSourceUrl")
         val searchUrl = if (rawSearchUrl.trimStart().startsWith("@js:") || rawSearchUrl.trimStart().startsWith("js:") || rawSearchUrl.contains("<js>")) {
             val jsCode = if (rawSearchUrl.contains("<js>")) rawSearchUrl.substringAfter("<js>").substringBefore("</js>") else rawSearchUrl.removePrefix("@js:").removePrefix("js:")
-            jsSandbox.eval(jsCode, mapOf("key" to keyword, "keyword" to keyword, "page" to 1, "baseUrl" to sourceUrl)) ?: throw RuleExecutionException("searchUrl JS 计算未返回有效地址")
+            val execContext = JsExecutionContext(sourceId = sourceUrl, database = database)
+            jsSandbox.eval(jsCode, mapOf("key" to keyword, "keyword" to keyword, "page" to 1, "baseUrl" to sourceUrl, "sourceId" to sourceUrl), execContext) ?: throw RuleExecutionException("searchUrl JS 计算未返回有效地址")
         } else {
             rawSearchUrl
         }
         val (urlTemplate, options) = splitUrlOptions(searchUrl)
-        val mergedOptions = mergeOptions(parseSourceHeaders(source), options)
+        val mergedOptions = mergeOptions(parseSourceHeaders(source, sourceUrl), options)
         val rendered = renderUrl(urlTemplate, keyword, sourceUrl).absolute(sourceUrl)
-        val body = fetchUrl(rendered, mergedOptions, keyword)
+        val body = fetchUrl(rendered, mergedOptions, keyword, sourceUrl, database)
         val rule = source.objectValue("ruleSearch") ?: throw RuleExecutionException("该书源未配置 ruleSearch")
         val items = nodes(body, rule.string("bookList") ?: throw RuleExecutionException("缺少 ruleSearch.bookList"))
         return items.mapNotNull { item ->
@@ -76,9 +79,10 @@ class RuleRunner(private val responseFetcher: ((String) -> String)? = null) {
     }
 
     private fun declarativeDetails(source: JsonObject, bookUrl: String): BookDetails {
+        val sourceUrl = source.string("bookSourceUrl")
         val (url, options) = splitUrlOptions(bookUrl)
-        val mergedOptions = mergeOptions(parseSourceHeaders(source), options)
-        val body = fetchUrl(url, mergedOptions, null)
+        val mergedOptions = mergeOptions(parseSourceHeaders(source, sourceUrl), options)
+        val body = fetchUrl(url, mergedOptions, null, sourceUrl, database)
         val rule = source.objectValue("ruleBookInfo") ?: throw RuleExecutionException("该书源未配置 ruleBookInfo")
         val root = NodeValue.document(body).at(rule.string("init"))
         fun value(key: String): String? = runCatching { root.value(rule.string(key), jsSandbox, body, bookUrl) }.getOrNull()
@@ -95,9 +99,10 @@ class RuleRunner(private val responseFetcher: ((String) -> String)? = null) {
     fun chapters(sourceJson: String, tocUrl: String): List<Chapter> {
         val source = sourceJson.objectValue()
         source.string("mainJs")?.takeIf { it.isNotBlank() }?.let { return JsSourceRunner(this, source).chapters(tocUrl) }
+        val sourceUrl = source.string("bookSourceUrl")
         val (url, options) = splitUrlOptions(tocUrl)
-        val mergedOptions = mergeOptions(parseSourceHeaders(source), options)
-        val body = fetchUrl(url, mergedOptions, null)
+        val mergedOptions = mergeOptions(parseSourceHeaders(source, sourceUrl), options)
+        val body = fetchUrl(url, mergedOptions, null, sourceUrl, database)
         val rule = source.objectValue("ruleToc") ?: throw RuleExecutionException("该书源未配置 ruleToc")
         val listRule = rule.string("chapterList") ?: throw RuleExecutionException("缺少 ruleToc.chapterList")
         return nodes(body, listRule).mapIndexedNotNull { index, node ->
@@ -109,9 +114,10 @@ class RuleRunner(private val responseFetcher: ((String) -> String)? = null) {
     fun content(sourceJson: String, chapterUrl: String): ChapterContent {
         val source = sourceJson.objectValue()
         source.string("mainJs")?.takeIf { it.isNotBlank() }?.let { return JsSourceRunner(this, source).content(chapterUrl) }
+        val sourceUrl = source.string("bookSourceUrl")
         val (url, options) = splitUrlOptions(chapterUrl)
-        val mergedOptions = mergeOptions(parseSourceHeaders(source), options)
-        val body = fetchUrl(url, mergedOptions, null)
+        val mergedOptions = mergeOptions(parseSourceHeaders(source, sourceUrl), options)
+        val body = fetchUrl(url, mergedOptions, null, sourceUrl, database)
         val rule = source.objectValue("ruleContent") ?: throw RuleExecutionException("该书源未配置 ruleContent")
         val root = NodeValue.document(body)
         var text = root.value(rule.string("content"), jsSandbox, body, chapterUrl)?.cleanContent().orEmpty()
@@ -136,16 +142,198 @@ class RuleRunner(private val responseFetcher: ((String) -> String)? = null) {
         return ChapterContent(root.value(rule.string("title"), jsSandbox, body, chapterUrl), text)
     }
 
-    internal fun fetch(url: String): String = fetchUrl(url, null, null)
+    fun parseLoginUi(sourceJson: String): List<SourceLoginUiItem> {
+        val source = sourceJson.objectValue()
+        val sourceUrl = source.string("bookSourceUrl") ?: ""
+        val loginUiStr = source.string("loginUi")?.trim()
+        val loginUrl = source.string("loginUrl")?.trim()
+        val jsLib = source.string("jsLib")?.trim()
 
-    private fun parseSourceHeaders(source: JsonObject): Map<String, String> {
-        val headerStr = source.string("header")?.trim() ?: return emptyMap()
+        if (loginUiStr.isNullOrBlank()) {
+            if (!loginUrl.isNullOrBlank() && (loginUrl.startsWith("http://") || loginUrl.startsWith("https://"))) {
+                return listOf(
+                    SourceLoginUiItem(
+                        name = "打开登录网页",
+                        type = "button",
+                        action = loginUrl,
+                        style = FlexChildStyle(layout_flexBasisPercent = 1.0f),
+                    ),
+                )
+            }
+            return emptyList()
+        }
+
+        val rawJson = if (loginUiStr.startsWith("@js:") || loginUiStr.startsWith("js:") || loginUiStr.contains("<js>")) {
+            val jsCode = if (loginUiStr.contains("<js>")) loginUiStr.substringAfter("<js>").substringBefore("</js>") else loginUiStr.removePrefix("@js:").removePrefix("js:")
+            val script = if (!jsLib.isNullOrBlank()) "$jsLib\n$jsCode" else jsCode
+            val execContext = JsExecutionContext(
+                sourceId = sourceUrl,
+                sourceName = source.string("bookSourceName") ?: sourceUrl,
+                database = database,
+            )
+            jsSandbox.eval(script, mapOf("sourceId" to sourceUrl, "baseUrl" to sourceUrl), execContext) ?: "[]"
+        } else {
+            loginUiStr
+        }
+
         return runCatching {
-            val elem = Json.parseToJsonElement(headerStr)
-            if (elem is JsonObject) {
-                elem.entries.filter { it.value is JsonPrimitive }.associate { it.key to ((it.value as JsonPrimitive).contentOrNull ?: "") }
-            } else emptyMap()
-        }.getOrDefault(emptyMap())
+            json.decodeFromString<List<SourceLoginUiItem>>(rawJson)
+        }.getOrElse { emptyList() }
+    }
+
+    fun executeLoginAction(
+        sourceJson: String,
+        actionCode: String,
+        loginData: Map<String, String>,
+        isLongClick: Boolean = false,
+    ): SourceLoginActionResult {
+        val source = sourceJson.objectValue()
+        val sourceUrl = source.string("bookSourceUrl") ?: ""
+        val sourceName = source.string("bookSourceName") ?: sourceUrl
+        val loginUrl = source.string("loginUrl") ?: ""
+        val jsLib = source.string("jsLib") ?: ""
+
+        val execContext = JsExecutionContext(
+            sourceId = sourceUrl,
+            sourceName = sourceName,
+            database = database,
+            initialLoginInfo = loginData.toMutableMap(),
+            isLongClick = isLongClick,
+        )
+
+        val trimmedAction = actionCode.trim()
+        if (trimmedAction.startsWith("http://") || trimmedAction.startsWith("https://")) {
+            return SourceLoginActionResult(
+                success = true,
+                openUrl = trimmedAction,
+            )
+        }
+
+        val fullScript = buildString {
+            if (jsLib.isNotBlank()) append(jsLib).append("\n")
+            if (loginUrl.isNotBlank()) append(loginUrl).append("\n")
+            if (trimmedAction.equals("login", ignoreCase = true) || trimmedAction.startsWith("login(")) {
+                append("if (typeof login === 'function') { login.apply(this); } else { $trimmedAction; }")
+            } else {
+                append(trimmedAction)
+            }
+        }
+
+        val bindings = mapOf(
+            "result" to loginData,
+            "baseUrl" to sourceUrl,
+            "sourceId" to sourceUrl,
+            "bookSourceUrl" to sourceUrl,
+            "isLongClick" to isLongClick,
+        )
+
+        jsSandbox.eval(fullScript, bindings, execContext)
+        val state = database?.getSourceLoginState(sourceUrl)
+
+        return SourceLoginActionResult(
+            success = true,
+            toastMessages = execContext.toastMessages,
+            openUrl = execContext.openUrl,
+            copyText = execContext.copyText,
+            updatedLoginInfo = execContext.initialLoginInfo.ifEmpty { state?.loginInfo ?: emptyMap() },
+            updatedLoginHeader = state?.loginHeader,
+            updatedVariable = state?.sourceVariable,
+            reRenderUi = execContext.reRenderUi,
+        )
+    }
+
+    fun checkLoginStatus(sourceJson: String): SourceLoginCheckResult {
+        val source = sourceJson.objectValue()
+        val sourceUrl = source.string("bookSourceUrl") ?: ""
+        val loginCheckJs = source.string("loginCheckJs")?.trim()
+        val loginUrl = source.string("loginUrl") ?: ""
+        val jsLib = source.string("jsLib") ?: ""
+
+        if (loginCheckJs.isNullOrBlank()) {
+            val jar = database?.getSourceCookieJar(sourceUrl)
+            val state = database?.getSourceLoginState(sourceUrl)
+            val hasCookie = jar?.isNotEmpty() == true
+            val hasInfo = state?.loginInfo?.isNotEmpty() == true
+            return SourceLoginCheckResult(
+                loggedIn = hasCookie || hasInfo,
+                message = if (hasCookie || hasInfo) "已配置登录凭据" else "未登录",
+            )
+        }
+
+        val execContext = JsExecutionContext(sourceId = sourceUrl, database = database)
+        val script = buildString {
+            if (jsLib.isNotBlank()) append(jsLib).append("\n")
+            if (loginUrl.isNotBlank()) append(loginUrl).append("\n")
+            append(loginCheckJs)
+        }
+        val result = jsSandbox.eval(script, mapOf("sourceId" to sourceUrl, "baseUrl" to sourceUrl), execContext)?.trim()
+        val isSuccess = result == "true" || (result != null && result.isNotBlank() && result != "false" && result != "0" && !result.contains("未登录"))
+        return SourceLoginCheckResult(
+            loggedIn = isSuccess,
+            message = if (isSuccess) "登录态有效" else (result ?: "未登录"),
+        )
+    }
+
+    internal fun fetch(url: String, sourceId: String? = null, database: Database? = null): String {
+        val (cleanUrl, options) = splitUrlOptions(url)
+        val db = database ?: this.database
+        val mergedOptions = if (db != null && !sourceId.isNullOrBlank()) {
+            val headers = mutableMapOf<String, String>()
+            val state = db.getSourceLoginState(sourceId)
+            state?.loginHeader?.takeIf { it.isNotBlank() }?.let { h ->
+                runCatching {
+                    val elem = Json.parseToJsonElement(h)
+                    if (elem is JsonObject) {
+                        elem.entries.filter { it.value is JsonPrimitive }.forEach {
+                            headers[it.key] = (it.value as JsonPrimitive).contentOrNull ?: ""
+                        }
+                    }
+                }
+            }
+            val cookie = db.getSourceCookie(sourceId, cleanUrl)
+            if (!cookie.isNullOrBlank()) {
+                headers["Cookie"] = cookie
+            }
+            mergeOptions(headers, options)
+        } else {
+            options
+        }
+        return fetchUrl(cleanUrl, mergedOptions, null, sourceId, db)
+    }
+
+    private fun parseSourceHeaders(source: JsonObject, sourceUrl: String? = null): Map<String, String> {
+        val headers = mutableMapOf<String, String>()
+        val headerStr = source.string("header")?.trim()
+        if (!headerStr.isNullOrBlank()) {
+            runCatching {
+                val elem = Json.parseToJsonElement(headerStr)
+                if (elem is JsonObject) {
+                    elem.entries.filter { it.value is JsonPrimitive }.forEach {
+                        headers[it.key] = (it.value as JsonPrimitive).contentOrNull ?: ""
+                    }
+                }
+            }
+        }
+        val sUrl = sourceUrl ?: source.string("bookSourceUrl")
+        val db = database
+        if (db != null && !sUrl.isNullOrBlank()) {
+            val state = db.getSourceLoginState(sUrl)
+            state?.loginHeader?.takeIf { it.isNotBlank() }?.let { h ->
+                runCatching {
+                    val elem = Json.parseToJsonElement(h)
+                    if (elem is JsonObject) {
+                        elem.entries.filter { it.value is JsonPrimitive }.forEach {
+                            headers[it.key] = (it.value as JsonPrimitive).contentOrNull ?: ""
+                        }
+                    }
+                }
+            }
+            val cookie = db.getSourceCookie(sUrl, sUrl)
+            if (!cookie.isNullOrBlank()) {
+                headers["Cookie"] = cookie
+            }
+        }
+        return headers
     }
 
     private fun mergeOptions(sourceHeaders: Map<String, String>, options: UrlOptions?): UrlOptions {
@@ -187,11 +375,24 @@ class RuleRunner(private val responseFetcher: ((String) -> String)? = null) {
         }
     }
 
-    private fun fetchUrl(url: String, options: UrlOptions?, keyword: String?): String {
+    private fun fetchUrl(
+        url: String,
+        options: UrlOptions?,
+        keyword: String?,
+        sourceId: String? = null,
+        database: Database? = null,
+    ): String {
         responseFetcher?.let { return it(url) }
+        val db = database ?: this.database
         var request = buildRequest(parseUri(url), options, keyword)
         repeat(4) {
             val response = client.send(request, HttpResponse.BodyHandlers.ofInputStream())
+            val setCookies = response.headers().allValues("set-cookie")
+            if (setCookies.isNotEmpty() && db != null && !sourceId.isNullOrBlank()) {
+                setCookies.forEach { cookieStr ->
+                    db.setSourceCookie(sourceId, url, cookieStr)
+                }
+            }
             if (response.statusCode() !in 300..399) {
                 if (response.statusCode() !in 200..299) throw RuleExecutionException("上游返回 HTTP ${response.statusCode()}")
                 val bytes = readLimited(response.body())

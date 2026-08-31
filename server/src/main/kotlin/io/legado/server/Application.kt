@@ -29,7 +29,7 @@ fun Application.legadoApplication(config: ServerConfig = ServerConfig.fromEnviro
     database.initialize(config.initialAdminPassword)
     val auth = AuthService(database, config.secureCookies)
     val subscriptions = SubscriptionService(database) { message -> log.info(message) }
-    val runner = RuleRunner()
+    val runner = RuleRunner(database = database)
     val bookCache = BookCacheService(database, runner) { message -> log.info(message) }
     subscriptions.start()
     bookCache.start()

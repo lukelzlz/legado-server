@@ -15,8 +15,90 @@ import kotlinx.serialization.Serializable
     val group: String? = null,
     val enabled: Boolean,
     val isJsSource: Boolean,
+    val hasLogin: Boolean = false,
     val updatedAt: Long,
     val version: Long,
+)
+
+@Serializable
+data class FlexChildStyle(
+    val layout_flexGrow: Float = 0f,
+    val layout_flexShrink: Float = 1f,
+    val layout_alignSelf: String = "auto",
+    val layout_flexBasisPercent: Float = -1f,
+    val layout_wrapBefore: Boolean = false,
+    val layout_justifySelf: String = "auto",
+)
+
+@Serializable
+data class SourceLoginUiItem(
+    val name: String = "",
+    val type: String = "text",
+    val action: String? = null,
+    val chars: List<String?>? = null,
+    val default: String? = null,
+    val viewName: String? = null,
+    val style: FlexChildStyle? = null,
+    val key: String? = null,
+    val hint: String? = null,
+    val value: String? = null,
+    val options: List<String>? = null,
+    val countdown: Int? = null,
+)
+
+@Serializable
+data class SourceLoginUiResponse(
+    val sourceId: String,
+    val sourceName: String,
+    val hasLogin: Boolean,
+    val loginUi: List<SourceLoginUiItem>,
+    val loginUrl: String? = null,
+    val loginInfo: Map<String, String> = emptyMap(),
+    val loginHeader: String? = null,
+    val sourceVariable: String? = null,
+)
+
+@Serializable
+data class SourceLoginInfoUpdateRequest(
+    val loginInfo: Map<String, String> = emptyMap(),
+    val loginHeader: String? = null,
+    val sourceVariable: String? = null,
+)
+
+@Serializable
+data class SourceLoginActionRequest(
+    val action: String,
+    val loginData: Map<String, String> = emptyMap(),
+    val isLongClick: Boolean = false,
+)
+
+@Serializable
+data class SourceLoginActionResult(
+    val success: Boolean,
+    val toastMessages: List<String> = emptyList(),
+    val openUrl: String? = null,
+    val copyText: String? = null,
+    val updatedLoginInfo: Map<String, String>? = null,
+    val updatedLoginHeader: String? = null,
+    val updatedVariable: String? = null,
+    val reRenderUi: Boolean = false,
+    val error: String? = null,
+)
+
+@Serializable
+data class SourceLoginCheckResult(
+    val loggedIn: Boolean,
+    val message: String? = null,
+)
+
+data class SourceLoginStateRecord(
+    val sourceId: String,
+    val loginInfo: Map<String, String>,
+    val loginHeader: String?,
+    val sourceVariable: String?,
+    val sourceKv: Map<String, String>,
+    val cookieJar: Map<String, String>,
+    val updatedAt: Long,
 )
 
 @Serializable data class SourceRecord(

@@ -151,10 +151,20 @@ class Database(private val path: String) : Closeable, AutoCloseable {
                   source_id text not null, toc_url text not null, chapters_json text not null, updated_at integer not null,
                   primary key (source_id, toc_url)
                 );
+                create table if not exists source_login_state (
+                  source_id text primary key,
+                  login_info text,
+                  login_header text,
+                  source_variable text,
+                  source_kv text,
+                  cookie_jar text,
+                  updated_at integer not null
+                );
             """.trimIndent())
         }
         migrateReadingProgress(db)
         migrateBookshelf(db)
+        migrateSourceTable(db)
         val userExists = db.prepareStatement("select 1 from app_user where id = 1").use { it.executeQuery().next() }
         if (!userExists) {
             require(!initialPassword.isNullOrBlank()) { "首次启动必须提供 ADMIN_PASSWORD" }
@@ -205,9 +215,9 @@ class Database(private val path: String) : Closeable, AutoCloseable {
 
     fun listSources(query: String?): List<SourceSummary> = connect { db ->
         val sql = if (query.isNullOrBlank()) {
-            "select id, name, source_url, source_group, enabled, is_js, updated_at, version from source order by name collate nocase"
+            "select id, name, source_url, source_group, enabled, is_js, updated_at, version, has_login from source order by name collate nocase"
         } else {
-            "select id, name, source_url, source_group, enabled, is_js, updated_at, version from source where name like ? or source_url like ? order by name collate nocase"
+            "select id, name, source_url, source_group, enabled, is_js, updated_at, version, has_login from source where name like ? or source_url like ? order by name collate nocase"
         }
         db.prepareStatement(sql).use { statement ->
             if (!query.isNullOrBlank()) { statement.setString(1, "%$query%"); statement.setString(2, "%$query%") }
@@ -222,6 +232,7 @@ class Database(private val path: String) : Closeable, AutoCloseable {
                                 group = rs.getString(4),
                                 enabled = rs.getInt(5) == 1,
                                 isJsSource = rs.getInt(6) == 1,
+                                hasLogin = rs.getInt(9) == 1,
                                 updatedAt = rs.getLong(7),
                                 version = rs.getLong(8),
                             )
@@ -255,9 +266,9 @@ class Database(private val path: String) : Closeable, AutoCloseable {
             val current = db.prepareStatement("select version from source where id = ?").use { it.setString(1, parsed.id); it.executeQuery().use { rs -> if (rs.next()) rs.getLong(1) else null } }
             if (expectedVersion != null && current != expectedVersion) throw VersionConflict()
             val version = (current ?: 0) + 1; val now = System.currentTimeMillis()
-            db.prepareStatement("""insert into source(id,name,source_url,source_group,enabled,is_js,payload,version,updated_at)
-                values(?,?,?,?,?,?,?,?,?) on conflict(id) do update set name=excluded.name,source_url=excluded.source_url,source_group=excluded.source_group,enabled=excluded.enabled,is_js=excluded.is_js,payload=excluded.payload,version=excluded.version,updated_at=excluded.updated_at""").use {
-                it.setString(1, parsed.id); it.setString(2, parsed.name); it.setString(3, parsed.url); it.setString(4, parsed.group); it.setInt(5, if (parsed.enabled) 1 else 0); it.setInt(6, if (parsed.isJs) 1 else 0); it.setString(7, parsed.json); it.setLong(8, version); it.setLong(9, now); it.executeUpdate()
+            db.prepareStatement("""insert into source(id,name,source_url,source_group,enabled,is_js,payload,version,updated_at,has_login)
+                values(?,?,?,?,?,?,?,?,?,?) on conflict(id) do update set name=excluded.name,source_url=excluded.source_url,source_group=excluded.source_group,enabled=excluded.enabled,is_js=excluded.is_js,payload=excluded.payload,version=excluded.version,updated_at=excluded.updated_at,has_login=excluded.has_login""").use {
+                it.setString(1, parsed.id); it.setString(2, parsed.name); it.setString(3, parsed.url); it.setString(4, parsed.group); it.setInt(5, if (parsed.enabled) 1 else 0); it.setInt(6, if (parsed.isJs) 1 else 0); it.setString(7, parsed.json); it.setLong(8, version); it.setLong(9, now); it.setInt(10, if (parsed.hasLogin) 1 else 0); it.executeUpdate()
             }
             db.commit(); SourceRecord(parsed.id, parsed.json, version, now)
         } catch (error: Throwable) { db.rollback(); throw error } finally { db.autoCommit = true }
@@ -535,15 +546,15 @@ class Database(private val path: String) : Closeable, AutoCloseable {
             db.autoCommit = false
             try {
                 db.prepareStatement("select version from source where id = ?").use { current ->
-                    db.prepareStatement("""insert into source(id,name,source_url,source_group,enabled,is_js,payload,version,updated_at)
-                        values(?,?,?,?,?,?,?,?,?) on conflict(id) do update set name=excluded.name,source_url=excluded.source_url,source_group=excluded.source_group,enabled=excluded.enabled,is_js=excluded.is_js,payload=excluded.payload,version=excluded.version,updated_at=excluded.updated_at""").use { save ->
+                    db.prepareStatement("""insert into source(id,name,source_url,source_group,enabled,is_js,payload,version,updated_at,has_login)
+                        values(?,?,?,?,?,?,?,?,?,?) on conflict(id) do update set name=excluded.name,source_url=excluded.source_url,source_group=excluded.source_group,enabled=excluded.enabled,is_js=excluded.is_js,payload=excluded.payload,version=excluded.version,updated_at=excluded.updated_at,has_login=excluded.has_login""").use { save ->
                         unique.values.forEach { parsed ->
                             current.setString(1, parsed.id)
                             val version = current.executeQuery().use { result -> if (result.next()) result.getLong(1) else null }
                             if (version == null) imported++ else updated++
                             save.setString(1, parsed.id); save.setString(2, parsed.name); save.setString(3, parsed.url); save.setString(4, parsed.group)
                             save.setInt(5, if (parsed.enabled) 1 else 0); save.setInt(6, if (parsed.isJs) 1 else 0); save.setString(7, parsed.json)
-                            save.setLong(8, (version ?: 0) + 1); save.setLong(9, System.currentTimeMillis()); save.addBatch()
+                            save.setLong(8, (version ?: 0) + 1); save.setLong(9, System.currentTimeMillis()); save.setInt(10, if (parsed.hasLogin) 1 else 0); save.addBatch()
                         }
                         save.executeBatch()
                     }
@@ -585,7 +596,230 @@ class Database(private val path: String) : Closeable, AutoCloseable {
         db.prepareStatement(sql).use { statement -> ids?.forEachIndexed { index, id -> statement.setString(index + 1, id) }; statement.executeQuery().use { rs -> buildList { while (rs.next()) add(rs.getString(1)) } } }
     }
 
-    private fun java.sql.ResultSet.toSummary() = SourceSummary(getString(1), getString(2), getString(3), getString(4), getInt(5) == 1, getInt(6) == 1, getLong(7), getLong(8))
+    fun getSourceLoginState(sourceId: String): SourceLoginStateRecord? = connect { db ->
+        db.prepareStatement("select source_id, login_info, login_header, source_variable, source_kv, cookie_jar, updated_at from source_login_state where source_id = ?").use { stmt ->
+            stmt.setString(1, sourceId)
+            stmt.executeQuery().use { rs ->
+                if (rs.next()) {
+                    val loginInfo = rs.getString(2)?.takeIf { it.isNotBlank() }?.let { raw ->
+                        runCatching { Json.decodeFromString<Map<String, String>>(raw) }.getOrDefault(emptyMap())
+                    } ?: emptyMap()
+                    val loginHeader = rs.getString(3)
+                    val sourceVariable = rs.getString(4)
+                    val sourceKv = rs.getString(5)?.takeIf { it.isNotBlank() }?.let { raw ->
+                        runCatching { Json.decodeFromString<Map<String, String>>(raw) }.getOrDefault(emptyMap())
+                    } ?: emptyMap()
+                    val cookieJar = rs.getString(6)?.takeIf { it.isNotBlank() }?.let { raw ->
+                        runCatching { Json.decodeFromString<Map<String, String>>(raw) }.getOrDefault(emptyMap())
+                    } ?: emptyMap()
+                    val updatedAt = rs.getLong(7)
+                    SourceLoginStateRecord(
+                        sourceId = rs.getString(1),
+                        loginInfo = loginInfo,
+                        loginHeader = loginHeader,
+                        sourceVariable = sourceVariable,
+                        sourceKv = sourceKv,
+                        cookieJar = cookieJar,
+                        updatedAt = updatedAt,
+                    )
+                } else null
+            }
+        }
+    }
+
+    fun saveSourceLoginInfo(sourceId: String, loginInfo: Map<String, String>): Boolean = write { db ->
+        val now = System.currentTimeMillis()
+        val infoJson = Json.encodeToString(loginInfo)
+        db.prepareStatement("""
+            insert into source_login_state(source_id, login_info, updated_at) values(?, ?, ?)
+            on conflict(source_id) do update set login_info=excluded.login_info, updated_at=excluded.updated_at
+        """).use { stmt ->
+            stmt.setString(1, sourceId)
+            stmt.setString(2, infoJson)
+            stmt.setLong(3, now)
+            stmt.executeUpdate() > 0
+        }
+    }
+
+    fun saveSourceLoginHeader(sourceId: String, header: String?): Boolean = write { db ->
+        val now = System.currentTimeMillis()
+        db.prepareStatement("""
+            insert into source_login_state(source_id, login_header, updated_at) values(?, ?, ?)
+            on conflict(source_id) do update set login_header=excluded.login_header, updated_at=excluded.updated_at
+        """).use { stmt ->
+            stmt.setString(1, sourceId)
+            stmt.setString(2, header)
+            stmt.setLong(3, now)
+            stmt.executeUpdate() > 0
+        }
+    }
+
+    fun removeSourceLoginHeader(sourceId: String): Boolean = write { db ->
+        val now = System.currentTimeMillis()
+        db.prepareStatement("""
+            update source_login_state set login_header = null, updated_at = ? where source_id = ?
+        """).use { stmt ->
+            stmt.setLong(1, now)
+            stmt.setString(2, sourceId)
+            stmt.executeUpdate() > 0
+        }
+    }
+
+    fun removeSourceLoginInfo(sourceId: String): Boolean = write { db ->
+        val now = System.currentTimeMillis()
+        db.prepareStatement("""
+            update source_login_state set login_info = null, updated_at = ? where source_id = ?
+        """).use { stmt ->
+            stmt.setLong(1, now)
+            stmt.setString(2, sourceId)
+            stmt.executeUpdate() > 0
+        }
+    }
+
+    fun saveSourceVariable(sourceId: String, variable: String?): Boolean = write { db ->
+        val now = System.currentTimeMillis()
+        db.prepareStatement("""
+            insert into source_login_state(source_id, source_variable, updated_at) values(?, ?, ?)
+            on conflict(source_id) do update set source_variable=excluded.source_variable, updated_at=excluded.updated_at
+        """).use { stmt ->
+            stmt.setString(1, sourceId)
+            stmt.setString(2, variable)
+            stmt.setLong(3, now)
+            stmt.executeUpdate() > 0
+        }
+    }
+
+    fun getSourceVariable(sourceId: String): String? = connect { db ->
+        db.prepareStatement("select source_variable from source_login_state where source_id = ?").use { stmt ->
+            stmt.setString(1, sourceId)
+            stmt.executeQuery().use { rs -> if (rs.next()) rs.getString(1) else null }
+        }
+    }
+
+    fun saveSourceKv(sourceId: String, key: String, value: String?): Boolean = write { db ->
+        val now = System.currentTimeMillis()
+        val state = getSourceLoginState(sourceId)
+        val currentKv = state?.sourceKv?.toMutableMap() ?: mutableMapOf()
+        if (value != null) {
+            currentKv[key] = value
+        } else {
+            currentKv.remove(key)
+        }
+        val kvJson = Json.encodeToString(currentKv)
+        db.prepareStatement("""
+            insert into source_login_state(source_id, source_kv, updated_at) values(?, ?, ?)
+            on conflict(source_id) do update set source_kv=excluded.source_kv, updated_at=excluded.updated_at
+        """).use { stmt ->
+            stmt.setString(1, sourceId)
+            stmt.setString(2, kvJson)
+            stmt.setLong(3, now)
+            stmt.executeUpdate() > 0
+        }
+    }
+
+    fun getSourceKv(sourceId: String, key: String): String? = connect { db ->
+        db.prepareStatement("select source_kv from source_login_state where source_id = ?").use { stmt ->
+            stmt.setString(1, sourceId)
+            stmt.executeQuery().use { rs ->
+                if (rs.next()) {
+                    val kvJson = rs.getString(1) ?: return@use null
+                    runCatching { Json.decodeFromString<Map<String, String>>(kvJson)[key] }.getOrNull()
+                } else null
+            }
+        }
+    }
+
+    fun saveSourceCookieJar(sourceId: String, cookies: Map<String, String>): Boolean = write { db ->
+        val now = System.currentTimeMillis()
+        val jarJson = Json.encodeToString(cookies)
+        db.prepareStatement("""
+            insert into source_login_state(source_id, cookie_jar, updated_at) values(?, ?, ?)
+            on conflict(source_id) do update set cookie_jar=excluded.cookie_jar, updated_at=excluded.updated_at
+        """).use { stmt ->
+            stmt.setString(1, sourceId)
+            stmt.setString(2, jarJson)
+            stmt.setLong(3, now)
+            stmt.executeUpdate() > 0
+        }
+    }
+
+    fun getSourceCookieJar(sourceId: String): Map<String, String> = connect { db ->
+        db.prepareStatement("select cookie_jar from source_login_state where source_id = ?").use { stmt ->
+            stmt.setString(1, sourceId)
+            stmt.executeQuery().use { rs ->
+                if (rs.next()) {
+                    val jarJson = rs.getString(1) ?: return@use emptyMap()
+                    runCatching { Json.decodeFromString<Map<String, String>>(jarJson) }.getOrDefault(emptyMap())
+                } else emptyMap()
+            }
+        }
+    }
+
+    fun getSourceCookie(sourceId: String, url: String): String? {
+        val jar = getSourceCookieJar(sourceId)
+        if (jar.isEmpty()) return null
+        if (jar.containsKey(url)) return jar[url]
+        val host = runCatching { java.net.URI(url).host }.getOrNull() ?: url
+        if (jar.containsKey(host)) return jar[host]
+        return jar.entries.firstOrNull { (k, _) -> host.contains(k) || k.contains(host) || url.contains(k) }?.value
+    }
+
+    fun setSourceCookie(sourceId: String, url: String, cookie: String): Boolean {
+        val jar = getSourceCookieJar(sourceId).toMutableMap()
+        val host = runCatching { java.net.URI(url).host }.getOrNull()?.takeIf { it.isNotBlank() } ?: url
+        val existing = jar[host] ?: jar[url]
+        if (existing.isNullOrBlank()) {
+            jar[host] = cookie
+        } else {
+            val map = parseCookieString(existing).toMutableMap()
+            map.putAll(parseCookieString(cookie))
+            jar[host] = map.entries.joinToString("; ") { "${it.key}=${it.value}" }
+        }
+        return saveSourceCookieJar(sourceId, jar)
+    }
+
+    fun removeSourceCookie(sourceId: String, url: String): Boolean {
+        val jar = getSourceCookieJar(sourceId).toMutableMap()
+        val host = runCatching { java.net.URI(url).host }.getOrNull()?.takeIf { it.isNotBlank() } ?: url
+        jar.remove(host)
+        jar.remove(url)
+        val keysToRemove = jar.keys.filter { it.contains(host) || host.contains(it) }
+        keysToRemove.forEach { jar.remove(it) }
+        return saveSourceCookieJar(sourceId, jar)
+    }
+
+    fun clearSourceLoginState(sourceId: String): Boolean = write { db ->
+        db.prepareStatement("delete from source_login_state where source_id = ?").use { stmt ->
+            stmt.setString(1, sourceId)
+            stmt.executeUpdate() > 0
+        }
+    }
+
+    private fun parseCookieString(cookieStr: String): Map<String, String> {
+        val result = linkedMapOf<String, String>()
+        cookieStr.split(';').forEach { part ->
+            val trimmed = part.trim()
+            val eq = trimmed.indexOf('=')
+            if (eq > 0) {
+                val key = trimmed.substring(0, eq).trim()
+                val value = trimmed.substring(eq + 1).trim()
+                result[key] = value
+            }
+        }
+        return result
+    }
+
+    private fun java.sql.ResultSet.toSummary() = SourceSummary(
+        id = getString(1),
+        name = getString(2),
+        url = getString(3),
+        group = getString(4),
+        enabled = getInt(5) == 1,
+        isJsSource = getInt(6) == 1,
+        hasLogin = getInt(9) == 1,
+        updatedAt = getLong(7),
+        version = getLong(8),
+    )
     private fun java.sql.ResultSet.toSubscription() = SourceSubscription(getLong("id"), getString("url"), getInt("enabled") == 1, getLong("created_at"), getLong("updated_at"), getLong("last_success_at").takeIf { !wasNull() }, getLong("last_attempt_at").takeIf { !wasNull() }, getString("last_error"), getInt("last_imported"), getString("content_hash"))
     private fun java.sql.ResultSet.toShelf(): BookshelfItem {
         val altJson = getString(15)
@@ -625,6 +859,19 @@ class Database(private val path: String) : Closeable, AutoCloseable {
         val columns = db.createStatement().use { statement -> statement.executeQuery("pragma table_info(book_shelf)").use { rs -> buildSet { while (rs.next()) add(rs.getString("name")) } } }
         if ("completed" !in columns) db.createStatement().use { it.executeUpdate("alter table book_shelf add column completed integer not null default 0") }
         if ("alternate_sources" !in columns) db.createStatement().use { it.executeUpdate("alter table book_shelf add column alternate_sources text") }
+    }
+    private fun migrateSourceTable(db: Connection) {
+        val columns = db.createStatement().use { statement ->
+            statement.executeQuery("pragma table_info(source)").use { rs ->
+                buildSet { while (rs.next()) add(rs.getString("name")) }
+            }
+        }
+        if ("has_login" !in columns) {
+            db.createStatement().use {
+                it.executeUpdate("alter table source add column has_login integer not null default 0")
+                it.executeUpdate("update source set has_login = 1 where payload like '%\"loginUi\"%' or payload like '%\"loginUrl\"%' or payload like '%\"loginCheckJs\"%'")
+            }
+        }
     }
     private fun secret(): String = ByteArray(32).also(random::nextBytes).let { Base64.getUrlEncoder().withoutPadding().encodeToString(it) }
     private fun passwordHash(password: String): String {

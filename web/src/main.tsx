@@ -10,6 +10,7 @@ import { AppHeader } from './AppHeader'
 import { cleanAuthor, cleanTitle, defaultSearchFilters, filterSearchGroups, isExactMatch, isPopularMatch, SearchFilters, SearchGroup, SortMode } from './searchFilters'
 import { groupSearchResults, SourceChoice, SourceChoiceStatus, useSearchStore } from './searchStore'
 import { SourceSwitchModal } from './SourceSwitchModal'
+import { SourceLoginModal } from './SourceLoginModal'
 import { toast, ToastContainer } from './Toast'
 import './styles.css'
 
@@ -422,13 +423,46 @@ function BookDetailModal({
 
 
 
-function SourceEditor({ selected, onSaved }: { selected: SourceSummary | null; onSaved: () => void }) {
+function SourceEditor({
+  selected,
+  onSaved,
+  onOpenLogin,
+}: {
+  selected: SourceSummary | null
+  onSaved: () => void
+  onOpenLogin?: (source: SourceSummary) => void
+}) {
   const [record, setRecord] = useState<SourceRecord | null>(null); const [text, setText] = useState(''); const [status, setStatus] = useState('')
   useEffect(() => { if (!selected) { setRecord(null); setText(''); return }; void api.source(selected.id).then(value => { setRecord(value); setText(value.json); setStatus('') }).catch(error => setStatus(error.message)) }, [selected])
   const save = async () => { if (!record || !selected) return; try { const next = await api.save(selected.id, text, record.version); setRecord(next); setStatus('已保存'); onSaved() } catch (error) { setStatus(error instanceof Error ? error.message : '保存失败') } }
   const validate = async () => { if (!selected) return; try { const result = await api.validate(selected.id); setStatus(result.valid ? result.warnings.join('；') || '结构校验通过' : result.errors.join('；')) } catch (error) { setStatus(error instanceof Error ? error.message : '校验失败') } }
   if (!selected) return <section className="source-editor empty-editor"><Icon name="book" /><h2>选择一个书源</h2><p>从列表选择书源，或导入一个 JSON 文件。</p></section>
-  return <section className="source-editor"><header><div><span className="section-kicker">书源编辑</span><h2>{selected.name}</h2><small>{selected.url}</small></div><div className="editor-actions"><button className="subtle-button" onClick={() => void validate}>校验</button><button className="primary-button" onClick={() => void save}>保存</button></div></header><textarea aria-label="书源 JSON 编辑器" value={text} onChange={event => setText(event.target.value)} spellCheck={false} />{status && <footer className={status.includes('失败') || status.includes('错误') ? 'form-error' : ''}>{status}</footer>}</section>
+  return (
+    <section className="source-editor">
+      <header>
+        <div>
+          <span className="section-kicker">书源编辑</span>
+          <h2>{selected.name}</h2>
+          <small>{selected.url}</small>
+        </div>
+        <div className="editor-actions">
+          {selected.hasLogin && (
+            <button
+              type="button"
+              className="subtle-button source-login-entry-btn"
+              onClick={() => onOpenLogin?.(selected)}
+            >
+              登录
+            </button>
+          )}
+          <button type="button" className="subtle-button" onClick={() => void validate()}>校验</button>
+          <button type="button" className="primary-button" onClick={() => void save()}>保存</button>
+        </div>
+      </header>
+      <textarea aria-label="书源 JSON 编辑器" value={text} onChange={event => setText(event.target.value)} spellCheck={false} />
+      {status && <footer className={status.includes('失败') || status.includes('错误') ? 'form-error' : ''}>{status}</footer>}
+    </section>
+  )
 }
 
 function SubscriptionPanel({ onSourcesChange }: { onSourcesChange: () => void }) {
@@ -449,11 +483,83 @@ function SubscriptionPage({ onSourcesChange }: { onSourcesChange: () => void }) 
 
 function SourcesPage({ selected, onSelect, onSourcesChange }: { selected: SourceSummary | null; onSelect: (source: SourceSummary | null) => void; onSourcesChange: (sources: SourceSummary[]) => void }) {
   const [sources, setSources] = useState<SourceSummary[]>([]); const [query, setQuery] = useState(''); const [notice, setNotice] = useState('')
+  const [loginModalSource, setLoginModalSource] = useState<SourceSummary | null>(null)
   const load = useCallback(async () => { try { const values = await api.sources(query); setSources(values); onSourcesChange(values) } catch (error) { setNotice(error instanceof Error ? error.message : '无法载入书源') } }, [onSourcesChange, query])
   useEffect(() => { const timer = window.setTimeout(() => { void load() }, 180); return () => window.clearTimeout(timer) }, [load])
   const importSources = async (file: File | undefined) => { if (!file) return; try { const parsed = JSON.parse(await file.text()); const values = Array.isArray(parsed) ? parsed : [parsed]; const result = await api.import(values.map(value => JSON.stringify(value))); setNotice(`新增 ${result.imported} 个，更新 ${result.updated} 个${result.skipped ? `，跳过 ${result.skipped} 个` : ''}`); await load() } catch (error) { setNotice(error instanceof Error ? error.message : '导入失败') } }
   const remove = async () => { if (!selected || !confirm(`删除“${selected.name}”？`)) return; try { await api.remove(selected.id); onSelect(null); await load() } catch (error) { setNotice(error instanceof Error ? error.message : '删除失败') } }
-  return <main className="sources-page"><aside className="source-sidebar"><div className="source-sidebar-heading"><span>书源</span><small>{sources.length}</small></div><div className="source-filter"><Icon name="search" /><input placeholder="筛选书源" value={query} onChange={event => setQuery(event.target.value)} /></div><label className="import-button"><Icon name="upload" />导入 JSON<input type="file" accept="application/json,.json" onChange={event => void importSources(event.target.files?.[0])} /></label>{notice && <p className="sidebar-notice">{notice}</p>}<nav className="source-list">{sources.map(source => <button className={selected?.id === source.id ? 'selected' : ''} key={source.id} onClick={() => onSelect(source)}><span>{source.name}</span><small>{source.group || (source.isJsSource ? 'JS 书源' : '书源')}</small></button>)}</nav></aside><section className="sources-content"><header className="page-title"><div><span className="section-kicker">阅读服务器</span><h1>书源管理</h1><p>导入、校验与维护你的阅读来源。</p></div>{selected && <button className="danger-button" onClick={() => void remove()}>删除书源</button>}</header><SourceEditor selected={selected} onSaved={() => void load()} /></section></main>
+  return (
+    <main className="sources-page">
+      <aside className="source-sidebar">
+        <div className="source-sidebar-heading">
+          <span>书源</span>
+          <small>{sources.length}</small>
+        </div>
+        <div className="source-filter">
+          <Icon name="search" />
+          <input placeholder="筛选书源" value={query} onChange={event => setQuery(event.target.value)} />
+        </div>
+        <label className="import-button">
+          <Icon name="upload" />导入 JSON
+          <input type="file" accept="application/json,.json" onChange={event => void importSources(event.target.files?.[0])} />
+        </label>
+        {notice && <p className="sidebar-notice">{notice}</p>}
+        <nav className="source-list">
+          {sources.map(source => (
+            <button className={selected?.id === source.id ? 'selected' : ''} key={source.id} onClick={() => onSelect(source)}>
+              <div className="source-list-item-title">
+                <span>{source.name}</span>
+                {source.hasLogin && <span className="source-login-badge" title="支持登录鉴权">登录</span>}
+              </div>
+              <small>{source.group || (source.isJsSource ? 'JS 书源' : '书源')}</small>
+            </button>
+          ))}
+        </nav>
+      </aside>
+      <section className="sources-content">
+        <header className="page-title">
+          <div>
+            <span className="section-kicker">阅读服务器</span>
+            <h1>书源管理</h1>
+            <p>导入、校验与维护你的阅读来源。</p>
+          </div>
+          <div className="page-title-actions">
+            {selected?.hasLogin && (
+              <button
+                type="button"
+                className="subtle-button source-login-entry-btn"
+                onClick={() => setLoginModalSource(selected)}
+              >
+                登录书源
+              </button>
+            )}
+            {selected && (
+              <button type="button" className="danger-button" onClick={() => void remove()}>
+                删除书源
+              </button>
+            )}
+          </div>
+        </header>
+        <SourceEditor
+          selected={selected}
+          onSaved={() => void load()}
+          onOpenLogin={source => setLoginModalSource(source)}
+        />
+      </section>
+      {loginModalSource && (
+        <SourceLoginModal
+          sourceId={loginModalSource.id}
+          sourceName={loginModalSource.name}
+          onClose={() => setLoginModalSource(null)}
+          onToast={(msg, type) => {
+            if (type === 'error') toast.error(msg)
+            else if (type === 'success') toast.success(msg)
+            else toast.info(msg)
+          }}
+        />
+      )}
+    </main>
+  )
 }
 
 function HighlightText({ text, keyword }: { text: string; keyword: string }) {

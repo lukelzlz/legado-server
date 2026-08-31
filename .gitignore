@@ -9,6 +9,7 @@ build/
 /release
 /tmp
 node_modules/
+**/node_modules/
 /app/app
 /app/google
 /app/gradle.properties

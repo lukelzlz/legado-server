@@ -1,4 +1,4 @@
-export type SourceSummary = { id: string; name: string; url: string; group?: string; enabled: boolean; isJsSource: boolean; updatedAt: number; version: number }
+export type SourceSummary = { id: string; name: string; url: string; group?: string; enabled: boolean; isJsSource: boolean; hasLogin: boolean; updatedAt: number; version: number }
 export type SourceRecord = { id: string; json: string; version: number; updatedAt: number }
 export type SearchResult = { sourceId: string; name: string; author?: string; bookUrl: string; coverUrl?: string; intro?: string }
 export type BookDetails = { sourceId: string; name: string; author?: string; intro?: string; coverUrl?: string; tocUrl: string; alternateSources?: SearchResult[] }
@@ -10,6 +10,58 @@ export type BookshelfSourceSwitch = { oldSourceId: string; oldBookUrl: string; b
 export type ImportResponse = { imported: number; updated: number; skipped: number; errors: string[] }
 export type SourceSubscription = { id: number; url: string; enabled: boolean; createdAt: number; updatedAt: number; lastSuccessAt?: number; lastAttemptAt?: number; lastError?: string; lastImported: number; contentHash?: string }
 export type SearchStreamEvent = { type: 'start' | 'results' | 'progress' | 'done' | 'error'; totalSources: number; completedSources: number; matchedSources: number; emptySources: number; failedSources: number; resultCount: number; results: SearchResult[]; message?: string }
+
+export type FlexChildStyle = {
+  layout_flexGrow?: number
+  layout_flexShrink?: number
+  layout_alignSelf?: string
+  layout_flexBasisPercent?: number
+  layout_wrapBefore?: boolean
+  layout_justifySelf?: string
+}
+
+export type SourceLoginUiItem = {
+  name: string
+  type: string
+  action?: string
+  chars?: (string | null)[]
+  default?: string
+  viewName?: string
+  style?: FlexChildStyle
+  key?: string
+  hint?: string
+  value?: string
+  options?: string[]
+  countdown?: number
+}
+
+export type SourceLoginUiResponse = {
+  sourceId: string
+  sourceName: string
+  hasLogin: boolean
+  loginUi: SourceLoginUiItem[]
+  loginUrl?: string
+  loginInfo: Record<string, string>
+  loginHeader?: string
+  sourceVariable?: string
+}
+
+export type SourceLoginActionResult = {
+  success: boolean
+  toastMessages: string[]
+  openUrl?: string
+  copyText?: string
+  updatedLoginInfo?: Record<string, string>
+  updatedLoginHeader?: string
+  updatedVariable?: string
+  reRenderUi: boolean
+  error?: string
+}
+
+export type SourceLoginCheckResult = {
+  loggedIn: boolean
+  message?: string
+}
 
 let csrfToken: string | null = null
 export const setCsrfToken = (token: string | null) => { csrfToken = token }
@@ -41,6 +93,12 @@ export const api = {
   removeSubscription: (id: number) => request<void>(`/api/subscriptions/${id}`, { method: 'DELETE' }),
   updateSubscription: (id: number) => request<ImportResponse>(`/api/subscriptions/${id}/update`, { method: 'POST' }),
   updateSubscriptions: () => request<{ updated: number; failed: number }>('/api/subscriptions/update', { method: 'POST' }),
+  getSourceLoginUi: (sourceId: string) => request<SourceLoginUiResponse>(`/api/sources/${encodeURIComponent(sourceId)}/login-ui`),
+  saveSourceLoginInfo: (sourceId: string, loginInfo: Record<string, string>) => request<{ ok: boolean }>(`/api/sources/${encodeURIComponent(sourceId)}/login-info`, { method: 'POST', body: JSON.stringify({ loginInfo }) }),
+  clearSourceLoginInfo: (sourceId: string) => request<{ ok: boolean }>(`/api/sources/${encodeURIComponent(sourceId)}/login-info`, { method: 'DELETE' }),
+  clearSourceLoginHeader: (sourceId: string) => request<{ ok: boolean }>(`/api/sources/${encodeURIComponent(sourceId)}/login-header`, { method: 'DELETE' }),
+  executeSourceLoginAction: (sourceId: string, action: string, loginData: Record<string, string>, isLongClick = false) => request<SourceLoginActionResult>(`/api/sources/${encodeURIComponent(sourceId)}/login-action`, { method: 'POST', body: JSON.stringify({ action, loginData, isLongClick }) }),
+  checkSourceLogin: (sourceId: string) => request<SourceLoginCheckResult>(`/api/sources/${encodeURIComponent(sourceId)}/login-check`),
   search: (keyword: string, sourceIds?: string[], signal?: AbortSignal) => request<SearchResult[]>('/api/search', { method: 'POST', body: JSON.stringify({ keyword, sourceIds }), signal }),
   details: (sourceId: string, bookUrl: string, signal?: AbortSignal) => request<BookDetails>('/api/books/details', { method: 'POST', body: JSON.stringify({ sourceId, bookUrl }), signal }),
   chapters: (sourceId: string, bookUrl: string, signal?: AbortSignal) => request<Chapter[]>('/api/books/chapters', { method: 'POST', body: JSON.stringify({ sourceId, bookUrl }), signal }),

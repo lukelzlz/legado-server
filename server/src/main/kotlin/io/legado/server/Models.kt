@@ -225,3 +225,27 @@ data class CachedBookRequest(val sourceId: String, val bookUrl: String, val tocU
     val completed: Boolean = false,
     val alternateSources: List<SearchResult> = emptyList(),
 )
+
+@Serializable
+data class TtsVoice(
+    val id: String,
+    val name: String,
+    val lang: String,
+    val gender: String,
+    val localeName: String,
+    val engine: String = "edge",
+    val description: String? = null,
+)
+
+@Serializable
+data class TtsSpeakRequest(
+    val text: String,
+    val voice: String = "zh-CN-XiaoxiaoNeural",
+    val rate: Int = 0,
+    val pitch: Int = 0,
+    val engine: String = "edge",
+    val customUrl: String? = null,
+    val customHeader: String? = null,
+    val customMethod: String? = null,
+    val customBody: String? = null,
+)

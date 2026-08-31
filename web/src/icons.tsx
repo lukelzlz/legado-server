@@ -26,6 +26,13 @@ type IconName =
   | 'sliders'
   | 'upload'
   | 'volume2'
+  | 'volumeX'
+  | 'play'
+  | 'pause'
+  | 'skipBack'
+  | 'skipForward'
+  | 'stop'
+  | 'clock'
 
 const paths: Record<IconName, ReactNode> = {
   arrowLeft: <path d="m15 18-6-6 6-6" />,
@@ -53,6 +60,13 @@ const paths: Record<IconName, ReactNode> = {
   sliders: <><path d="M4 6h16M4 12h16M4 18h16" /><circle cx="9" cy="6" r="2" /><circle cx="15" cy="12" r="2" /><circle cx="11" cy="18" r="2" /></>,
   upload: <><path d="M12 15V3" /><path d="m7 8 5-5 5 5" /><path d="M5 13v6a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-6" /></>,
   volume2: <><path d="M11 5 6 9H3v6h3l5 4V5Z" /><path d="M15.5 9a4 4 0 0 1 0 6" /><path d="M18.5 6a8 8 0 0 1 0 12" /></>,
+  volumeX: <><path d="M11 5 6 9H3v6h3l5 4V5Z" /><line x1="23" y1="9" x2="17" y2="15" /><line x1="17" y1="9" x2="23" y2="15" /></>,
+  play: <polygon points="6 3 20 12 6 21 6 3" />,
+  pause: <><rect x="6" y="4" width="4" height="16" /><rect x="14" y="4" width="4" height="16" /></>,
+  skipBack: <><polygon points="19 20 9 12 19 4 19 20" /><line x1="5" y1="19" x2="5" y2="5" /></>,
+  skipForward: <><polygon points="5 4 15 12 5 20 5 4" /><line x1="19" y1="5" x2="19" y2="19" /></>,
+  stop: <rect x="5" y="5" width="14" height="14" rx="2" />,
+  clock: <><circle cx="12" cy="12" r="10" /><polyline points="12 6 12 12 16 14" /></>,
 }
 
 export function Icon({ name, ...props }: { name: IconName } & SVGProps<SVGSVGElement>) {

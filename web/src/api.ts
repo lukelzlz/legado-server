@@ -78,6 +78,28 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   return response.status === 204 ? undefined as T : response.json() as Promise<T>
 }
 
+export type TtsVoice = {
+  id: string
+  name: string
+  lang: string
+  gender: string
+  localeName: string
+  engine: string
+  description?: string
+}
+
+export type TtsSpeakRequest = {
+  text: string
+  voice?: string
+  rate?: number
+  pitch?: number
+  engine?: string
+  customUrl?: string
+  customHeader?: string
+  customMethod?: string
+  customBody?: string
+}
+
 export const api = {
   session: () => request<{ authenticated: boolean; csrfToken?: string }>('/api/auth/session'),
   login: (password: string) => request<{ csrfToken: string }>('/api/auth/login', { method: 'POST', body: JSON.stringify({ password }) }),
@@ -116,6 +138,22 @@ export const api = {
   updateBookshelfInfo: (data: { sourceId: string; bookUrl: string; name: string; author?: string; coverUrl?: string }) => request<BookshelfItem>('/api/bookshelf/info', { method: 'PUT', body: JSON.stringify(data) }),
   switchBookshelfSource: (value: BookshelfSourceSwitch) => request<BookshelfItem>('/api/bookshelf/switch-source', { method: 'POST', body: JSON.stringify(value) }),
   cover: (key: string) => `/api/covers/${encodeURIComponent(key)}`,
+  getTtsVoices: () => request<TtsVoice[]>('/api/tts/voices'),
+  fetchTtsAudioBlob: async (req: TtsSpeakRequest): Promise<Blob> => {
+    const headers = new Headers({ 'Content-Type': 'application/json' })
+    if (csrfToken) headers.set('X-CSRF-Token', csrfToken)
+    const response = await fetch('/api/tts/speak', {
+      method: 'POST',
+      headers,
+      credentials: 'same-origin',
+      body: JSON.stringify(req),
+    })
+    if (!response.ok) {
+      const err = await response.json().catch(() => ({ message: response.statusText })) as { message?: string }
+      throw new Error(err.message ?? '语音合成失败')
+    }
+    return response.blob()
+  },
 }
 
 export function streamSearch(keyword: string, sourceIds: string[] | undefined, onEvent: (event: SearchStreamEvent) => void, onError: (message: string) => void, onClose: () => void): WebSocket {

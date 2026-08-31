@@ -24,6 +24,7 @@ import './ToastStore.test.ts'
 import './ShelfInstantOpen.test.ts'
 import './source-login.test.ts'
 import './source-import.test.ts'
+import './tts.test.ts'
 
 console.log('🚀 Running Legado Web Frontend Comprehensive Test Suite (Tier 1, 2, 4 + Challenger Stress)...\n')
 

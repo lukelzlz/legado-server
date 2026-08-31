@@ -2,10 +2,14 @@ import { CSSProperties, PointerEvent as ReactPointerEvent, useCallback, useDefer
 import { api, BookDetails, Chapter, ReadingProgress, SearchResult } from './api'
 import { Icon } from './icons'
 import { calculatePaginationLayout, isAtBottomBoundary, isAtTopBoundary, isInteractiveReaderTarget, isTapGesture, paginateTapZone, scrollTapZone, swipeDirection } from './readerInteractions'
-import { clampScrollPosition, defaultReaderSettings, getReaderFontFamily, ReaderSettings, scrollPosition } from './readerSettings'
+import { clampScrollPosition, defaultReaderSettings, getReaderFontFamily, ReaderSettings, scrollPosition, TtsEngineType } from './readerSettings'
 import { SourceSwitchModal } from './SourceSwitchModal'
 import { cleanAuthor, cleanTitle } from './searchFilters'
 import { toast } from './Toast'
+import { processChapterForTts, TtsChapterData } from './ttsTextProcessor'
+import { ITtsEngine, WebSpeechEngine, HttpAudioTtsEngine, TtsPlayState } from './ttsEngine'
+import { TtsSettingsModal, SleepTimerOption } from './TtsSettingsModal'
+import { TtsPlayerBar } from './TtsPlayerBar'
 
 export type OpenBook = { details: BookDetails; bookUrl: string; chapters: Chapter[]; progress?: ReadingProgress }
 
@@ -186,7 +190,12 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
   const [toolbarsVisible, setToolbarsVisible] = useState(false)
   const [boundaryMessage, setBoundaryMessage] = useState('')
   const [inShelf, setInShelf] = useState(true)
-  const [speechState, setSpeechState] = useState<'idle' | 'speaking' | 'paused'>('idle')
+  const [ttsActive, setTtsActive] = useState(false)
+  const [ttsPlayState, setTtsPlayState] = useState<TtsPlayState>('idle')
+  const [currentChunkIndex, setCurrentChunkIndex] = useState(0)
+  const [sleepTimer, setSleepTimer] = useState<SleepTimerOption>('off')
+  const [remainingSeconds, setRemainingSeconds] = useState<number | null>(null)
+  const [showTtsSettings, setShowTtsSettings] = useState(false)
   const [showSourceSwitch, setShowSourceSwitch] = useState(false)
   const [cacheStatus, setCacheStatus] = useState<{ state: string; cached: number; total: number; error?: string }>({
     state: 'idle',
@@ -205,7 +214,10 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
   const currentRef = useRef<{ chapter: Chapter; position: number } | null>(null)
   const timerRef = useRef<number | null>(null)
   const restoredRef = useRef(false)
-  const speechRef = useRef<SpeechSynthesisUtterance | null>(null)
+  const autoPlayNextChapterRef = useRef(false)
+  const webSpeechEngineRef = useRef<WebSpeechEngine | null>(null)
+  const httpAudioEngineRef = useRef<HttpAudioTtsEngine | null>(null)
+  const wakeLockRef = useRef<WakeLockSentinel | null>(null)
   const preloadedContentRef = useRef(new Map<string, string>())
   const preloadingRef = useRef(new Set<string>())
   const lastScrollYRef = useRef(0)
@@ -300,25 +312,167 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
     void api.saveProgress(currentBook.details.sourceId, currentBook.bookUrl, current.chapter.url, current.chapter.index, clampScrollPosition(current.position)).catch(() => undefined)
   }, [currentBook.bookUrl, currentBook.details.sourceId])
 
-  const stopSpeech = useCallback(() => {
-    if (!('speechSynthesis' in window)) return
-    window.speechSynthesis.cancel()
-    speechRef.current = null
-    setSpeechState('idle')
+  const ttsData: TtsChapterData = useMemo(() => {
+    return processChapterForTts(chapter?.title || '', paragraphs, settings.ttsFilterSymbols)
+  }, [chapter?.title, paragraphs, settings.ttsFilterSymbols])
+
+  const currentChunk = ttsData.chunks[currentChunkIndex] ?? null
+  const activeParagraphIndex = currentChunk ? currentChunk.paragraphIndex : -1
+  const activeSentenceText = currentChunk?.text || ''
+
+  const getTtsEngine = useCallback((type: TtsEngineType): ITtsEngine => {
+    if (type === 'webSpeech') {
+      if (!webSpeechEngineRef.current) {
+        webSpeechEngineRef.current = new WebSpeechEngine()
+      }
+      return webSpeechEngineRef.current
+    }
+    if (!httpAudioEngineRef.current) {
+      httpAudioEngineRef.current = new HttpAudioTtsEngine()
+    }
+    return httpAudioEngineRef.current
   }, [])
 
-  const toggleSpeech = useCallback(() => {
-    if (!content || !chapter || !('speechSynthesis' in window)) return
-    if (speechState === 'speaking') { window.speechSynthesis.pause(); setSpeechState('paused'); return }
-    if (speechState === 'paused') { window.speechSynthesis.resume(); setSpeechState('speaking'); return }
-    const utterance = new SpeechSynthesisUtterance(`${chapter.title}。${content}`)
-    utterance.lang = 'zh-CN'
-    utterance.onend = () => setSpeechState('idle')
-    utterance.onerror = () => setSpeechState('idle')
-    speechRef.current = utterance
-    window.speechSynthesis.speak(utterance)
-    setSpeechState('speaking')
-  }, [chapter, content, speechState])
+  const stopAllEngines = useCallback(() => {
+    webSpeechEngineRef.current?.stop()
+    httpAudioEngineRef.current?.stop()
+  }, [])
+
+  const stopTts = useCallback(() => {
+    stopAllEngines()
+    setTtsPlayState('idle')
+    setTtsActive(false)
+  }, [stopAllEngines])
+
+  const pauseTts = useCallback(() => {
+    const engine = getTtsEngine(settings.ttsEngine)
+    engine.pause()
+    setTtsPlayState('paused')
+  }, [getTtsEngine, settings.ttsEngine])
+
+  const resumeTts = useCallback(() => {
+    const engine = getTtsEngine(settings.ttsEngine)
+    engine.resume()
+    setTtsPlayState('playing')
+  }, [getTtsEngine, settings.ttsEngine])
+
+  const playTtsChunk = useCallback((idx: number) => {
+    if (!ttsData.chunks || ttsData.chunks.length === 0) return
+    if (idx < 0) idx = 0
+    if (idx >= ttsData.chunks.length) {
+      // Reached end of current chapter
+      if (sleepTimer === 'chapter') {
+        toast.info('已读完本章，睡眠定时已触发')
+        stopTts()
+        return
+      }
+      if (settings.ttsAutoNextChapter && chapterIndex < currentBook.chapters.length - 1) {
+        persist()
+        autoPlayNextChapterRef.current = true
+        changeChapter(chapterIndex + 1)
+        return
+      }
+      stopTts()
+      return
+    }
+
+    setCurrentChunkIndex(idx)
+    setTtsPlayState('playing')
+
+    const chunk = ttsData.chunks[idx]
+    const engine = getTtsEngine(settings.ttsEngine)
+
+    if (settings.ttsEngine !== 'webSpeech' && idx + 1 < ttsData.chunks.length) {
+      const nextChunk = ttsData.chunks[idx + 1]
+      void (engine as HttpAudioTtsEngine).prefetch(nextChunk.text, settings)
+    }
+
+    engine.speak(
+      chunk.text,
+      settings,
+      () => {
+        const nextIdx = idx + 1
+        if (sleepTimer === 'paragraph') {
+          const nextChunk = ttsData.chunks[nextIdx]
+          if (!nextChunk || nextChunk.paragraphIndex !== chunk.paragraphIndex) {
+            toast.info('当前段落已读完，睡眠定时已触发')
+            stopTts()
+            return
+          }
+        }
+        playTtsChunk(nextIdx)
+      },
+      (err) => {
+        toast.warning(err.message || '朗读中断')
+        setTtsPlayState('paused')
+      }
+    )
+  }, [ttsData, sleepTimer, settings, chapterIndex, currentBook.chapters.length, persist, stopTts, getTtsEngine])
+
+  const toggleTts = useCallback(() => {
+    if (!ttsActive) {
+      setTtsActive(true)
+      playTtsChunk(currentChunkIndex)
+    } else if (ttsPlayState === 'playing') {
+      pauseTts()
+    } else if (ttsPlayState === 'paused') {
+      resumeTts()
+    } else {
+      playTtsChunk(currentChunkIndex)
+    }
+  }, [ttsActive, ttsPlayState, playTtsChunk, currentChunkIndex, pauseTts, resumeTts])
+
+  const handleParagraphClick = useCallback((pIdx: number) => {
+    const targetChunk = ttsData.chunks.find(c => c.paragraphIndex === pIdx)
+    if (targetChunk) {
+      if (!ttsActive) setTtsActive(true)
+      playTtsChunk(targetChunk.globalIndex)
+    }
+  }, [ttsData.chunks, ttsActive, playTtsChunk])
+
+  const handlePrevChunk = useCallback(() => {
+    const prevIdx = Math.max(0, currentChunkIndex - 1)
+    playTtsChunk(prevIdx)
+  }, [currentChunkIndex, playTtsChunk])
+
+  const handleNextChunk = useCallback(() => {
+    const nextIdx = Math.min(ttsData.chunks.length - 1, currentChunkIndex + 1)
+    playTtsChunk(nextIdx)
+  }, [currentChunkIndex, ttsData.chunks.length, playTtsChunk])
+
+  const handlePrevChapterTts = useCallback(() => {
+    if (chapterIndex > 0) {
+      persist()
+      autoPlayNextChapterRef.current = true
+      changeChapter(chapterIndex - 1)
+    }
+  }, [chapterIndex, persist])
+
+  const handleNextChapterTts = useCallback(() => {
+    if (chapterIndex < currentBook.chapters.length - 1) {
+      persist()
+      autoPlayNextChapterRef.current = true
+      changeChapter(chapterIndex + 1)
+    }
+  }, [chapterIndex, currentBook.chapters.length, persist])
+
+  const renderParagraphContent = (rawLine: string, pIndex: number) => {
+    if (!ttsActive || activeParagraphIndex !== pIndex || !currentChunk) {
+      return rawLine
+    }
+    const sentenceText = currentChunk.text
+    const sIdx = rawLine.indexOf(sentenceText)
+    if (sIdx >= 0) {
+      const before = rawLine.slice(0, sIdx)
+      const after = rawLine.slice(sIdx + sentenceText.length)
+      return <>
+        {before}
+        <span className="tts-active-sentence">{sentenceText}</span>
+        {after}
+      </>
+    }
+    return rawLine
+  }
 
   const preloadNextChapter = useCallback((index: number) => {
     const next = currentBook.chapters[index + 1]
@@ -357,11 +511,15 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
       return
     }
     persist()
-    stopSpeech()
+    if (!autoPlayNextChapterRef.current) {
+      stopTts()
+    } else {
+      stopAllEngines()
+    }
     targetInitialPageRef.current = targetPage === 'auto' ? null : targetPage
     setChapterIndex(nextIndex)
     setActiveDrawer(null)
-  }, [chapterIndex, currentBook.chapters.length, persist, showBoundaryNotice, stopSpeech])
+  }, [chapterIndex, currentBook.chapters.length, persist, showBoundaryNotice, stopTts, stopAllEngines])
 
   const toggleShelf = async () => {
     if (inShelf) {
@@ -666,7 +824,99 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
     }
   }, [chapter, pageCount, pageIndex, persist, preloadNextChapter, preloadPrevChapter, settings.pageMode])
 
-  useEffect(() => () => stopSpeech(), [stopSpeech])
+  // Stop TTS on unmount
+  useEffect(() => () => {
+    stopAllEngines()
+  }, [stopAllEngines])
+
+  // Chapter content load effect for auto continuous next chapter
+  useEffect(() => {
+    if (!content || loading) return
+    if (autoPlayNextChapterRef.current) {
+      autoPlayNextChapterRef.current = false
+      setTtsActive(true)
+      playTtsChunk(0)
+    }
+  }, [content, loading, playTtsChunk])
+
+  // Sleep Timer countdown effect
+  useEffect(() => {
+    if (sleepTimer === 'off' || sleepTimer === 'chapter' || sleepTimer === 'paragraph') {
+      setRemainingSeconds(null)
+      return
+    }
+    const totalSecs = parseInt(sleepTimer, 10) * 60
+    setRemainingSeconds(totalSecs)
+    const timer = window.setInterval(() => {
+      setRemainingSeconds(prev => {
+        if (prev === null || prev <= 1) {
+          window.clearInterval(timer)
+          toast.info('睡眠定时时间到，已停止朗读')
+          stopTts()
+          return 0
+        }
+        return prev - 1
+      })
+    }, 1000)
+    return () => window.clearInterval(timer)
+  }, [sleepTimer, stopTts])
+
+  // MediaSession API integration
+  useEffect(() => {
+    if (!('mediaSession' in navigator) || !ttsActive) return
+    try {
+      navigator.mediaSession.metadata = new MediaMetadata({
+        title: chapter?.title || '正文朗读',
+        artist: currentBook.details.author || currentBook.details.name,
+        album: bookName,
+        artwork: currentBook.details.coverUrl ? [{ src: currentBook.details.coverUrl }] : undefined,
+      })
+      navigator.mediaSession.playbackState = ttsPlayState === 'playing' ? 'playing' : 'paused'
+
+      navigator.mediaSession.setActionHandler('play', () => resumeTts())
+      navigator.mediaSession.setActionHandler('pause', () => pauseTts())
+      navigator.mediaSession.setActionHandler('previoustrack', () => handlePrevChunk())
+      navigator.mediaSession.setActionHandler('nexttrack', () => handleNextChunk())
+    } catch {
+      // Ignore mediaSession errors
+    }
+  }, [ttsActive, ttsPlayState, chapter?.title, bookName, currentBook.details.author, currentBook.details.coverUrl, resumeTts, pauseTts, handlePrevChunk, handleNextChunk])
+
+  // Wake Lock API integration
+  useEffect(() => {
+    if (!('wakeLock' in navigator)) return
+    if (ttsActive && ttsPlayState === 'playing') {
+      navigator.wakeLock.request('screen').then(lock => {
+        wakeLockRef.current = lock
+      }).catch(() => undefined)
+    } else {
+      wakeLockRef.current?.release().catch(() => undefined)
+      wakeLockRef.current = null
+    }
+    return () => {
+      wakeLockRef.current?.release().catch(() => undefined)
+      wakeLockRef.current = null
+    }
+  }, [ttsActive, ttsPlayState])
+
+  // Auto-scroll / highlight follower effect
+  useEffect(() => {
+    if (!ttsActive || activeParagraphIndex < 0) return
+
+    if (settings.pageMode === 'scroll') {
+      const el = document.querySelector(`[data-paragraph-index="${activeParagraphIndex}"]`)
+      if (el) {
+        el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      }
+    } else if (settings.pageMode === 'paginate') {
+      const el = bodyRef.current?.querySelector(`[data-paragraph-index="${activeParagraphIndex}"]`) as HTMLElement | null
+      if (el && stride > 0) {
+        const targetPage = Math.min(pageCount - 1, Math.max(0, Math.floor(el.offsetLeft / stride)))
+        setPageIndex(targetPage)
+      }
+    }
+  }, [activeParagraphIndex, ttsActive, settings.pageMode, stride, pageCount])
+
   useEffect(() => () => { if (boundaryTimerRef.current !== null) window.clearTimeout(boundaryTimerRef.current) }, [])
 
   // Keyboard navigation
@@ -792,7 +1042,7 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
     {/* Floating Header */}
     <header className="reader-header">
       <div className="reader-header-left">
-        <IconButton label="返回书架" icon="arrowLeft" onClick={() => { persist(); stopSpeech(); onClose() }} />
+        <IconButton label="返回书架" icon="arrowLeft" onClick={() => { persist(); stopTts(); onClose() }} />
         <IconButton
           label="目录"
           icon="list"
@@ -810,7 +1060,11 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
       <div className="reader-header-actions">
         <IconButton label="切换书源" icon="sliders" onClick={() => setShowSourceSwitch(true)} />
         <IconButton label="阅读设置" icon="settings" onClick={() => setActiveDrawer(d => d === 'settings' ? null : 'settings')} />
-        <IconButton label={speechState === 'speaking' ? '暂停朗读' : speechState === 'paused' ? '继续朗读' : '朗读本章'} icon="volume2" onClick={toggleSpeech} />
+        <IconButton
+          label={!ttsActive ? '朗读本章' : ttsPlayState === 'playing' ? '暂停朗读' : '继续朗读'}
+          icon={ttsActive && ttsPlayState === 'playing' ? 'pause' : 'volume2'}
+          onClick={toggleTts}
+        />
       </div>
     </header>
 
@@ -920,7 +1174,16 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
                 <h1>{chapter?.title}</h1>
                 {loading && <ReaderContentSkeleton />}
                 {message && <p className="reader-error">{message}</p>}
-                {paragraphs.map((line, index) => <p key={index}>{line}</p>)}
+                {paragraphs.map((line, index) => (
+                  <p
+                    key={index}
+                    data-paragraph-index={index}
+                    className={`reader-paragraph ${ttsActive && activeParagraphIndex === index ? 'tts-active-paragraph' : ''}`}
+                    onClick={() => handleParagraphClick(index)}
+                  >
+                    {renderParagraphContent(line, index)}
+                  </p>
+                ))}
               </article>
             </div>
           </div>
@@ -934,7 +1197,16 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
           <h1>{chapter?.title}</h1>
           {loading && <ReaderContentSkeleton />}
           {message && <p className="reader-error">{message}</p>}
-          {paragraphs.map((line, index) => <p key={index}>{line}</p>)}
+          {paragraphs.map((line, index) => (
+            <p
+              key={index}
+              data-paragraph-index={index}
+              className={`reader-paragraph ${ttsActive && activeParagraphIndex === index ? 'tts-active-paragraph' : ''}`}
+              onClick={() => handleParagraphClick(index)}
+            >
+              {renderParagraphContent(line, index)}
+            </p>
+          ))}
           {content && <footer className="reader-navigation"><button disabled={chapterIndex === 0 || loading} onClick={() => changeChapter(chapterIndex - 1)}><Icon name="arrowLeft" />上一章</button><div className="chapter-progress"><i style={{ width: `${chapterProgress}%` }} /><span>{chapterIndex + 1} / {currentBook.chapters.length}</span></div><button disabled={chapterIndex === currentBook.chapters.length - 1 || loading} onClick={() => changeChapter(chapterIndex + 1)}>下一章<Icon name="arrowRight" /></button></footer>}
         </article>
       )}
@@ -945,6 +1217,7 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
     <nav className="mobile-reader-nav">
       <button onClick={() => setActiveDrawer('toc')}><Icon name="list" /><span>目录</span></button>
       <button onClick={() => setShowSourceSwitch(true)}><Icon name="sliders" /><span>换源</span></button>
+      <button onClick={toggleTts}><Icon name={ttsActive && ttsPlayState === 'playing' ? 'pause' : 'volume2'} /><span>{ttsActive ? (ttsPlayState === 'playing' ? '暂停' : '继续') : '朗读'}</span></button>
       <button onClick={() => setActiveDrawer('settings')}><span className="aa">Aa</span><span>设置</span></button>
       <button onClick={() => onSettingsChange({ ...settings, theme: settings.theme === 'dark' ? 'light' : 'dark' })}><Icon name="moon" /><span>夜间</span></button>
     </nav>
@@ -961,6 +1234,39 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
         knownAlternateSources={currentBook.details.alternateSources}
         onSwitch={handleSwitchSource}
         onClose={() => setShowSourceSwitch(false)}
+      />
+    )}
+
+    {/* TTS Floating Player Bar */}
+    {ttsActive && (
+      <TtsPlayerBar
+        playState={ttsPlayState}
+        currentParagraphIndex={activeParagraphIndex}
+        totalParagraphs={paragraphs.length}
+        currentChunkIndex={currentChunkIndex}
+        totalChunks={ttsData.chunks.length}
+        activeSentenceText={activeSentenceText}
+        sleepTimer={sleepTimer}
+        remainingSeconds={remainingSeconds}
+        onTogglePlay={toggleTts}
+        onPrevChunk={handlePrevChunk}
+        onNextChunk={handleNextChunk}
+        onPrevChapter={handlePrevChapterTts}
+        onNextChapter={handleNextChapterTts}
+        onOpenSettings={() => setShowTtsSettings(true)}
+        onClose={stopTts}
+      />
+    )}
+
+    {/* TTS Settings Modal */}
+    {showTtsSettings && (
+      <TtsSettingsModal
+        settings={settings}
+        onChange={onSettingsChange}
+        sleepTimer={sleepTimer}
+        onSleepTimerChange={setSleepTimer}
+        remainingSeconds={remainingSeconds}
+        onClose={() => setShowTtsSettings(false)}
       />
     )}
   </main>

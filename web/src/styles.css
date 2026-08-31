@@ -1608,3 +1608,430 @@ mark.search-highlight { background: var(--accent-soft); color: var(--accent); fo
   box-shadow: 0 0 0 2px var(--accent-soft);
 }
 
+/* ==========================================================================
+   TTS (Text-to-Speech) Immersive Player & Highlighting Styles
+   ========================================================================== */
+
+@keyframes tts-slide-up {
+  from {
+    opacity: 0;
+    transform: translate(-50%, 20px) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, 0) scale(1);
+  }
+}
+
+@keyframes tts-pulse {
+  0%, 100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.4;
+    transform: scale(1.3);
+  }
+}
+
+.reader-paragraph {
+  position: relative;
+  transition: background-color 0.2s ease, border-left-color 0.2s ease, padding-left 0.2s ease;
+  border-radius: 4px;
+}
+
+.tts-active-paragraph {
+  background: color-mix(in srgb, var(--accent) 14%, transparent) !important;
+  border-left: 4px solid var(--accent) !important;
+  padding-left: 10px !important;
+  border-radius: 4px;
+  box-shadow: 0 2px 8px color-mix(in srgb, var(--accent) 10%, transparent);
+}
+
+.tts-active-sentence {
+  background: color-mix(in srgb, var(--accent) 28%, transparent);
+  border-radius: 3px;
+  padding: 1px 3px;
+  font-weight: 550;
+  transition: background 0.15s ease;
+}
+
+.tts-floating-bar {
+  position: fixed;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 950;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 12px 6px 16px;
+  border-radius: 36px;
+  background: color-mix(in srgb, var(--surface) 92%, transparent);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid color-mix(in srgb, var(--line) 75%, var(--accent) 25%);
+  box-shadow: 0 16px 36px rgba(0, 0, 0, 0.18), 0 2px 8px rgba(0, 0, 0, 0.08);
+  max-width: min(680px, 94vw);
+  animation: tts-slide-up 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+  user-select: none;
+}
+
+.tts-bar-info {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  cursor: pointer;
+  max-width: 220px;
+  overflow: hidden;
+  padding: 4px 6px;
+  border-radius: 8px;
+  transition: background 0.15s ease;
+}
+
+.tts-bar-info:hover {
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+
+.tts-bar-status-dot-wrap {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+}
+
+.tts-bar-status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--muted);
+}
+
+.tts-bar-status-dot.pulse {
+  background: var(--accent);
+  animation: tts-pulse 1.6s ease-in-out infinite;
+}
+
+.tts-bar-text-group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  overflow: hidden;
+}
+
+.tts-bar-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+}
+
+.tts-bar-badge {
+  font-weight: 600;
+  color: var(--accent-ink);
+  white-space: nowrap;
+}
+
+.tts-bar-loading {
+  color: var(--accent);
+  font-size: 10px;
+  animation: tts-pulse 1s infinite;
+}
+
+.tts-bar-timer-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  background: color-mix(in srgb, var(--accent) 15%, transparent);
+  color: var(--accent-ink);
+  padding: 1px 5px;
+  border-radius: 10px;
+  font-size: 10px;
+  font-weight: 500;
+}
+
+.tts-bar-snippet {
+  font-size: 12px;
+  color: var(--ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 180px;
+}
+
+.tts-bar-controls {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.tts-bar-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--ink);
+  transition: all 0.15s ease;
+  padding: 0;
+}
+
+.tts-bar-btn:hover:not(:disabled) {
+  background: var(--surface-muted);
+  color: var(--accent);
+  transform: scale(1.06);
+}
+
+.tts-bar-btn:active:not(:disabled) {
+  transform: scale(0.95);
+}
+
+.tts-bar-btn.nav-btn {
+  width: 28px;
+  height: 28px;
+  opacity: 0.75;
+}
+
+.tts-bar-btn.nav-btn:hover:not(:disabled) {
+  opacity: 1;
+}
+
+.tts-bar-btn.primary-play-btn {
+  width: 40px;
+  height: 40px;
+  background: var(--accent);
+  color: #ffffff;
+  box-shadow: 0 4px 12px color-mix(in srgb, var(--accent) 40%, transparent);
+}
+
+.tts-bar-btn.primary-play-btn:hover:not(:disabled) {
+  background: var(--accent-ink);
+  color: #ffffff;
+  transform: scale(1.08);
+}
+
+.tts-bar-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  border-left: 1px solid var(--line);
+  padding-left: 8px;
+}
+
+.tts-bar-btn.subtle-btn {
+  width: 32px;
+  height: 32px;
+  color: var(--muted);
+}
+
+.tts-bar-btn.subtle-btn:hover:not(:disabled) {
+  color: var(--ink);
+  background: var(--surface-muted);
+}
+
+.tts-bar-btn.close-btn:hover:not(:disabled) {
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+}
+
+/* TTS Settings Modal */
+.tts-settings-dialog {
+  width: min(540px, 94vw);
+  max-height: 88vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+  border-radius: 14px;
+  border: 1px solid var(--line);
+  box-shadow: var(--shadow);
+  overflow: hidden;
+  animation: modal-enter 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.tts-modal-content {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  padding: 18px 20px;
+  overflow-y: auto;
+}
+
+.tts-setting-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.tts-section-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.tts-engine-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 8px;
+}
+
+.tts-engine-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: var(--surface-muted);
+  color: var(--ink);
+  text-align: left;
+  transition: all 0.15s ease;
+}
+
+.tts-engine-btn strong {
+  font-size: 13px;
+}
+
+.tts-engine-btn span {
+  font-size: 11px;
+  color: var(--muted);
+  line-height: 1.3;
+}
+
+.tts-engine-btn:hover {
+  border-color: var(--accent);
+}
+
+.tts-engine-btn.active {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  border-color: var(--accent);
+}
+
+.tts-engine-btn.active strong {
+  color: var(--accent);
+}
+
+.tts-slider-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.tts-value-badge {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  padding: 2px 8px;
+  border-radius: 12px;
+}
+
+.tts-countdown-badge {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--accent-ink);
+  background: color-mix(in srgb, var(--accent) 15%, transparent);
+  padding: 2px 8px;
+  border-radius: 12px;
+}
+
+.tts-slider {
+  width: 100%;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.tts-preset-chips {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.tts-chip {
+  padding: 4px 10px;
+  font-size: 12px;
+  border-radius: 14px;
+  background: var(--surface-muted);
+  border: 1px solid var(--line);
+  color: var(--ink);
+  transition: all 0.15s ease;
+}
+
+.tts-chip:hover {
+  border-color: var(--accent);
+}
+
+.tts-chip.active {
+  background: var(--accent);
+  color: #ffffff;
+  border-color: var(--accent);
+  font-weight: 600;
+}
+
+.tts-timer-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(76px, 1fr));
+  gap: 6px;
+}
+
+.tts-timer-btn {
+  padding: 8px 6px;
+  font-size: 12px;
+  text-align: center;
+  border-radius: 6px;
+  background: var(--surface-muted);
+  border: 1px solid var(--line);
+  color: var(--ink);
+  transition: all 0.15s ease;
+}
+
+.tts-timer-btn:hover {
+  border-color: var(--accent);
+}
+
+.tts-timer-btn.active {
+  background: var(--accent);
+  color: #ffffff;
+  border-color: var(--accent);
+  font-weight: 600;
+}
+
+.tts-toggle-row {
+  padding: 4px 0;
+}
+
+.tts-hint {
+  font-size: 12px;
+  color: var(--muted);
+  margin: 0 0 6px 0;
+}
+
+.tts-hint code {
+  background: var(--surface-muted);
+  padding: 2px 4px;
+  border-radius: 4px;
+  font-family: monospace;
+}
+
+@media (max-width: 640px) {
+  .tts-floating-bar {
+    bottom: 74px; /* above mobile bottom nav */
+    gap: 8px;
+    padding: 6px 8px 6px 12px;
+  }
+  .tts-bar-info {
+    max-width: 130px;
+  }
+  .tts-bar-snippet {
+    max-width: 100px;
+  }
+  .tts-bar-btn.nav-btn {
+    display: none;
+  }
+}
+
+

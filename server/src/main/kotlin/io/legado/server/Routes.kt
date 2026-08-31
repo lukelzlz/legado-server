@@ -28,7 +28,15 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
 import java.util.concurrent.atomic.AtomicInteger
 
-fun Route.apiRoutes(database: Database, auth: AuthService, runner: RuleRunner, coverCache: CoverCache, subscriptions: SubscriptionService, bookCache: BookCacheService) {
+fun Route.apiRoutes(
+    database: Database,
+    auth: AuthService,
+    runner: RuleRunner,
+    coverCache: CoverCache,
+    subscriptions: SubscriptionService,
+    bookCache: BookCacheService,
+    edgeTts: EdgeTtsService = EdgeTtsService(),
+) {
     route("/api") {
         get("/sources") {
             if (auth.requireSession(call) == null) return@get
@@ -449,6 +457,68 @@ fun Route.apiRoutes(database: Database, auth: AuthService, runner: RuleRunner, c
             val progress = call.receive<ReadingProgress>()
             if (progress.sourceId.isBlank() || progress.bookUrl.isBlank() || progress.chapterUrl.isBlank() || progress.chapterIndex < 0 || !progress.scrollPosition.isFinite() || progress.scrollPosition !in 0.0..1.0) { call.respond(HttpStatusCode.BadRequest, ApiError("invalid_progress", "阅读进度无效")); return@put }
             call.respond(database.saveProgress(progress))
+        }
+        route("/tts") {
+            get("/voices") {
+                if (auth.requireSession(call) == null) return@get
+                call.respond(edgeTts.listVoices())
+            }
+            post("/speak") {
+                if (auth.requireSession(call) == null) return@post
+                val req = call.receive<TtsSpeakRequest>()
+                val text = req.text.trim()
+                if (text.isEmpty()) {
+                    call.respond(HttpStatusCode.BadRequest, ApiError("invalid_text", "朗读文本不能为空"))
+                    return@post
+                }
+                try {
+                    if (req.engine == "custom" && !req.customUrl.isNullOrBlank()) {
+                        val (contentType, audioBytes) = edgeTts.synthesizeCustom(req)
+                        call.respondBytes(
+                            bytes = audioBytes,
+                            contentType = ContentType.parse(contentType),
+                            status = HttpStatusCode.OK,
+                        )
+                    } else {
+                        val audioBytes = edgeTts.synthesize(
+                            text = text,
+                            voice = req.voice.ifBlank { "zh-CN-XiaoxiaoNeural" },
+                            rate = req.rate,
+                            pitch = req.pitch,
+                        )
+                        call.respondBytes(
+                            bytes = audioBytes,
+                            contentType = ContentType.Audio.MPEG,
+                            status = HttpStatusCode.OK,
+                        )
+                    }
+                } catch (e: Exception) {
+                    call.application.log.warn("TTS synthesis failed for voice={}: {}", req.voice, e.message)
+                    call.respond(HttpStatusCode.InternalServerError, ApiError("tts_failed", e.message ?: "语音合成失败"))
+                }
+            }
+            get("/speak") {
+                if (auth.requireSession(call) == null) return@get
+                val text = call.request.queryParameters["text"]?.trim() ?: ""
+                if (text.isEmpty()) {
+                    call.respond(HttpStatusCode.BadRequest, ApiError("invalid_text", "朗读文本不能为空"))
+                    return@get
+                }
+                val voice = call.request.queryParameters["voice"] ?: "zh-CN-XiaoxiaoNeural"
+                val rate = call.request.queryParameters["rate"]?.toIntOrNull() ?: 0
+                val pitch = call.request.queryParameters["pitch"]?.toIntOrNull() ?: 0
+                try {
+                    val audioBytes = edgeTts.synthesize(text = text, voice = voice, rate = rate, pitch = pitch)
+                    call.respondBytes(
+                        bytes = audioBytes,
+                        contentType = ContentType.Audio.MPEG,
+                        status = HttpStatusCode.OK,
+                    )
+                } catch (e: Exception) {
+                    call.application.log.warn("TTS get speak failed: {}", e.message)
+                    call.respond(HttpStatusCode.InternalServerError, ApiError("tts_failed", e.message ?: "语音合成失败"))
+                }
+            }
         }
     }
 }

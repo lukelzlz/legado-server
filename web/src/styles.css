@@ -1282,17 +1282,17 @@ mark.search-highlight { background: var(--accent-soft); color: var(--accent); fo
   letter-spacing: 0.5px;
 }
 
-.source-login-modal {
-  width: 520px;
-  max-width: 92vw;
-  max-height: 85vh;
+.source-login-dialog, .source-login-modal {
+  width: min(520px, 94vw);
+  max-height: min(85vh, 720px);
   display: flex;
   flex-direction: column;
   background: var(--surface);
-  border-radius: 12px;
+  border-radius: 14px;
   border: 1px solid var(--line);
-  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.2);
+  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.25);
   overflow: hidden;
+  animation: scaleUp .2s cubic-bezier(0.25, 1, 0.5, 1);
 }
 
 .source-login-header {

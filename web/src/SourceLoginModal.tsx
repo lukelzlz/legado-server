@@ -267,10 +267,10 @@ export const SourceLoginModal: React.FC<SourceLoginModalProps> = ({
   }
 
   return (
-    <div className="modal-overlay" onClick={onClose}>
-      <div className="modal-content source-login-modal" onClick={e => e.stopPropagation()}>
+    <div className="modal-backdrop" onClick={onClose}>
+      <div className="source-login-dialog" onClick={e => e.stopPropagation()} role="dialog" aria-modal="true">
         {/* Modal Header */}
-        <div className="modal-header source-login-header">
+        <div className="source-login-header">
           <div className="source-login-title-group">
             <h3 className="source-login-title">登录 {sourceName}</h3>
             {uiResponse?.sourceVariable && (
@@ -338,7 +338,7 @@ export const SourceLoginModal: React.FC<SourceLoginModalProps> = ({
         </div>
 
         {/* Modal Body */}
-        <div className="modal-body source-login-body">
+        <div className="source-login-body">
           {loading ? (
             <div className="login-ui-loading">正在加载登录界面...</div>
           ) : !uiResponse?.loginUi || uiResponse.loginUi.length === 0 ? (
@@ -371,21 +371,21 @@ export const SourceLoginModal: React.FC<SourceLoginModalProps> = ({
 
         {/* View Login Header Subdialog */}
         {headerViewOpen && (
-          <div className="modal-overlay" style={{ zIndex: 1100 }} onClick={() => setHeaderViewOpen(false)}>
-            <div className="modal-content header-view-dialog" onClick={e => e.stopPropagation()}>
-              <div className="modal-header">
+          <div className="modal-backdrop top-layer-modal-backdrop" onClick={() => setHeaderViewOpen(false)}>
+            <div className="header-view-dialog" onClick={e => e.stopPropagation()}>
+              <div className="source-login-header">
                 <h3>已保存的登录头</h3>
                 <button type="button" className="source-login-action-btn" onClick={() => setHeaderViewOpen(false)}>✕</button>
               </div>
-              <div className="modal-body">
+              <div className="source-login-body">
                 <pre className="header-view-code">
                   {uiResponse?.loginHeader ? uiResponse.loginHeader : '(暂无登录头数据)'}
                 </pre>
               </div>
-              <div className="modal-footer">
-                <button type="button" className="btn-secondary" onClick={() => setHeaderViewOpen(false)}>关闭</button>
+              <div style={{ padding: '12px 18px', display: 'flex', justifyContent: 'flex-end', gap: '8px', borderTop: '1px solid var(--line)' }}>
+                <button type="button" className="subtle-button" onClick={() => setHeaderViewOpen(false)}>关闭</button>
                 {uiResponse?.loginHeader && (
-                  <button type="button" className="btn-primary" onClick={handleCopyLoginHeader}>复制登录头</button>
+                  <button type="button" className="primary-button" onClick={handleCopyLoginHeader}>复制登录头</button>
                 )}
               </div>
             </div>

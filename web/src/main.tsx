@@ -524,15 +524,6 @@ function SourcesPage({ selected, onSelect, onSourcesChange }: { selected: Source
             <p>导入、校验与维护你的阅读来源。</p>
           </div>
           <div className="page-title-actions">
-            {selected?.hasLogin && (
-              <button
-                type="button"
-                className="subtle-button source-login-entry-btn"
-                onClick={() => setLoginModalSource(selected)}
-              >
-                登录书源
-              </button>
-            )}
             {selected && (
               <button type="button" className="danger-button" onClick={() => void remove()}>
                 删除书源

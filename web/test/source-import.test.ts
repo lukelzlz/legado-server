@@ -52,3 +52,17 @@ test('Source Import - parseSourceJsonText handles BOM and line-delimited JSON', 
   assert.equal((parsedNd[0] as any).bookSourceName, 'ND1')
   assert.equal((parsedNd[1] as any).bookSourceName, 'ND2')
 })
+
+test('Source Import - parseSourceJsonText parses shareBookSource format with custom URL', () => {
+  const jsonText = JSON.stringify([
+    {
+      bookSourceName: '🍅大灰狼聚合5.8.20(vip完全版)',
+      bookSourceUrl: '大灰狼融合VIP5.0',
+      bookSourceGroup: '大灰狼聚合',
+    }
+  ])
+  const parsed = parseSourceJsonText(jsonText)
+  assert.equal(parsed.length, 1)
+  assert.equal((parsed[0] as any).bookSourceUrl, '大灰狼融合VIP5.0')
+  assert.equal((parsed[0] as any).bookSourceName, '🍅大灰狼聚合5.8.20(vip完全版)')
+})

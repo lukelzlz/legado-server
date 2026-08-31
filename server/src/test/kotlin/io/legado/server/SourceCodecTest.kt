@@ -20,11 +20,23 @@ class SourceCodecTest {
     }
 
     @Test
-    fun `rejects non HTTP source URLs`() {
-        val result = SourceCodec.validate("""{"bookSourceUrl":"file:///etc/passwd"}""")
-
+    fun `rejects missing or empty source URLs`() {
+        val result = SourceCodec.validate("""{"bookSourceName":"无URL"}""")
         assertFalse(result.valid)
-        assertTrue(result.errors.single().contains("HTTP"))
+        assertTrue(result.errors.single().contains("缺少 bookSourceUrl"))
+
+        val emptyResult = SourceCodec.validate("""{"bookSourceUrl":"   "}""")
+        assertFalse(emptyResult.valid)
+        assertTrue(emptyResult.errors.single().contains("不能为空"))
+    }
+
+    @Test
+    fun `parses custom ID source URLs like Chinese names`() {
+        val source = SourceCodec.parse("""{"bookSourceUrl":"大灰狼融合VIP5.0","bookSourceName":"🍅大灰狼聚合5.8.20(vip完全版)","bookSourceGroup":"大灰狼聚合"}""")
+        assertEquals("大灰狼融合VIP5.0", source.id)
+        assertEquals("🍅大灰狼聚合5.8.20(vip完全版)", source.name)
+        assertEquals("大灰狼聚合", source.group)
+        assertTrue(source.enabled)
     }
 
     @Test
@@ -56,11 +68,23 @@ class SourceCodecTest {
     }
 
     @Test
-    fun `auto prepends http or https to protocol relative or bare domain urls`() {
+    fun `auto converts protocol relative urls`() {
         val protoRelative = SourceCodec.parse("""{"bookSourceUrl":"//relative.example.com","bookSourceName":"相对协议"}""")
         assertEquals("https://relative.example.com", protoRelative.id)
+    }
 
-        val bareDomain = SourceCodec.parse("""{"bookSourceUrl":"bare.example.com","bookSourceName":"无协议"}""")
-        assertEquals("http://bare.example.com", bareDomain.id)
+    @Test
+    fun `parses real-world complex shareBookSource JSON`() {
+        val sampleFile = java.io.File("/Users/zhangran/Downloads/shareBookSource(1).json")
+        if (sampleFile.exists()) {
+            val content = sampleFile.readText()
+            val list = kotlinx.serialization.json.Json.parseToJsonElement(content) as kotlinx.serialization.json.JsonArray
+            val first = list[0].toString()
+            val parsed = SourceCodec.parse(first)
+            assertEquals("大灰狼融合VIP5.0", parsed.id)
+            assertEquals("🍅大灰狼聚合5.8.20(vip完全版)", parsed.name)
+            assertEquals("大灰狼聚合", parsed.group)
+            assertTrue(parsed.hasLogin)
+        }
     }
 }

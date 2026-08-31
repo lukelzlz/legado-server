@@ -39,15 +39,13 @@ object SourceCodec {
             ?: throw IllegalArgumentException("书源必须是 JSON 对象")
         val rawUrl = (objectValue.string("bookSourceUrl")
             ?: objectValue.string("sourceUrl")
-            ?: objectValue.string("url"))
+            ?: objectValue.string("url"))?.trim()
             ?: throw IllegalArgumentException("缺少 bookSourceUrl")
+        require(rawUrl.isNotBlank()) { "bookSourceUrl 不能为空" }
         val fixedUrl = when {
-            rawUrl.startsWith("http://", ignoreCase = true) || rawUrl.startsWith("https://", ignoreCase = true) -> rawUrl
             rawUrl.startsWith("//") -> "https:$rawUrl"
-            rawUrl.contains("://") -> rawUrl
-            else -> "http://$rawUrl"
+            else -> rawUrl
         }
-        require(fixedUrl.startsWith("http://", ignoreCase = true) || fixedUrl.startsWith("https://", ignoreCase = true)) { "bookSourceUrl 必须是 HTTP(S) 地址" }
         // Legado source URLs may carry annotations such as `https://host/##@group` or `https://host/#module`.
         // The server only needs the reachable origin; annotations are metadata used by the Android client.
         val url = normalizeSourceUrl(fixedUrl)

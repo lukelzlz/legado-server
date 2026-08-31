@@ -526,7 +526,14 @@ class RuleRunner(private val responseFetcher: ((String) -> String)? = null, inte
         .map { it.trim() }
         .filter { it.isNotBlank() }
         .joinToString("\n\n")
-    private fun String.absolute(base: String): String = try { URI(base).resolve(this).toString() } catch (_: Exception) { this }
+    private fun String.absolute(base: String): String = try {
+        val cleanBase = base.substringBefore("##").substringBefore("#").trim()
+        if (cleanBase.startsWith("http://", ignoreCase = true) || cleanBase.startsWith("https://", ignoreCase = true)) {
+            URI(cleanBase).resolve(this).toString()
+        } else {
+            this
+        }
+    } catch (_: Exception) { this }
     private fun String.objectValue(): JsonObject = json.parseToJsonElement(this).jsonObject
     private fun JsonObject.objectValue(key: String): JsonObject? = get(key)?.jsonObject
     private fun JsonObject.string(key: String): String? = (get(key) as? JsonPrimitive)?.contentOrNull

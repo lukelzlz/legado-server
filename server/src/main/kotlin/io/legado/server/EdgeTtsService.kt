@@ -126,27 +126,32 @@ class EdgeTtsService(
             .buildAsync(URI.create(WSS_URL), listener)
             .get(timeoutSeconds, TimeUnit.SECONDS)
 
-        val configMsg = "Content-Type:application/json; charset=utf-8\r\n" +
-                "Path:speech.config\r\n\r\n" +
-                "{\"context\":{\"synthesis\":{\"audio\":{\"metadataoptions\":{\"sentenceBoundaryEnabled\":\"false\",\"wordBoundaryEnabled\":\"false\"},\"outputFormat\":\"audio-24khz-48kbitrate-mono-mp3\"}}}}"
+        try {
+            val configMsg = "Content-Type:application/json; charset=utf-8\r\n" +
+                    "Path:speech.config\r\n\r\n" +
+                    "{\"context\":{\"synthesis\":{\"audio\":{\"metadataoptions\":{\"sentenceBoundaryEnabled\":\"false\",\"wordBoundaryEnabled\":\"false\"},\"outputFormat\":\"audio-24khz-48kbitrate-mono-mp3\"}}}}"
 
-        ws.sendText(configMsg, true)
+            ws.sendText(configMsg, true)
 
-        val ssmlMsg = "X-RequestId:$requestId\r\n" +
-                "Content-Type:application/ssml+xml\r\n" +
-                "Path:ssml\r\n\r\n" +
-                ssml
+            val ssmlMsg = "X-RequestId:$requestId\r\n" +
+                    "Content-Type:application/ssml+xml\r\n" +
+                    "Path:ssml\r\n\r\n" +
+                    ssml
 
-        ws.sendText(ssmlMsg, true)
+            ws.sendText(ssmlMsg, true)
 
-        val result = future.get(timeoutSeconds, TimeUnit.SECONDS)
-        if (result.isNotEmpty()) {
-            if (cache.size > maxCacheSize) {
-                cache.clear()
+            val result = future.get(timeoutSeconds, TimeUnit.SECONDS)
+            if (result.isNotEmpty()) {
+                if (cache.size > maxCacheSize) {
+                    cache.clear()
+                }
+                cache[cacheKey] = result
             }
-            cache[cacheKey] = result
+            return result
+        } catch (e: Exception) {
+            ws.abort()
+            throw e
         }
-        return result
     }
 
     fun synthesizeCustom(request: TtsSpeakRequest, timeoutSeconds: Long = 15): Pair<String, ByteArray> {

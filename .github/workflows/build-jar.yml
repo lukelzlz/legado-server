@@ -1,0 +1,117 @@
+name: Build Legado Server JAR
+
+on:
+  push:
+    branches: [ main, master ]
+    tags: [ 'v*' ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+  release:
+    types: [ published ]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build & Package JAR
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'npm'
+          cache-dependency-path: 'web/package.json'
+
+      - name: Setup Java JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '21'
+          cache: 'gradle'
+
+      - name: Build Web Client
+        run: |
+          cd web
+          npm ci
+          npm run build
+
+      - name: Run Web & Server Verification Tests
+        run: |
+          npm --prefix web run check
+          npx tsx web/test/run-all.ts
+          chmod +x gradlew
+          ./gradlew :server:test --no-daemon
+
+      - name: Build Standalone Fat JAR & Distribution
+        run: |
+          ./gradlew :server:fatJar :server:distZip --no-daemon
+
+      - name: Prepare Artifacts
+        run: |
+          mkdir -p artifacts
+          cp server/build/libs/legado-server-*-all.jar artifacts/legado-server.jar
+          if ls server/build/distributions/*.zip 1> /dev/null 2>&1; then
+            cp server/build/distributions/*.zip artifacts/legado-server-dist.zip
+          fi
+          echo "=== Built Artifacts ==="
+          ls -lh artifacts/
+
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: legado-server-binaries
+          path: artifacts/*
+          retention-days: 90
+
+      - name: Determine Release Tag & Name
+        id: release_meta
+        if: github.event_name != 'pull_request'
+        run: |
+          if [[ "${{ github.ref }}" == refs/tags/* ]]; then
+            echo "tag_name=${{ github.ref_name }}" >> $GITHUB_OUTPUT
+            echo "release_name=Legado Server ${{ github.ref_name }}" >> $GITHUB_OUTPUT
+          else
+            echo "tag_name=latest" >> $GITHUB_OUTPUT
+            echo "release_name=Legado Server Continuous Build (latest)" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Auto Publish / Update GitHub Release
+        if: github.event_name != 'pull_request'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.release_meta.outputs.tag_name }}
+          name: ${{ steps.release_meta.outputs.release_name }}
+          body: |
+            ## 🚀 Legado Server 自动构建发布
+            
+            本 Release 由 GitHub Actions 自动化流水线随 Commit 自动编译打包生成：
+            - **Commit**: [${{ github.sha }}](https://github.com/${{ github.repository }}/commit/${{ github.sha }})
+            - **Branch / Ref**: `${{ github.ref_name }}`
+            
+            ### 📦 二进制产物下载
+            - **`legado-server.jar`**：开箱即用独立 Fat JAR（内嵌完整 Web 前端与后端服务，支持单文件运行）
+            - **`legado-server-dist.zip`**：标准分发包（含 `bin/` 启动脚本与依赖库）
+            
+            ### ☕ 快速启动
+            ```bash
+            # 极简启动 (Java 17+)
+            java -jar legado-server.jar
+            
+            # 自定义端口与数据目录
+            LEGADO_PORT=8080 LEGADO_DATA_DIR=./ls_data ADMIN_PASSWORD='your_password' java -jar legado-server.jar
+            ```
+          draft: false
+          prerelease: false
+          make_latest: true
+          files: |
+            artifacts/legado-server.jar
+            artifacts/legado-server-dist.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -42,6 +42,32 @@ application {
     mainClass = 'io.legado.server.ApplicationKt'
 }
 
+tasks.register('fatJar', Jar) {
+    archiveBaseName.set('legado-server')
+    archiveClassifier.set('all')
+    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+    manifest {
+        attributes(
+            'Main-Class': 'io.legado.server.ApplicationKt',
+            'Implementation-Title': 'Legado Server',
+            'Implementation-Version': project.version
+        )
+    }
+    from {
+        configurations.runtimeClasspath.collect { it.isDirectory() ? it : zipTree(it) }
+    }
+    with tasks.jar
+}
+
+processResources {
+    duplicatesStrategy = DuplicatesStrategy.INCLUDE
+    if (file("${rootProject.projectDir}/web/dist").exists()) {
+        from("${rootProject.projectDir}/web/dist") {
+            into("static")
+        }
+    }
+}
+
 dependencies {
     implementation "io.ktor:ktor-server-cio:3.4.3"
     implementation "io.ktor:ktor-server-core:3.4.3"

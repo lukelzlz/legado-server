@@ -103,6 +103,7 @@ AI 与人类协作时必须明确当前达到的完成度阶梯，严禁混淆�
 | 2026-08-29 | Hist | 跨书源封面与正文融合、书架空值判定与搜索中断修复 | [`docs/sessions/SESSION-HIST-003-multi-source-fusion-and-shelf-null-handling.md`](file:///Users/zhangran/Documents/antigravity/joyful-galileo/docs/sessions/SESSION-HIST-003-multi-source-fusion-and-shelf-null-handling.md) | Pushed |
 | 2026-08-30 | Init | 初始化标准文档体系与历史会话挖掘继承 (`/doc-init`) | [`docs/`](file:///Users/zhangran/Documents/antigravity/joyful-galileo/docs/) | Accepted |
 | 2026-08-30 | Fix | 统一登录界面品牌 Logo 与设计语言微调 | - | Pushed |
+| 2026-08-31 | Feat | 配置 GitHub Actions 自动编译与分发可执行 JAR 及分发包 | - | Pushed |
 
 ---
 

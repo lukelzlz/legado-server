@@ -13,6 +13,7 @@
 [![Vite](https://img.shields.io/badge/Vite-6.3.5-646CFF?logo=vite&logoColor=white)](https://vitejs.dev/)
 [![SQLite](https://img.shields.io/badge/SQLite-WAL_Mode-003B57?logo=sqlite&logoColor=white)](https://sqlite.org/)
 [![Docker](https://img.shields.io/badge/Docker-Ready-2496ED?logo=docker&logoColor=white)](https://www.docker.com/)
+[![Build JAR](https://github.com/lukelzlz/legado-server/actions/workflows/build-jar.yml/badge.svg)](https://github.com/lukelzlz/legado-server/actions/workflows/build-jar.yml)
 [![License](https://img.shields.io/badge/License-GPL--3.0-blue.svg)](LICENSE)
 
 </div>
@@ -211,7 +212,38 @@ docker compose up -d
 
 ---
 
-### 🛠️ 方式三：本地源码编译与开发运行
+### ☕ 方式三：独立可执行 JAR 运行（无需 Docker）
+
+本项目配置了 **GitHub Actions 自动化流水线**，每次代码推送或发布 Release 时均会自动构建开箱即用的 Standalone Fat JAR（内嵌完整 Web 前端与后端引擎）。
+
+#### 1. 获取 JAR 文件
+- **GitHub 自动构建产物**：前往仓库的 **Actions** 页面下载最新构建生成的 `legado-server-binaries` Artifacts，或在 **Releases** 页面下载 `legado-server.jar`。
+- **本地直接编译**：
+  ```bash
+  # 编译 Web 前端与服务端独立 JAR
+  npm --prefix web run build
+  ./gradlew :server:fatJar
+  # 生成产物位于 server/build/libs/legado-server-0.1.0-all.jar
+  ```
+
+#### 2. 启动服务
+运行环境需安装 **Java 17+**（推荐 JDK 21）：
+```bash
+# 极简启动（默认端口 8080，数据持久化在 ./data）
+java -jar legado-server.jar
+
+# 自定义端口、数据目录与管理员密码
+LEGADO_PORT=8080 LEGADO_DATA_DIR=./ls_data ADMIN_PASSWORD='your_password_at_least_12_chars' java -jar legado-server.jar
+```
+
+#### 3. CLI 工具（如命令行重置管理员密码）
+```bash
+java -jar legado-server.jar reset-password 'new_password_at_least_12_chars'
+```
+
+---
+
+### 🛠️ 方式四：本地源码编译与开发运行
 
 #### 环境要求
 - **Java**: JDK 17+（推荐 JDK 21）

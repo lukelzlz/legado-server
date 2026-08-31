@@ -89,6 +89,7 @@ AI 与人类协作时必须明确当前达到的完成度阶梯，严禁混淆�
 | PROPOSAL-003 | 整书离线缓存、断点续传与跨书源书架持久化 | [`docs/proposals/PROPOSAL-003-offline-book-caching-and-breakpoint-resume.md`](file:///Users/zhangran/Documents/antigravity/joyful-galileo/docs/proposals/PROPOSAL-003-offline-book-caching-and-breakpoint-resume.md) | Implemented |
 | PROPOSAL-004 | 现代化 Web 阅读器、超大目录虚拟化与双栏宽屏排版 | [`docs/proposals/PROPOSAL-004-modern-web-reader-and-toc-virtualization.md`](file:///Users/zhangran/Documents/antigravity/joyful-galileo/docs/proposals/PROPOSAL-004-modern-web-reader-and-toc-virtualization.md) | Implemented |
 | PROPOSAL-005 | 支持书源登录、凭据持久化与动态 LoginUI 交互 | [`docs/proposals/PROPOSAL-005-book-source-login-and-credential-storage.md`](file:///Users/zhangran/Documents/antigravity/joyful-galileo/docs/proposals/PROPOSAL-005-book-source-login-and-credential-storage.md) | Implemented |
+| PROPOSAL-006 | 现代化 TTS 朗读引擎与沉浸式听书体验 | [`docs/proposals/PROPOSAL-006-tts-engine-and-immersive-reading-experience.md`](file:///Users/zhangran/Documents/antigravity/joyful-galileo/docs/proposals/PROPOSAL-006-tts-engine-and-immersive-reading-experience.md) | Draft |
 
 ### 架构决策记录 (ADR)
 | 编号 | 决策标题 | 关联文档 | 状态 |
@@ -98,6 +99,7 @@ AI 与人类协作时必须明确当前达到的完成度阶梯，严禁混淆�
 | ADR-003 | 开书级联请求消除：单书源秒开 + 候补源懒加载 + TOC 虚拟滚动 | [`docs/decisions/ADR-003-lazy-candidate-loading-and-toc-virtualization.md`](file:///Users/zhangran/Documents/antigravity/joyful-galileo/docs/decisions/ADR-003-lazy-candidate-loading-and-toc-virtualization.md) | Accepted |
 | ADR-004 | 阅读器跨章反向翻页定位状态机与异步排版守卫 | [`docs/decisions/ADR-004-cross-chapter-navigation-state-machine.md`](file:///Users/zhangran/Documents/antigravity/joyful-galileo/docs/decisions/ADR-004-cross-chapter-navigation-state-machine.md) | Accepted |
 | ADR-005 | 书源登录鉴权、动态 LoginUI 驱动与凭据状态持久化 | [`docs/decisions/ADR-005-book-source-login-ui-and-session-state.md`](file:///Users/zhangran/Documents/antigravity/joyful-galileo/docs/decisions/ADR-005-book-source-login-ui-and-session-state.md) | Accepted |
+| ADR-006 | 双模式 TTS 引擎、分片预缓冲与视口高亮联动架构 | [`docs/decisions/ADR-006-dual-tts-engine-and-audio-streaming-architecture.md`](file:///Users/zhangran/Documents/antigravity/joyful-galileo/docs/decisions/ADR-006-dual-tts-engine-and-audio-streaming-architecture.md) | Accepted |
 
 ### 工作记忆与历史推演归档 (Sessions Chronicle)
 | 日期 / ID | 类型 | 标题 / 议题 | 关联文档 | 状态 |
@@ -110,7 +112,8 @@ AI 与人类协作时必须明确当前达到的完成度阶梯，严禁混淆�
 | 2026-08-31 | Feat | 配置 GitHub Actions 自动编译与分发可执行 JAR 及分发包 | - | Pushed |
 | 2026-08-31 | Feat | 支持书源登录鉴权、动态 LoginUI 与凭据状态持久化 | [`docs/sessions/SESSION-HIST-004-book-source-login-implementation.md`](file:///Users/zhangran/Documents/antigravity/joyful-galileo/docs/sessions/SESSION-HIST-004-book-source-login-implementation.md) | Pushed |
 | 2026-08-31 | Fix | 修复书源导入解析（支持自定义标识/BOM/外层包装），优化交互反馈 | - | Pushed |
-| 2026-08-31 | Feat | 书源全场景凭据获取、Chrome扩展穿透同步与直接填入交互 | [`docs/sessions/SESSION-HIST-005-source-login-and-cookie-extension.md`](file:///Users/zhangran/Documents/antigravity/joyful-galileo/docs/sessions/SESSION-HIST-005-source-login-and-cookie-extension.md) | Deployed |
+| 2026-08-31 | Feat | 书源全场景凭据获取、Chrome扩展穿透同步与直接填入交互 | [`docs/sessions/SESSION-HIST-005-source-login-and-cookie-extension.md`](file:///Users/zhangran/Documents/antigravity/joyful-galileo/docs/sessions/SESSION-HIST-005-source-login-and-cookie-extension.md) | Pushed |
+| 2026-08-31 | Fix | 修复 Actions Release 滚动发布时 Tag 未同步移动到最新 Commit 的问题 | - | Pushed |
 
 ---
 

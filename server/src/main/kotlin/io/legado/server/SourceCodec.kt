@@ -27,7 +27,7 @@ object SourceCodec {
 
     fun validate(text: String): ValidateResponse = try {
         parse(text)
-        ValidateResponse(true, emptyList(), listOf("首版仅执行声明式规则及受限 JS API；Android WebView 登录不执行"))
+        ValidateResponse(true, emptyList(), emptyList())
     } catch (error: IllegalArgumentException) {
         ValidateResponse(false, listOf(error.message ?: "JSON 无效"), emptyList())
     }

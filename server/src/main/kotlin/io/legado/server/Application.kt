@@ -56,7 +56,8 @@ fun Application.legadoApplication(config: ServerConfig = ServerConfig.fromEnviro
     routing {
         get("/healthz") { call.respond(mapOf("status" to "ok")) }
         authRoutes(auth)
-        apiRoutes(database, auth, runner, CoverCache(config.coverCacheDirectory), subscriptions, bookCache)
+        val edgeTts = EdgeTtsService()
+        apiRoutes(database, auth, runner, CoverCache(config.coverCacheDirectory), subscriptions, bookCache, edgeTts)
         staticWeb()
     }
 }

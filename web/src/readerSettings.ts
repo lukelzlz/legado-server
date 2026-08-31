@@ -2,6 +2,8 @@ export type ReaderTheme = 'light' | 'paper' | 'dark'
 export type ReaderFont = 'song' | 'hei' | 'kai' | 'fangsong' | 'system'
 export type ReaderPageMode = 'scroll' | 'paginate'
 export type ReaderColumnMode = 'auto' | 'single' | 'double'
+export type TtsEngineType = 'webSpeech' | 'edge' | 'custom'
+
 export type ReaderSettings = {
   theme: ReaderTheme
   fontSize: number
@@ -14,6 +16,16 @@ export type ReaderSettings = {
   maxWidth: number
   columnMode: ReaderColumnMode
   sidebarPinned: boolean
+  ttsEngine: TtsEngineType
+  ttsVoice: string
+  ttsSpeed: number
+  ttsPitch: number
+  ttsAutoNextChapter: boolean
+  ttsFilterSymbols: boolean
+  ttsCustomUrl?: string
+  ttsCustomHeader?: string
+  ttsCustomBody?: string
+  ttsCustomMethod?: string
 }
 
 const storageKey = 'legado-reader-settings-v2'
@@ -29,6 +41,16 @@ export const defaultReaderSettings: ReaderSettings = {
   maxWidth: 860,
   columnMode: 'auto',
   sidebarPinned: false,
+  ttsEngine: 'edge',
+  ttsVoice: 'zh-CN-XiaoxiaoNeural',
+  ttsSpeed: 1.0,
+  ttsPitch: 1.0,
+  ttsAutoNextChapter: true,
+  ttsFilterSymbols: true,
+  ttsCustomUrl: '',
+  ttsCustomHeader: '',
+  ttsCustomBody: '',
+  ttsCustomMethod: 'GET',
 }
 
 export function clampScrollPosition(value: number): number {
@@ -60,6 +82,11 @@ export function parseMaxWidth(width: unknown): number {
   return defaultReaderSettings.maxWidth
 }
 
+export function parseTtsEngine(engine: unknown): TtsEngineType {
+  if (engine === 'webSpeech' || engine === 'edge' || engine === 'custom') return engine
+  return defaultReaderSettings.ttsEngine
+}
+
 export function loadReaderSettings(): ReaderSettings {
   try {
     const raw = window.localStorage.getItem(storageKey) || window.localStorage.getItem('legado-reader-settings-v1')
@@ -76,6 +103,16 @@ export function loadReaderSettings(): ReaderSettings {
       maxWidth: parseMaxWidth(saved.maxWidth),
       columnMode: parseColumnMode(saved.columnMode),
       sidebarPinned: typeof saved.sidebarPinned === 'boolean' ? saved.sidebarPinned : defaultReaderSettings.sidebarPinned,
+      ttsEngine: parseTtsEngine(saved.ttsEngine),
+      ttsVoice: typeof saved.ttsVoice === 'string' && saved.ttsVoice.trim() ? saved.ttsVoice : defaultReaderSettings.ttsVoice,
+      ttsSpeed: typeof saved.ttsSpeed === 'number' && Number.isFinite(saved.ttsSpeed) ? Math.min(3.0, Math.max(0.5, saved.ttsSpeed)) : defaultReaderSettings.ttsSpeed,
+      ttsPitch: typeof saved.ttsPitch === 'number' && Number.isFinite(saved.ttsPitch) ? Math.min(1.5, Math.max(0.5, saved.ttsPitch)) : defaultReaderSettings.ttsPitch,
+      ttsAutoNextChapter: typeof saved.ttsAutoNextChapter === 'boolean' ? saved.ttsAutoNextChapter : defaultReaderSettings.ttsAutoNextChapter,
+      ttsFilterSymbols: typeof saved.ttsFilterSymbols === 'boolean' ? saved.ttsFilterSymbols : defaultReaderSettings.ttsFilterSymbols,
+      ttsCustomUrl: typeof saved.ttsCustomUrl === 'string' ? saved.ttsCustomUrl : '',
+      ttsCustomHeader: typeof saved.ttsCustomHeader === 'string' ? saved.ttsCustomHeader : '',
+      ttsCustomBody: typeof saved.ttsCustomBody === 'string' ? saved.ttsCustomBody : '',
+      ttsCustomMethod: saved.ttsCustomMethod === 'POST' ? 'POST' : 'GET',
     }
   } catch {
     return defaultReaderSettings

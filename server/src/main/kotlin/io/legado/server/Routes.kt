@@ -120,6 +120,38 @@ fun Route.apiRoutes(database: Database, auth: AuthService, runner: RuleRunner, c
                 database.removeSourceLoginInfo(sourceId)
                 call.respond(mapOf("ok" to true))
             }
+            post("/login-header") {
+                if (auth.requireSession(call, true) == null) return@post
+                val sourceId = call.parameters["id"]!!
+                val req = call.receive<SourceLoginHeaderUpdateRequest>()
+                database.saveSourceLoginHeader(sourceId, req.loginHeader)
+                call.respond(mapOf("ok" to true))
+            }
+            options("/login-cookie") {
+                call.response.headers.append(HttpHeaders.AccessControlAllowOrigin, "*")
+                call.response.headers.append(HttpHeaders.AccessControlAllowMethods, "POST, OPTIONS")
+                call.response.headers.append(HttpHeaders.AccessControlAllowHeaders, "Content-Type, X-CSRF-Token, Authorization")
+                call.respond(HttpStatusCode.OK)
+            }
+            post("/login-cookie") {
+                call.response.headers.append(HttpHeaders.AccessControlAllowOrigin, "*")
+                val sourceId = call.parameters["id"]!!
+                val source = database.getSource(sourceId) ?: run {
+                    call.respond(HttpStatusCode.NotFound, ApiError("not_found", "书源不存在"))
+                    return@post
+                }
+                val req = call.receive<SourceLoginCookieUpdateRequest>()
+                val rawCookie = req.cookie.trim()
+                if (rawCookie.isNotEmpty()) {
+                    database.setSourceCookie(sourceId, req.url ?: sourceId, rawCookie)
+                    val state = database.getSourceLoginState(sourceId)
+                    if (state?.loginHeader.isNullOrBlank()) {
+                        val headerMap = mapOf("Cookie" to rawCookie)
+                        database.saveSourceLoginHeader(sourceId, Json.encodeToString(headerMap))
+                    }
+                }
+                call.respond(mapOf("ok" to true, "message" to "Cookie 同步成功"))
+            }
             delete("/login-header") {
                 if (auth.requireSession(call, true) == null) return@delete
                 val sourceId = call.parameters["id"]!!

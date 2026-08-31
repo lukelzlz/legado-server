@@ -795,14 +795,69 @@ class Database(private val path: String) : Closeable, AutoCloseable {
         }
     }
 
-    private fun parseCookieString(cookieStr: String): Map<String, String> {
+    fun parseCookieString(cookieStr: String): Map<String, String> {
+        val trimmed = cookieStr.trim()
+        if (trimmed.isEmpty()) return emptyMap()
+
+        // 1. JSON Array (e.g. Cookie-Editor / EditThisCookie export format)
+        if (trimmed.startsWith("[") && trimmed.endsWith("]")) {
+            val fromArray = runCatching {
+                val array = Json.parseToJsonElement(trimmed).jsonArray
+                val map = linkedMapOf<String, String>()
+                for (item in array) {
+                    val obj = item.jsonObject
+                    val name = (obj["name"] as? JsonPrimitive)?.contentOrNull
+                    val value = (obj["value"] as? JsonPrimitive)?.contentOrNull
+                    if (!name.isNullOrBlank() && value != null) {
+                        map[name] = value
+                    }
+                }
+                map
+            }.getOrNull()
+            if (!fromArray.isNullOrEmpty()) return fromArray
+        }
+
+        // 2. JSON Object (e.g. {"Cookie": "..."} or {"token": "..."})
+        if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
+            val fromObj = runCatching {
+                val obj = Json.parseToJsonElement(trimmed).jsonObject
+                if (obj.containsKey("Cookie") || obj.containsKey("cookie")) {
+                    val c = (obj["Cookie"] ?: obj["cookie"])?.jsonPrimitive?.contentOrNull
+                    if (!c.isNullOrBlank()) return parseCookieString(c)
+                }
+                val map = linkedMapOf<String, String>()
+                for ((k, v) in obj) {
+                    val value = (v as? JsonPrimitive)?.contentOrNull ?: v.toString()
+                    if (k.isNotBlank()) map[k] = value
+                }
+                map
+            }.getOrNull()
+            if (!fromObj.isNullOrEmpty()) return fromObj
+        }
+
+        // 3. Netscape format lines (tab separated)
+        val lines = trimmed.lines().map { it.trim() }.filter { it.isNotEmpty() && !it.startsWith("#") }
+        if (lines.isNotEmpty() && lines.any { it.contains("\t") }) {
+            val map = linkedMapOf<String, String>()
+            for (line in lines) {
+                val parts = line.split("\t")
+                if (parts.size >= 7) {
+                    val name = parts[5].trim()
+                    val value = parts[6].trim()
+                    if (name.isNotEmpty()) map[name] = value
+                }
+            }
+            if (map.isNotEmpty()) return map
+        }
+
+        // 4. Standard key=value; key2=value2 format
         val result = linkedMapOf<String, String>()
-        cookieStr.split(';').forEach { part ->
-            val trimmed = part.trim()
-            val eq = trimmed.indexOf('=')
+        trimmed.split(';').forEach { part ->
+            val p = part.trim()
+            val eq = p.indexOf('=')
             if (eq > 0) {
-                val key = trimmed.substring(0, eq).trim()
-                val value = trimmed.substring(eq + 1).trim()
+                val key = p.substring(0, eq).trim()
+                val value = p.substring(eq + 1).trim()
                 result[key] = value
             }
         }

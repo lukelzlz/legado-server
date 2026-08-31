@@ -1588,3 +1588,23 @@ mark.search-highlight { background: var(--accent-soft); color: var(--accent); fo
   color: var(--text);
 }
 
+.source-login-textarea {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 10px 12px;
+  font-size: 13px;
+  line-height: 1.5;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface-input, var(--surface));
+  color: var(--text);
+  resize: vertical;
+  font-family: inherit;
+}
+
+.source-login-textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-soft);
+}
+

@@ -95,6 +95,8 @@ export const api = {
   updateSubscriptions: () => request<{ updated: number; failed: number }>('/api/subscriptions/update', { method: 'POST' }),
   getSourceLoginUi: (sourceId: string) => request<SourceLoginUiResponse>(`/api/sources/${encodeURIComponent(sourceId)}/login-ui`),
   saveSourceLoginInfo: (sourceId: string, loginInfo: Record<string, string>) => request<{ ok: boolean }>(`/api/sources/${encodeURIComponent(sourceId)}/login-info`, { method: 'POST', body: JSON.stringify({ loginInfo }) }),
+  saveSourceLoginHeader: (sourceId: string, loginHeader: string) => request<{ ok: boolean }>(`/api/sources/${encodeURIComponent(sourceId)}/login-header`, { method: 'POST', body: JSON.stringify({ loginHeader }) }),
+  saveSourceCookie: (sourceId: string, cookie: string, url?: string) => request<{ ok: boolean; message?: string }>(`/api/sources/${encodeURIComponent(sourceId)}/login-cookie`, { method: 'POST', body: JSON.stringify({ cookie, url }) }),
   clearSourceLoginInfo: (sourceId: string) => request<{ ok: boolean }>(`/api/sources/${encodeURIComponent(sourceId)}/login-info`, { method: 'DELETE' }),
   clearSourceLoginHeader: (sourceId: string) => request<{ ok: boolean }>(`/api/sources/${encodeURIComponent(sourceId)}/login-header`, { method: 'DELETE' }),
   executeSourceLoginAction: (sourceId: string, action: string, loginData: Record<string, string>, isLongClick = false) => request<SourceLoginActionResult>(`/api/sources/${encodeURIComponent(sourceId)}/login-action`, { method: 'POST', body: JSON.stringify({ action, loginData, isLongClick }) }),

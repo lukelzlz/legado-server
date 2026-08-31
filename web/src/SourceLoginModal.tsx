@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react'
+import React, { useState, useEffect, useCallback, useMemo } from 'react'
 import { api, SourceLoginUiItem, SourceLoginUiResponse } from './api'
 
 interface SourceLoginModalProps {
@@ -19,7 +19,11 @@ export const SourceLoginModal: React.FC<SourceLoginModalProps> = ({
   const [uiResponse, setUiResponse] = useState<SourceLoginUiResponse | null>(null)
   const [formData, setFormData] = useState<Record<string, string>>({})
   const [menuOpen, setMenuOpen] = useState(false)
-  const [headerViewOpen, setHeaderViewOpen] = useState(false)
+  const [headerEditOpen, setHeaderEditOpen] = useState(false)
+  const [headerEditText, setHeaderEditText] = useState('')
+  const [cookieModalOpen, setCookieModalOpen] = useState(false)
+  const [cookieInputText, setCookieInputText] = useState('')
+  const [bookmarkletModalOpen, setBookmarkletModalOpen] = useState(false)
   const [showPasswords, setShowPasswords] = useState<Record<string, boolean>>({})
 
   const loadLoginUi = useCallback(async () => {
@@ -27,6 +31,7 @@ export const SourceLoginModal: React.FC<SourceLoginModalProps> = ({
       setLoading(true)
       const res = await api.getSourceLoginUi(sourceId)
       setUiResponse(res)
+      setHeaderEditText(res.loginHeader || '')
       const initialData: Record<string, string> = { ...(res.loginInfo || {}) }
       res.loginUi.forEach(item => {
         const key = item.key || item.name
@@ -45,6 +50,12 @@ export const SourceLoginModal: React.FC<SourceLoginModalProps> = ({
   useEffect(() => {
     loadLoginUi()
   }, [loadLoginUi])
+
+  const bookmarkletCode = useMemo(() => {
+    const serverOrigin = window.location.origin
+    const targetSourceId = encodeURIComponent(sourceId)
+    return `javascript:(function(){var c=document.cookie;var u=location.href;if(!c){alert('⚠️ 当前页面未检测到任何 Cookie！');return;}fetch('${serverOrigin}/api/sources/${targetSourceId}/login-cookie',{method:'POST',mode:'cors',headers:{'Content-Type':'application/json'},body:JSON.stringify({cookie:c,url:u})}).then(function(r){return r.json()}).then(function(d){alert('✅ 成功将当前站点的 Cookie 同步至阅读服务器！')}).catch(function(e){alert('❌ 同步失败: '+e)});})();`
+  }, [sourceId])
 
   const handleInputChange = (key: string, val: string) => {
     setFormData(prev => ({ ...prev, [key]: val }))
@@ -127,6 +138,39 @@ export const SourceLoginModal: React.FC<SourceLoginModalProps> = ({
     setMenuOpen(false)
   }
 
+  const handleSaveHeader = async () => {
+    try {
+      setExecuting(true)
+      await api.saveSourceLoginHeader(sourceId, headerEditText.trim())
+      onToast('登录头已成功更新并保存', 'success')
+      setHeaderEditOpen(false)
+      await loadLoginUi()
+    } catch (err: any) {
+      onToast(err.message || '保存登录头失败', 'error')
+    } finally {
+      setExecuting(false)
+    }
+  }
+
+  const handleSaveCookie = async () => {
+    if (!cookieInputText.trim()) {
+      onToast('请输入 Cookie 内容', 'error')
+      return
+    }
+    try {
+      setExecuting(true)
+      await api.saveSourceCookie(sourceId, cookieInputText.trim())
+      onToast('Cookie 已成功保存并关联到书源', 'success')
+      setCookieModalOpen(false)
+      setCookieInputText('')
+      await loadLoginUi()
+    } catch (err: any) {
+      onToast(err.message || '保存 Cookie 失败', 'error')
+    } finally {
+      setExecuting(false)
+    }
+  }
+
   const handleDeleteLoginHeader = async () => {
     if (!confirm('确定删除此书源保存的登录头吗？')) return
     try {
@@ -151,13 +195,17 @@ export const SourceLoginModal: React.FC<SourceLoginModalProps> = ({
     }
   }
 
+  const copyBookmarklet = async () => {
+    await navigator.clipboard.writeText(bookmarkletCode)
+    onToast('一键抓取书签代码已复制到剪贴板', 'success')
+  }
+
   const renderControl = (item: SourceLoginUiItem, index: number) => {
     const key = item.key || item.name
     const label = item.viewName || item.name
     const type = (item.type || 'text').toLowerCase()
     const value = formData[key] ?? ''
 
-    // Flex style computation
     const basisPercent = item.style?.layout_flexBasisPercent ?? -1
     let flexStyle: React.CSSProperties = {}
     if (basisPercent > 0) {
@@ -178,7 +226,7 @@ export const SourceLoginModal: React.FC<SourceLoginModalProps> = ({
 
     if (type === 'button') {
       return (
-        <div key={`${key}-${index}`} style={flexStyle} className="login-ui-item-btn-container">
+        <div key={`${key}-${index}`} style={flexStyle} className="login-ui-item-btn">
           <button
             type="button"
             className="source-login-btn primary-subtle"
@@ -237,7 +285,6 @@ export const SourceLoginModal: React.FC<SourceLoginModalProps> = ({
       )
     }
 
-    // Default: text / password
     const isPassword = type === 'password'
     const isShowing = showPasswords[key]
     return (
@@ -269,7 +316,6 @@ export const SourceLoginModal: React.FC<SourceLoginModalProps> = ({
   return (
     <div className="modal-backdrop" onClick={onClose}>
       <div className="source-login-dialog" onClick={e => e.stopPropagation()} role="dialog" aria-modal="true">
-        {/* Modal Header */}
         <div className="source-login-header">
           <div className="source-login-title-group">
             <h3 className="source-login-title">登录 {sourceName}</h3>
@@ -280,7 +326,6 @@ export const SourceLoginModal: React.FC<SourceLoginModalProps> = ({
             )}
           </div>
           <div className="source-login-actions">
-            {/* Save & Run Login Checkmark */}
             <button
               type="button"
               className="source-login-action-btn primary"
@@ -290,8 +335,6 @@ export const SourceLoginModal: React.FC<SourceLoginModalProps> = ({
             >
               ✓
             </button>
-
-            {/* Three Dots More Menu */}
             <div className="source-login-menu-container">
               <button
                 type="button"
@@ -306,26 +349,45 @@ export const SourceLoginModal: React.FC<SourceLoginModalProps> = ({
                   <button
                     type="button"
                     onClick={() => {
-                      setHeaderViewOpen(true)
+                      setHeaderEditText(uiResponse?.loginHeader || '')
+                      setHeaderEditOpen(true)
                       setMenuOpen(false)
                     }}
                   >
-                    查看登录头
+                    ✏️ 填入 / 查看登录头
                   </button>
-                  <button type="button" onClick={handleCopyLoginHeader}>
-                    复制登录头
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setCookieModalOpen(true)
+                      setMenuOpen(false)
+                    }}
+                  >
+                    🍪 快捷填入 Cookie
                   </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setBookmarkletModalOpen(true)
+                      setMenuOpen(false)
+                    }}
+                  >
+                    ⚡ 一键同步书签 (Bookmarklet)
+                  </button>
+                  {uiResponse?.loginHeader && (
+                    <button type="button" onClick={handleCopyLoginHeader}>
+                      📋 复制登录头
+                    </button>
+                  )}
                   <button type="button" className="danger-text" onClick={handleDeleteLoginHeader}>
-                    删除登录头
+                    🗑️ 删除登录头
                   </button>
                   <button type="button" className="danger-text" onClick={handleClearLoginInfo}>
-                    清空登录信息
+                    🧹 清空登录信息
                   </button>
                 </div>
               )}
             </div>
-
-            {/* Close Modal */}
             <button
               type="button"
               className="source-login-action-btn"
@@ -337,7 +399,6 @@ export const SourceLoginModal: React.FC<SourceLoginModalProps> = ({
           </div>
         </div>
 
-        {/* Modal Body */}
         <div className="source-login-body">
           {loading ? (
             <div className="login-ui-loading">正在加载登录界面...</div>
@@ -345,14 +406,30 @@ export const SourceLoginModal: React.FC<SourceLoginModalProps> = ({
             <div className="login-ui-empty">
               <p>此书源未定义可视化的登录表单。</p>
               {uiResponse?.loginUrl && (
-                <div style={{ marginTop: '16px' }}>
+                <div style={{ marginTop: '16px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
                   <button
                     type="button"
                     className="source-login-btn primary"
                     onClick={() => window.open(uiResponse.loginUrl, '_blank', 'noopener,noreferrer')}
                   >
-                    在网页中打开登录页
+                    🌐 在新标签页中打开登录页
                   </button>
+                  <div style={{ display: 'flex', gap: '8px', justifyContent: 'center' }}>
+                    <button
+                      type="button"
+                      className="subtle-button"
+                      onClick={() => setCookieModalOpen(true)}
+                    >
+                      🍪 填入 Cookie
+                    </button>
+                    <button
+                      type="button"
+                      className="subtle-button"
+                      onClick={() => setBookmarkletModalOpen(true)}
+                    >
+                      ⚡ 一键同步书签
+                    </button>
+                  </div>
                 </div>
               )}
             </div>
@@ -369,24 +446,92 @@ export const SourceLoginModal: React.FC<SourceLoginModalProps> = ({
           )}
         </div>
 
-        {/* View Login Header Subdialog */}
-        {headerViewOpen && (
-          <div className="modal-backdrop top-layer-modal-backdrop" onClick={() => setHeaderViewOpen(false)}>
-            <div className="header-view-dialog" onClick={e => e.stopPropagation()}>
+        {headerEditOpen && (
+          <div className="modal-backdrop top-layer-modal-backdrop" onClick={() => setHeaderEditOpen(false)}>
+            <div className="source-login-dialog" style={{ width: 'min(500px, 94vw)' }} onClick={e => e.stopPropagation()}>
               <div className="source-login-header">
-                <h3>已保存的登录头</h3>
-                <button type="button" className="source-login-action-btn" onClick={() => setHeaderViewOpen(false)}>✕</button>
+                <h3>编辑 / 填入登录头 (Login Header)</h3>
+                <button type="button" className="source-login-action-btn" onClick={() => setHeaderEditOpen(false)}>✕</button>
               </div>
-              <div className="source-login-body">
-                <pre className="header-view-code">
-                  {uiResponse?.loginHeader ? uiResponse.loginHeader : '(暂无登录头数据)'}
-                </pre>
+              <div className="source-login-body" style={{ padding: '16px' }}>
+                <p style={{ margin: '0 0 10px', fontSize: '12px', color: 'var(--muted)' }}>
+                  支持 JSON 格式（如 <code>{"Authorization": "Bearer ...", "Cookie": "..."}</code>）或直接文本。
+                </p>
+                <textarea
+                  className="source-login-textarea"
+                  rows={6}
+                  value={headerEditText}
+                  placeholder='{"Authorization": "Bearer ...", "Cookie": "..."}'
+                  onChange={e => setHeaderEditText(e.target.value)}
+                />
               </div>
               <div style={{ padding: '12px 18px', display: 'flex', justifyContent: 'flex-end', gap: '8px', borderTop: '1px solid var(--line)' }}>
-                <button type="button" className="subtle-button" onClick={() => setHeaderViewOpen(false)}>关闭</button>
-                {uiResponse?.loginHeader && (
-                  <button type="button" className="primary-button" onClick={handleCopyLoginHeader}>复制登录头</button>
-                )}
+                <button type="button" className="subtle-button" onClick={() => setHeaderEditOpen(false)}>取消</button>
+                <button type="button" className="primary-button" disabled={executing} onClick={handleSaveHeader}>保存登录头</button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {cookieModalOpen && (
+          <div className="modal-backdrop top-layer-modal-backdrop" onClick={() => setCookieModalOpen(false)}>
+            <div className="source-login-dialog" style={{ width: 'min(500px, 94vw)' }} onClick={e => e.stopPropagation()}>
+              <div className="source-login-header">
+                <h3>快捷填入 Cookie</h3>
+                <button type="button" className="source-login-action-btn" onClick={() => setCookieModalOpen(false)}>✕</button>
+              </div>
+              <div className="source-login-body" style={{ padding: '16px' }}>
+                <p style={{ margin: '0 0 10px', fontSize: '12px', color: 'var(--muted)' }}>
+                  将目标网站登录后的 Cookie 字符串粘贴在下方（服务端将自动按域名持久化合并）：
+                </p>
+                <textarea
+                  className="source-login-textarea"
+                  rows={5}
+                  value={cookieInputText}
+                  placeholder="token=xxxx; uid=12345; session=yyyy"
+                  onChange={e => setCookieInputText(e.target.value)}
+                />
+              </div>
+              <div style={{ padding: '12px 18px', display: 'flex', justifyContent: 'flex-end', gap: '8px', borderTop: '1px solid var(--line)' }}>
+                <button type="button" className="subtle-button" onClick={() => setCookieModalOpen(false)}>取消</button>
+                <button type="button" className="primary-button" disabled={executing} onClick={handleSaveCookie}>保存 Cookie</button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {bookmarkletModalOpen && (
+          <div className="modal-backdrop top-layer-modal-backdrop" onClick={() => setBookmarkletModalOpen(false)}>
+            <div className="source-login-dialog" style={{ width: 'min(520px, 94vw)' }} onClick={e => e.stopPropagation()}>
+              <div className="source-login-header">
+                <h3>⚡ 一键同步书签 (Bookmarklet)</h3>
+                <button type="button" className="source-login-action-btn" onClick={() => setBookmarkletModalOpen(false)}>✕</button>
+              </div>
+              <div className="source-login-body" style={{ padding: '16px', display: 'grid', gap: '12px' }}>
+                <p style={{ margin: 0, fontSize: '13px', lineHeight: 1.5, color: 'var(--ink)' }}>
+                  在新标签页打开目标小说网站完成登录后，<strong>只需在书签栏点击一下此书签</strong>，当前站点的 Cookie / Token 即可秒级自动同步回阅读服务器！
+                </p>
+                <div style={{ background: 'var(--surface-muted)', padding: '10px 12px', borderRadius: '6px', border: '1px solid var(--line)' }}>
+                  <span style={{ fontSize: '12px', color: 'var(--muted)', display: 'block', marginBottom: '6px' }}>
+                    📖 使用方法：
+                  </span>
+                  <ol style={{ margin: 0, paddingLeft: '18px', fontSize: '12px', color: 'var(--muted)', display: 'grid', gap: '4px' }}>
+                    <li>点击下方按钮复制书签代码；</li>
+                    <li>在浏览器书签栏新建书签，网址处粘贴该代码；</li>
+                    <li>在新页面登录网站后，直接点击该书签即可一键回传。</li>
+                  </ol>
+                </div>
+                <textarea
+                  className="source-login-textarea"
+                  rows={4}
+                  readOnly
+                  value={bookmarkletCode}
+                  style={{ fontSize: '11px', fontFamily: 'monospace' }}
+                />
+              </div>
+              <div style={{ padding: '12px 18px', display: 'flex', justifyContent: 'flex-end', gap: '8px', borderTop: '1px solid var(--line)' }}>
+                <button type="button" className="subtle-button" onClick={() => setBookmarkletModalOpen(false)}>关闭</button>
+                <button type="button" className="primary-button" onClick={copyBookmarklet}>📋 复制书签代码</button>
               </div>
             </div>
           </div>

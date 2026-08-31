@@ -91,6 +91,17 @@ data class SourceLoginCheckResult(
     val message: String? = null,
 )
 
+@Serializable
+data class SourceLoginHeaderUpdateRequest(
+    val loginHeader: String?,
+)
+
+@Serializable
+data class SourceLoginCookieUpdateRequest(
+    val cookie: String,
+    val url: String? = null,
+)
+
 data class SourceLoginStateRecord(
     val sourceId: String,
     val loginInfo: Map<String, String>,

@@ -182,6 +182,7 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
   const [currentBook, setCurrentBook] = useState<OpenBook>(openBook)
   const [chapterIndex, setChapterIndex] = useState(startIndex)
   const [content, setContent] = useState('')
+  const [loadedChapterUrl, setLoadedChapterUrl] = useState('')
   const [message, setMessage] = useState('')
   const [loading, setLoading] = useState(true)
   const [chapterQuery, setChapterQuery] = useState('')
@@ -226,6 +227,9 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
   const targetInitialPageRef = useRef<'first' | 'last' | null>(null)
   const initialPagePositionRef = useRef<number | null>(null)
   const wheelTimerRef = useRef<number | null>(null)
+  // Ref to the latest playTtsChunk so that async onEnd callbacks always invoke the freshest version,
+  // avoiding stale closure issues when cross-chapter auto-play triggers after chapter content reloads.
+  const playTtsChunkRef = useRef<(idx: number) => void>(() => undefined)
 
   const viewportRef = useRef<HTMLDivElement | null>(null)
   const bodyRef = useRef<HTMLDivElement | null>(null)
@@ -293,8 +297,10 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
 
   const chapterProgress = currentBook.chapters.length > 1 ? (chapterIndex / (currentBook.chapters.length - 1)) * 100 : 0
 
+  const isCurrentChapterLoaded = loadedChapterUrl === chapter?.url && !loading
+
   const paragraphs = useMemo(() => {
-    if (!content) return []
+    if (!content || !isCurrentChapterLoaded) return []
     const rawLines = content.split('\n')
     const result: string[] = []
     for (let i = 0; i < rawLines.length; i++) {
@@ -304,7 +310,7 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
       }
     }
     return result
-  }, [content])
+  }, [content, isCurrentChapterLoaded])
 
   const persist = useCallback(() => {
     const current = currentRef.current
@@ -400,7 +406,7 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
             return
           }
         }
-        playTtsChunk(nextIdx)
+        playTtsChunkRef.current(nextIdx)
       },
       (err) => {
         toast.warning(err.message || '朗读中断')
@@ -408,6 +414,8 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
       }
     )
   }, [ttsData, sleepTimer, settings, chapterIndex, currentBook.chapters.length, persist, stopTts, getTtsEngine])
+
+  playTtsChunkRef.current = playTtsChunk
 
   const toggleTts = useCallback(() => {
     if (!ttsActive) {
@@ -423,9 +431,10 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
   }, [ttsActive, ttsPlayState, playTtsChunk, currentChunkIndex, pauseTts, resumeTts])
 
   const handleParagraphClick = useCallback((pIdx: number) => {
+    // Only jump to paragraph if TTS is already active; don't auto-start reading on arbitrary clicks
+    if (!ttsActive) return
     const targetChunk = ttsData.chunks.find(c => c.paragraphIndex === pIdx)
     if (targetChunk) {
-      if (!ttsActive) setTtsActive(true)
       playTtsChunk(targetChunk.globalIndex)
     }
   }, [ttsData.chunks, ttsActive, playTtsChunk])
@@ -517,6 +526,9 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
       stopAllEngines()
     }
     targetInitialPageRef.current = targetPage === 'auto' ? null : targetPage
+    setLoadedChapterUrl('')
+    setContent('')
+    setLoading(true)
     setChapterIndex(nextIndex)
     setActiveDrawer(null)
   }, [chapterIndex, currentBook.chapters.length, persist, showBoundaryNotice, stopTts, stopAllEngines])
@@ -622,6 +634,7 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
     const applyContent = (nextContent: string) => {
       if (cancelled) return
       setContent(nextContent)
+      setLoadedChapterUrl(chapter.url)
       const position = !restoredRef.current && chapter.index === startIndex ? currentBook.progress?.scrollPosition ?? 0 : 0
       restoredRef.current = true
       currentRef.current = { chapter, position }
@@ -831,13 +844,13 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
 
   // Chapter content load effect for auto continuous next chapter
   useEffect(() => {
-    if (!content || loading) return
+    if (!content || loading || loadedChapterUrl !== chapter?.url) return
     if (autoPlayNextChapterRef.current) {
       autoPlayNextChapterRef.current = false
       setTtsActive(true)
-      playTtsChunk(0)
+      playTtsChunkRef.current(0)
     }
-  }, [content, loading, playTtsChunk])
+  }, [content, loading, loadedChapterUrl, chapter?.url])
 
   // Sleep Timer countdown effect
   useEffect(() => {

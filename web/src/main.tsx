@@ -442,7 +442,10 @@ function SourceEditor({
       <header>
         <div>
           <span className="section-kicker">书源编辑</span>
-          <h2>{selected.name}</h2>
+          <div className="source-editor-name-row">
+            <h2>{selected.name}</h2>
+            {selected.hasLogin && <span className="source-login-badge" title="支持登录鉴权">登录</span>}
+          </div>
           <small>{selected.url}</small>
         </div>
         <div className="editor-actions">

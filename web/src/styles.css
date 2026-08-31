@@ -306,8 +306,8 @@ svg { width: 18px; height: 18px; flex: none; }
 /* Source workspace */
 .app-workspace { min-height: 100vh; display: grid; grid-template-columns: 260px minmax(0, 1fr); background: var(--canvas); }
 .source-sidebar { min-height: 100vh; display: flex; flex-direction: column; border-right: 1px solid var(--line); background: var(--surface); }
-.sources-page { min-height: calc(100vh - 68px); display: grid; grid-template-columns: 250px minmax(0, 1fr); }
-.sources-page .source-sidebar { min-height: calc(100vh - 68px); }
+.sources-page { min-height: calc(100vh - 68px); display: grid; grid-template-columns: 280px minmax(0, 1fr); }
+.sources-page .source-sidebar { min-height: calc(100vh - 68px); overflow: hidden; }
 .source-sidebar-heading { display: flex; justify-content: space-between; align-items: center; padding: 20px 18px 3px; color: var(--ink); font-family: Georgia, "Noto Serif SC", serif; font-size: 17px; }
 .source-sidebar-heading small { color: var(--muted); font-family: Inter, sans-serif; font-size: 12px; }
 .sources-content { width: min(1000px, 100%); display: grid; align-content: start; gap: 28px; padding: clamp(28px, 5vw, 68px); margin: 0 auto; }
@@ -325,8 +325,8 @@ svg { width: 18px; height: 18px; flex: none; }
 .import-button input { display: none; }
 .sidebar-notice { margin: 0 16px 10px; color: var(--muted); font-size: 12px; line-height: 1.55; }
 .source-list-label { display: flex; justify-content: space-between; padding: 10px 20px; color: var(--muted); border-top: 1px solid var(--line); font-size: 12px; }
-.source-list { display: grid; overflow: auto; align-content: start; }
-.source-list button { min-height: 58px; display: grid; gap: 5px; padding: 10px 20px; background: transparent; color: var(--ink); text-align: left; border-left: 3px solid transparent; }
+.source-list { display: grid; overflow-y: auto; overflow-x: hidden; align-content: start; min-width: 0; }
+.source-list button { min-height: 58px; display: grid; gap: 5px; padding: 10px 16px; background: transparent; color: var(--ink); text-align: left; border-left: 3px solid transparent; width: 100%; box-sizing: border-box; min-width: 0; }
 .source-list button:hover { background: var(--surface-muted); }
 .source-list button.selected { background: var(--accent-soft); border-left-color: var(--accent); color: var(--accent-ink); }
 .source-list small { color: var(--muted); font-size: 11px; }
@@ -1261,25 +1261,45 @@ mark.search-highlight { background: var(--accent-soft); color: var(--accent); fo
 }
 
 /* Source Login Badges and Modal Styles */
+.source-editor-name-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
 .source-list-item-title {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 6px;
+  gap: 8px;
   width: 100%;
+  min-width: 0;
+}
+
+.source-list-item-title > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+  flex: 1;
 }
 
 .source-login-badge {
   display: inline-flex;
   align-items: center;
-  font-size: 10px;
+  justify-content: center;
+  font-size: 11px;
   font-weight: 600;
-  padding: 1px 5px;
+  line-height: 1.2;
+  padding: 2px 6px;
   border-radius: 4px;
   background: color-mix(in srgb, var(--accent) 15%, transparent);
   color: var(--accent);
-  border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
   letter-spacing: 0.5px;
+  flex-shrink: 0;
+  white-space: nowrap;
 }
 
 .source-login-dialog, .source-login-modal {

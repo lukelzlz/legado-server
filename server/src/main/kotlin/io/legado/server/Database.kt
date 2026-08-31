@@ -773,15 +773,18 @@ class Database(private val path: String) : Closeable, AutoCloseable {
 
     fun setSourceCookie(sourceId: String, url: String, cookie: String): Boolean {
         val jar = getSourceCookieJar(sourceId).toMutableMap()
-        val host = runCatching { java.net.URI(url).host }.getOrNull()?.takeIf { it.isNotBlank() } ?: url
+        val host = runCatching { java.net.URI(url).host }.getOrNull()?.takeIf { !it.isNullOrBlank() } ?: url
         val existing = jar[host] ?: jar[url]
-        if (existing.isNullOrBlank()) {
-            jar[host] = cookie
-        } else {
+        val incomingMap = parseCookieString(cookie)
+        if (incomingMap.isEmpty()) return false
+        val finalMap = if (!existing.isNullOrBlank()) {
             val map = parseCookieString(existing).toMutableMap()
-            map.putAll(parseCookieString(cookie))
-            jar[host] = map.entries.joinToString("; ") { "${it.key}=${it.value}" }
+            map.putAll(incomingMap)
+            map
+        } else {
+            incomingMap
         }
+        jar[host] = finalMap.entries.joinToString("; ") { "${it.key}=${it.value}" }
         return saveSourceCookieJar(sourceId, jar)
     }
 

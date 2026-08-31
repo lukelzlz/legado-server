@@ -102,6 +102,13 @@ data class SourceLoginCookieUpdateRequest(
     val url: String? = null,
 )
 
+@Serializable
+data class SourceLoginCookieResponse(
+    val ok: Boolean,
+    val message: String? = null,
+    val count: Int = 0,
+)
+
 data class SourceLoginStateRecord(
     val sourceId: String,
     val loginInfo: Map<String, String>,

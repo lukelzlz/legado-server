@@ -403,32 +403,76 @@ export const SourceLoginModal: React.FC<SourceLoginModalProps> = ({
           {loading ? (
             <div className="login-ui-loading">正在加载登录界面...</div>
           ) : !uiResponse?.loginUi || uiResponse.loginUi.length === 0 ? (
-            <div className="login-ui-empty">
-              <p>此书源未定义可视化的登录表单。</p>
-              {uiResponse?.loginUrl && (
-                <div style={{ marginTop: '16px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
+            <div className="login-ui-empty-direct-cookie" style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '8px' }}>
+                <span style={{ fontSize: '13px', color: 'var(--muted)' }}>
+                  此书源未定义可视化登录表单，请直接填入 Cookie / 凭据：
+                </span>
+                {uiResponse?.loginUrl && (
                   <button
                     type="button"
-                    className="source-login-btn primary"
+                    className="subtle-button"
+                    style={{ fontSize: '12px', padding: '4px 10px' }}
                     onClick={() => window.open(uiResponse.loginUrl, '_blank', 'noopener,noreferrer')}
                   >
-                    🌐 在新标签页中打开登录页
+                    🌐 打开站点登录页
                   </button>
-                  <div style={{ display: 'flex', gap: '8px', justifyContent: 'center' }}>
+                )}
+              </div>
+
+              <div className="direct-cookie-card" style={{ background: 'var(--card-bg, rgba(255,255,255,0.03))', border: '1px solid var(--line)', borderRadius: '8px', padding: '14px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <label style={{ fontSize: '12px', fontWeight: 600, color: 'var(--foreground)' }}>
+                    🍪 粘贴 Cookie / Token (支持 JSON / 键值对)
+                  </label>
+                  <span style={{ fontSize: '11px', color: 'var(--muted)' }}>
+                    支持 Cookie-Editor 导出的 JSON
+                  </span>
+                </div>
+                <textarea
+                  className="source-login-textarea"
+                  rows={5}
+                  value={cookieInputText}
+                  placeholder={`直接粘贴 Cookie 字符串（k1=v1; k2=v2）或 Cookie-Editor 导出的 JSON 数组：\n[{"name":"session_id","value":"..."},{"name":"token","value":"..."}]`}
+                  onChange={e => setCookieInputText(e.target.value)}
+                />
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '8px' }}>
+                  <div style={{ display: 'flex', gap: '6px' }}>
                     <button
                       type="button"
                       className="subtle-button"
-                      onClick={() => setCookieModalOpen(true)}
-                    >
-                      🍪 填入 Cookie
-                    </button>
-                    <button
-                      type="button"
-                      className="subtle-button"
+                      style={{ fontSize: '12px', padding: '5px 10px' }}
                       onClick={() => setBookmarkletModalOpen(true)}
                     >
                       ⚡ 一键同步书签
                     </button>
+                    {uiResponse?.loginHeader && (
+                      <button
+                        type="button"
+                        className="subtle-button danger-text"
+                        style={{ fontSize: '12px', padding: '5px 10px' }}
+                        onClick={handleDeleteLoginHeader}
+                      >
+                        🗑️ 清除已存凭据
+                      </button>
+                    )}
+                  </div>
+                  <button
+                    type="button"
+                    className="primary-button"
+                    disabled={executing || !cookieInputText.trim()}
+                    onClick={handleSaveCookie}
+                  >
+                    {executing ? '保存中...' : '保存 Cookie'}
+                  </button>
+                </div>
+              </div>
+
+              {uiResponse?.loginHeader && (
+                <div style={{ padding: '10px 14px', background: 'rgba(56, 189, 248, 0.08)', border: '1px solid rgba(56, 189, 248, 0.2)', borderRadius: '6px', fontSize: '12px' }}>
+                  <div style={{ fontWeight: 600, color: '#38bdf8', marginBottom: '4px' }}>✅ 当前书源已持久化登录头 (Login Header)</div>
+                  <div style={{ color: 'var(--muted)', wordBreak: 'break-all', fontFamily: 'monospace', maxHeight: '60px', overflowY: 'auto' }}>
+                    {uiResponse.loginHeader}
                   </div>
                 </div>
               )}

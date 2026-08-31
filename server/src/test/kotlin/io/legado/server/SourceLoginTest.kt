@@ -254,16 +254,73 @@ class SourceLoginTest {
         assertTrue(actionOutcome.success)
         assertTrue(actionOutcome.toastMessages.contains("API登录成功"))
 
-        // 4. DELETE /api/sources/{id}/login-header
+        // 4. DELETE /api/sources/$encodedId/login-header
         val delHeaderRes = client.delete("/api/sources/$encodedId/login-header") {
             header("X-CSRF-Token", csrf)
         }
         assertEquals(HttpStatusCode.OK, delHeaderRes.status)
 
-        // 5. DELETE /api/sources/{id}/login-info
+        // 5. POST /api/sources/{id}/login-cookie with JSON Array format (Cookie-Editor format)
+        val cookieJsonArray = """[{"name":"token","value":"xyz999"},{"name":"session_id","value":"sess888"}]"""
+        val cookieRes = client.post("/api/sources/$encodedId/login-cookie") {
+            header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
+            setBody(SourceLoginCookieUpdateRequest(cookie = cookieJsonArray, url = sourceRecord.url))
+        }
+        assertEquals(HttpStatusCode.OK, cookieRes.status)
+        val updatedUiRes = client.get("/api/sources/$encodedId/login-ui")
+        val updatedUi = updatedUiRes.body<SourceLoginUiResponse>()
+        assertNotNull(updatedUi.loginHeader)
+        assertTrue(updatedUi.loginHeader!!.contains("token=xyz999"))
+        assertTrue(updatedUi.loginHeader!!.contains("session_id=sess888"))
+
+        // 6. DELETE /api/sources/{id}/login-info
         val delInfoRes = client.delete("/api/sources/$encodedId/login-info") {
             header("X-CSRF-Token", csrf)
         }
         assertEquals(HttpStatusCode.OK, delInfoRes.status)
+    }
+
+    @Test
+    fun `Database parseCookieString handles all major cookie formats`() {
+        val dbPath = Files.createTempFile("legado-cookie-parse-test", ".sqlite").toString()
+        val db = Database(dbPath)
+        db.initialize("admin123")
+
+        // 1. Standard cookie string
+        val stdMap = db.parseCookieString("name1=val1; name2=val2=with=eq; name3=val3")
+        assertEquals(3, stdMap.size)
+        assertEquals("val1", stdMap["name1"])
+        assertEquals("val2=with=eq", stdMap["name2"])
+        assertEquals("val3", stdMap["name3"])
+
+        // 2. Cookie-Editor JSON array
+        val jsonArray = """
+        [
+            {"name": "token", "value": "secret-abc-123", "domain": ".shubl.com"},
+            {"name": "uid", "value": "10086", "path": "/"}
+        ]
+        """.trimIndent()
+        val jsonArrayMap = db.parseCookieString(jsonArray)
+        assertEquals(2, jsonArrayMap.size)
+        assertEquals("secret-abc-123", jsonArrayMap["token"])
+        assertEquals("10086", jsonArrayMap["uid"])
+
+        // 3. JSON Object format
+        val jsonObj = """{"Cookie": "sess=xyz; auth=true"}"""
+        val jsonObjMap = db.parseCookieString(jsonObj)
+        assertEquals(2, jsonObjMap.size)
+        assertEquals("xyz", jsonObjMap["sess"])
+        assertEquals("true", jsonObjMap["auth"])
+
+        // 4. Netscape format
+        val netscape = """
+        # Netscape HTTP Cookie File
+        .example.com	TRUE	/	FALSE	1999999999	session_key	netscape_val_1
+        .example.com	TRUE	/	FALSE	1999999999	account_id	998877
+        """.trimIndent()
+        val netscapeMap = db.parseCookieString(netscape)
+        assertEquals(2, netscapeMap.size)
+        assertEquals("netscape_val_1", netscapeMap["session_key"])
+        assertEquals("998877", netscapeMap["account_id"])
     }
 }

@@ -136,21 +136,28 @@ fun Route.apiRoutes(database: Database, auth: AuthService, runner: RuleRunner, c
             post("/login-cookie") {
                 call.response.headers.append(HttpHeaders.AccessControlAllowOrigin, "*")
                 val sourceId = call.parameters["id"]!!
-                val source = database.getSource(sourceId) ?: run {
-                    call.respond(HttpStatusCode.NotFound, ApiError("not_found", "书源不存在"))
-                    return@post
-                }
+                val targetSource = database.getSource(sourceId)
+                    ?: database.listSources(null).firstOrNull {
+                        it.id.contains(sourceId) || sourceId.contains(it.id) || (it.url.isNotBlank() && (sourceId.contains(it.url) || it.url.contains(sourceId)))
+                    }?.let { database.getSource(it.id) }
+
+                val resolvedSourceId = targetSource?.id ?: sourceId
                 val req = call.receive<SourceLoginCookieUpdateRequest>()
                 val rawCookie = req.cookie.trim()
+                var savedCount = 0
                 if (rawCookie.isNotEmpty()) {
-                    database.setSourceCookie(sourceId, req.url ?: sourceId, rawCookie)
-                    val state = database.getSourceLoginState(sourceId)
-                    if (state?.loginHeader.isNullOrBlank()) {
-                        val headerMap = mapOf("Cookie" to rawCookie)
-                        database.saveSourceLoginHeader(sourceId, Json.encodeToString(headerMap))
+                    val cookieMap = database.parseCookieString(rawCookie)
+                    savedCount = cookieMap.size
+                    database.setSourceCookie(resolvedSourceId, req.url ?: resolvedSourceId, rawCookie)
+                    val cookieStr = cookieMap.entries.joinToString("; ") { "${it.key}=${it.value}" }
+                    val state = database.getSourceLoginState(resolvedSourceId)
+                    if (state?.loginHeader.isNullOrBlank() && cookieStr.isNotBlank()) {
+                        val headerMap = mapOf("Cookie" to cookieStr)
+                        database.saveSourceLoginHeader(resolvedSourceId, Json.encodeToString(headerMap))
                     }
+                    call.application.log.info("cookie synchronized for source: {}, count: {}, url: {}", resolvedSourceId, savedCount, req.url)
                 }
-                call.respond(mapOf("ok" to true, "message" to "Cookie 同步成功"))
+                call.respond(SourceLoginCookieResponse(ok = true, message = "Cookie 同步成功", count = savedCount))
             }
             delete("/login-header") {
                 if (auth.requireSession(call, true) == null) return@delete

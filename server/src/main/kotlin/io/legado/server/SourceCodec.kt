@@ -19,7 +19,11 @@ data class ParsedSource(
 )
 
 object SourceCodec {
-    private val json = Json { ignoreUnknownKeys = true }
+    private val json = Json {
+        ignoreUnknownKeys = true
+        isLenient = true
+        coerceInputValues = true
+    }
 
     fun validate(text: String): ValidateResponse = try {
         parse(text)
@@ -29,18 +33,40 @@ object SourceCodec {
     }
 
     fun parse(text: String): ParsedSource {
-        require(text.toByteArray().size <= MAX_SOURCE_BYTES) { "书源不能超过 1 MiB" }
-        val objectValue = try { json.parseToJsonElement(text) as? JsonObject } catch (_: Exception) { null }
+        val cleanText = text.trim().removePrefix("\uFEFF")
+        require(cleanText.toByteArray().size <= MAX_SOURCE_BYTES) { "书源不能超过 1 MiB" }
+        val objectValue = try { json.parseToJsonElement(cleanText) as? JsonObject } catch (_: Exception) { null }
             ?: throw IllegalArgumentException("书源必须是 JSON 对象")
-        val rawUrl = objectValue.string("bookSourceUrl") ?: throw IllegalArgumentException("缺少 bookSourceUrl")
-        require(rawUrl.startsWith("http://") || rawUrl.startsWith("https://")) { "bookSourceUrl 必须是 HTTP(S) 地址" }
+        val rawUrl = (objectValue.string("bookSourceUrl")
+            ?: objectValue.string("sourceUrl")
+            ?: objectValue.string("url"))
+            ?: throw IllegalArgumentException("缺少 bookSourceUrl")
+        val fixedUrl = when {
+            rawUrl.startsWith("http://", ignoreCase = true) || rawUrl.startsWith("https://", ignoreCase = true) -> rawUrl
+            rawUrl.startsWith("//") -> "https:$rawUrl"
+            rawUrl.contains("://") -> rawUrl
+            else -> "http://$rawUrl"
+        }
+        require(fixedUrl.startsWith("http://", ignoreCase = true) || fixedUrl.startsWith("https://", ignoreCase = true)) { "bookSourceUrl 必须是 HTTP(S) 地址" }
         // Legado source URLs may carry annotations such as `https://host/##@group` or `https://host/#module`.
         // The server only needs the reachable origin; annotations are metadata used by the Android client.
-        val url = normalizeSourceUrl(rawUrl)
-        val name = objectValue.string("bookSourceName")?.takeIf { it.isNotBlank() } ?: rawUrl
+        val url = normalizeSourceUrl(fixedUrl)
+        val name = (objectValue.string("bookSourceName")
+            ?: objectValue.string("sourceName")
+            ?: objectValue.string("name"))
+            ?.takeIf { it.isNotBlank() } ?: url
+        val group = objectValue.string("bookSourceGroup")
+            ?: objectValue.string("sourceGroup")
+            ?: objectValue.string("group")
+        val enabled = objectValue.boolean("enabled")
+            ?: objectValue.boolean("enable")
+            ?: true
+        val normalizedMap = objectValue.toMutableMap()
+        normalizedMap["bookSourceUrl"] = JsonPrimitive(url)
+        normalizedMap["bookSourceName"] = JsonPrimitive(name)
         val normalizedJson = json.encodeToString(
             JsonElement.serializer(),
-            if (url == rawUrl) objectValue else JsonObject(objectValue.toMap() + ("bookSourceUrl" to JsonPrimitive(url))),
+            JsonObject(normalizedMap),
         )
         val hasLogin = !objectValue.string("loginUi").isNullOrBlank() ||
             !objectValue.string("loginUrl").isNullOrBlank() ||
@@ -49,8 +75,8 @@ object SourceCodec {
             id = url,
             name = name,
             url = url,
-            group = objectValue.string("bookSourceGroup"),
-            enabled = objectValue.boolean("enabled") ?: true,
+            group = group,
+            enabled = enabled,
             isJs = !objectValue.string("mainJs").isNullOrBlank(),
             hasLogin = hasLogin,
             json = normalizedJson,
@@ -60,9 +86,24 @@ object SourceCodec {
     private fun normalizeSourceUrl(rawUrl: String): String = rawUrl
         .substringBefore("##")
         .substringBefore("#")
+        .trim()
         .ifBlank { rawUrl }
 
-    private fun JsonObject.string(key: String): String? = (get(key) as? JsonPrimitive)?.contentOrNull
-    private fun JsonObject.boolean(key: String): Boolean? = (get(key) as? JsonPrimitive)?.booleanOrNull
+    private fun JsonObject.string(key: String): String? {
+        val primitive = get(key) as? JsonPrimitive ?: return null
+        return primitive.contentOrNull?.trim()
+    }
+
+    private fun JsonObject.boolean(key: String): Boolean? {
+        val primitive = get(key) as? JsonPrimitive ?: return null
+        primitive.booleanOrNull?.let { return it }
+        val content = primitive.contentOrNull?.trim()?.lowercase() ?: return null
+        return when (content) {
+            "true", "1" -> true
+            "false", "0" -> false
+            else -> null
+        }
+    }
+
     private const val MAX_SOURCE_BYTES = 1024 * 1024
 }

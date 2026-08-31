@@ -535,7 +535,7 @@ class Database(private val path: String) : Closeable, AutoCloseable {
         rawSources.forEachIndexed { index, raw ->
             try {
                 val parsed = SourceCodec.parse(raw)
-                unique[parsed.url] = parsed
+                unique[parsed.id] = parsed
             } catch (error: IllegalArgumentException) {
                 errors += "第 ${index + 1} 项：${error.message}"
             }

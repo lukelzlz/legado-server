@@ -15,7 +15,9 @@ import { toast, ToastContainer } from './Toast'
 import './styles.css'
 
 import { clearStoredInspections, getInitialOrStoredInspections, inspectAllSourcesConcurrently, SourceHealthInspection } from './sourceInspector'
+import { parseSourceJsonText, extractSourcesFromRaw } from './sourceImport'
 
+export { extractSourcesFromRaw, parseSourceJsonText }
 export type { SourceChoice, SourceChoiceStatus }
 
 type Page = 'sources' | 'subscriptions' | 'library' | 'shelf' | 'reader'
@@ -473,7 +475,7 @@ function SubscriptionPanel({ onSourcesChange }: { onSourcesChange: () => void })
   const load = useCallback(async () => { try { setItems(await api.subscriptions()) } catch (error) { setNotice(error instanceof Error ? error.message : '无法载入订阅') } }, [])
   useEffect(() => { void load() }, [load])
   const add = async (event: FormEvent) => { event.preventDefault(); if (!url.trim()) return; setBusy('all'); try { await api.saveSubscription(url.trim()); setUrl(''); setNotice('订阅已保存'); await load() } catch (error) { setNotice(error instanceof Error ? error.message : '保存订阅失败') } finally { setBusy(null) } }
-  const update = async (id: number) => { setBusy(id); try { const result = await api.updateSubscription(id); setNotice(`同步完成：新增 ${result.imported}，更新 ${result.updated}，跳过 ${result.skipped}`); onSourcesChange(); await load() } catch (error) { setNotice(error instanceof Error ? error.message : '同步失败') } finally { setBusy(null) } }
+  const update = async (id: number) => { setBusy(id); try { const result = await api.updateSubscription(id); setNotice(`同步完成：新增 ${result.imported || 0}，更新 ${result.updated || 0}，跳过 ${result.skipped || 0}`); onSourcesChange(); await load() } catch (error) { setNotice(error instanceof Error ? error.message : '同步失败') } finally { setBusy(null) } }
   const updateAll = async () => { setBusy('all'); try { const result = await api.updateSubscriptions(); setNotice(`全部同步完成：成功 ${result.updated}，失败 ${result.failed}`); onSourcesChange(); await load() } catch (error) { setNotice(error instanceof Error ? error.message : '同步失败') } finally { setBusy(null) } }
   const toggle = async (item: SourceSubscription) => { setBusy(item.id); try { await api.saveSubscription(item.url, !item.enabled); await load() } catch (error) { setNotice(error instanceof Error ? error.message : '更新失败') } finally { setBusy(null) } }
   const remove = async (item: SourceSubscription) => { if (!confirm(`删除订阅“${item.url}”？已导入的书源会保留。`)) return; setBusy(item.id); try { await api.removeSubscription(item.id); await load() } catch (error) { setNotice(error instanceof Error ? error.message : '删除失败') } finally { setBusy(null) } }
@@ -485,11 +487,70 @@ function SubscriptionPage({ onSourcesChange }: { onSourcesChange: () => void }) 
 }
 
 function SourcesPage({ selected, onSelect, onSourcesChange }: { selected: SourceSummary | null; onSelect: (source: SourceSummary | null) => void; onSourcesChange: (sources: SourceSummary[]) => void }) {
-  const [sources, setSources] = useState<SourceSummary[]>([]); const [query, setQuery] = useState(''); const [notice, setNotice] = useState('')
+  const [sources, setSources] = useState<SourceSummary[]>([])
+  const [query, setQuery] = useState('')
+  const [notice, setNotice] = useState('')
+  const [importing, setImporting] = useState(false)
   const [loginModalSource, setLoginModalSource] = useState<SourceSummary | null>(null)
-  const load = useCallback(async () => { try { const values = await api.sources(query); setSources(values); onSourcesChange(values) } catch (error) { setNotice(error instanceof Error ? error.message : '无法载入书源') } }, [onSourcesChange, query])
-  useEffect(() => { const timer = window.setTimeout(() => { void load() }, 180); return () => window.clearTimeout(timer) }, [load])
-  const importSources = async (file: File | undefined) => { if (!file) return; try { const parsed = JSON.parse(await file.text()); const values = Array.isArray(parsed) ? parsed : [parsed]; const result = await api.import(values.map(value => JSON.stringify(value))); setNotice(`新增 ${result.imported} 个，更新 ${result.updated} 个${result.skipped ? `，跳过 ${result.skipped} 个` : ''}`); await load() } catch (error) { setNotice(error instanceof Error ? error.message : '导入失败') } }
+  const load = useCallback(async () => {
+    try {
+      const values = await api.sources(query)
+      setSources(values)
+      onSourcesChange(values)
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : '无法载入书源')
+    }
+  }, [onSourcesChange, query])
+  useEffect(() => {
+    const timer = window.setTimeout(() => { void load() }, 180)
+    return () => window.clearTimeout(timer)
+  }, [load])
+
+  const importSources = async (file: File | undefined) => {
+    if (!file) return
+    setImporting(true)
+    try {
+      const rawText = await file.text()
+      const rawList = parseSourceJsonText(rawText)
+      if (rawList.length === 0) {
+        toast.error('未在文件中识别到有效的书源配置')
+        setNotice('导入失败：未在文件中识别到有效的书源配置')
+        return
+      }
+      const serialized = rawList
+        .filter(item => item && typeof item === 'object')
+        .map(item => JSON.stringify(item))
+      if (serialized.length === 0) {
+        toast.error('书源格式无效')
+        setNotice('导入失败：书源格式无效')
+        return
+      }
+      const result = await api.import(serialized)
+      const importedCount = result.imported || 0
+      const updatedCount = result.updated || 0
+      const skippedCount = result.skipped || 0
+      const parts = [`新增 ${importedCount} 个`, `更新 ${updatedCount} 个`]
+      if (skippedCount > 0) parts.push(`跳过 ${skippedCount} 个`)
+      let msg = `导入完成：${parts.join('，')}`
+      if (result.errors && result.errors.length > 0) {
+        const errorSummary = result.errors.slice(0, 3).join('；') + (result.errors.length > 3 ? ` 等共 ${result.errors.length} 项错误` : '')
+        msg += ` (${errorSummary})`
+      }
+      setNotice(msg)
+      if (importedCount > 0 || updatedCount > 0) {
+        toast.success(`已导入/更新 ${importedCount + updatedCount} 个书源`)
+      } else if (skippedCount > 0) {
+        toast.error(result.errors?.[0] || '书源未能导入，请检查格式')
+      }
+      await load()
+    } catch (error) {
+      const errMsg = error instanceof Error ? error.message : '导入失败'
+      toast.error(errMsg)
+      setNotice(`导入失败：${errMsg}`)
+    } finally {
+      setImporting(false)
+    }
+  }
   const remove = async () => { if (!selected || !confirm(`删除“${selected.name}”？`)) return; try { await api.remove(selected.id); onSelect(null); await load() } catch (error) { setNotice(error instanceof Error ? error.message : '删除失败') } }
   return (
     <main className="sources-page">
@@ -502,9 +563,19 @@ function SourcesPage({ selected, onSelect, onSourcesChange }: { selected: Source
           <Icon name="search" />
           <input placeholder="筛选书源" value={query} onChange={event => setQuery(event.target.value)} />
         </div>
-        <label className="import-button">
-          <Icon name="upload" />导入 JSON
-          <input type="file" accept="application/json,.json" onChange={event => void importSources(event.target.files?.[0])} />
+        <label className={`import-button ${importing ? 'disabled' : ''}`}>
+          <Icon name="upload" />
+          {importing ? '导入中...' : '导入 JSON'}
+          <input
+            type="file"
+            accept="application/json,.json,text/plain,.txt,*"
+            disabled={importing}
+            onChange={event => {
+              const file = event.target.files?.[0]
+              event.target.value = ''
+              void importSources(file)
+            }}
+          />
         </label>
         {notice && <p className="sidebar-notice">{notice}</p>}
         <nav className="source-list">

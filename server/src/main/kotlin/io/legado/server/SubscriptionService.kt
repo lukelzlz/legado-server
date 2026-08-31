@@ -12,6 +12,7 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
 import java.net.InetAddress
 import java.net.URI
 import java.net.http.HttpClient
@@ -85,8 +86,19 @@ class SubscriptionService(private val database: Database, private val log: (Stri
     }
 
     private fun parseSources(body: String): List<String> {
-        val element = try { Json.parseToJsonElement(body) } catch (_: Exception) { throw IllegalArgumentException("订阅内容不是有效 JSON") }
-        val values = when (element) { is JsonArray -> element; else -> listOf(element) }
+        val cleanBody = body.trim().removePrefix("\uFEFF")
+        val element = try { Json.parseToJsonElement(cleanBody) } catch (_: Exception) { throw IllegalArgumentException("订阅内容不是有效 JSON") }
+        val values = when (element) {
+            is JsonArray -> element
+            is JsonObject -> when {
+                element["data"] is JsonArray -> element["data"] as JsonArray
+                element["sources"] is JsonArray -> element["sources"] as JsonArray
+                element["bookSources"] is JsonArray -> element["bookSources"] as JsonArray
+                element["list"] is JsonArray -> element["list"] as JsonArray
+                else -> listOf(element)
+            }
+            else -> listOf(element)
+        }
         return values.map { Json.encodeToString(JsonElement.serializer(), it) }
     }
 

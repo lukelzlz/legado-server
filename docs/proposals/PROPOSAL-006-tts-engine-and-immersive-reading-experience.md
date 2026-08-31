@@ -1,7 +1,7 @@
 ---
 id: PROPOSAL-006
 title: 现代化 TTS 朗读引擎与沉浸式听书体验
-status: draft # draft -> accepted -> implemented
+status: accepted # draft -> accepted -> implemented
 author: Agent & User
 date: 2026-08-31
 ---

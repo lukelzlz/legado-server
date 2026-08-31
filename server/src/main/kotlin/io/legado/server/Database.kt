@@ -869,8 +869,10 @@ class Database(private val path: String) : Closeable, AutoCloseable {
         if ("has_login" !in columns) {
             db.createStatement().use {
                 it.executeUpdate("alter table source add column has_login integer not null default 0")
-                it.executeUpdate("update source set has_login = 1 where payload like '%\"loginUi\"%' or payload like '%\"loginUrl\"%' or payload like '%\"loginCheckJs\"%'")
             }
+        }
+        db.createStatement().use {
+            it.executeUpdate("update source set has_login = 1 where (payload like '%\"loginUi\"%' or payload like '%\"loginUrl\"%' or payload like '%\"loginCheckJs\"%') and (has_login is null or has_login = 0)")
         }
     }
     private fun secret(): String = ByteArray(32).also(random::nextBytes).let { Base64.getUrlEncoder().withoutPadding().encodeToString(it) }

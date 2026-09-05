@@ -142,6 +142,19 @@ export class WebSpeechEngine implements ITtsEngine {
   }
 }
 
+export function isPlayInterruptedError(err: unknown): boolean {
+  if (!err) return false
+  if (typeof DOMException !== 'undefined' && err instanceof DOMException && err.name === 'AbortError') return true
+  if (err instanceof Error) {
+    if (err.name === 'AbortError') return true
+    const msg = err.message.toLowerCase()
+    if (msg.includes('interrupted by a call to pause') || msg.includes('interrupted by a new load request')) {
+      return true
+    }
+  }
+  return false
+}
+
 /**
  * HTTP / Edge-TTS audio stream engine with sliding-window pre-buffering
  */
@@ -165,12 +178,14 @@ export class HttpAudioTtsEngine implements ITtsEngine {
   private lastError: Error | null = null
   private recoveryAttempts = 0
   private playbackTimer: number | null = null
+  private isPaused = false
 
   private getAudio(): HTMLAudioElement {
     if (!this.audio) {
       this.audio = new Audio()
       this.audio.preload = 'auto'
       this.audio.addEventListener('error', () => {
+        if (!this.sessionId) return
         const err = this.audio?.error
         this.recoverOrReport(new Error(err?.message || '音频播放遇到错误'))
       })
@@ -242,6 +257,7 @@ export class HttpAudioTtsEngine implements ITtsEngine {
     if (mode === 'replace' || (this.sessionId && this.sessionSettingsKey !== this.getSettingsKey(settings))) {
       this.resetSession()
     }
+    this.isPaused = false
 
     const key = this.getCacheKey(clean, settings)
     const item = this.takePendingItem(key) ?? this.createItem(clean, settings, context)
@@ -268,17 +284,22 @@ export class HttpAudioTtsEngine implements ITtsEngine {
   }
 
   pause(): void {
+    this.isPaused = true
     this.audio?.pause()
     if (this.sessionId) void api.controlTtsSession(this.sessionId, 'pause').catch(() => undefined)
   }
 
   resume(): void {
+    this.isPaused = false
     if (this.lastError) {
       this.restartCurrentItem()
       return
     }
     if (this.sessionId) void api.controlTtsSession(this.sessionId, 'resume').catch(() => undefined)
-    this.audio?.play().catch(err => this.reportError(err instanceof Error ? err : new Error('无法继续播放音频')))
+    this.audio?.play().catch(err => {
+      if (isPlayInterruptedError(err)) return
+      this.reportError(err instanceof Error ? err : new Error('无法继续播放音频'))
+    })
   }
 
   stop(): void {
@@ -352,7 +373,11 @@ export class HttpAudioTtsEngine implements ITtsEngine {
         this.pendingItems = []
         for (const item of items) await this.submitItem(item, generation)
         if (generation !== this.generation) return
-        await audio.play().catch(err => this.reportError(err instanceof Error ? err : new Error('无法播放音频，请检查网络或点击页面授予音频权限')))
+        if (this.isPaused) return
+        await audio.play().catch(err => {
+          if (isPlayInterruptedError(err)) return
+          this.reportError(err instanceof Error ? err : new Error('无法播放音频，请检查网络或点击页面授予音频权限'))
+        })
       })
       .catch(error => {
         if (generation === this.generation) this.reportError(error instanceof Error ? error : new Error('创建 TTS 音频流失败'))
@@ -405,6 +430,7 @@ export class HttpAudioTtsEngine implements ITtsEngine {
   }
 
   private reportError(error: Error) {
+    if (isPlayInterruptedError(error)) return
     if (this.lastError?.message === error.message) return
     this.lastError = error
     const callback = this.currentItemId ? this.callbacks.get(this.currentItemId) : undefined
@@ -460,6 +486,7 @@ export class HttpAudioTtsEngine implements ITtsEngine {
 
   private resetSession() {
     const sessionId = this.sessionId
+    this.isPaused = false
     this.stopPlaybackMonitor()
     this.generation++
     this.sessionAbortController?.abort()

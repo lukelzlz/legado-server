@@ -1,10 +1,11 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { HttpAudioTtsEngine } from '../src/ttsEngine'
+import { HttpAudioTtsEngine, isPlayInterruptedError } from '../src/ttsEngine'
 import { defaultReaderSettings } from '../src/readerSettings'
 
 class FakeAudio {
   static instances: FakeAudio[] = []
+  static playError: Error | null = null
   src = ''
   preload = ''
   playbackRate = 1
@@ -26,6 +27,7 @@ class FakeAudio {
 
   play() {
     this.paused = false
+    if (FakeAudio.playError) return Promise.reject(FakeAudio.playError)
     return Promise.resolve()
   }
 
@@ -129,3 +131,95 @@ test('HTTP TTS session keeps one audio element and appends chunks to one session
   assert.deepEqual(errors, [])
   engine.stop()
 })
+
+test('isPlayInterruptedError correctly detects play interruption errors', () => {
+  assert.equal(isPlayInterruptedError(null), false)
+  assert.equal(isPlayInterruptedError(undefined), false)
+  assert.equal(isPlayInterruptedError(new Error('网络连接超时')), false)
+  assert.equal(isPlayInterruptedError(new Error('The play() request was interrupted by a call to pause(). https://goo.gl/LdLk22')), true)
+  assert.equal(isPlayInterruptedError(new Error('The play() request was interrupted by a new load request.')), true)
+
+  const abortError = new Error('The play() request was canceled')
+  abortError.name = 'AbortError'
+  assert.equal(isPlayInterruptedError(abortError), true)
+})
+
+test('HTTP TTS engine ignores play interruption errors when interrupted by pause', async t => {
+  const originalAudio = globalThis.Audio
+  const originalEventSource = globalThis.EventSource
+  const originalFetch = globalThis.fetch
+  Object.assign(globalThis, { Audio: FakeAudio, EventSource: FakeEventSource })
+  FakeAudio.playError = new Error('The play() request was interrupted by a call to pause(). https://goo.gl/LdLk22')
+
+  globalThis.fetch = async (input) => {
+    const url = String(input)
+    if (url === '/api/tts/session') {
+      return new Response(JSON.stringify({
+        sessionId: 'session-interrupted',
+        audioUrl: '/api/tts/session/session-interrupted/audio',
+        eventsUrl: '/api/tts/session/session-interrupted/events',
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    }
+    return new Response(JSON.stringify({ accepted: true }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+  }
+  t.after(() => {
+    FakeAudio.playError = null
+    globalThis.Audio = originalAudio
+    globalThis.EventSource = originalEventSource
+    globalThis.fetch = originalFetch
+  })
+
+  const engine = new HttpAudioTtsEngine()
+  const reportedErrors: Error[] = []
+  engine.speak('测试被打断的音频。', settings, () => {}, err => reportedErrors.push(err), 'replace')
+  await new Promise(resolve => setTimeout(resolve, 20))
+
+  // Interruption by pause should NOT trigger onError
+  assert.equal(reportedErrors.length, 0)
+  engine.stop()
+})
+
+test('Calling pause during session creation avoids triggering play', async t => {
+  const originalAudio = globalThis.Audio
+  const originalEventSource = globalThis.EventSource
+  const originalFetch = globalThis.fetch
+  let playCalled = false
+
+  class GuardedAudio extends FakeAudio {
+    override play() {
+      playCalled = true
+      return super.play()
+    }
+  }
+
+  Object.assign(globalThis, { Audio: GuardedAudio, EventSource: FakeEventSource })
+  globalThis.fetch = async (input) => {
+    const url = String(input)
+    if (url === '/api/tts/session') {
+      await new Promise(resolve => setTimeout(resolve, 10))
+      return new Response(JSON.stringify({
+        sessionId: 'session-paused',
+        audioUrl: '/api/tts/session/session-paused/audio',
+        eventsUrl: '/api/tts/session/session-paused/events',
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    }
+    return new Response(JSON.stringify({ accepted: true }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+  }
+  t.after(() => {
+    globalThis.Audio = originalAudio
+    globalThis.EventSource = originalEventSource
+    globalThis.fetch = originalFetch
+  })
+
+  const engine = new HttpAudioTtsEngine()
+  const reportedErrors: Error[] = []
+  engine.speak('测试初始暂停。', settings, () => {}, err => reportedErrors.push(err), 'replace')
+  // User pauses immediately while session is connecting
+  engine.pause()
+  await new Promise(resolve => setTimeout(resolve, 30))
+
+  assert.equal(playCalled, false)
+  assert.equal(reportedErrors.length, 0)
+  engine.stop()
+})
+

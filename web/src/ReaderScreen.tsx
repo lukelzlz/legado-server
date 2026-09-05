@@ -7,7 +7,7 @@ import { SourceSwitchModal } from './SourceSwitchModal'
 import { cleanAuthor, cleanTitle } from './searchFilters'
 import { toast } from './Toast'
 import { processChapterForTts, TtsChapterData } from './ttsTextProcessor'
-import { ITtsEngine, WebSpeechEngine, HttpAudioTtsEngine, TtsPlayState, TtsSpeakMode } from './ttsEngine'
+import { ITtsEngine, WebSpeechEngine, HttpAudioTtsEngine, TtsPlayState, TtsSpeakMode, isPlayInterruptedError } from './ttsEngine'
 import { TtsSettingsModal, SleepTimerOption } from './TtsSettingsModal'
 import { TtsPlayerBar } from './TtsPlayerBar'
 
@@ -404,6 +404,7 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
         playTtsChunkRef.current(nextIdx, 'continue')
       },
       (err) => {
+        if (isPlayInterruptedError(err)) return
         toast.warning(err.message || '朗读中断')
         setTtsPlayState('paused')
       },

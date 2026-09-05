@@ -127,6 +127,7 @@ AI 与人类协作时必须明确当前达到的完成度阶梯，严禁混淆�
 | 2026-08-31 | Fix | 修复 TTS 跨章连播正文加载时序竞态与未开启朗读时点击误触发 | - | Pushed |
 | 2026-09-05 | Docs | 新增阿里云计算巢一键秒级部署入口与使用说明 | - | Pushed |
 | 2026-09-05 | Feat | 服务端会话级连续 TTS 音频流与移动端后台稳定播放 | [`docs/acceptance/ACCEPT-007-server-session-tts-stream.md`](file:///Users/zhangran/Documents/antigravity/joyful-galileo/docs/acceptance/ACCEPT-007-server-session-tts-stream.md) | Accepted & Pushed |
+| 2026-09-05 | Fix | 优化 Actions Release 发布逻辑，发布前清理旧 release 确保时间戳刷新并追加构建时间 | - | Pushed |
 
 ---
 

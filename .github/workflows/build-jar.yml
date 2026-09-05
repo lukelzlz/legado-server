@@ -74,6 +74,8 @@ jobs:
         id: release_meta
         if: github.event_name != 'pull_request'
         run: |
+          BUILD_TIME=$(TZ='Asia/Shanghai' date '+%Y-%m-%d %H:%M:%S')
+          echo "build_time=${BUILD_TIME}" >> $GITHUB_OUTPUT
           if [[ "${{ github.ref }}" == refs/tags/* ]]; then
             echo "tag_name=${{ github.ref_name }}" >> $GITHUB_OUTPUT
             echo "release_name=Legado Server ${{ github.ref_name }}" >> $GITHUB_OUTPUT
@@ -82,9 +84,15 @@ jobs:
             echo "release_name=Legado Server Continuous Build (latest)" >> $GITHUB_OUTPUT
           fi
 
-      - name: Update latest git tag
+      - name: Recreate latest release & tag
         if: github.event_name != 'pull_request' && !startsWith(github.ref, 'refs/tags/')
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          # 删除旧的 latest Release，确保新建时 GitHub 发布时间戳刷新为最新
+          gh release delete latest --yes || true
+          
+          # 更新并强制推送 latest Git Tag 指向当前 Commit
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git tag -f latest ${{ github.sha }}
@@ -103,6 +111,7 @@ jobs:
             本 Release 由 GitHub Actions 自动化流水线随 Commit 自动编译打包生成：
             - **Commit**: [${{ github.sha }}](https://github.com/${{ github.repository }}/commit/${{ github.sha }})
             - **Branch / Ref**: `${{ github.ref_name }}`
+            - **Build Time**: `${{ steps.release_meta.outputs.build_time }} (UTC+8)`
             
             ### 📦 二进制产物下载
             - **`legado-server.jar`**：开箱即用独立 Fat JAR（内嵌完整 Web 前端与后端服务，支持单文件运行）

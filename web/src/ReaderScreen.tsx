@@ -1,7 +1,7 @@
 import { CSSProperties, PointerEvent as ReactPointerEvent, useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { api, BookDetails, Chapter, ReadingProgress, SearchResult } from './api'
 import { Icon } from './icons'
-import { calculatePaginationLayout, isAtBottomBoundary, isAtTopBoundary, isInteractiveReaderTarget, isTapGesture, paginateTapZone, scrollTapZone, swipeDirection } from './readerInteractions'
+import { calculatePaginationLayout, findFirstFullyVisibleParagraphIndex, isAtBottomBoundary, isAtTopBoundary, isInteractiveReaderTarget, isTapGesture, paginateTapZone, scrollTapZone, swipeDirection, ViewportBounds } from './readerInteractions'
 import { clampScrollPosition, defaultReaderSettings, getReaderFontFamily, ReaderSettings, scrollPosition, TtsEngineType } from './readerSettings'
 import { SourceSwitchModal } from './SourceSwitchModal'
 import { cleanAuthor, cleanTitle } from './searchFilters'
@@ -452,10 +452,75 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
 
   playTtsChunkRef.current = playTtsChunk
 
+  const getInitialTtsChunkIndex = useCallback((): number => {
+    if (!ttsData.chunks || ttsData.chunks.length === 0) return 0
+
+    let viewportBounds: ViewportBounds
+    if (settings.pageMode === 'paginate') {
+      const vEl = viewportRef.current
+      if (vEl) {
+        const r = vEl.getBoundingClientRect()
+        viewportBounds = { top: r.top, bottom: r.bottom, left: r.left, right: r.right }
+      } else {
+        viewportBounds = { top: 0, bottom: window.innerHeight, left: 0, right: window.innerWidth }
+      }
+    } else {
+      // In scroll mode, header bar is fixed at 56px height (top boundary)
+      const topBarHeight = 56
+      viewportBounds = { top: topBarHeight, bottom: window.innerHeight, left: 0, right: window.innerWidth }
+    }
+
+    // 1. Check if chapter title <h1> is fully visible on the current screen
+    const h1El = document.querySelector(
+      settings.pageMode === 'paginate'
+        ? '.reader-paginated-column-body h1'
+        : '.reading-content h1'
+    ) as HTMLElement | null
+
+    if (h1El) {
+      const h1Rect = h1El.getBoundingClientRect()
+      const isH1FullyVisible =
+        h1Rect.top >= viewportBounds.top - 2 &&
+        h1Rect.bottom <= viewportBounds.bottom + 2 &&
+        h1Rect.left >= viewportBounds.left - 2 &&
+        h1Rect.right <= viewportBounds.right + 2
+      if (isH1FullyVisible) {
+        const titleChunk = ttsData.chunks.find(c => c.paragraphIndex === -1)
+        if (titleChunk) return titleChunk.globalIndex
+      }
+    }
+
+    // 2. Query all paragraph elements with data-paragraph-index
+    const paragraphEls = Array.from(
+      document.querySelectorAll<HTMLElement>(
+        settings.pageMode === 'paginate'
+          ? '.reader-paginated-column-body [data-paragraph-index]'
+          : '.reading-content [data-paragraph-index]'
+      )
+    )
+
+    if (paragraphEls.length === 0) return 0
+
+    const paragraphItems = paragraphEls.map(el => {
+      const pIdx = parseInt(el.getAttribute('data-paragraph-index') || '0', 10)
+      const r = el.getBoundingClientRect()
+      return {
+        index: pIdx,
+        rect: { top: r.top, bottom: r.bottom, left: r.left, right: r.right },
+      }
+    })
+
+    const targetPIndex = findFirstFullyVisibleParagraphIndex(paragraphItems, viewportBounds)
+
+    const targetChunk = ttsData.chunks.find(c => c.paragraphIndex === targetPIndex)
+    return targetChunk ? targetChunk.globalIndex : 0
+  }, [ttsData.chunks, settings.pageMode])
+
   const toggleTts = useCallback(() => {
     if (!ttsActive) {
       setTtsActive(true)
-      playTtsChunk(currentChunkIndex)
+      const startIdx = getInitialTtsChunkIndex()
+      playTtsChunk(startIdx)
     } else if (ttsPlayState === 'playing') {
       pauseTts()
     } else if (ttsPlayState === 'paused') {
@@ -463,7 +528,7 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
     } else {
       playTtsChunk(currentChunkIndex)
     }
-  }, [ttsActive, ttsPlayState, playTtsChunk, currentChunkIndex, pauseTts, resumeTts])
+  }, [ttsActive, ttsPlayState, playTtsChunk, currentChunkIndex, pauseTts, resumeTts, getInitialTtsChunkIndex])
 
   const handleParagraphClick = useCallback((pIdx: number) => {
     // Only jump to paragraph if TTS is already active; don't auto-start reading on arbitrary clicks

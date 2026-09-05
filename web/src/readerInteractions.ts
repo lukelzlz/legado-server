@@ -89,4 +89,57 @@ export function calculatePaginationLayout({
   }
 }
 
+export type ParagraphRect = {
+  top: number
+  bottom: number
+  left: number
+  right: number
+}
+
+export type ViewportBounds = {
+  top: number
+  bottom: number
+  left: number
+  right: number
+}
+
+/**
+ * Calculates the first paragraph index that is fully visible within the given viewport bounds.
+ * If no paragraph is fully visible, falls back to the best partially visible paragraph, or 0.
+ */
+export function findFirstFullyVisibleParagraphIndex(
+  paragraphs: Array<{ index: number; rect: ParagraphRect }>,
+  viewport: ViewportBounds,
+  tolerance = 2
+): number {
+  if (!paragraphs || paragraphs.length === 0) return 0
+
+  // 1. Look for the first paragraph whose rect is completely inside the viewport bounds
+  for (const p of paragraphs) {
+    const fullyInsideY = p.rect.top >= viewport.top - tolerance && p.rect.bottom <= viewport.bottom + tolerance
+    const fullyInsideX = p.rect.left >= viewport.left - tolerance && p.rect.right <= viewport.right + tolerance
+    if (fullyInsideY && fullyInsideX) {
+      return p.index
+    }
+  }
+
+  // 2. If none are fully visible (e.g. paragraph is taller than viewport), find the first paragraph that has substantial visibility inside the viewport
+  for (const p of paragraphs) {
+    const visibleTop = Math.max(p.rect.top, viewport.top)
+    const visibleBottom = Math.min(p.rect.bottom, viewport.bottom)
+    const visibleHeight = visibleBottom - visibleTop
+
+    const visibleLeft = Math.max(p.rect.left, viewport.left)
+    const visibleRight = Math.min(p.rect.right, viewport.right)
+    const visibleWidth = visibleRight - visibleLeft
+
+    if (visibleHeight > 0 && visibleWidth > 0) {
+      return p.index
+    }
+  }
+
+  return 0
+}
+
+
 

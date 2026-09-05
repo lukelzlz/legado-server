@@ -81,6 +81,7 @@ AI 与人类协作时必须明确当前达到的完成度阶梯，严禁混淆�
 - **[TTS/朗读] 跨章连播状态与正文加载竞态守卫**：切章（`changeChapter`）时必须同步将 `loadedChapterUrl` 置空并清除旧 `content`，连播 `useEffect` 必须严格校验 `loadedChapterUrl === chapter?.url` 且使用 `playTtsChunkRef.current` 调用最新闭包，杜绝切章瞬间误读上一章旧正文；正文段落点击选播严格守卫 `if (!ttsActive) return`，防止普通阅读点选误触发朗读。
 - **[TTS/朗读] 单句相对时钟锚定（Anchor Resync）、600ms 尾部静音看门狗与 5 分片前瞻**：原绝对时钟累加（`audioCursorMs`）在播放约 2 分钟（40~50 分片）后，由于 MP3 Priming/Padding 样本与声卡重采样微小物理偏差累积超过 180ms 触发静音死锁；章节末尾 Edge-TTS 音频常包含 300~500ms 尾部静音帧，播放器在最后一两句易在距时长 300~400ms 处停止推进。解决方案：① 服务端 `chunk_end` 显式下发单分片 `durationMs`；② 前端切句时动态锚定 `anchorMs = audio.currentTime * 1000`，单句相对判定 `nowMs >= anchorMs + durationMs - 60`，跨句累积漂移彻底归零；③ 配备停滞看门狗（Stall Watchdog），放宽窗口至 `nowMs >= anchorMs + durationMs - 600`，停滞 > 350ms 强制推进 `onEnd`，杜绝章末短分片尾部静音卡死；④ `ReaderScreen` 前瞻缓冲扩大至 5 分片（`lookahead <= 5`），并在距离章末 5 句内提前预载下一章正文，避免断流卡顿；⑤ 监听 `<audio>` 的 `stalled` 事件与 `waiting` 状态，并在非暂停停滞 > 500ms 时自动调用 `.play()` 唤醒底层解码管道。
 - **[TTS/朗读] HTML5 audio.play() 暂停打断与 AbortError 守卫**：浏览器原生规范中，当调用 `audio.pause()`、重置 `src` 或切章重置时，正在 pending 的 `audio.play()` Promise 会被浏览器自动 reject 抛出 DOMException (`AbortError: The play() request was interrupted by a call to pause(). https://goo.gl/LdLk22`)。这属于用户主动暂停或切流，必须在 `HttpAudioTtsEngine`（play catch、reportError、isPaused 状态跟踪）与 `ReaderScreen`（onError 回调）中多层静默拦截 `AbortError` 与 interrupted 关键词，严禁向用户弹窗报错。
+- **[TTS/朗读] 开启朗读时视口首个完整可见段落智能对齐**：当用户在阅读中途点击开启 TTS 朗读时，阅读器会基于当前排版视图模式（滚动模式避开顶部 56px 导航栏、翻页模式限定分栏视口内）精准计算视口内第一个完整可见的段落（或章节标题 `<h1>`），并以此为朗读起始分片，避免每次开启都跳回章首或历史断点的突兀体验。
 - **[容器/云原生] 阿里云计算巢与 ECI 部署**：ROS 模板必须包含完整 VPC/安全组声明、ECI 容器组规格与数据持久化挂载；国内推荐使用阿里云个人镜像加速源。
 
 ---
@@ -134,6 +135,7 @@ AI 与人类协作时必须明确当前达到的完成度阶梯，严禁混淆�
 | 2026-09-05 | Fix | 修复 CodeQL 扫描告警：补充 CI 权限声明并过滤封面图片协议防 XSS | - | Pushed |
 | 2026-09-05 | Fix | 过滤 audio.play() 暂停与切流打断错误，消除 pause 打断时的 Toast 警告提示 | - | Pushed |
 | 2026-09-05 | Fix | 根治 TTS 连续播放约 2 分钟时钟漂移累积死锁与章末静音停滞：单句相对锚定、600ms看门狗与5分片前瞻 | [`docs/acceptance/ACCEPT-008-tts-continuous-playback-stability.md`](file:///Users/zhangran/Documents/antigravity/joyful-galileo/docs/acceptance/ACCEPT-008-tts-continuous-playback-stability.md) | Deployed |
+| 2026-09-05 | Feat | 开启 TTS 朗读时自动对齐当前视口最上方首个完整可见段落 | - | Deployed |
 
 ---
 

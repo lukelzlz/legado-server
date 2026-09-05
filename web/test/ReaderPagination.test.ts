@@ -1,6 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
+  findFirstFullyVisibleParagraphIndex,
   calculatePaginationLayout,
   isAtBottomBoundary,
   isAtTopBoundary,
@@ -318,6 +319,44 @@ test('ReaderPagination - Chapter Transition: Turning back from chapter beginning
   assert.equal(resolveTargetScroll('first', null, scrollHeight, clientHeight), 0, 'Navigating forward in scroll mode lands on top (0)')
   assert.equal(resolveTargetScroll(null, 0.4, scrollHeight, clientHeight), 1080, 'Resuming 40% progress lands on 1080px')
 })
+
+test('ReaderPagination - findFirstFullyVisibleParagraphIndex: finds first fully visible paragraph on screen', () => {
+  // Case 1: Scroll mode viewport (height = 800, top = 56 header height, bottom = 800)
+  // Paragraph 0: top = 10, bottom = 90 (partially cut by top header 56)
+  // Paragraph 1: top = 110, bottom = 220 (fully visible!)
+  // Paragraph 2: top = 240, bottom = 360 (fully visible)
+  const paragraphs1 = [
+    { index: 0, rect: { top: 10, bottom: 90, left: 100, right: 700 } },
+    { index: 1, rect: { top: 110, bottom: 220, left: 100, right: 700 } },
+    { index: 2, rect: { top: 240, bottom: 360, left: 100, right: 700 } },
+  ]
+  const scrollViewport = { top: 56, bottom: 800, left: 0, right: 800 }
+  assert.equal(findFirstFullyVisibleParagraphIndex(paragraphs1, scrollViewport), 1, 'Should pick paragraph 1 as first fully visible')
+
+  // Case 2: Paginated mode viewport (column track: left = 0, right = 600)
+  // Paragraph 0: left = -640, right = -40 (previous page)
+  // Paragraph 1: left = -40, right = 200 (crossing page boundary, not fully on current page)
+  // Paragraph 2: left = 10, right = 590 (fully on current page)
+  // Paragraph 3: left = 10, right = 590 (fully on current page)
+  const paragraphs2 = [
+    { index: 0, rect: { top: 50, bottom: 150, left: -640, right: -40 } },
+    { index: 1, rect: { top: 160, bottom: 260, left: -40, right: 200 } },
+    { index: 2, rect: { top: 270, bottom: 380, left: 10, right: 590 } },
+    { index: 3, rect: { top: 390, bottom: 500, left: 10, right: 590 } },
+  ]
+  const paginatedViewport = { top: 40, bottom: 700, left: 0, right: 600 }
+  assert.equal(findFirstFullyVisibleParagraphIndex(paragraphs2, paginatedViewport), 2, 'Should pick paragraph 2 as first fully visible on current page')
+
+  // Case 3: Empty paragraphs fallback
+  assert.equal(findFirstFullyVisibleParagraphIndex([], scrollViewport), 0, 'Empty list defaults to 0')
+
+  // Case 4: No paragraph fully visible (e.g. huge paragraph taller than viewport), fallback to visible one
+  const giantParagraph = [
+    { index: 3, rect: { top: -200, bottom: 1200, left: 100, right: 700 } }
+  ]
+  assert.equal(findFirstFullyVisibleParagraphIndex(giantParagraph, scrollViewport), 3, 'Falls back to visible paragraph if taller than screen')
+})
+
 
 
 

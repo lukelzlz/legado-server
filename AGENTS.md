@@ -79,6 +79,7 @@ AI 与人类协作时必须明确当前达到的完成度阶梯，严禁混淆�
 - **[TTS/朗读] Edge-TTS WebSocket 握手版本必须与 Chromium 同步更新**：Edge-TTS 连接头中 `Sec-MS-GEC-Version`（如 `1-143.0.3650.75`）与 `User-Agent` 中的 Chrome 版本号必须保持一致；同时须携带随机 `Cookie: muid=<16字节大写hex>` 头，否则 WebSocket 握手被微软服务端拒绝导致合成静默失败（返回 0 字节音频）。版本信息参考 `edge-tts` Python 包的 `constants.py`。
 - **[TTS/朗读] 孤立标点切片导致 ERR_REQUEST_RANGE_NOT_SATISFIABLE 的三层防御**：TTS 分句正则可能将中文对话引号 `"` 切为孤立碎片，发送空/纯标点文本至 Edge-TTS 会返回 0 字节音频，前端 `URL.createObjectURL(0字节blob)` 后浏览器发出 Range 请求，得到 HTTP 416 崩溃。**必须在三处同时加守卫**：① `splitSentences` 过滤去标点后有效字符 `< 2` 的碎片；② `HttpAudioTtsEngine.speak/prefetch` 调用 `isEffectiveText()` 判断，无效时 `setTimeout(onEnd,0)` 跳过；③ 服务端 `EdgeTtsService.synthesize` 检测去标点后有效字符 `< 2` 直接返回 `ByteArray(0)` 不请求上游。
 - **[TTS/朗读] 跨章连播状态与正文加载竞态守卫**：切章（`changeChapter`）时必须同步将 `loadedChapterUrl` 置空并清除旧 `content`，连播 `useEffect` 必须严格校验 `loadedChapterUrl === chapter?.url` 且使用 `playTtsChunkRef.current` 调用最新闭包，杜绝切章瞬间误读上一章旧正文；正文段落点击选播严格守卫 `if (!ttsActive) return`，防止普通阅读点选误触发朗读。
+- **[TTS/朗读] 服务端会话流时钟漂移与 2-Chunk 前瞻缓冲防卡死**：浏览器 HTML5 `<audio>` 播放连续 chunked MP3 时，由于音频解码器填充和硬件采样率时钟轻微漂移，且原生 `timeupdate` 事件仅约 250ms 触发一次，单分片前瞻容易在长句播放完瞬间因 `currentTime` 未达 `endMs` 导致 `onEnd` 判定阻塞。必须保持：① 前端 `ReaderScreen` 保持 2 分片前瞻预加载（`lookahead <= 2`），确保音频流管道不断粮；② `HttpAudioTtsEngine` 增加 100ms 播放监控轮询，并将 `drainPlayback` 时钟容差设为 180ms，实现无缝断句高亮切换。
 - **[容器/云原生] 阿里云计算巢与 ECI 部署**：ROS 模板必须包含完整 VPC/安全组声明、ECI 容器组规格与数据持久化挂载；国内推荐使用阿里云个人镜像加速源。
 
 ---
@@ -94,6 +95,7 @@ AI 与人类协作时必须明确当前达到的完成度阶梯，严禁混淆�
 | PROPOSAL-004 | 现代化 Web 阅读器、超大目录虚拟化与双栏宽屏排版 | [`docs/proposals/PROPOSAL-004-modern-web-reader-and-toc-virtualization.md`](file:///Users/zhangran/Documents/antigravity/joyful-galileo/docs/proposals/PROPOSAL-004-modern-web-reader-and-toc-virtualization.md) | Implemented |
 | PROPOSAL-005 | 支持书源登录、凭据持久化与动态 LoginUI 交互 | [`docs/proposals/PROPOSAL-005-book-source-login-and-credential-storage.md`](file:///Users/zhangran/Documents/antigravity/joyful-galileo/docs/proposals/PROPOSAL-005-book-source-login-and-credential-storage.md) | Implemented |
 | PROPOSAL-006 | 现代化 TTS 朗读引擎与沉浸式听书体验 | [`docs/proposals/PROPOSAL-006-tts-engine-and-immersive-reading-experience.md`](file:///Users/zhangran/Documents/antigravity/joyful-galileo/docs/proposals/PROPOSAL-006-tts-engine-and-immersive-reading-experience.md) | Implemented |
+| PROPOSAL-007 | 服务端会话级连续 TTS 音频流与移动端后台稳定播放 | [`docs/proposals/PROPOSAL-007-server-session-tts-stream-and-mobile-background-playback.md`](file:///disk/legado-server/docs/proposals/PROPOSAL-007-server-session-tts-stream-and-mobile-background-playback.md) | Implemented |
 
 ### 架构决策记录 (ADR)
 | 编号 | 决策标题 | 关联文档 | 状态 |
@@ -104,6 +106,7 @@ AI 与人类协作时必须明确当前达到的完成度阶梯，严禁混淆�
 | ADR-004 | 阅读器跨章反向翻页定位状态机与异步排版守卫 | [`docs/decisions/ADR-004-cross-chapter-navigation-state-machine.md`](file:///Users/zhangran/Documents/antigravity/joyful-galileo/docs/decisions/ADR-004-cross-chapter-navigation-state-machine.md) | Accepted |
 | ADR-005 | 书源登录鉴权、动态 LoginUI 驱动与凭据状态持久化 | [`docs/decisions/ADR-005-book-source-login-ui-and-session-state.md`](file:///Users/zhangran/Documents/antigravity/joyful-galileo/docs/decisions/ADR-005-book-source-login-ui-and-session-state.md) | Accepted |
 | ADR-006 | 双模式 TTS 引擎、分片预缓冲与视口高亮联动架构 | [`docs/decisions/ADR-006-dual-tts-engine-and-audio-streaming-architecture.md`](file:///Users/zhangran/Documents/antigravity/joyful-galileo/docs/decisions/ADR-006-dual-tts-engine-and-audio-streaming-architecture.md) | Accepted |
+| ADR-007 | 服务端会话级连续 MP3 音频流与独立进度事件通道 | [`docs/decisions/ADR-007-session-scoped-continuous-tts-audio-stream.md`](file:///disk/legado-server/docs/decisions/ADR-007-session-scoped-continuous-tts-audio-stream.md) | Accepted |
 
 ### 工作记忆与历史推演归档 (Sessions Chronicle)
 | 日期 / ID | 类型 | 标题 / 议题 | 关联文档 | 状态 |
@@ -123,6 +126,7 @@ AI 与人类协作时必须明确当前达到的完成度阶梯，严禁混淆�
 | 2026-08-31 | Fix | 防御后引号切片导致 0 字节 blob 引发 ERR_REQUEST_RANGE_NOT_SATISFIABLE | [`docs/acceptance/ACCEPT-TTS-001.md`](file:///Users/zhangran/Documents/antigravity/joyful-galileo/docs/acceptance/ACCEPT-TTS-001.md) | Pushed |
 | 2026-08-31 | Fix | 修复 TTS 跨章连播正文加载时序竞态与未开启朗读时点击误触发 | - | Pushed |
 | 2026-09-05 | Docs | 新增阿里云计算巢一键秒级部署入口与使用说明 | - | Pushed |
+| 2026-09-05 | Feat | 服务端会话级连续 TTS 音频流与移动端后台稳定播放 | [`docs/acceptance/ACCEPT-007-server-session-tts-stream.md`](file:///Users/zhangran/Documents/antigravity/joyful-galileo/docs/acceptance/ACCEPT-007-server-session-tts-stream.md) | Accepted & Pushed |
 
 ---
 

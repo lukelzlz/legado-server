@@ -192,6 +192,114 @@ class EdgeTtsService(
         }
     }
 
+    /**
+     * Sends MP3 frames to the callback as they arrive from Edge-TTS while also
+     * retaining the existing bounded in-memory cache for completed chunks.
+     */
+    fun synthesizeStream(
+        text: String,
+        voice: String = "zh-CN-XiaoxiaoNeural",
+        rate: Int = 0,
+        pitch: Int = 0,
+        timeoutSeconds: Long = 15,
+        onAudio: (ByteArray) -> Unit,
+    ) {
+        val cleanText = text.trim()
+        if (cleanText.isEmpty()) return
+
+        val strippedForCheck = cleanText.replace(Regex("[\\s\\p{Punct}\\u2000-\\u206F\\u2018\\u2019\\u201C\\u201D\\u3000-\\u303F\\uFF00-\\uFFEF]"), "")
+        if (strippedForCheck.length < 2) return
+
+        val cacheKey = "$voice:$rate:$pitch:$cleanText"
+        cache[cacheKey]?.let { cached ->
+            onAudio(cached)
+            return
+        }
+
+        val rateStr = if (rate >= 0) "+$rate%" else "$rate%"
+        val pitchStr = if (pitch >= 0) "+${pitch}Hz" else "${pitch}Hz"
+        val requestId = UUID.randomUUID().toString().replace("-", "")
+        val escapedText = xmlEscape(cleanText)
+        val ssml = "<speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis' xml:lang='zh-CN'>" +
+                "<voice name='$voice'>" +
+                "<prosody pitch='$pitchStr' rate='$rateStr' volume='+0%'>$escapedText</prosody>" +
+                "</voice></speak>"
+        val audioBuffer = ByteArrayOutputStream()
+        val future = CompletableFuture<Unit>()
+
+        val listener = object : WebSocket.Listener {
+            override fun onText(webSocket: WebSocket, data: CharSequence, last: Boolean): CompletionStage<*>? {
+                if (data.toString().contains("Path:turn.end")) {
+                    future.complete(Unit)
+                    webSocket.sendClose(WebSocket.NORMAL_CLOSURE, "Done")
+                }
+                return super.onText(webSocket, data, last)
+            }
+
+            override fun onBinary(webSocket: WebSocket, data: ByteBuffer, last: Boolean): CompletionStage<*>? {
+                if (data.remaining() > 2) {
+                    val headerLen = data.short.toInt() and 0xFFFF
+                    if (data.remaining() >= headerLen) {
+                        val headerBytes = ByteArray(headerLen)
+                        data.get(headerBytes)
+                        val audioBytes = ByteArray(data.remaining())
+                        data.get(audioBytes)
+                        if (audioBytes.isNotEmpty()) {
+                            synchronized(audioBuffer) { audioBuffer.write(audioBytes) }
+                            onAudio(audioBytes)
+                        }
+                    }
+                }
+                return super.onBinary(webSocket, data, last)
+            }
+
+            override fun onError(webSocket: WebSocket, error: Throwable) {
+                future.completeExceptionally(error)
+            }
+
+            override fun onClose(webSocket: WebSocket, statusCode: Int, reason: String): CompletionStage<*>? {
+                if (!future.isDone) future.complete(Unit)
+                return super.onClose(webSocket, statusCode, reason)
+            }
+        }
+
+        val connectionId = UUID.randomUUID().toString().replace("-", "")
+        val secMsGec = generateSecMsGec()
+        val muid = generateMuid()
+        val wssUrl = "$WSS_BASE_URL?TrustedClientToken=$TRUSTED_CLIENT_TOKEN&Sec-MS-GEC=$secMsGec&Sec-MS-GEC-Version=$SEC_MS_GEC_VERSION&ConnectionId=$connectionId"
+        val ws = client.newWebSocketBuilder()
+            .header("User-Agent", USER_AGENT)
+            .header("Origin", ORIGIN)
+            .header("Pragma", "no-cache")
+            .header("Cache-Control", "no-cache")
+            .header("Accept-Encoding", "gzip, deflate, br, zstd")
+            .header("Accept-Language", "en-US,en;q=0.9")
+            .header("Cookie", "muid=$muid;")
+            .buildAsync(URI.create(wssUrl), listener)
+            .get(timeoutSeconds, TimeUnit.SECONDS)
+
+        try {
+            val configMsg = "Content-Type:application/json; charset=utf-8\r\n" +
+                    "Path:speech.config\r\n\r\n" +
+                    "{\"context\":{\"synthesis\":{\"audio\":{\"metadataoptions\":{\"sentenceBoundaryEnabled\":\"false\",\"wordBoundaryEnabled\":\"false\"},\"outputFormat\":\"audio-24khz-48kbitrate-mono-mp3\"}}}}"
+            ws.sendText(configMsg, true)
+            val ssmlMsg = "X-RequestId:$requestId\r\n" +
+                    "Content-Type:application/ssml+xml\r\n" +
+                    "Path:ssml\r\n\r\n" +
+                    ssml
+            ws.sendText(ssmlMsg, true)
+            future.get(timeoutSeconds, TimeUnit.SECONDS)
+            val result = audioBuffer.toByteArray()
+            if (result.isNotEmpty()) {
+                if (cache.size > maxCacheSize) cache.clear()
+                cache[cacheKey] = result
+            }
+        } catch (e: Exception) {
+            ws.abort()
+            throw e
+        }
+    }
+
     fun synthesizeCustom(request: TtsSpeakRequest, timeoutSeconds: Long = 15): Pair<String, ByteArray> {
         val targetUrl = request.customUrl ?: throw IllegalArgumentException("customUrl is required for custom TTS")
         val cleanText = request.text.trim()
@@ -231,6 +339,61 @@ class EdgeTtsService(
         val response = client.send(reqBuilder.build(), HttpResponse.BodyHandlers.ofByteArray())
         val contentType = response.headers().firstValue("Content-Type").orElse("audio/mpeg")
         return Pair(contentType, response.body())
+    }
+
+    fun synthesizeCustomStream(
+        request: TtsSessionChunkRequest,
+        timeoutSeconds: Long = 15,
+        onAudio: (ByteArray) -> Unit,
+    ): String {
+        val targetUrl = request.customUrl ?: throw IllegalArgumentException("customUrl is required for custom TTS")
+        val cleanText = request.text.trim()
+        val speedMultiplier = (1.0 + request.rate / 100.0).coerceIn(0.2, 4.0)
+        val resolvedUrl = targetUrl
+            .replace("{{speakText}}", URLEncoder.encode(cleanText, StandardCharsets.UTF_8))
+            .replace("{{speakVoice}}", URLEncoder.encode(request.voice, StandardCharsets.UTF_8))
+            .replace("{{speakSpeed}}", speedMultiplier.toString())
+        val method = request.customMethod?.uppercase() ?: "GET"
+        val reqBuilder = HttpRequest.newBuilder().timeout(Duration.ofSeconds(timeoutSeconds))
+        request.customHeader?.let { headerRaw ->
+            runCatching {
+                val json = Json.parseToJsonElement(headerRaw).jsonObject
+                for ((k, v) in json) reqBuilder.header(k, v.jsonPrimitive.content)
+            }
+        }
+        if (method == "POST") {
+            val body = (request.customBody ?: "")
+                .replace("{{speakText}}", cleanText)
+                .replace("{{speakVoice}}", request.voice)
+                .replace("{{speakSpeed}}", speedMultiplier.toString())
+            reqBuilder.uri(URI.create(resolvedUrl))
+            reqBuilder.POST(HttpRequest.BodyPublishers.ofString(body, StandardCharsets.UTF_8))
+        } else {
+            reqBuilder.uri(URI.create(resolvedUrl))
+            reqBuilder.GET()
+        }
+
+        val response = client.send(reqBuilder.build(), HttpResponse.BodyHandlers.ofInputStream())
+        response.body().use { input ->
+            if (response.statusCode() !in 200..299) {
+                throw IllegalStateException("自定义 TTS 返回 HTTP ${response.statusCode()}")
+            }
+            val contentType = response.headers().firstValue("Content-Type")
+                .orElse("audio/mpeg")
+                .substringBefore(';')
+                .trim()
+                .lowercase()
+            if (contentType !in setOf("audio/mpeg", "audio/mp3")) {
+                throw IllegalArgumentException("自定义 TTS 必须返回 audio/mpeg，实际为 $contentType")
+            }
+            val buffer = ByteArray(8192)
+            while (true) {
+                val count = input.read(buffer)
+                if (count < 0) break
+                if (count > 0) onAudio(buffer.copyOf(count))
+            }
+            return contentType
+        }
     }
 
     private fun xmlEscape(str: String): String {

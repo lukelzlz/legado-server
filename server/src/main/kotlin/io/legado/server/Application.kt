@@ -31,9 +31,11 @@ fun Application.legadoApplication(config: ServerConfig = ServerConfig.fromEnviro
     val subscriptions = SubscriptionService(database) { message -> log.info(message) }
     val runner = RuleRunner(database = database)
     val bookCache = BookCacheService(database, runner) { message -> log.info(message) }
+    val edgeTts = EdgeTtsService()
+    val ttsSessions = TtsSessionService(edgeTts)
     subscriptions.start()
     bookCache.start()
-    environment.monitor.subscribe(ApplicationStopped) { subscriptions.stop(); bookCache.stop(); database.close() }
+    environment.monitor.subscribe(ApplicationStopped) { subscriptions.stop(); bookCache.stop(); ttsSessions.close(); database.close() }
 
     install(ContentNegotiation) {
         json(Json { ignoreUnknownKeys = true; explicitNulls = false })
@@ -56,8 +58,7 @@ fun Application.legadoApplication(config: ServerConfig = ServerConfig.fromEnviro
     routing {
         get("/healthz") { call.respond(mapOf("status" to "ok")) }
         authRoutes(auth)
-        val edgeTts = EdgeTtsService()
-        apiRoutes(database, auth, runner, CoverCache(config.coverCacheDirectory), subscriptions, bookCache, edgeTts)
+        apiRoutes(database, auth, runner, CoverCache(config.coverCacheDirectory), subscriptions, bookCache, edgeTts, ttsSessions)
         staticWeb()
     }
 }

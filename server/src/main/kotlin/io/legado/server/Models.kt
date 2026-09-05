@@ -249,3 +249,47 @@ data class TtsSpeakRequest(
     val customMethod: String? = null,
     val customBody: String? = null,
 )
+
+@Serializable
+data class TtsSessionInfo(
+    val sessionId: String,
+    val audioUrl: String,
+    val eventsUrl: String,
+)
+
+@Serializable
+data class TtsSessionChunkRequest(
+    val chunkId: String,
+    val text: String,
+    val chapterIndex: Int = -1,
+    val paragraphIndex: Int = -1,
+    val engine: String = "edge",
+    val voice: String = "zh-CN-XiaoxiaoNeural",
+    val rate: Int = 0,
+    val pitch: Int = 0,
+    val customUrl: String? = null,
+    val customHeader: String? = null,
+    val customMethod: String? = null,
+    val customBody: String? = null,
+)
+
+@Serializable
+data class TtsSessionControlRequest(
+    val action: String,
+)
+
+@Serializable
+data class TtsSessionAck(
+    val accepted: Boolean,
+)
+
+@Serializable
+data class TtsSessionEvent(
+    val type: String,
+    val sessionId: String,
+    val chunkId: String? = null,
+    val chapterIndex: Int = -1,
+    val paragraphIndex: Int = -1,
+    val audioEndMs: Long? = null,
+    val message: String? = null,
+)

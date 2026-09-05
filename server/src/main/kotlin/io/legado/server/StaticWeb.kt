@@ -7,6 +7,7 @@ import io.ktor.server.routing.*
 import io.ktor.server.http.content.*
 
 fun Route.staticWeb() {
+    get("/index.html") { call.respondResource("static/index.html") }
     staticResources("/", "static")
     get("/") { call.respondResource("static/index.html") }
 }

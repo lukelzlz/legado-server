@@ -100,6 +100,27 @@ export type TtsSpeakRequest = {
   customBody?: string
 }
 
+export type TtsSessionInfo = {
+  sessionId: string
+  audioUrl: string
+  eventsUrl: string
+}
+
+export type TtsSessionChunkRequest = {
+  chunkId: string
+  text: string
+  chapterIndex: number
+  paragraphIndex: number
+  engine: string
+  voice: string
+  rate: number
+  pitch: number
+  customUrl?: string
+  customHeader?: string
+  customMethod?: string
+  customBody?: string
+}
+
 export const api = {
   session: () => request<{ authenticated: boolean; csrfToken?: string }>('/api/auth/session'),
   login: (password: string) => request<{ csrfToken: string }>('/api/auth/login', { method: 'POST', body: JSON.stringify({ password }) }),
@@ -139,6 +160,10 @@ export const api = {
   switchBookshelfSource: (value: BookshelfSourceSwitch) => request<BookshelfItem>('/api/bookshelf/switch-source', { method: 'POST', body: JSON.stringify(value) }),
   cover: (key: string) => `/api/covers/${encodeURIComponent(key)}`,
   getTtsVoices: () => request<TtsVoice[]>('/api/tts/voices'),
+  createTtsSession: (signal?: AbortSignal) => request<TtsSessionInfo>('/api/tts/session', { method: 'POST', body: '{}', signal }),
+  appendTtsSessionChunk: (sessionId: string, chunk: TtsSessionChunkRequest) => request<{ accepted: boolean }>(`/api/tts/session/${encodeURIComponent(sessionId)}/chunks`, { method: 'POST', body: JSON.stringify(chunk) }),
+  controlTtsSession: (sessionId: string, action: 'pause' | 'resume' | 'stop') => request<{ accepted: boolean }>(`/api/tts/session/${encodeURIComponent(sessionId)}/control`, { method: 'POST', body: JSON.stringify({ action }) }),
+  deleteTtsSession: (sessionId: string) => request<void>(`/api/tts/session/${encodeURIComponent(sessionId)}`, { method: 'DELETE' }),
   fetchTtsAudioBlob: async (req: TtsSpeakRequest): Promise<Blob> => {
     const headers = new Headers({ 'Content-Type': 'application/json' })
     if (csrfToken) headers.set('X-CSRF-Token', csrfToken)

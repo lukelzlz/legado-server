@@ -1,7 +1,13 @@
-import { api, TtsSpeakRequest } from './api'
-import { ReaderSettings, TtsEngineType } from './readerSettings'
+import { api, TtsSessionChunkRequest } from './api'
+import { ReaderSettings } from './readerSettings'
 
 export type TtsPlayState = 'idle' | 'buffering' | 'playing' | 'paused'
+export type TtsSpeakMode = 'replace' | 'continue'
+export type TtsChunkContext = {
+  chunkId?: string
+  chapterIndex?: number
+  paragraphIndex?: number
+}
 
 /**
  * Guard: returns true only if the text has >= 2 meaningful characters after stripping
@@ -24,6 +30,8 @@ export interface ITtsEngine {
     settings: ReaderSettings,
     onEnd: () => void,
     onError: (err: Error) => void,
+    mode?: TtsSpeakMode,
+    context?: TtsChunkContext,
   ): void
   pause(): void
   resume(): void
@@ -44,6 +52,8 @@ export class WebSpeechEngine implements ITtsEngine {
     settings: ReaderSettings,
     onEnd: () => void,
     onError: (err: Error) => void,
+    _mode: TtsSpeakMode = 'replace',
+    _context?: TtsChunkContext,
   ): void {
     this.stop()
     if (!('speechSynthesis' in window)) {
@@ -137,42 +147,82 @@ export class WebSpeechEngine implements ITtsEngine {
  */
 export class HttpAudioTtsEngine implements ITtsEngine {
   private audio: HTMLAudioElement | null = null
-  private currentObjectUrl: string | null = null
-  private preloadedBlobUrls = new Map<string, string>()
-  private onEndCb: (() => void) | null = null
-  private onErrorCb: ((err: Error) => void) | null = null
-  private abortController: AbortController | null = null
+  private sessionId: string | null = null
+  private sessionSettingsKey: string | null = null
+  private sessionPromise: Promise<void> | null = null
+  private sessionAbortController: AbortController | null = null
+  private eventSource: EventSource | null = null
+  private generation = 0
+  private itemSequence = 0
+  private pendingItems: StreamItem[] = []
+  private submittedItems = new Set<string>()
+  private completedItems = new Set<string>()
+  private readyItems = new Map<string, number | null>()
+  private callbacks = new Map<string, { onEnd: () => void; onError: (err: Error) => void }>()
+  private currentItemId: string | null = null
+  private currentItem: StreamItem | null = null
+  private currentSettings: ReaderSettings | null = null
+  private lastError: Error | null = null
+  private recoveryAttempts = 0
+  private playbackTimer: number | null = null
 
   private getAudio(): HTMLAudioElement {
     if (!this.audio) {
       this.audio = new Audio()
       this.audio.preload = 'auto'
-      this.audio.addEventListener('ended', () => {
-        this.cleanupCurrentUrl()
-        this.onEndCb?.()
-      })
       this.audio.addEventListener('error', () => {
-        this.cleanupCurrentUrl()
         const err = this.audio?.error
-        this.onErrorCb?.(new Error(err?.message || '音频播放遇到错误'))
+        this.recoverOrReport(new Error(err?.message || '音频播放遇到错误'))
       })
+      this.audio.addEventListener('ended', () => {
+        this.stopPlaybackMonitor()
+        this.recoverOrReport(new Error('音频流意外结束'))
+      })
+      this.audio.addEventListener('play', () => this.startPlaybackMonitor())
+      this.audio.addEventListener('playing', () => {
+        this.startPlaybackMonitor()
+        this.drainPlayback()
+      })
+      this.audio.addEventListener('pause', () => this.stopPlaybackMonitor())
+      this.audio.addEventListener('waiting', () => this.drainPlayback())
+      this.audio.addEventListener('timeupdate', () => this.drainPlayback())
     }
     return this.audio
   }
 
-  async prefetch(text: string, settings: ReaderSettings): Promise<void> {
+  private startPlaybackMonitor() {
+    this.stopPlaybackMonitor()
+    this.playbackTimer = window.setInterval(() => {
+      if (this.audio && !this.audio.paused) {
+        this.drainPlayback()
+      }
+    }, 100)
+  }
+
+  private stopPlaybackMonitor() {
+    if (this.playbackTimer !== null) {
+      window.clearInterval(this.playbackTimer)
+      this.playbackTimer = null
+    }
+  }
+
+  async prefetch(text: string, settings: ReaderSettings, context: TtsChunkContext = {}): Promise<void> {
     const clean = text.trim()
     if (!isEffectiveText(clean)) return
+    if (!this.sessionId && !this.sessionPromise) return
     const key = this.getCacheKey(clean, settings)
-    if (this.preloadedBlobUrls.has(key)) return
-
-    try {
-      const blob = await this.fetchAudioBlob(clean, settings)
-      if (blob.size === 0) return  // skip empty audio, don't cache dead blob URL
-      const url = URL.createObjectURL(blob)
-      this.preloadedBlobUrls.set(key, url)
-    } catch {
-      // Ignore prefetch errors silently
+    const chunkId = context.chunkId || ''
+    if (
+      this.pendingItems.some(item => item.key === key || (chunkId && item.id === chunkId)) ||
+      this.currentItem?.key === key ||
+      (chunkId && this.submittedItems.has(chunkId))
+    ) {
+      return
+    }
+    const item = this.createItem(clean, settings, context)
+    this.pendingItems.push(item)
+    if (this.sessionId && this.sessionSettingsKey === this.getSettingsKey(settings)) {
+      await this.submitItem(item, this.generation)
     }
   }
 
@@ -181,104 +231,274 @@ export class HttpAudioTtsEngine implements ITtsEngine {
     settings: ReaderSettings,
     onEnd: () => void,
     onError: (err: Error) => void,
+    mode: TtsSpeakMode = 'replace',
+    context: TtsChunkContext = {},
   ): void {
-    this.stop()
     const clean = text.trim()
     if (!isEffectiveText(clean)) {
-      // Skip punctuation-only or trivially short chunks without creating a blob
       setTimeout(onEnd, 0)
       return
     }
-
-    this.onEndCb = onEnd
-    this.onErrorCb = onError
-    this.abortController = new AbortController()
-
-    const audio = this.getAudio()
-    const key = this.getCacheKey(clean, settings)
-
-    const startPlayback = (blobUrl: string) => {
-      this.currentObjectUrl = blobUrl
-      audio.src = blobUrl
-      audio.playbackRate = 1.0 // speed is already controlled via TTS synthesis rate
-      audio.play().catch((err) => {
-        if (this.abortController?.signal.aborted) return
-        onError(err instanceof Error ? err : new Error('无法播放音频，请检查网络或点击页面授予音频权限'))
-      })
+    if (mode === 'replace' || (this.sessionId && this.sessionSettingsKey !== this.getSettingsKey(settings))) {
+      this.resetSession()
     }
 
-    if (this.preloadedBlobUrls.has(key)) {
-      const cachedUrl = this.preloadedBlobUrls.get(key)!
-      this.preloadedBlobUrls.delete(key)
-      startPlayback(cachedUrl)
+    const key = this.getCacheKey(clean, settings)
+    const item = this.takePendingItem(key) ?? this.createItem(clean, settings, context)
+    const previousItemId = this.currentItemId
+    this.currentItemId = item.id
+    this.currentItem = item
+    this.currentSettings = settings
+    if (mode === 'replace' || previousItemId !== item.id) this.recoveryAttempts = 0
+    this.lastError = null
+    this.callbacks.set(item.id, { onEnd, onError })
+    if (this.completedItems.has(item.id)) {
+      this.completedItems.delete(item.id)
+      setTimeout(onEnd, 0)
       return
     }
+    if (this.readyItems.has(item.id)) this.drainPlayback()
 
-    this.fetchAudioBlob(clean, settings)
-      .then((blob) => {
-        if (this.abortController?.signal.aborted) return
-        const url = URL.createObjectURL(blob)
-        startPlayback(url)
-      })
-      .catch((err) => {
-        if (this.abortController?.signal.aborted) return
-        onError(err instanceof Error ? err : new Error('获取 TTS 音频失败'))
-      })
+    if (!this.sessionId) {
+      this.pendingItems = [item, ...this.pendingItems.filter(pending => pending.id !== item.id)]
+      if (!this.sessionPromise) this.startSession(settings)
+    } else {
+      void this.submitItem(item, this.generation)
+    }
   }
 
   pause(): void {
     this.audio?.pause()
+    if (this.sessionId) void api.controlTtsSession(this.sessionId, 'pause').catch(() => undefined)
   }
 
   resume(): void {
-    this.audio?.play().catch(() => undefined)
+    if (this.lastError) {
+      this.restartCurrentItem()
+      return
+    }
+    if (this.sessionId) void api.controlTtsSession(this.sessionId, 'resume').catch(() => undefined)
+    this.audio?.play().catch(err => this.reportError(err instanceof Error ? err : new Error('无法继续播放音频')))
   }
 
   stop(): void {
-    this.abortController?.abort()
-    this.abortController = null
-    if (this.audio) {
-      this.audio.pause()
-      this.audio.removeAttribute('src')
-      this.audio.load()
-    }
-    this.cleanupCurrentUrl()
-    this.onEndCb = null
-    this.onErrorCb = null
+    this.resetSession()
   }
 
   clearPreloadCache(): void {
-    for (const url of this.preloadedBlobUrls.values()) {
-      try { URL.revokeObjectURL(url) } catch {}
-    }
-    this.preloadedBlobUrls.clear()
-  }
-
-  private cleanupCurrentUrl() {
-    if (this.currentObjectUrl) {
-      try { URL.revokeObjectURL(this.currentObjectUrl) } catch {}
-      this.currentObjectUrl = null
-    }
+    this.pendingItems = []
   }
 
   private getCacheKey(text: string, settings: ReaderSettings): string {
     return `${settings.ttsEngine}:${settings.ttsVoice}:${settings.ttsSpeed}:${settings.ttsPitch}:${text}`
   }
 
-  private async fetchAudioBlob(text: string, settings: ReaderSettings): Promise<Blob> {
+  private getSettingsKey(settings: ReaderSettings): string {
+    return `${settings.ttsEngine}:${settings.ttsVoice}:${settings.ttsSpeed}:${settings.ttsPitch}:${settings.ttsCustomUrl}:${settings.ttsCustomHeader}:${settings.ttsCustomMethod}:${settings.ttsCustomBody}`
+  }
+
+  private createItem(text: string, settings: ReaderSettings, context: TtsChunkContext = {}): StreamItem {
+    const id = context.chunkId || `client-${++this.itemSequence}`
+    return {
+      id,
+      key: this.getCacheKey(text, settings),
+      request: this.createChunkRequest(id, text, settings, context),
+    }
+  }
+
+  private createChunkRequest(id: string, text: string, settings: ReaderSettings, context: TtsChunkContext): TtsSessionChunkRequest {
     const ratePercent = Math.round((settings.ttsSpeed - 1.0) * 100)
     const pitchHz = Math.round((settings.ttsPitch - 1.0) * 50)
-    const req: TtsSpeakRequest = {
+    return {
+      chunkId: id,
       text,
+      chapterIndex: context.chapterIndex ?? -1,
+      paragraphIndex: context.paragraphIndex ?? -1,
+      engine: settings.ttsEngine,
       voice: settings.ttsVoice || 'zh-CN-XiaoxiaoNeural',
       rate: ratePercent,
       pitch: pitchHz,
-      engine: settings.ttsEngine,
       customUrl: settings.ttsCustomUrl,
       customHeader: settings.ttsCustomHeader,
       customMethod: settings.ttsCustomMethod,
       customBody: settings.ttsCustomBody,
     }
-    return api.fetchTtsAudioBlob(req)
   }
+
+  private takePendingItem(key: string): StreamItem | undefined {
+    const index = this.pendingItems.findIndex(item => item.key === key)
+    if (index < 0) return undefined
+    const [item] = this.pendingItems.splice(index, 1)
+    return item
+  }
+
+  private async startSession(settings: ReaderSettings): Promise<void> {
+    const generation = ++this.generation
+    const abortController = new AbortController()
+    this.sessionAbortController = abortController
+    this.sessionSettingsKey = this.getSettingsKey(settings)
+    this.sessionPromise = api.createTtsSession(abortController.signal)
+      .then(async session => {
+        if (generation !== this.generation) {
+          void api.deleteTtsSession(session.sessionId).catch(() => undefined)
+          return
+        }
+        this.sessionId = session.sessionId
+        this.eventSource = this.openEvents(session.eventsUrl, generation)
+        const audio = this.getAudio()
+        audio.src = session.audioUrl
+        audio.playbackRate = 1.0
+        const items = [...this.pendingItems]
+        this.pendingItems = []
+        for (const item of items) await this.submitItem(item, generation)
+        if (generation !== this.generation) return
+        await audio.play().catch(err => this.reportError(err instanceof Error ? err : new Error('无法播放音频，请检查网络或点击页面授予音频权限')))
+      })
+      .catch(error => {
+        if (generation === this.generation) this.reportError(error instanceof Error ? error : new Error('创建 TTS 音频流失败'))
+      })
+      .finally(() => {
+        if (generation === this.generation) {
+          this.sessionPromise = null
+          this.sessionAbortController = null
+        }
+      })
+  }
+
+  private async submitItem(item: StreamItem, generation: number): Promise<void> {
+    if (!this.sessionId || generation !== this.generation || this.submittedItems.has(item.id)) return
+    this.submittedItems.add(item.id)
+    try {
+      await api.appendTtsSessionChunk(this.sessionId, item.request)
+    } catch (error) {
+      this.submittedItems.delete(item.id)
+      if (generation === this.generation) this.reportError(error instanceof Error ? error : new Error('提交 TTS 朗读分片失败'))
+    }
+  }
+
+  private openEvents(url: string, generation: number): EventSource {
+    const source = new EventSource(url)
+    for (const type of ['chunk_end', 'tts_error', 'stopped']) {
+      source.addEventListener(type, event => {
+        if (generation !== this.generation) return
+        let data: TtsStreamEvent
+        try {
+          data = JSON.parse((event as MessageEvent).data) as TtsStreamEvent
+        } catch {
+          this.reportError(new Error('TTS 进度事件格式无效'))
+          return
+        }
+        if (type === 'chunk_end' && data.chunkId) {
+          this.readyItems.set(data.chunkId, data.audioEndMs ?? null)
+          this.drainPlayback()
+        } else if (type === 'tts_error') {
+          this.recoverOrReport(new Error(data.message || 'TTS 音频流合成失败'))
+        } else if (type === 'stopped' && data.message !== 'stopped' && data.message !== 'removed') {
+          this.recoverOrReport(new Error('TTS 音频流已停止'))
+        }
+      })
+    }
+    // EventSource reconnects automatically. Audio playback remains independent
+    // from this metadata channel, so a transient event disconnect is harmless.
+    source.onerror = () => undefined
+    return source
+  }
+
+  private reportError(error: Error) {
+    if (this.lastError?.message === error.message) return
+    this.lastError = error
+    const callback = this.currentItemId ? this.callbacks.get(this.currentItemId) : undefined
+    callback?.onError(error)
+  }
+
+  private recoverOrReport(error: Error) {
+    const item = this.currentItem
+    if (item && this.currentSettings && this.recoveryAttempts < 1) {
+      this.recoveryAttempts++
+      const settings = this.currentSettings
+      const callback = this.callbacks.get(item.id)
+      this.resetSession()
+      if (callback) this.callbacks.set(item.id, callback)
+      this.currentItemId = item.id
+      this.currentItem = item
+      this.currentSettings = settings
+      this.pendingItems = [item]
+      this.startSession(settings)
+      return
+    }
+    this.reportError(error)
+  }
+
+  private restartCurrentItem() {
+    const item = this.currentItem
+    const settings = this.currentSettings
+    const callback = item ? this.callbacks.get(item.id) : undefined
+    this.resetSession()
+    if (!item || !settings) return
+    this.currentItemId = item.id
+    this.currentItem = item
+    this.currentSettings = settings
+    if (callback) this.callbacks.set(item.id, callback)
+    this.pendingItems = [item]
+    this.recoveryAttempts = 0
+    this.startSession(settings)
+  }
+
+  private drainPlayback() {
+    const nowMs = this.audio ? this.audio.currentTime * 1000 : Number.NaN
+    for (const [id, endMs] of this.readyItems) {
+      if (endMs !== null && Number.isFinite(nowMs) && nowMs + 180 < endMs) continue
+      this.readyItems.delete(id)
+      this.completedItems.add(id)
+      const callback = this.callbacks.get(id)
+      if (callback) {
+        this.callbacks.delete(id)
+        callback.onEnd()
+      }
+    }
+  }
+
+  private resetSession() {
+    const sessionId = this.sessionId
+    this.stopPlaybackMonitor()
+    this.generation++
+    this.sessionAbortController?.abort()
+    this.sessionAbortController = null
+    this.eventSource?.close()
+    this.eventSource = null
+    this.sessionId = null
+    this.sessionSettingsKey = null
+    this.sessionPromise = null
+    this.submittedItems.clear()
+    this.completedItems.clear()
+    this.readyItems.clear()
+    this.callbacks.clear()
+    this.currentItemId = null
+    this.currentItem = null
+    this.currentSettings = null
+    this.lastError = null
+    this.pendingItems = []
+    if (this.audio) {
+      this.audio.pause()
+      this.audio.removeAttribute('src')
+      this.audio.load()
+    }
+    if (sessionId) {
+      void api.controlTtsSession(sessionId, 'stop').catch(() => undefined)
+    }
+  }
+}
+
+type StreamItem = {
+  id: string
+  key: string
+  request: TtsSessionChunkRequest
+}
+
+type TtsStreamEvent = {
+  type: string
+  sessionId: string
+  chunkId?: string
+  audioEndMs?: number
+  message?: string
 }

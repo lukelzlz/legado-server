@@ -36,6 +36,7 @@ fun Route.apiRoutes(
     subscriptions: SubscriptionService,
     bookCache: BookCacheService,
     edgeTts: EdgeTtsService = EdgeTtsService(),
+    ttsSessions: TtsSessionService = TtsSessionService(edgeTts),
 ) {
     route("/api") {
         get("/sources") {
@@ -462,6 +463,81 @@ fun Route.apiRoutes(
             get("/voices") {
                 if (auth.requireSession(call) == null) return@get
                 call.respond(edgeTts.listVoices())
+            }
+            post("/session") {
+                val session = auth.requireSession(call, true) ?: return@post
+                call.respond(ttsSessions.create(session.id))
+            }
+            post("/session/{id}/chunks") {
+                val owner = auth.requireSession(call, true) ?: return@post
+                val session = ttsSessions.get(call.parameters["id"] ?: "", owner.id)
+                    ?: run {
+                        call.respond(HttpStatusCode.NotFound, ApiError("tts_session_not_found", "朗读会话不存在"))
+                        return@post
+                    }
+                try {
+                    val accepted = session.append(call.receive<TtsSessionChunkRequest>())
+                    if (!accepted) {
+                        call.respond(HttpStatusCode.Conflict, ApiError("tts_session_busy", "朗读队列已满"))
+                    } else {
+                        call.respond(TtsSessionAck(accepted = true))
+                    }
+                } catch (error: IllegalArgumentException) {
+                    call.respond(HttpStatusCode.BadRequest, ApiError("invalid_tts_chunk", error.message ?: "朗读分片无效"))
+                }
+            }
+            post("/session/{id}/control") {
+                val owner = auth.requireSession(call, true) ?: return@post
+                val session = ttsSessions.get(call.parameters["id"] ?: "", owner.id)
+                    ?: run {
+                        call.respond(HttpStatusCode.NotFound, ApiError("tts_session_not_found", "朗读会话不存在"))
+                        return@post
+                    }
+                val request = call.receive<TtsSessionControlRequest>()
+                when (request.action) {
+                    "pause" -> session.pause()
+                    "resume" -> session.resume()
+                    "stop" -> ttsSessions.remove(session)
+                    else -> {
+                        call.respond(HttpStatusCode.BadRequest, ApiError("invalid_tts_action", "不支持的朗读操作"))
+                        return@post
+                    }
+                }
+                call.respond(TtsSessionAck(accepted = true))
+            }
+            delete("/session/{id}") {
+                val owner = auth.requireSession(call, true) ?: return@delete
+                val session = ttsSessions.get(call.parameters["id"] ?: "", owner.id)
+                    ?: run {
+                        call.respond(HttpStatusCode.NotFound, ApiError("tts_session_not_found", "朗读会话不存在"))
+                        return@delete
+                    }
+                ttsSessions.remove(session)
+                call.respond(HttpStatusCode.NoContent)
+            }
+            get("/session/{id}/audio") {
+                val owner = auth.requireSession(call) ?: return@get
+                val session = ttsSessions.get(call.parameters["id"] ?: "", owner.id)
+                    ?: run {
+                        call.respond(HttpStatusCode.NotFound, ApiError("tts_session_not_found", "朗读会话不存在"))
+                        return@get
+                    }
+                call.response.cacheControl(CacheControl.NoStore(null))
+                call.respondBytesWriter(ContentType.Audio.MPEG, status = HttpStatusCode.OK) {
+                    session.streamAudio(this)
+                }
+            }
+            get("/session/{id}/events") {
+                val owner = auth.requireSession(call) ?: return@get
+                val session = ttsSessions.get(call.parameters["id"] ?: "", owner.id)
+                    ?: run {
+                        call.respond(HttpStatusCode.NotFound, ApiError("tts_session_not_found", "朗读会话不存在"))
+                        return@get
+                    }
+                call.response.cacheControl(CacheControl.NoStore(null))
+                call.respondTextWriter(ContentType.Text.EventStream) {
+                    session.streamEvents(this)
+                }
             }
             post("/speak") {
                 if (auth.requireSession(call) == null) return@post

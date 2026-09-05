@@ -7,7 +7,7 @@ import { SourceSwitchModal } from './SourceSwitchModal'
 import { cleanAuthor, cleanTitle } from './searchFilters'
 import { toast } from './Toast'
 import { processChapterForTts, TtsChapterData } from './ttsTextProcessor'
-import { ITtsEngine, WebSpeechEngine, HttpAudioTtsEngine, TtsPlayState } from './ttsEngine'
+import { ITtsEngine, WebSpeechEngine, HttpAudioTtsEngine, TtsPlayState, TtsSpeakMode } from './ttsEngine'
 import { TtsSettingsModal, SleepTimerOption } from './TtsSettingsModal'
 import { TtsPlayerBar } from './TtsPlayerBar'
 
@@ -229,7 +229,7 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
   const wheelTimerRef = useRef<number | null>(null)
   // Ref to the latest playTtsChunk so that async onEnd callbacks always invoke the freshest version,
   // avoiding stale closure issues when cross-chapter auto-play triggers after chapter content reloads.
-  const playTtsChunkRef = useRef<(idx: number) => void>(() => undefined)
+  const playTtsChunkRef = useRef<(idx: number, mode?: TtsSpeakMode) => void>(() => undefined)
 
   const viewportRef = useRef<HTMLDivElement | null>(null)
   const bodyRef = useRef<HTMLDivElement | null>(null)
@@ -362,7 +362,7 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
     setTtsPlayState('playing')
   }, [getTtsEngine, settings.ttsEngine])
 
-  const playTtsChunk = useCallback((idx: number) => {
+  const playTtsChunk = useCallback((idx: number, mode: TtsSpeakMode = 'replace') => {
     if (!ttsData.chunks || ttsData.chunks.length === 0) return
     if (idx < 0) idx = 0
     if (idx >= ttsData.chunks.length) {
@@ -388,11 +388,6 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
     const chunk = ttsData.chunks[idx]
     const engine = getTtsEngine(settings.ttsEngine)
 
-    if (settings.ttsEngine !== 'webSpeech' && idx + 1 < ttsData.chunks.length) {
-      const nextChunk = ttsData.chunks[idx + 1]
-      void (engine as HttpAudioTtsEngine).prefetch(nextChunk.text, settings)
-    }
-
     engine.speak(
       chunk.text,
       settings,
@@ -406,13 +401,29 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
             return
           }
         }
-        playTtsChunkRef.current(nextIdx)
+        playTtsChunkRef.current(nextIdx, 'continue')
       },
       (err) => {
         toast.warning(err.message || '朗读中断')
         setTtsPlayState('paused')
-      }
+      },
+      mode,
+      { chunkId: `${chapterIndex}:${chunk.globalIndex}`, chapterIndex, paragraphIndex: chunk.paragraphIndex },
     )
+    if (settings.ttsEngine !== 'webSpeech') {
+      const httpEngine = engine as HttpAudioTtsEngine
+      for (let lookahead = 1; lookahead <= 2; lookahead++) {
+        const nextIdx = idx + lookahead
+        if (nextIdx < ttsData.chunks.length) {
+          const nextChunk = ttsData.chunks[nextIdx]
+          void httpEngine.prefetch(
+            nextChunk.text,
+            settings,
+            { chunkId: `${chapterIndex}:${nextChunk.globalIndex}`, chapterIndex, paragraphIndex: nextChunk.paragraphIndex },
+          )
+        }
+      }
+    }
   }, [ttsData, sleepTimer, settings, chapterIndex, currentBook.chapters.length, persist, stopTts, getTtsEngine])
 
   playTtsChunkRef.current = playTtsChunk
@@ -522,7 +533,7 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
     persist()
     if (!autoPlayNextChapterRef.current) {
       stopTts()
-    } else {
+    } else if (settings.ttsEngine === 'webSpeech') {
       stopAllEngines()
     }
     targetInitialPageRef.current = targetPage === 'auto' ? null : targetPage
@@ -531,7 +542,7 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
     setLoading(true)
     setChapterIndex(nextIndex)
     setActiveDrawer(null)
-  }, [chapterIndex, currentBook.chapters.length, persist, showBoundaryNotice, stopTts, stopAllEngines])
+  }, [chapterIndex, currentBook.chapters.length, persist, settings.ttsEngine, showBoundaryNotice, stopTts, stopAllEngines])
 
   const toggleShelf = async () => {
     if (inShelf) {
@@ -848,7 +859,7 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
     if (autoPlayNextChapterRef.current) {
       autoPlayNextChapterRef.current = false
       setTtsActive(true)
-      playTtsChunkRef.current(0)
+      playTtsChunkRef.current(0, 'continue')
     }
   }, [content, loading, loadedChapterUrl, chapter?.url])
 

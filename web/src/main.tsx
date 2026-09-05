@@ -15,9 +15,9 @@ import { toast, ToastContainer } from './Toast'
 import './styles.css'
 
 import { clearStoredInspections, getInitialOrStoredInspections, inspectAllSourcesConcurrently, SourceHealthInspection } from './sourceInspector'
-import { parseSourceJsonText, extractSourcesFromRaw } from './sourceImport'
+import { parseSourceJsonText, extractSourcesFromRaw, sanitizeImageUrl } from './sourceImport'
 
-export { extractSourcesFromRaw, parseSourceJsonText }
+export { extractSourcesFromRaw, parseSourceJsonText, sanitizeImageUrl }
 export type { SourceChoice, SourceChoiceStatus }
 
 type Page = 'sources' | 'subscriptions' | 'library' | 'shelf' | 'reader'
@@ -331,8 +331,8 @@ function BookDetailModal({
       >
         <header className="book-detail-modal-header">
           <div className="book-detail-heading">
-            {book.details.coverUrl ? (
-              <img className="book-detail-cover" src={book.details.coverUrl} alt="" referrerPolicy="no-referrer" />
+            {sanitizeImageUrl(book.details.coverUrl) ? (
+              <img className="book-detail-cover" src={sanitizeImageUrl(book.details.coverUrl)!} alt="" referrerPolicy="no-referrer" />
             ) : (
               <div className="book-detail-cover-placeholder">{book.details.name.slice(0, 1)}</div>
             )}
@@ -838,7 +838,7 @@ function BookInfoEditModal({
   const candidateCovers = useMemo(() => {
     const map = new Map<string, { sourceId: string; coverUrl: string }>()
     for (const alt of item.alternateSources || []) {
-      const url = alt.coverUrl?.trim()
+      const url = sanitizeImageUrl(alt.coverUrl)
       if (url && !map.has(url)) {
         map.set(url, { sourceId: alt.sourceId, coverUrl: url })
       }
@@ -848,7 +848,7 @@ function BookInfoEditModal({
 
   const previewSrc = useMemo(() => {
     if (coverUrl === '') return null
-    if (coverUrl) return coverUrl
+    if (coverUrl) return sanitizeImageUrl(coverUrl)
     if (item.coverKey) return api.cover(item.coverKey)
     return null
   }, [coverUrl, item.coverKey])

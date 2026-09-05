@@ -13,6 +13,7 @@
 [![Vite](https://img.shields.io/badge/Vite-6.3.5-646CFF?logo=vite&logoColor=white)](https://vitejs.dev/)
 [![SQLite](https://img.shields.io/badge/SQLite-WAL_Mode-003B57?logo=sqlite&logoColor=white)](https://sqlite.org/)
 [![Docker](https://img.shields.io/badge/Docker-Ready-2496ED?logo=docker&logoColor=white)](https://www.docker.com/)
+[![阿里云计算巢一键部署](https://img.shields.io/badge/阿里云计算巢-一键部署-FF6A00?logo=alibabacloud&logoColor=white)](https://computenest.console.aliyun.com/service/instance/create/cn-hangzhou?type=user&ServiceId=service-533806288add4002b02a)
 [![Build JAR](https://github.com/lukelzlz/legado-server/actions/workflows/build-jar.yml/badge.svg)](https://github.com/lukelzlz/legado-server/actions/workflows/build-jar.yml)
 [![License](https://img.shields.io/badge/License-GPL--3.0-blue.svg)](LICENSE)
 
@@ -24,7 +25,7 @@
 
 **Legado Server** 是针对流行开源阅读软件 **[Legado（开源阅读 Android 端）](https://github.com/LegadoTeam/legado)** 的独立服务端重构版本。
 
-本项目彻底剥离了 Android Framework 原生依赖，在纯 JVM 环境下构建了高性能**无头后端（Headless Server）**，并配套提供了基于 **React 19 + TypeScript + Vite** 的现代化**Web 阅读器与管理控制台**。用户可以在 VPS、家庭 NAS、个人电脑或 Docker 容器中快速部署属于自己的私有化云端书源中心与跨平台阅读平台。
+本项目彻底剥离了 Android Framework 原生依赖，在纯 JVM 环境下构建了高性能**无头后端（Headless Server）**，并配套提供了基于 **React 19 + TypeScript + Vite** 的现代化**Web 阅读器与管理控制台**。用户可以在 VPS、家庭 NAS、个人电脑、Docker 容器或阿里云计算巢中快速部署属于自己的私有化云端书源中心与跨平台阅读平台。
 
 ---
 
@@ -97,7 +98,23 @@ flowchart TD
 
 ## 🚀 快速开始与部署
 
-### ⚡ 方式一：一行命令极速启动（Docker CLI）
+### ☁️ 方式一：阿里云计算巢一键秒级部署（推荐 · 免运维）
+
+无需手动购买/配置 VPS 或安装 Docker 环境，通过阿里云计算巢即可一键自动化拉起专属的云原生 Legado Server 服务实例（弹性容器实例 ECI + NAS 持久化文件存储 + 独立公网 IP）。
+
+[![Deploy on Alibaba Cloud](https://service-info-public.oss-cn-hangzhou.aliyuncs.com/computenest-package/badge/cn-deploy-badge.svg)](https://computenest.console.aliyun.com/service/instance/create/cn-hangzhou?type=user&ServiceId=service-533806288add4002b02a)
+
+- **一键直达链接**：[前往阿里云计算巢一键部署 Legado Server](https://computenest.console.aliyun.com/service/instance/create/cn-hangzhou?type=user&ServiceId=service-533806288add4002b02a)
+- **部署步骤**：
+  1. 点击上方部署按钮直达计算巢创建页。
+  2. 填写 **管理员初始密码**（至少 12 位），其余规格（如 1核 2G 容器规格与网络）保持默认即可。
+  3. 点击 **立即创建**，约 1~2 分钟即可完成自动化部署。
+  4. 部署成功后在实例详情页点击 **`WebUrl`**（如 `http://<公网IP>:8080`）直接进入 Web 阅读器。
+- **计费说明**：软件 100% 免费开源；云资源按实际使用量秒级计费（弹性 ECI 每小时仅需几分钱），可随时一键暂停或彻底释放。
+
+---
+
+### ⚡ 方式二：一行命令极速启动（Docker CLI）
 
 无需克隆代码仓库，直接运行以下命令即可拉取多架构镜像（支持 x86_64 / ARM64）并启动服务。
 
@@ -150,7 +167,7 @@ docker run -d \
 
 ---
 
-### 📦 方式二：Docker Compose 编排部署
+### 📦 方式三：Docker Compose 编排部署
 
 #### 选项 A：使用预编译镜像直接部署（无需源码）
 
@@ -212,7 +229,7 @@ docker compose up -d
 
 ---
 
-### ☕ 方式三：独立可执行 JAR 运行（无需 Docker）
+### ☕ 方式四：独立可执行 JAR 运行（无需 Docker）
 
 本项目配置了 **GitHub Actions 自动化流水线**，每次代码推送或发布 Release 时均会自动构建开箱即用的 Standalone Fat JAR（内嵌完整 Web 前端与后端引擎）。
 
@@ -243,7 +260,7 @@ java -jar legado-server.jar reset-password 'new_password_at_least_12_chars'
 
 ---
 
-### 🛠️ 方式四：本地源码编译与开发运行
+### 🛠️ 方式五：本地源码编译与开发运行
 
 #### 环境要求
 - **Java**: JDK 17+（推荐 JDK 21）

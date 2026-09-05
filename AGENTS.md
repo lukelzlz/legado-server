@@ -122,6 +122,7 @@ AI 与人类协作时必须明确当前达到的完成度阶梯，严禁混淆�
 | 2026-08-31 | Fix | 更新 Edge-TTS 握手协议至 Chrome 143，添加 muid Cookie 修复连接鉴权 | - | Pushed |
 | 2026-08-31 | Fix | 防御后引号切片导致 0 字节 blob 引发 ERR_REQUEST_RANGE_NOT_SATISFIABLE | [`docs/acceptance/ACCEPT-TTS-001.md`](file:///Users/zhangran/Documents/antigravity/joyful-galileo/docs/acceptance/ACCEPT-TTS-001.md) | Pushed |
 | 2026-08-31 | Fix | 修复 TTS 跨章连播正文加载时序竞态与未开启朗读时点击误触发 | - | Pushed |
+| 2026-09-05 | Docs | 新增阿里云计算巢一键秒级部署入口与使用说明 | - | Pushed |
 
 ---
 

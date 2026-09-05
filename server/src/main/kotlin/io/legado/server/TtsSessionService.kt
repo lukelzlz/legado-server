@@ -207,6 +207,7 @@ class TtsSession(
                     chapterIndex = chunk.chapterIndex,
                     paragraphIndex = chunk.paragraphIndex,
                     audioEndMs = audioCursorMs,
+                    durationMs = audioStats.durationMs,
                 )
             )
         } catch (cancelled: CancellationException) {

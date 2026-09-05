@@ -291,5 +291,7 @@ data class TtsSessionEvent(
     val chapterIndex: Int = -1,
     val paragraphIndex: Int = -1,
     val audioEndMs: Long? = null,
+    val durationMs: Long? = null,
     val message: String? = null,
 )
+

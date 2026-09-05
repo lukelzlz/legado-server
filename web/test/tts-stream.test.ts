@@ -223,3 +223,165 @@ test('Calling pause during session creation avoids triggering play', async t => 
   engine.stop()
 })
 
+test('Relative clock anchoring prevents deadlock over 60 consecutive drifted chunks', async t => {
+  const originalAudio = globalThis.Audio
+  const originalEventSource = globalThis.EventSource
+  const originalFetch = globalThis.fetch
+
+  Object.assign(globalThis, { Audio: FakeAudio, EventSource: FakeEventSource })
+  globalThis.fetch = async (input) => {
+    const url = String(input)
+    if (url === '/api/tts/session') {
+      return new Response(JSON.stringify({
+        sessionId: 'session-drift',
+        audioUrl: '/api/tts/session/session-drift/audio',
+        eventsUrl: '/api/tts/session/session-drift/events',
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    }
+    return new Response(JSON.stringify({ accepted: true }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+  }
+  t.after(() => {
+    globalThis.Audio = originalAudio
+    globalThis.EventSource = originalEventSource
+    globalThis.fetch = originalFetch
+  })
+
+  const engine = new HttpAudioTtsEngine()
+  let endedCount = 0
+  const errors: Error[] = []
+
+  // Chunk 1 starts session
+  engine.speak('句子1测试内容。', settings, () => { endedCount++ }, err => errors.push(err), 'replace', { chunkId: 'chunk-1' })
+  await new Promise(resolve => setTimeout(resolve, 10))
+
+  const events = FakeEventSource.instances[FakeEventSource.instances.length - 1]
+  const audio = FakeAudio.instances[FakeAudio.instances.length - 1]
+
+  for (let i = 1; i <= 60; i++) {
+    const chunkId = `chunk-${i}`
+    if (i > 1) {
+      engine.speak(`句子${i}测试内容。`, settings, () => { endedCount++ }, err => errors.push(err), 'continue', { chunkId })
+    }
+    // Server emits durationMs = 2000, audioEndMs = i * 2000
+    events.emit('chunk_end', {
+      type: 'chunk_end',
+      sessionId: 'session-drift',
+      chunkId,
+      durationMs: 2000,
+      audioEndMs: i * 2000,
+    })
+    // Simulate player clock advancing by 1.95s (50ms drift per chunk, total 3000ms drift over 60 chunks)
+    audio.currentTime += 1.95
+    audio.emit('timeupdate')
+    assert.equal(endedCount, i, `Chunk ${i} should have completed despite accumulated drift`)
+  }
+
+  assert.equal(endedCount, 60)
+  assert.equal(errors.length, 0)
+  engine.stop()
+})
+
+test('Stall watchdog forces onEnd when audio clock halts near chunk end', async t => {
+  const originalAudio = globalThis.Audio
+  const originalEventSource = globalThis.EventSource
+  const originalFetch = globalThis.fetch
+
+  Object.assign(globalThis, { Audio: FakeAudio, EventSource: FakeEventSource })
+  globalThis.fetch = async (input) => {
+    const url = String(input)
+    if (url === '/api/tts/session') {
+      return new Response(JSON.stringify({
+        sessionId: 'session-stall',
+        audioUrl: '/api/tts/session/session-stall/audio',
+        eventsUrl: '/api/tts/session/session-stall/events',
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    }
+    return new Response(JSON.stringify({ accepted: true }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+  }
+  t.after(() => {
+    globalThis.Audio = originalAudio
+    globalThis.EventSource = originalEventSource
+    globalThis.fetch = originalFetch
+  })
+
+  const engine = new HttpAudioTtsEngine()
+  let ended = false
+  engine.speak('句子测试停滞看门狗。', settings, () => { ended = true }, () => {}, 'replace', { chunkId: 'chunk-stall' })
+  await new Promise(resolve => setTimeout(resolve, 10))
+
+  const events = FakeEventSource.instances[FakeEventSource.instances.length - 1]
+  const audio = FakeAudio.instances[FakeAudio.instances.length - 1]
+
+  events.emit('chunk_end', {
+    type: 'chunk_end',
+    sessionId: 'session-stall',
+    chunkId: 'chunk-stall',
+    durationMs: 2000,
+  })
+
+  // Audio advances to 1.82s (near end: 2.0s - 0.18s), but stops moving (e.g. decoder silence/buffer underrun)
+  audio.currentTime = 1.82
+  audio.emit('timeupdate')
+  assert.equal(ended, false, 'Should not end immediately before watchdog timeout')
+
+  // Wait 400ms for stall watchdog
+  await new Promise(resolve => setTimeout(resolve, 400))
+  audio.emit('timeupdate')
+  assert.equal(ended, true, 'Stall watchdog should have triggered onEnd after clock halt')
+
+  engine.stop()
+})
+
+test('Stall watchdog triggers onEnd when audio halts 400ms before chunk end due to trailing silence', async t => {
+  const originalAudio = globalThis.Audio
+  const originalEventSource = globalThis.EventSource
+  const originalFetch = globalThis.fetch
+
+  Object.assign(globalThis, { Audio: FakeAudio, EventSource: FakeEventSource })
+  globalThis.fetch = async (input) => {
+    const url = String(input)
+    if (url === '/api/tts/session') {
+      return new Response(JSON.stringify({
+        sessionId: 'session-silence',
+        audioUrl: '/api/tts/session/session-silence/audio',
+        eventsUrl: '/api/tts/session/session-silence/events',
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    }
+    return new Response(JSON.stringify({ accepted: true }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+  }
+  t.after(() => {
+    globalThis.Audio = originalAudio
+    globalThis.EventSource = originalEventSource
+    globalThis.fetch = originalFetch
+  })
+
+  const engine = new HttpAudioTtsEngine()
+  let ended = false
+  engine.speak('测试静音尾隙。', settings, () => { ended = true }, () => {}, 'replace', { chunkId: 'chunk-silence' })
+  await new Promise(resolve => setTimeout(resolve, 10))
+
+  const events = FakeEventSource.instances[FakeEventSource.instances.length - 1]
+  const audio = FakeAudio.instances[FakeAudio.instances.length - 1]
+
+  events.emit('chunk_end', {
+    type: 'chunk_end',
+    sessionId: 'session-silence',
+    chunkId: 'chunk-silence',
+    durationMs: 3000,
+  })
+
+  // Audio halts at 2.6s (400ms before 3.0s duration due to Edge-TTS trailing silence frames)
+  audio.currentTime = 2.60
+  audio.emit('timeupdate')
+  assert.equal(ended, false, 'Should not end immediately before timeout')
+
+  // Wait 400ms for stall watchdog
+  await new Promise(resolve => setTimeout(resolve, 400))
+  audio.emit('timeupdate')
+  assert.equal(ended, true, 'Stall watchdog with 600ms window should trigger onEnd after 350ms silence')
+
+  engine.stop()
+})
+
+
+

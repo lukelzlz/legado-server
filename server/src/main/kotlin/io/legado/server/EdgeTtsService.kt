@@ -224,79 +224,90 @@ class EdgeTtsService(
                 "<voice name='$voice'>" +
                 "<prosody pitch='$pitchStr' rate='$rateStr' volume='+0%'>$escapedText</prosody>" +
                 "</voice></speak>"
-        val audioBuffer = ByteArrayOutputStream()
-        val future = CompletableFuture<Unit>()
+        var attempt = 0
+        while (attempt < 2) {
+            attempt++
+            val audioBuffer = ByteArrayOutputStream()
+            val future = CompletableFuture<Unit>()
 
-        val listener = object : WebSocket.Listener {
-            override fun onText(webSocket: WebSocket, data: CharSequence, last: Boolean): CompletionStage<*>? {
-                if (data.toString().contains("Path:turn.end")) {
-                    future.complete(Unit)
-                    webSocket.sendClose(WebSocket.NORMAL_CLOSURE, "Done")
+            val listener = object : WebSocket.Listener {
+                override fun onText(webSocket: WebSocket, data: CharSequence, last: Boolean): CompletionStage<*>? {
+                    if (data.toString().contains("Path:turn.end")) {
+                        future.complete(Unit)
+                        webSocket.sendClose(WebSocket.NORMAL_CLOSURE, "Done")
+                    }
+                    return super.onText(webSocket, data, last)
                 }
-                return super.onText(webSocket, data, last)
-            }
 
-            override fun onBinary(webSocket: WebSocket, data: ByteBuffer, last: Boolean): CompletionStage<*>? {
-                if (data.remaining() > 2) {
-                    val headerLen = data.short.toInt() and 0xFFFF
-                    if (data.remaining() >= headerLen) {
-                        val headerBytes = ByteArray(headerLen)
-                        data.get(headerBytes)
-                        val audioBytes = ByteArray(data.remaining())
-                        data.get(audioBytes)
-                        if (audioBytes.isNotEmpty()) {
-                            synchronized(audioBuffer) { audioBuffer.write(audioBytes) }
-                            onAudio(audioBytes)
+                override fun onBinary(webSocket: WebSocket, data: ByteBuffer, last: Boolean): CompletionStage<*>? {
+                    if (data.remaining() > 2) {
+                        val headerLen = data.short.toInt() and 0xFFFF
+                        if (data.remaining() >= headerLen) {
+                            val headerBytes = ByteArray(headerLen)
+                            data.get(headerBytes)
+                            val audioBytes = ByteArray(data.remaining())
+                            data.get(audioBytes)
+                            if (audioBytes.isNotEmpty()) {
+                                synchronized(audioBuffer) { audioBuffer.write(audioBytes) }
+                                onAudio(audioBytes)
+                            }
                         }
                     }
+                    return super.onBinary(webSocket, data, last)
                 }
-                return super.onBinary(webSocket, data, last)
+
+                override fun onError(webSocket: WebSocket, error: Throwable) {
+                    future.completeExceptionally(error)
+                }
+
+                override fun onClose(webSocket: WebSocket, statusCode: Int, reason: String): CompletionStage<*>? {
+                    if (!future.isDone) future.complete(Unit)
+                    return super.onClose(webSocket, statusCode, reason)
+                }
             }
 
-            override fun onError(webSocket: WebSocket, error: Throwable) {
-                future.completeExceptionally(error)
-            }
+            val connectionId = UUID.randomUUID().toString().replace("-", "")
+            val secMsGec = generateSecMsGec()
+            val muid = generateMuid()
+            val wssUrl = "$WSS_BASE_URL?TrustedClientToken=$TRUSTED_CLIENT_TOKEN&Sec-MS-GEC=$secMsGec&Sec-MS-GEC-Version=$SEC_MS_GEC_VERSION&ConnectionId=$connectionId"
+            var ws: WebSocket? = null
 
-            override fun onClose(webSocket: WebSocket, statusCode: Int, reason: String): CompletionStage<*>? {
-                if (!future.isDone) future.complete(Unit)
-                return super.onClose(webSocket, statusCode, reason)
-            }
-        }
+            try {
+                ws = client.newWebSocketBuilder()
+                    .header("User-Agent", USER_AGENT)
+                    .header("Origin", ORIGIN)
+                    .header("Pragma", "no-cache")
+                    .header("Cache-Control", "no-cache")
+                    .header("Accept-Encoding", "gzip, deflate, br, zstd")
+                    .header("Accept-Language", "en-US,en;q=0.9")
+                    .header("Cookie", "muid=$muid;")
+                    .buildAsync(URI.create(wssUrl), listener)
+                    .get(timeoutSeconds, TimeUnit.SECONDS)
 
-        val connectionId = UUID.randomUUID().toString().replace("-", "")
-        val secMsGec = generateSecMsGec()
-        val muid = generateMuid()
-        val wssUrl = "$WSS_BASE_URL?TrustedClientToken=$TRUSTED_CLIENT_TOKEN&Sec-MS-GEC=$secMsGec&Sec-MS-GEC-Version=$SEC_MS_GEC_VERSION&ConnectionId=$connectionId"
-        val ws = client.newWebSocketBuilder()
-            .header("User-Agent", USER_AGENT)
-            .header("Origin", ORIGIN)
-            .header("Pragma", "no-cache")
-            .header("Cache-Control", "no-cache")
-            .header("Accept-Encoding", "gzip, deflate, br, zstd")
-            .header("Accept-Language", "en-US,en;q=0.9")
-            .header("Cookie", "muid=$muid;")
-            .buildAsync(URI.create(wssUrl), listener)
-            .get(timeoutSeconds, TimeUnit.SECONDS)
-
-        try {
-            val configMsg = "Content-Type:application/json; charset=utf-8\r\n" +
-                    "Path:speech.config\r\n\r\n" +
-                    "{\"context\":{\"synthesis\":{\"audio\":{\"metadataoptions\":{\"sentenceBoundaryEnabled\":\"false\",\"wordBoundaryEnabled\":\"false\"},\"outputFormat\":\"audio-24khz-48kbitrate-mono-mp3\"}}}}"
-            ws.sendText(configMsg, true)
-            val ssmlMsg = "X-RequestId:$requestId\r\n" +
-                    "Content-Type:application/ssml+xml\r\n" +
-                    "Path:ssml\r\n\r\n" +
-                    ssml
-            ws.sendText(ssmlMsg, true)
-            future.get(timeoutSeconds, TimeUnit.SECONDS)
-            val result = audioBuffer.toByteArray()
-            if (result.isNotEmpty()) {
-                if (cache.size > maxCacheSize) cache.clear()
-                cache[cacheKey] = result
+                val configMsg = "Content-Type:application/json; charset=utf-8\r\n" +
+                        "Path:speech.config\r\n\r\n" +
+                        "{\"context\":{\"synthesis\":{\"audio\":{\"metadataoptions\":{\"sentenceBoundaryEnabled\":\"false\",\"wordBoundaryEnabled\":\"false\"},\"outputFormat\":\"audio-24khz-48kbitrate-mono-mp3\"}}}}"
+                ws.sendText(configMsg, true)
+                val ssmlMsg = "X-RequestId:$requestId\r\n" +
+                        "Content-Type:application/ssml+xml\r\n" +
+                        "Path:ssml\r\n\r\n" +
+                        ssml
+                ws.sendText(ssmlMsg, true)
+                future.get(timeoutSeconds, TimeUnit.SECONDS)
+                val result = audioBuffer.toByteArray()
+                if (result.isNotEmpty()) {
+                    if (cache.size > maxCacheSize) cache.clear()
+                    cache[cacheKey] = result
+                }
+                return
+            } catch (e: Exception) {
+                ws?.abort()
+                if (attempt < 2 && audioBuffer.size() == 0) {
+                    Thread.sleep(150)
+                    continue
+                }
+                throw e
             }
-        } catch (e: Exception) {
-            ws.abort()
-            throw e
         }
     }
 

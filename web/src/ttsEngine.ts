@@ -170,11 +170,14 @@ export class HttpAudioTtsEngine implements ITtsEngine {
   private pendingItems: StreamItem[] = []
   private submittedItems = new Set<string>()
   private completedItems = new Set<string>()
-  private readyItems = new Map<string, number | null>()
+  private readyItems = new Map<string, { audioEndMs: number | null; durationMs: number | null }>()
   private callbacks = new Map<string, { onEnd: () => void; onError: (err: Error) => void }>()
   private currentItemId: string | null = null
   private currentItem: StreamItem | null = null
   private currentSettings: ReaderSettings | null = null
+  private currentItemAnchorMs: number | null = null
+  private lastPlaybackCurrentTime = -1
+  private lastPlaybackAdvanceAt = 0
   private lastError: Error | null = null
   private recoveryAttempts = 0
   private playbackTimer: number | null = null
@@ -199,7 +202,22 @@ export class HttpAudioTtsEngine implements ITtsEngine {
         this.drainPlayback()
       })
       this.audio.addEventListener('pause', () => this.stopPlaybackMonitor())
-      this.audio.addEventListener('waiting', () => this.drainPlayback())
+      this.audio.addEventListener('waiting', () => {
+        this.drainPlayback()
+        if (!this.isPaused && this.sessionId) {
+          this.audio?.play().catch(err => {
+            if (isPlayInterruptedError(err)) return
+          })
+        }
+      })
+      this.audio.addEventListener('stalled', () => {
+        this.drainPlayback()
+        if (!this.isPaused && this.sessionId) {
+          this.audio?.play().catch(err => {
+            if (isPlayInterruptedError(err)) return
+          })
+        }
+      })
       this.audio.addEventListener('timeupdate', () => this.drainPlayback())
     }
     return this.audio
@@ -210,6 +228,24 @@ export class HttpAudioTtsEngine implements ITtsEngine {
     this.playbackTimer = window.setInterval(() => {
       if (this.audio && !this.audio.paused) {
         this.drainPlayback()
+        // If audio is not paused but currentTime hasn't moved for > 500ms while waiting/stalled,
+        // poke audio.play() to nudge the media pipeline.
+        if (
+          !this.isPaused &&
+          this.sessionId &&
+          this.lastPlaybackAdvanceAt > 0 &&
+          Date.now() - this.lastPlaybackAdvanceAt > 500
+        ) {
+          this.audio.play().catch(err => {
+            if (isPlayInterruptedError(err)) return
+          })
+        }
+      } else if (this.audio && this.audio.paused && !this.isPaused && this.sessionId && this.currentItemId) {
+        if (this.readyItems.has(this.currentItemId)) {
+          this.audio.play().catch(err => {
+            if (isPlayInterruptedError(err)) return
+          })
+        }
       }
     }, 100)
   }
@@ -262,6 +298,11 @@ export class HttpAudioTtsEngine implements ITtsEngine {
     const key = this.getCacheKey(clean, settings)
     const item = this.takePendingItem(key) ?? this.createItem(clean, settings, context)
     const previousItemId = this.currentItemId
+    if (previousItemId !== item.id) {
+      this.currentItemAnchorMs = this.audio && Number.isFinite(this.audio.currentTime) ? this.audio.currentTime * 1000 : null
+      this.lastPlaybackCurrentTime = this.currentItemAnchorMs ?? -1
+      this.lastPlaybackAdvanceAt = Date.now()
+    }
     this.currentItemId = item.id
     this.currentItem = item
     this.currentSettings = settings
@@ -414,7 +455,10 @@ export class HttpAudioTtsEngine implements ITtsEngine {
           return
         }
         if (type === 'chunk_end' && data.chunkId) {
-          this.readyItems.set(data.chunkId, data.audioEndMs ?? null)
+          this.readyItems.set(data.chunkId, {
+            audioEndMs: data.audioEndMs ?? null,
+            durationMs: data.durationMs ?? null,
+          })
           this.drainPlayback()
         } else if (type === 'tts_error') {
           this.recoverOrReport(new Error(data.message || 'TTS 音频流合成失败'))
@@ -471,14 +515,64 @@ export class HttpAudioTtsEngine implements ITtsEngine {
   }
 
   private drainPlayback() {
-    const nowMs = this.audio ? this.audio.currentTime * 1000 : Number.NaN
-    for (const [id, endMs] of this.readyItems) {
-      if (endMs !== null && Number.isFinite(nowMs) && nowMs + 180 < endMs) continue
-      this.readyItems.delete(id)
-      this.completedItems.add(id)
-      const callback = this.callbacks.get(id)
+    if (!this.audio) return
+    const nowMs = this.audio.currentTime * 1000
+    const now = Date.now()
+
+    if (!this.audio.paused && Number.isFinite(nowMs)) {
+      if (Math.abs(nowMs - this.lastPlaybackCurrentTime) > 10) {
+        this.lastPlaybackCurrentTime = nowMs
+        this.lastPlaybackAdvanceAt = now
+      }
+    }
+
+    const currentId = this.currentItemId
+    if (!currentId) return
+
+    const readyInfo = this.readyItems.get(currentId)
+    if (!readyInfo) return
+
+    if (this.currentItemAnchorMs === null && Number.isFinite(nowMs)) {
+      this.currentItemAnchorMs = nowMs
+    }
+
+    const anchor = this.currentItemAnchorMs ?? nowMs
+    const durationMs = readyInfo.durationMs
+    const endMs = readyInfo.audioEndMs
+
+    let isFinished = false
+
+    if (durationMs != null && durationMs > 0 && Number.isFinite(nowMs)) {
+      if (nowMs >= anchor + durationMs - 60) {
+        isFinished = true
+      } else if (
+        nowMs >= anchor + durationMs - 600 &&
+        this.lastPlaybackAdvanceAt > 0 &&
+        now - this.lastPlaybackAdvanceAt > 350
+      ) {
+        isFinished = true
+      }
+    } else if (endMs != null && Number.isFinite(nowMs)) {
+      if (nowMs + 180 >= endMs) {
+        isFinished = true
+      } else if (
+        nowMs + 600 >= endMs &&
+        this.lastPlaybackAdvanceAt > 0 &&
+        now - this.lastPlaybackAdvanceAt > 350
+      ) {
+        isFinished = true
+      }
+    } else if (durationMs == null && endMs == null) {
+      isFinished = true
+    }
+
+    if (isFinished) {
+      this.readyItems.delete(currentId)
+      this.completedItems.add(currentId)
+      this.currentItemAnchorMs = Number.isFinite(nowMs) ? nowMs : null
+      const callback = this.callbacks.get(currentId)
       if (callback) {
-        this.callbacks.delete(id)
+        this.callbacks.delete(currentId)
         callback.onEnd()
       }
     }
@@ -503,6 +597,9 @@ export class HttpAudioTtsEngine implements ITtsEngine {
     this.currentItemId = null
     this.currentItem = null
     this.currentSettings = null
+    this.currentItemAnchorMs = null
+    this.lastPlaybackCurrentTime = -1
+    this.lastPlaybackAdvanceAt = 0
     this.lastError = null
     this.pendingItems = []
     if (this.audio) {
@@ -527,5 +624,6 @@ type TtsStreamEvent = {
   sessionId: string
   chunkId?: string
   audioEndMs?: number
+  durationMs?: number
   message?: string
 }

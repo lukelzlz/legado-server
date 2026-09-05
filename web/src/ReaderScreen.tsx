@@ -362,6 +362,26 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
     setTtsPlayState('playing')
   }, [getTtsEngine, settings.ttsEngine])
 
+  const preloadNextChapter = useCallback((index: number) => {
+    const next = currentBook.chapters[index + 1]
+    if (!next || preloadedContentRef.current.has(next.url) || preloadingRef.current.has(next.url)) return
+    preloadingRef.current.add(next.url)
+    void api.content(currentBook.details.sourceId, next.url, currentBook.bookUrl)
+      .then(result => preloadedContentRef.current.set(next.url, result.content))
+      .catch(() => undefined)
+      .finally(() => preloadingRef.current.delete(next.url))
+  }, [currentBook.bookUrl, currentBook.chapters, currentBook.details.sourceId])
+
+  const preloadPrevChapter = useCallback((index: number) => {
+    const prev = currentBook.chapters[index - 1]
+    if (!prev || preloadedContentRef.current.has(prev.url) || preloadingRef.current.has(prev.url)) return
+    preloadingRef.current.add(prev.url)
+    void api.content(currentBook.details.sourceId, prev.url, currentBook.bookUrl)
+      .then(result => preloadedContentRef.current.set(prev.url, result.content))
+      .catch(() => undefined)
+      .finally(() => preloadingRef.current.delete(prev.url))
+  }, [currentBook.bookUrl, currentBook.chapters, currentBook.details.sourceId])
+
   const playTtsChunk = useCallback((idx: number, mode: TtsSpeakMode = 'replace') => {
     if (!ttsData.chunks || ttsData.chunks.length === 0) return
     if (idx < 0) idx = 0
@@ -413,7 +433,7 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
     )
     if (settings.ttsEngine !== 'webSpeech') {
       const httpEngine = engine as HttpAudioTtsEngine
-      for (let lookahead = 1; lookahead <= 2; lookahead++) {
+      for (let lookahead = 1; lookahead <= 5; lookahead++) {
         const nextIdx = idx + lookahead
         if (nextIdx < ttsData.chunks.length) {
           const nextChunk = ttsData.chunks[nextIdx]
@@ -425,7 +445,10 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
         }
       }
     }
-  }, [ttsData, sleepTimer, settings, chapterIndex, currentBook.chapters.length, persist, stopTts, getTtsEngine])
+    if (settings.ttsAutoNextChapter && idx >= ttsData.chunks.length - 5) {
+      preloadNextChapter(chapterIndex)
+    }
+  }, [ttsData, sleepTimer, settings, chapterIndex, currentBook.chapters.length, persist, stopTts, getTtsEngine, preloadNextChapter])
 
   playTtsChunkRef.current = playTtsChunk
 
@@ -494,26 +517,6 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
     }
     return rawLine
   }
-
-  const preloadNextChapter = useCallback((index: number) => {
-    const next = currentBook.chapters[index + 1]
-    if (!next || preloadedContentRef.current.has(next.url) || preloadingRef.current.has(next.url)) return
-    preloadingRef.current.add(next.url)
-    void api.content(currentBook.details.sourceId, next.url, currentBook.bookUrl)
-      .then(result => preloadedContentRef.current.set(next.url, result.content))
-      .catch(() => undefined)
-      .finally(() => preloadingRef.current.delete(next.url))
-  }, [currentBook.bookUrl, currentBook.chapters, currentBook.details.sourceId])
-
-  const preloadPrevChapter = useCallback((index: number) => {
-    const prev = currentBook.chapters[index - 1]
-    if (!prev || preloadedContentRef.current.has(prev.url) || preloadingRef.current.has(prev.url)) return
-    preloadingRef.current.add(prev.url)
-    void api.content(currentBook.details.sourceId, prev.url, currentBook.bookUrl)
-      .then(result => preloadedContentRef.current.set(prev.url, result.content))
-      .catch(() => undefined)
-      .finally(() => preloadingRef.current.delete(prev.url))
-  }, [currentBook.bookUrl, currentBook.chapters, currentBook.details.sourceId])
 
   const showBoundaryNotice = useCallback((msg: string) => {
     setBoundaryMessage(msg)

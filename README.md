@@ -102,7 +102,7 @@ flowchart TD
 
 无需手动购买/配置 VPS 或安装 Docker 环境，通过阿里云计算巢即可一键自动化拉起专属的云原生 Legado Server 服务实例（弹性容器实例 ECI + NAS 持久化文件存储 + 独立公网 IP）。
 
-[![Deploy on Alibaba Cloud](https://service-info-public.oss-cn-hangzhou.aliyuncs.com/computenest-package/badge/cn-deploy-badge.svg)](https://computenest.console.aliyun.com/service/instance/create/cn-hangzhou?type=user&ServiceId=service-533806288add4002b02a)
+[![Deploy to Alibaba Cloud](https://img.shields.io/badge/Deploy%20to-阿里云计算巢-FF6A00?logo=alibabacloud&logoColor=white&style=for-the-badge)](https://computenest.console.aliyun.com/service/instance/create/cn-hangzhou?type=user&ServiceId=service-533806288add4002b02a)
 
 - **一键直达链接**：[前往阿里云计算巢一键部署 Legado Server](https://computenest.console.aliyun.com/service/instance/create/cn-hangzhou?type=user&ServiceId=service-533806288add4002b02a)
 - **部署步骤**：

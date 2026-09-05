@@ -134,8 +134,8 @@ AI 与人类协作时必须明确当前达到的完成度阶梯，严禁混淆�
 | 2026-09-05 | Fix | 优化 Actions Release 发布逻辑，发布前清理旧 release 确保时间戳刷新并追加构建时间 | - | Pushed |
 | 2026-09-05 | Fix | 修复 CodeQL 扫描告警：补充 CI 权限声明并过滤封面图片协议防 XSS | - | Pushed |
 | 2026-09-05 | Fix | 过滤 audio.play() 暂停与切流打断错误，消除 pause 打断时的 Toast 警告提示 | - | Pushed |
-| 2026-09-05 | Fix | 根治 TTS 连续播放约 2 分钟时钟漂移累积死锁与章末静音停滞：单句相对锚定、600ms看门狗与5分片前瞻 | [`docs/acceptance/ACCEPT-008-tts-continuous-playback-stability.md`](file:///Users/zhangran/Documents/antigravity/joyful-galileo/docs/acceptance/ACCEPT-008-tts-continuous-playback-stability.md) | Deployed |
-| 2026-09-05 | Feat | 开启 TTS 朗读时自动对齐当前视口最上方首个完整可见段落 | - | Deployed |
+| 2026-09-05 | Fix | 根治 TTS 连续播放约 2 分钟时钟漂移累积死锁与章末静音停滞：单句相对锚定、600ms看门狗与5分片前瞻 | [`docs/acceptance/ACCEPT-008-tts-continuous-playback-stability.md`](file:///Users/zhangran/Documents/antigravity/joyful-galileo/docs/acceptance/ACCEPT-008-tts-continuous-playback-stability.md) | Accepted & Pushed |
+| 2026-09-05 | Feat | 开启 TTS 朗读时自动对齐当前视口最上方首个完整可见段落 | [`docs/acceptance/ACCEPT-008-tts-continuous-playback-stability.md`](file:///Users/zhangran/Documents/antigravity/joyful-galileo/docs/acceptance/ACCEPT-008-tts-continuous-playback-stability.md) | Accepted & Pushed |
 
 ---
 

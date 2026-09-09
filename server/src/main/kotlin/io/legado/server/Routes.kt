@@ -523,6 +523,9 @@ fun Route.apiRoutes(
                         return@get
                     }
                 call.response.cacheControl(CacheControl.NoStore(null))
+                call.response.header("X-Accel-Buffering", "no")
+                call.response.header("Cache-Control", "no-cache, no-transform")
+                call.response.header("Connection", "keep-alive")
                 call.respondBytesWriter(ContentType.Audio.MPEG, status = HttpStatusCode.OK) {
                     session.streamAudio(this)
                 }
@@ -535,6 +538,9 @@ fun Route.apiRoutes(
                         return@get
                     }
                 call.response.cacheControl(CacheControl.NoStore(null))
+                call.response.header("X-Accel-Buffering", "no")
+                call.response.header("Cache-Control", "no-cache, no-transform")
+                call.response.header("Connection", "keep-alive")
                 call.respondTextWriter(ContentType.Text.EventStream) {
                     session.streamEvents(this)
                 }

@@ -35,6 +35,7 @@ fun Application.legadoApplication(config: ServerConfig = ServerConfig.fromEnviro
     val ttsSessions = TtsSessionService(edgeTts)
     subscriptions.start()
     bookCache.start()
+    environment.monitor.subscribe(ApplicationStopping) { subscriptions.stop(); bookCache.stop(); ttsSessions.close(); database.close() }
     environment.monitor.subscribe(ApplicationStopped) { subscriptions.stop(); bookCache.stop(); ttsSessions.close(); database.close() }
 
     install(ContentNegotiation) {

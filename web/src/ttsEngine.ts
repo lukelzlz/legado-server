@@ -294,6 +294,8 @@ export class HttpAudioTtsEngine implements ITtsEngine {
       this.resetSession()
     }
     this.isPaused = false
+    // Synchronously warm up HTMLAudioElement in user gesture context
+    this.getAudio()
 
     const key = this.getCacheKey(clean, settings)
     const item = this.takePendingItem(key) ?? this.createItem(clean, settings, context)

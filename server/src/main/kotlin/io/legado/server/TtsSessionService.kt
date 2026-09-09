@@ -77,7 +77,7 @@ class TtsSession(
     private val createdAt = System.currentTimeMillis()
     private val lastActivityAt = AtomicLong(createdAt)
     private val chunks = Channel<TtsSessionChunkRequest>(48)
-    private val audio = Channel<ByteArray>(16)
+    private val audio = MutableSharedFlow<ByteArray>(replay = 16, extraBufferCapacity = 64)
     private val events = MutableSharedFlow<TtsSessionEvent>(replay = 32, extraBufferCapacity = 64)
     private val closed = AtomicBoolean(false)
     private val paused = AtomicBoolean(false)
@@ -135,20 +135,22 @@ class TtsSession(
     }
 
     suspend fun streamAudio(output: ByteWriteChannel) {
-        check(audioAttached.compareAndSet(false, true)) { "音频流已连接" }
+        audioAttached.set(true)
         touch()
         try {
-            for (bytes in audio) {
-                touch()
-                output.writeFully(bytes)
-                output.flush()
-            }
+            output.writeFully(MP3_SILENCE_PREAMBLE)
+            output.flush()
+            audio
+                .takeWhile { !closed.get() }
+                .collect { bytes ->
+                    touch()
+                    output.writeFully(bytes)
+                    output.flush()
+                }
         } catch (cancelled: CancellationException) {
-            close("audio_disconnected")
             throw cancelled
         } catch (error: Throwable) {
-            close("audio_disconnected")
-            throw error
+            // Client disconnected (e.g. range probe or stream aborted), keep session alive
         } finally {
             audioAttached.set(false)
         }
@@ -180,7 +182,6 @@ class TtsSession(
     fun close(reason: String) {
         if (!closed.compareAndSet(false, true)) return
         chunks.close()
-        audio.close()
         worker?.cancel()
         events.tryEmit(TtsSessionEvent("stopped", sessionId, message = reason))
         onClosed(this)
@@ -258,7 +259,7 @@ class TtsSession(
                     if (bytes === end) break
                     byteCount += bytes.size
                     durationEstimator.add(bytes)
-                    audio.send(bytes)
+                    audio.emit(bytes)
                 }
                 producer.await()
             } finally {
@@ -298,6 +299,26 @@ class TtsSession(
         private val TERMINAL_EVENTS = setOf("stopped", "error")
         private const val IDLE_TIMEOUT_MS = 10 * 60 * 1000L
         private const val MAX_LIFETIME_MS = 6 * 60 * 60 * 1000L
+        private val MP3_SILENCE_PREAMBLE = byteArrayOf(
+            0xFF.toByte(), 0xF3.toByte(), 0x64.toByte(), 0xC4.toByte(), 0x00, 0x00, 0x00, 0x03,
+            0x48, 0x00, 0x00, 0x00, 0x00, 0x4C, 0x41, 0x4D,
+            0x45, 0x55, 0x55, 0x55, 0x13, 0x94.toByte(), 0x62, 0x04,
+            0x0C, 0x77, 0x26, 0x00, 0x56, 0xF7.toByte(), 0x3C, 0x9A.toByte(),
+            0x7E, 0xEC.toByte(), 0xFB.toByte(), 0xBB.toByte(), 0xD3.toByte(), 0x08, 0x13, 0x4F,
+            0xC1.toByte(), 0x84.toByte(), 0x10, 0xCB.toByte(), 0x21, 0x11, 0x1B, 0x98.toByte(),
+            0x71, 0x7E, 0xEE.toByte(), 0x78, 0x71, 0x61, 0x00, 0xCD.toByte(),
+            0xDF.toByte(), 0x44, 0x00, 0x20, 0x02, 0xD1.toByte(), 0x3E, 0x51,
+            0x1E, 0x84.toByte(), 0xE7.toByte(), 0xB9.toByte(), 0x3B, 0xD0.toByte(), 0xEE.toByte(), 0x80.toByte(),
+            0x09, 0xE8.toByte(), 0x88.toByte(), 0x5D, 0x38, 0x94.toByte(), 0xFA.toByte(), 0xFA.toByte(),
+            0x1F, 0xC4.toByte(), 0xAF.toByte(), 0xA4.toByte(), 0x2F, 0xCE.toByte(), 0x13, 0x90.toByte(),
+            0x73, 0x4F, 0xAF.toByte(), 0x1D, 0xF2.toByte(), 0xE0.toByte(), 0x44, 0xA2.toByte(),
+            0x38, 0x5A, 0x28, 0x1B, 0xD3.toByte(), 0xDD.toByte(), 0xDF.toByte(), 0x42,
+            0xF2.toByte(), 0x73, 0x44, 0xA6.toByte(), 0xE7.toByte(), 0x97.toByte(), 0x00, 0x15,
+            0xF8.toByte(), 0x00, 0x4F, 0xD1.toByte(), 0x7E, 0x8A.toByte(), 0xEE.toByte(), 0x1C,
+            0xC2.toByte(), 0x11, 0x07, 0x17, 0x11, 0x04, 0x5D, 0xC1.toByte(),
+            0x00, 0x08, 0xF7.toByte(), 0x73, 0x89.toByte(), 0x5C, 0xE8.toByte(), 0x19,
+            0x96.toByte(), 0xE0.toByte(), 0x62, 0xF8.toByte(), 0x00, 0x85.toByte(), 0x5C, 0x20
+        )
     }
 }
 

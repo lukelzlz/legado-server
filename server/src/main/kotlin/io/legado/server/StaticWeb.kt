@@ -7,7 +7,16 @@ import io.ktor.server.routing.*
 import io.ktor.server.http.content.*
 
 fun Route.staticWeb() {
-    get("/index.html") { call.respondResource("static/index.html") }
+    val respondIndex: suspend (ApplicationCall) -> Unit = { call ->
+        call.response.header(HttpHeaders.CacheControl, "no-cache, no-store, must-revalidate")
+        call.response.header(HttpHeaders.Pragma, "no-cache")
+        call.response.header(HttpHeaders.Expires, "0")
+        call.respondResource("static/index.html")
+    }
+    get("/index.html") { respondIndex(call) }
+    head("/index.html") { respondIndex(call) }
+    staticResources("/assets", "static/assets")
     staticResources("/", "static")
-    get("/") { call.respondResource("static/index.html") }
+    get("/") { respondIndex(call) }
+    head("/") { respondIndex(call) }
 }

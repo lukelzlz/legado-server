@@ -47,6 +47,8 @@ class TtsSessionServiceTest {
             )
             assertTrue(session.append(request))
             assertTrue(session.append(request))
+            val preamble = ByteArray(144)
+            withTimeout(5_000) { output.readFully(preamble) }
             val received = ByteArray(first.size)
             withTimeout(5_000) { output.readFully(received) }
             assertArrayEquals(first, received)
@@ -84,6 +86,8 @@ class TtsSessionServiceTest {
                 customUrl = "http://127.0.0.1:${server.address.port}/tts",
             )
             assertTrue(session.append(request))
+            val preamble = ByteArray(144)
+            withTimeout(5_000) { output.readFully(preamble) }
             val received = ByteArray(mp3Bytes.size)
             withTimeout(5_000) { output.readFully(received) }
             kotlinx.coroutines.delay(200)
@@ -96,6 +100,50 @@ class TtsSessionServiceTest {
             session.close("test_done")
             audioJob.cancelAndJoin()
             eventJob.cancelAndJoin()
+            scope.cancel()
+            server.stop(0)
+        }
+    }
+
+    @Test
+    fun `session supports concurrent or reconnecting audio streams without error`() = kotlinx.coroutines.runBlocking {
+        val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+        val mp3Bytes = "concurrent-stream-data".toByteArray(StandardCharsets.UTF_8)
+        server.createContext("/tts") { exchange ->
+            exchange.responseHeaders.add("Content-Type", "audio/mpeg")
+            exchange.sendResponseHeaders(200, mp3Bytes.size.toLong())
+            exchange.responseBody.use { it.write(mp3Bytes) }
+        }
+        server.start()
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val output1 = ByteChannel(autoFlush = true)
+        val output2 = ByteChannel(autoFlush = true)
+        val session = TtsSession("session-multi", "owner-1", EdgeTtsService(HttpClient.newHttpClient()), scope) { }
+        val audioJob1 = scope.launch { session.streamAudio(output1) }
+        val audioJob2 = scope.launch { session.streamAudio(output2) }
+        try {
+            session.start()
+            val request = TtsSessionChunkRequest(
+                chunkId = "chunk-multi",
+                text = "测试多流并发与断连",
+                engine = "custom",
+                customUrl = "http://127.0.0.1:${server.address.port}/tts",
+            )
+            assertTrue(session.append(request))
+            val preamble1 = ByteArray(144)
+            val preamble2 = ByteArray(144)
+            withTimeout(5_000) { output1.readFully(preamble1) }
+            withTimeout(5_000) { output2.readFully(preamble2) }
+            val received1 = ByteArray(mp3Bytes.size)
+            val received2 = ByteArray(mp3Bytes.size)
+            withTimeout(5_000) { output1.readFully(received1) }
+            withTimeout(5_000) { output2.readFully(received2) }
+            assertArrayEquals(mp3Bytes, received1)
+            assertArrayEquals(mp3Bytes, received2)
+        } finally {
+            session.close("test_done")
+            audioJob1.cancelAndJoin()
+            audioJob2.cancelAndJoin()
             scope.cancel()
             server.stop(0)
         }

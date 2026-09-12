@@ -88,6 +88,7 @@ AI 与人类协作时必须明确当前达到的完成度阶梯，严禁混淆�
 - **[沙箱/安全] `JavaImporter` 必须采用安全空替身模式**：Legado 书源中大量 `jsLib` 工具库使用 `with (JavaImporter(...))` 组织代码。沙箱严禁开启真实 Java 反射（防止 RCE 漏洞），必须返回 `importClass`/`importPackage` 均为 no-op 的安全空替身，既规避 `ReferenceError` 崩溃，又确保纯沙箱环境安全。
 - **[Cookie 管理] Set-Cookie 存库前必须剥离指令属性**：上游响应中的 `Path=/; HttpOnly; SameSite=Lax; Max-Age=3600` 等指令属性若直接整串入库，会导致后续作为客户端请求头 `Cookie:` 发送时将属性一并带出引发上游 400 报错。
 - **[HTTP 规范/Ktor] 巨型 Data URL 必须转由服务端托管避免请求行超限**：书源 JS 生成的自包含 Base64 网页动辄数万字符，直接拼入 iframe URL 会触发 Ktor 8192 字符上限报 400，必须先通过 POST 上传服务端内存托管，前端仅引用短 key。
+- **[CI/构建] Gradle Wrapper 必须保持官方 distributions 下载源**：`gradle-wrapper.properties` 中的 `distributionUrl` 若配置为国内镜像（如腾讯云 `mirrors.cloud.tencent.com`），在 GitHub Actions 等海外 Runner 环境中会出现网络超时（Connection timed out）导致 CI 崩溃，必须始终保持官方 `https://services.gradle.org/distributions/` 地址。
 
 ---
 
@@ -146,6 +147,7 @@ AI 与人类协作时必须明确当前达到的完成度阶梯，严禁混淆�
 | 2026-09-09 | Fix | TTS 播放管线穿透、反向代理防缓冲与首帧静音垫底优化 | [`docs/sessions/SESSION-008-tts-buffering-proxy-and-silence-preamble.md`](file:///Users/zhangran/Documents/antigravity/joyful-galileo/docs/sessions/SESSION-008-tts-buffering-proxy-and-silence-preamble.md) | Accepted & Pushed |
 | 2026-09-09 | Fix | 根治浏览器探针并发锁（500）与连接断开误自毁：SharedFlow 广播解耦 | [`docs/acceptance/ACCEPT-009-tts-stream-buffering-proxy-and-multi-stream-resilience.md`](file:///Users/zhangran/Documents/antigravity/joyful-galileo/docs/acceptance/ACCEPT-009-tts-stream-buffering-proxy-and-multi-stream-resilience.md) | Accepted & Pushed |
 | 2026-09-12 | Feat | 内置浏览器反向代理登录与复杂聚合书源生态兼容 (#2) | [`docs/sessions/SESSION-010-source-webview-login-and-aggregate-compat.md`](file:///Users/zhangran/Documents/antigravity/joyful-galileo/docs/sessions/SESSION-010-source-webview-login-and-aggregate-compat.md) | Accepted & Pushed |
+| 2026-09-12 | Fix | 恢复 Gradle Wrapper 官方下载源，修复 Actions 境外构建超时 | - | Pushed |
 
 ---
 

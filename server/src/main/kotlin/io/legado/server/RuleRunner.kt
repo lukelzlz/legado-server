@@ -3,6 +3,8 @@ package io.legado.server
 import com.jayway.jsonpath.JsonPath
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
@@ -46,45 +48,116 @@ class RuleRunner(private val responseFetcher: ((String) -> String)? = null, inte
         source.string("mainJs")?.takeIf { it.isNotBlank() }?.let { return JsSourceRunner(this, source).search(keyword) }
         val rawSearchUrl = source.string("searchUrl") ?: throw RuleExecutionException("该书源未配置 searchUrl")
         val sourceUrl = source.string("bookSourceUrl") ?: throw RuleExecutionException("书源缺少 bookSourceUrl")
-        val searchUrl = if (rawSearchUrl.trimStart().startsWith("@js:") || rawSearchUrl.trimStart().startsWith("js:") || rawSearchUrl.contains("<js>")) {
-            val jsCode = if (rawSearchUrl.contains("<js>")) rawSearchUrl.substringAfter("<js>").substringBefore("</js>") else rawSearchUrl.removePrefix("@js:").removePrefix("js:")
-            val execContext = JsExecutionContext(sourceId = sourceUrl, database = database)
-            jsSandbox.eval(jsCode, mapOf("key" to keyword, "keyword" to keyword, "page" to 1, "baseUrl" to sourceUrl, "sourceId" to sourceUrl), execContext) ?: throw RuleExecutionException("searchUrl JS 计算未返回有效地址")
-        } else {
-            rawSearchUrl
+        // 整个搜索流程都在书源上下文内执行：规则里的 <js> 依赖 source.getVariable() 与 jsLib 工具函数
+        val execContext = sourceContext(source, sourceUrl)
+        return jsSandbox.withSourceContext(execContext) {
+            val searchUrl = if (rawSearchUrl.trimStart().startsWith("@js:") || rawSearchUrl.trimStart().startsWith("js:") || rawSearchUrl.contains("<js>")) {
+                val jsCode = if (rawSearchUrl.contains("<js>")) rawSearchUrl.substringAfter("<js>").substringBefore("</js>") else rawSearchUrl.removePrefix("@js:").removePrefix("js:")
+                jsSandbox.eval(jsCode, mapOf("key" to keyword, "keyword" to keyword, "page" to 1, "baseUrl" to sourceUrl, "sourceId" to sourceUrl), execContext)
+                    ?: throw RuleExecutionException("searchUrl JS 计算未返回有效地址：${execContext.lastError ?: "脚本无返回值"}")
+            } else {
+                rawSearchUrl
+            }
+            val (urlTemplate, options) = splitUrlOptions(searchUrl)
+            val mergedOptions = mergeOptions(parseSourceHeaders(source, sourceUrl), options)
+            val rendered = renderUrl(urlTemplate, keyword, sourceUrl).absolute(sourceUrl)
+            val body = fetchUrl(rendered, mergedOptions, keyword, sourceUrl, database)
+            val rule = source.objectValue("ruleSearch") ?: throw RuleExecutionException("该书源未配置 ruleSearch")
+            val items = nodes(body, rule.string("bookList") ?: throw RuleExecutionException("缺少 ruleSearch.bookList"))
+            items.mapNotNull { item ->
+                val url = item.value(rule.string("bookUrl"), jsSandbox, body, sourceUrl)?.absolute(sourceUrl) ?: return@mapNotNull null
+                SearchResult(
+                    sourceId = sourceUrl,
+                    name = item.value(rule.string("name"), jsSandbox, body, sourceUrl) ?: return@mapNotNull null,
+                    author = item.value(rule.string("author"), jsSandbox, body, sourceUrl),
+                    bookUrl = url,
+                    coverUrl = item.value(rule.string("coverUrl"), jsSandbox, body, sourceUrl)?.absolute(sourceUrl),
+                    intro = item.value(rule.string("intro"), jsSandbox, body, sourceUrl),
+                )
+            }
         }
-        val (urlTemplate, options) = splitUrlOptions(searchUrl)
-        val mergedOptions = mergeOptions(parseSourceHeaders(source, sourceUrl), options)
-        val rendered = renderUrl(urlTemplate, keyword, sourceUrl).absolute(sourceUrl)
-        val body = fetchUrl(rendered, mergedOptions, keyword, sourceUrl, database)
-        val rule = source.objectValue("ruleSearch") ?: throw RuleExecutionException("该书源未配置 ruleSearch")
-        val items = nodes(body, rule.string("bookList") ?: throw RuleExecutionException("缺少 ruleSearch.bookList"))
-        return items.mapNotNull { item ->
-            val url = item.value(rule.string("bookUrl"), jsSandbox, body, sourceUrl)?.absolute(sourceUrl) ?: return@mapNotNull null
-            SearchResult(
-                sourceId = sourceUrl,
-                name = item.value(rule.string("name"), jsSandbox, body, sourceUrl) ?: return@mapNotNull null,
-                author = item.value(rule.string("author"), jsSandbox, body, sourceUrl),
-                bookUrl = url,
-                coverUrl = item.value(rule.string("coverUrl"), jsSandbox, body, sourceUrl)?.absolute(sourceUrl),
-                intro = item.value(rule.string("intro"), jsSandbox, body, sourceUrl),
-            )
-        }
+    }
+
+    /**
+     * 构造当前书源的 JS 执行上下文（含 jsLib，规则 JS 因此可以调用书源工具函数）。
+     *
+     * 注意：Legado 约定里 `loginUrl` 可以不是网址，而是**整段登录用 JS**（聚合源普遍如此），
+     * 其中的工具函数同样会被正文/目录规则调用，因此也要并入脚本库。
+     */
+    private fun sourceContext(source: JsonObject, sourceUrl: String?): JsExecutionContext {
+        val library = buildString {
+            source.string("jsLib")?.takeIf { it.isNotBlank() }?.let { append(it) }
+            val loginScript = source.string("loginUrl")?.takeIf { it.isNotBlank() && !it.trim().startsWith("http") }
+            if (loginScript != null) {
+                if (isNotEmpty()) append("\n")
+                append(loginScript)
+            }
+        }.takeIf { it.isNotBlank() }
+        return JsExecutionContext(sourceId = sourceUrl, database = database, jsLib = library)
     }
 
     fun details(sourceJson: String, bookUrl: String): BookDetails {
         val source = sourceJson.objectValue()
         source.string("mainJs")?.takeIf { it.isNotBlank() }?.let { return JsSourceRunner(this, source).details(bookUrl) }
-        return declarativeDetails(source, bookUrl)
+        return jsSandbox.withSourceContext(sourceContext(source, source.string("bookSourceUrl"))) {
+            declarativeDetails(source, bookUrl)
+        }
+    }
+
+    /**
+     * 解析 `data:;base64,<载荷>,<类型标记>` 形式的数据地址，返回解码后的载荷；非数据地址返回 null。
+     *
+     * 聚合类书源用它把 book_id/来源/分栏等参数从搜索结果一路带到详情、目录和正文。
+     */
+    private fun dataUrlPayload(url: String): String? {
+        val value = url.trim()
+        if (!value.startsWith("data:", ignoreCase = true)) return null
+        val comma = value.indexOf(',')
+        if (comma < 0) return null
+        val meta = value.substring(5, comma)
+        var payload = value.substring(comma + 1)
+        // 末尾可能跟一个类型标记（如 ,{"type":"qingtian2"}），取最后一个逗号之前的部分
+        val typeIndex = payload.lastIndexOf(',')
+        if (typeIndex > 0 && payload.substring(typeIndex + 1).trimStart().startsWith("{")) {
+            payload = payload.substring(0, typeIndex)
+        }
+        return if (meta.contains("base64", ignoreCase = true)) {
+            runCatching { String(java.util.Base64.getDecoder().decode(payload.trim()), Charsets.UTF_8) }
+                .getOrElse { payload }
+        } else {
+            runCatching { java.net.URLDecoder.decode(payload, Charsets.UTF_8) }.getOrDefault(payload)
+        }
     }
 
     private fun declarativeDetails(source: JsonObject, bookUrl: String): BookDetails {
         val sourceUrl = source.string("bookSourceUrl")
-        val (url, options) = splitUrlOptions(bookUrl)
-        val mergedOptions = mergeOptions(parseSourceHeaders(source, sourceUrl), options)
-        val body = fetchUrl(url, mergedOptions, null, sourceUrl, database)
         val rule = source.objectValue("ruleBookInfo") ?: throw RuleExecutionException("该书源未配置 ruleBookInfo")
-        val root = NodeValue.document(body).at(rule.string("init"))
+        val initRule = rule.string("init")
+
+        // 聚合源把 bookUrl 当作参数载体（data:;base64,<载荷>,{"type":"qingtian"}），
+        // 这类地址无法直接 HTTP 请求，需要先取出解码后的载荷交给规则。
+        val dataPayload = dataUrlPayload(bookUrl)
+        val body: String
+        val baseDoc: NodeValue
+        if (dataPayload != null) {
+            body = dataPayload
+            baseDoc = NodeValue.json(dataPayload)
+        } else {
+            val (url, options) = splitUrlOptions(bookUrl)
+            val mergedOptions = mergeOptions(parseSourceHeaders(source, sourceUrl), options)
+            body = fetchUrl(url, mergedOptions, null, sourceUrl, database)
+            baseDoc = NodeValue.document(body)
+        }
+
+        // init 常写成「JS + 后置取值路径」的规则链（如 <js>…</js>$.data）：必须求值，不能当路径用。
+        // 纯路径（如 $.data）仍走原有 at() 语义，避免把 JSON 对象退化成字符串。
+        val root = when {
+            initRule.isNullOrBlank() -> baseDoc
+            initRule.contains("<js>") || initRule.trimStart().startsWith("@js:") || initRule.trimStart().startsWith("js:") ->
+                runCatching { baseDoc.value(initRule, jsSandbox, body, bookUrl) }.getOrNull()
+                    ?.takeIf { it.isNotBlank() }?.let { NodeValue.document(it) } ?: baseDoc
+            else -> baseDoc.at(initRule)
+        }
         fun value(key: String): String? = runCatching { root.value(rule.string(key), jsSandbox, body, bookUrl) }.getOrNull()
         val name = (value("name") ?: "").trim()
         return BookDetails(
@@ -100,46 +173,96 @@ class RuleRunner(private val responseFetcher: ((String) -> String)? = null, inte
         val source = sourceJson.objectValue()
         source.string("mainJs")?.takeIf { it.isNotBlank() }?.let { return JsSourceRunner(this, source).chapters(tocUrl) }
         val sourceUrl = source.string("bookSourceUrl")
-        val (url, options) = splitUrlOptions(tocUrl)
-        val mergedOptions = mergeOptions(parseSourceHeaders(source, sourceUrl), options)
-        val body = fetchUrl(url, mergedOptions, null, sourceUrl, database)
-        val rule = source.objectValue("ruleToc") ?: throw RuleExecutionException("该书源未配置 ruleToc")
-        val listRule = rule.string("chapterList") ?: throw RuleExecutionException("缺少 ruleToc.chapterList")
-        return nodes(body, listRule).mapIndexedNotNull { index, node ->
-            val chUrl = node.value(rule.string("chapterUrl"), jsSandbox, body, tocUrl)?.absolute(tocUrl) ?: return@mapIndexedNotNull null
-            Chapter(index, node.value(rule.string("chapterName"), jsSandbox, body, tocUrl) ?: "第 ${index + 1} 章", chUrl)
+        return jsSandbox.withSourceContext(sourceContext(source, sourceUrl)) {
+            val rule = source.objectValue("ruleToc") ?: throw RuleExecutionException("该书源未配置 ruleToc")
+            val listRule = rule.string("chapterList") ?: throw RuleExecutionException("缺少 ruleToc.chapterList")
+            val dataPayload = dataUrlPayload(tocUrl)
+            val body: String
+            val chapterNodes: List<NodeValue>
+            if (dataPayload != null) {
+                // 聚合源的目录地址同样是参数载体，由 chapterList 的 JS 自行取回目录
+                body = dataPayload
+                chapterNodes = jsListNodes(NodeValue.json(dataPayload), listRule, body, tocUrl)
+            } else {
+                val (url, options) = splitUrlOptions(tocUrl)
+                val mergedOptions = mergeOptions(parseSourceHeaders(source, sourceUrl), options)
+                body = fetchUrl(url, mergedOptions, null, sourceUrl, database)
+                val baseDoc = NodeValue.document(body)
+                chapterNodes = if (isJsRule(listRule)) jsListNodes(baseDoc, listRule, body, tocUrl) else nodes(body, listRule)
+            }
+            chapterNodes.mapIndexedNotNull { index, node ->
+                val chUrl = node.value(rule.string("chapterUrl"), jsSandbox, body, tocUrl)?.absolute(tocUrl) ?: return@mapIndexedNotNull null
+                Chapter(index, node.value(rule.string("chapterName"), jsSandbox, body, tocUrl) ?: "第 ${index + 1} 章", chUrl)
+            }
         }
+    }
+
+    private fun isJsRule(rule: String): Boolean {
+        val trimmed = rule.trimStart()
+        return trimmed.startsWith("@js:") || trimmed.startsWith("js:") || (rule.contains("<js>") && rule.contains("</js>"))
+    }
+
+    /** `<js>` 形式的列表规则：求值得到 JSON 数组后逐项包装成可继续取值的节点。 */
+    private fun jsListNodes(base: NodeValue, listRule: String, body: String, baseUrl: String): List<NodeValue> {
+        val json = base.value(listRule, jsSandbox, body, baseUrl) ?: return emptyList()
+        val parsed = runCatching { Json.parseToJsonElement(json) }.getOrNull() as? JsonArray ?: return emptyList()
+        return parsed.map { NodeValue.json(it.toPlainJava()) }
+    }
+
+    /** 把 kotlinx JsonElement 转成普通 Java 结构，使 JsonPath 取值与 JS 属性访问都能正常工作。 */
+    private fun JsonElement.toPlainJava(): Any? = when (this) {
+        is JsonObject -> LinkedHashMap<String, Any?>().also { map -> entries.forEach { (key, value) -> map[key] = value.toPlainJava() } }
+        is JsonArray -> map { it.toPlainJava() }
+        is JsonPrimitive -> if (isString) content
+        else content.toBooleanStrictOrNull() ?: content.toLongOrNull() ?: content.toDoubleOrNull() ?: content
+        JsonNull -> null
     }
 
     fun content(sourceJson: String, chapterUrl: String): ChapterContent {
         val source = sourceJson.objectValue()
         source.string("mainJs")?.takeIf { it.isNotBlank() }?.let { return JsSourceRunner(this, source).content(chapterUrl) }
         val sourceUrl = source.string("bookSourceUrl")
-        val (url, options) = splitUrlOptions(chapterUrl)
-        val mergedOptions = mergeOptions(parseSourceHeaders(source, sourceUrl), options)
-        val body = fetchUrl(url, mergedOptions, null, sourceUrl, database)
-        val rule = source.objectValue("ruleContent") ?: throw RuleExecutionException("该书源未配置 ruleContent")
-        val root = NodeValue.document(body)
-        var text = root.value(rule.string("content"), jsSandbox, body, chapterUrl)?.cleanContent().orEmpty()
-        if (text.length < 500) {
-            val paragraphs = Regex("(?i)<p[^>]*>([\\s\\S]*?)</p>").findAll(body)
-                .map { it.groupValues[1].cleanContent() }
-                .filter { it.length > 2 && !it.contains("按←键返回") && !it.contains("加入书签") && !it.contains("仅放置最近浏览") }
-                .toList()
-            if (paragraphs.size >= 5) {
-                val candidate = paragraphs.joinToString("\n\n")
-                if (candidate.length > text.length) text = candidate
+        return jsSandbox.withSourceContext(
+            sourceContext(source, sourceUrl).let { it.copy(chapterUrl = chapterUrl) },
+        ) {
+            val rule = source.objectValue("ruleContent") ?: throw RuleExecutionException("该书源未配置 ruleContent")
+            // 聚合源的章节地址同样是 data: 参数载体，正文由内容规则自行取回
+            val dataPayload = dataUrlPayload(chapterUrl)
+            val body: String
+            val root: NodeValue
+            if (dataPayload != null) {
+                body = dataPayload
+                root = NodeValue.json(dataPayload)
+            } else {
+                val (url, options) = splitUrlOptions(chapterUrl)
+                val mergedOptions = mergeOptions(parseSourceHeaders(source, sourceUrl), options)
+                body = fetchUrl(url, mergedOptions, null, sourceUrl, database)
+                root = NodeValue.document(body)
             }
-        }
-        val replaceRegex = rule.string("replaceRegex")
-        if (!replaceRegex.isNullOrBlank()) {
-            val patterns = replaceRegex.split(Regex("[\r\n]+|&&")).map { it.trim() }.filter { it.isNotBlank() }
-            for (pattern in patterns) {
-                text = runCatching { text.replace(Regex(pattern), "") }.getOrDefault(text)
+            var text = root.value(rule.string("content"), jsSandbox, body, chapterUrl)?.cleanContent().orEmpty()
+            if (text.length < 500) {
+                val paragraphs = Regex("(?i)<p[^>]*>([\\s\\S]*?)</p>").findAll(body)
+                    .map { it.groupValues[1].cleanContent() }
+                    .filter { it.length > 2 && !it.contains("按←键返回") && !it.contains("加入书签") && !it.contains("仅放置最近浏览") }
+                    .toList()
+                if (paragraphs.size >= 5) {
+                    val candidate = paragraphs.joinToString("\n\n")
+                    if (candidate.length > text.length) text = candidate
+                }
             }
+            val replaceRegex = rule.string("replaceRegex")
+            if (!replaceRegex.isNullOrBlank()) {
+                val patterns = replaceRegex.split(Regex("[\r\n]+|&&")).map { it.trim() }.filter { it.isNotBlank() }
+                for (pattern in patterns) {
+                    text = runCatching { text.replace(Regex(pattern), "") }.getOrDefault(text)
+                }
+            }
+            if (text.isBlank()) {
+                val detail = jsSandbox.lastError?.let { "，脚本异常：$it" } ?: ""
+                throw RuleExecutionException("正文规则未提取到内容$detail")
+            }
+            ChapterContent(root.value(rule.string("title"), jsSandbox, body, chapterUrl), text)
         }
-        if (text.isBlank()) throw RuleExecutionException("正文规则未提取到内容")
-        return ChapterContent(root.value(rule.string("title"), jsSandbox, body, chapterUrl), text)
     }
 
     fun parseLoginUi(sourceJson: String): List<SourceLoginUiItem> {
@@ -165,13 +288,9 @@ class RuleRunner(private val responseFetcher: ((String) -> String)? = null, inte
 
         val rawJson = if (loginUiStr.startsWith("@js:") || loginUiStr.startsWith("js:") || loginUiStr.contains("<js>")) {
             val jsCode = if (loginUiStr.contains("<js>")) loginUiStr.substringAfter("<js>").substringBefore("</js>") else loginUiStr.removePrefix("@js:").removePrefix("js:")
-            val script = if (!jsLib.isNullOrBlank()) "$jsLib\n$jsCode" else jsCode
-            val execContext = JsExecutionContext(
-                sourceId = sourceUrl,
-                sourceName = source.string("bookSourceName") ?: sourceUrl,
-                database = database,
-            )
-            jsSandbox.eval(script, mapOf("sourceId" to sourceUrl, "baseUrl" to sourceUrl), execContext) ?: "[]"
+            val execContext = sourceContext(source, sourceUrl)
+                .copy(sourceName = source.string("bookSourceName") ?: sourceUrl)
+            jsSandbox.eval(jsCode, mapOf("sourceId" to sourceUrl, "baseUrl" to sourceUrl), execContext) ?: "[]"
         } else {
             loginUiStr
         }
@@ -190,13 +309,10 @@ class RuleRunner(private val responseFetcher: ((String) -> String)? = null, inte
         val source = sourceJson.objectValue()
         val sourceUrl = source.string("bookSourceUrl") ?: ""
         val sourceName = source.string("bookSourceName") ?: sourceUrl
-        val loginUrl = source.string("loginUrl") ?: ""
-        val jsLib = source.string("jsLib") ?: ""
 
-        val execContext = JsExecutionContext(
-            sourceId = sourceUrl,
+        // 脚本库（jsLib + loginUrl 形式的 JS）由执行上下文统一注入，这里只拼动作本身
+        val execContext = sourceContext(source, sourceUrl).copy(
             sourceName = sourceName,
-            database = database,
             initialLoginInfo = loginData.toMutableMap(),
             isLongClick = isLongClick,
         )
@@ -209,14 +325,10 @@ class RuleRunner(private val responseFetcher: ((String) -> String)? = null, inte
             )
         }
 
-        val fullScript = buildString {
-            if (jsLib.isNotBlank()) append(jsLib).append("\n")
-            if (loginUrl.isNotBlank()) append(loginUrl).append("\n")
-            if (trimmedAction.equals("login", ignoreCase = true) || trimmedAction.startsWith("login(")) {
-                append("if (typeof login === 'function') { login.apply(this); } else { $trimmedAction; }")
-            } else {
-                append(trimmedAction)
-            }
+        val fullScript = if (trimmedAction.equals("login", ignoreCase = true) || trimmedAction.startsWith("login(")) {
+            "if (typeof login === 'function') { login.apply(this); } else { $trimmedAction; }"
+        } else {
+            trimmedAction
         }
 
         val bindings = mapOf(
@@ -229,9 +341,11 @@ class RuleRunner(private val responseFetcher: ((String) -> String)? = null, inte
 
         jsSandbox.eval(fullScript, bindings, execContext)
         val state = database?.getSourceLoginState(sourceUrl)
+        val failure = execContext.lastError
 
         return SourceLoginActionResult(
-            success = true,
+            success = failure == null,
+            error = failure,
             toastMessages = execContext.toastMessages,
             openUrl = execContext.openUrl,
             copyText = execContext.copyText,
@@ -260,13 +374,8 @@ class RuleRunner(private val responseFetcher: ((String) -> String)? = null, inte
             )
         }
 
-        val execContext = JsExecutionContext(sourceId = sourceUrl, database = database)
-        val script = buildString {
-            if (jsLib.isNotBlank()) append(jsLib).append("\n")
-            if (loginUrl.isNotBlank()) append(loginUrl).append("\n")
-            append(loginCheckJs)
-        }
-        val result = jsSandbox.eval(script, mapOf("sourceId" to sourceUrl, "baseUrl" to sourceUrl), execContext)?.trim()
+        val execContext = sourceContext(source, sourceUrl)
+        val result = jsSandbox.eval(loginCheckJs, mapOf("sourceId" to sourceUrl, "baseUrl" to sourceUrl), execContext)?.trim()
         val isSuccess = result == "true" || (result != null && result.isNotBlank() && result != "false" && result != "0" && !result.contains("未登录"))
         return SourceLoginCheckResult(
             loggedIn = isSuccess,
@@ -368,11 +477,26 @@ class RuleRunner(private val responseFetcher: ((String) -> String)? = null, inte
         if (!trimmed.startsWith("http://", ignoreCase = true) && !trimmed.startsWith("https://", ignoreCase = true)) {
             throw RuleExecutionException("URL 格式无效或包含未解析变量: $url")
         }
-        return try {
-            URI(trimmed)
-        } catch (e: Throwable) {
-            throw RuleExecutionException("URL 解析失败: $url (${e.message})")
+        // Legado 书源普遍把未转义的 JSON（含 { } " 等）直接拼进 query，Android 端 OkHttp 会自动编码，
+        // 而 java.net.URI 严格按 RFC 3986 拒绝。这里先按原样解析，失败再对非法字符做百分号编码。
+        runCatching { URI(trimmed) }.getOrNull()?.let { return it }
+        val encoded = encodeIllegalUrlChars(trimmed)
+        return runCatching { URI(encoded) }.getOrElse {
+            throw RuleExecutionException("URL 解析失败: $url (${it.message})")
         }
+    }
+
+    /** 对 URL 中 RFC 不允许的字面字符做百分号编码。 */
+    private fun encodeIllegalUrlChars(url: String): String {
+        val builder = StringBuilder(url.length + 16)
+        for (ch in url) {
+            when {
+                ch == ' ' -> builder.append("%20")
+                ch.code > 127 || ch in "\"<>{}|\\^`" -> builder.append(URLEncoder.encode(ch.toString(), Charsets.UTF_8))
+                else -> builder.append(ch)
+            }
+        }
+        return builder.toString()
     }
 
     private fun fetchUrl(
@@ -385,12 +509,24 @@ class RuleRunner(private val responseFetcher: ((String) -> String)? = null, inte
         responseFetcher?.let { return it(url) }
         val db = database ?: this.database
         var request = buildRequest(parseUri(url), options, keyword)
+        // 首次连接偶发失败（连接复用/握手抖动）时重试一次：书源 JS 常在内部 try/catch 吞掉 ajax 异常，
+        // 不重试会表现为「规则执行成功但内容为空」这类极难排查的现象。
+        var transientAttempt = 0
         repeat(4) {
-            val response = client.send(request, HttpResponse.BodyHandlers.ofInputStream())
+            val response = try {
+                client.send(request, HttpResponse.BodyHandlers.ofInputStream())
+            } catch (error: java.io.IOException) {
+                if (transientAttempt == 0) {
+                    transientAttempt++
+                    client.send(request, HttpResponse.BodyHandlers.ofInputStream())
+                } else {
+                    throw error
+                }
+            }
             val setCookies = response.headers().allValues("set-cookie")
             if (setCookies.isNotEmpty() && db != null && !sourceId.isNullOrBlank()) {
                 setCookies.forEach { cookieStr ->
-                    db.setSourceCookie(sourceId, url, cookieStr)
+                    db.setSourceCookieFromSetCookie(sourceId, url, cookieStr)
                 }
             }
             if (response.statusCode() !in 300..399) {
@@ -624,8 +760,19 @@ internal class NodeValue private constructor(private val html: Element?, private
         if (trimmedRule.contains("<js>") && trimmedRule.contains("</js>")) {
             val preRule = trimmedRule.substringBefore("<js>").trim()
             val jsCode = trimmedRule.substringAfter("<js>").substringBefore("</js>").trim()
-            val intermediate = if (preRule.isNotBlank()) valuePlain(preRule) ?: "" else (html?.html() ?: json?.toString() ?: rawBody ?: "")
-            return jsSandbox?.eval(jsCode, mapOf("result" to intermediate, "src" to (rawBody ?: intermediate), "baseUrl" to (baseUrl ?: ""))) ?: intermediate
+            val postRule = trimmedRule.substringAfter("</js>").trim()
+            // 无前缀时 result 就是当前条目本身。JSON 条目必须按**对象**传入（沙箱会把 Map 转成 JS 对象），
+            // 若按 toString 传，书源里的 result.book_id 之类属性访问全部取不到值，条目会被整条丢弃。
+            val intermediate: Any? = if (preRule.isNotBlank()) valuePlain(preRule) ?: ""
+            else html?.html() ?: json ?: rawBody ?: ""
+            val evaluated = jsSandbox?.eval(
+                jsCode,
+                mapOf("result" to intermediate, "src" to (rawBody ?: intermediate), "baseUrl" to (baseUrl ?: "")),
+            ) ?: (intermediate as? String ?: intermediate?.toString() ?: "")
+            if (postRule.isBlank()) return evaluated
+            // Legado 规则链：`<js>…</js>` 之后可以再接取值路径（如 `$.data` 或 CSS 选择器），
+            // 把 JS 的返回值当作新文档继续取值。聚合源大量使用这种写法。
+            return NodeValue.document(evaluated).value(postRule, jsSandbox, evaluated, baseUrl)
         }
 
         return valuePlain(trimmedRule)
@@ -663,20 +810,7 @@ internal class NodeValue private constructor(private val html: Element?, private
                 }
             }
             if (texts.isEmpty()) return null
-            var resultText = texts.joinToString("\n")
-
-            if (lastSegment.contains("##")) {
-                val parts = lastSegment.split("##")
-                var i = 1
-                while (i < parts.size) {
-                    val pattern = parts[i]
-                    val replacement = if (i + 1 < parts.size) parts[i + 1] else ""
-                    if (pattern.isNotBlank()) {
-                        resultText = runCatching { resultText.replace(Regex(pattern), replacement) }.getOrDefault(resultText)
-                    }
-                    i += 2
-                }
-            }
+            val resultText = applyRegexReplace(texts.joinToString("\n"), lastSegment)
             resultText.takeIf { it.isNotBlank() }
         }
     }
@@ -723,22 +857,64 @@ internal class NodeValue private constructor(private val html: Element?, private
     private fun unwrapJsonValue(value: Any?): String? {
         return when (value) {
             null -> null
+            // JSON 对象必须序列化成合法 JSON：直接用 Java 的 {k=v} 形式会让后续规则链解析失败
+            is Map<*, *> -> toJsonText(value)
             is List<*> -> {
                 val nonNull = value.filterNotNull()
-                if (nonNull.size == 1) nonNull[0].toString().takeIf { it.isNotBlank() }
-                else nonNull.joinToString(separator = "\n") { it.toString() }.ifBlank { null }
+                // 元素是对象/嵌套结构时必须保留 JSON 数组形态，否则章节列表之类的规则链会被压成文本而无法再解析；
+                // 纯标量列表仍按行拼接，保持原有取值语义。
+                if (nonNull.any { it is Map<*, *> || it is List<*> }) toJsonText(nonNull)
+                else if (nonNull.size == 1) unwrapJsonValue(nonNull[0])
+                else nonNull.joinToString(separator = "\n") { unwrapJsonValue(it) ?: "" }.ifBlank { null }
             }
             else -> value.toString().takeIf { it.isNotBlank() }
         }
     }
 
+    /** 把 JsonPath 取出的 Java Map/List 递归序列化为合法 JSON 文本。 */
+    private fun toJsonText(value: Any?): String = runCatching {
+        Json.encodeToString(JsonElement.serializer(), toJsonElement(value))
+    }.getOrElse { value?.toString() ?: "" }
+
+    private fun toJsonElement(value: Any?): JsonElement = when (value) {
+        null -> JsonNull
+        is JsonElement -> value
+        is String -> JsonPrimitive(value)
+        is Number -> JsonPrimitive(value)
+        is Boolean -> JsonPrimitive(value)
+        is Map<*, *> -> JsonObject(value.entries.associate { (key, item) -> key.toString() to toJsonElement(item) })
+        is Iterable<*> -> JsonArray(value.map { toJsonElement(it) })
+        else -> JsonPrimitive(value.toString())
+    }
+
     private fun valueJson(rule: String): String? {
-        val template = Regex("\\{\\{(.*?)}}").replace(rule) { match ->
+        // Legado 规则语法 `路径##正则##替换`：必须先剥离 ## 部分再交给 JsonPath，
+        // 否则整串会当成 JSON 路径解析失败，条目会被 mapNotNull 全部丢弃（表现为搜索 0 结果）。
+        val pathPart = rule.substringBefore("##").trim()
+        val template = Regex("\\{\\{(.*?)}}").replace(pathPart) { match ->
             val inner = match.groupValues[1].trim()
             unwrapJsonValue(readJson(inner)) ?: ""
         }
-        if (!template.startsWith("$")) return template.takeIf { it.isNotBlank() }
-        return unwrapJsonValue(readJson(template))
+        if (!template.startsWith("$")) return applyRegexReplace(template, rule).takeIf { it.isNotBlank() }
+        val raw = unwrapJsonValue(readJson(template)) ?: return null
+        return applyRegexReplace(raw, rule).takeIf { it.isNotBlank() }
+    }
+
+    /** Legado 的 `##正则##替换` 语法：成对出现，替换串缺省为空串。 */
+    private fun applyRegexReplace(value: String, rule: String): String {
+        if (!rule.contains("##")) return value
+        val parts = rule.split("##")
+        var result = value
+        var index = 1
+        while (index < parts.size) {
+            val pattern = parts[index]
+            val replacement = if (index + 1 < parts.size) parts[index + 1] else ""
+            if (pattern.isNotBlank()) {
+                result = runCatching { result.replace(Regex(pattern), replacement) }.getOrDefault(result)
+            }
+            index += 2
+        }
+        return result
     }
 
     private fun readJson(path: String): Any? = runCatching {

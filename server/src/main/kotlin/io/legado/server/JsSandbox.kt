@@ -28,24 +28,65 @@ data class JsExecutionContext(
     var openUrl: String? = null,
     var copyText: String? = null,
     var reRenderUi: Boolean = false,
+    /** 脚本执行失败的原始原因，供登录动作回传给前端展示（否则按钮会「假成功」） */
+    var lastError: String? = null,
+    /** 当前书籍上下文，供 book 桥接对象读取 */
+    val bookUrl: String? = null,
+    val bookName: String? = null,
+    val bookAuthor: String? = null,
+    val bookTocUrl: String? = null,
+    val bookType: Int? = null,
+    val bookVariables: MutableMap<String, String> = mutableMapOf(),
+    /** 当前章节上下文，供 chapter 桥接对象读取 */
+    val chapterUrl: String? = null,
+    val chapterIndex: Int? = null,
+    val chapterTitle: String? = null,
+    /** 该书源的 jsLib：所有规则 JS 都应能调用其中的工具函数 */
+    val jsLib: String? = null,
 )
 
 class JsSandbox(private val runner: RuleRunner? = null) {
     private val sessionStore = ConcurrentHashMap<String, Any>()
+
+    /**
+     * 当前线程正在求值的书源上下文。
+     *
+     * 规则的 `<js>` 片段（NodeValue）无法方便地把执行上下文逐层透传，但书源 JS 普遍依赖
+     * `source.getVariable()` 与 jsLib 里的工具函数，因此由 RuleRunner 的入口方法设置本线程上下文，
+     * eval 在未显式传入 execContext 时回退到它。
+     */
+    @PublishedApi
+    internal val threadContext = ThreadLocal<JsExecutionContext?>()
+
+    /** 在指定的书源上下文内执行 block（inline 以便调用方直接 return）。 */
+    inline fun <T> withSourceContext(context: JsExecutionContext?, block: () -> T): T {
+        val previous = threadContext.get()
+        threadContext.set(context)
+        try {
+            return block()
+        } finally {
+            threadContext.set(previous)
+        }
+    }
 
     fun eval(
         script: String,
         bindings: Map<String, Any?> = emptyMap(),
         execContext: JsExecutionContext? = null,
     ): String? {
-        val cleanScript = script.trim().removePrefix("@js:").removePrefix("js:").trim()
-        if (cleanScript.isBlank()) return null
+        val context = execContext ?: threadContext.get()
+        val rawScript = script.trim().removePrefix("@js:").removePrefix("js:").trim()
+        if (rawScript.isBlank()) return null
+        // 书源的 jsLib 对所有规则 JS 可见（Legado 语义），集中在这里注入，
+        // 避免每个调用点各自拼接、漏拼一处就整段脚本 ReferenceError。
+        val library = context?.jsLib?.takeIf { it.isNotBlank() }
+        val cleanScript = if (library == null) rawScript else "$library\n$rawScript"
 
-        val context = Context.enter()
+        val cx = Context.enter()
         try {
-            context.optimizationLevel = -1
-            context.setClassShutter(ClassShutter { false }) // Sandbox: block all Java reflection
-            val scope = context.initSafeStandardObjects()
+            cx.optimizationLevel = -1
+            cx.setClassShutter(ClassShutter { false }) // Sandbox: block all Java reflection
+            val scope = cx.initSafeStandardObjects()
 
             // Inject bindings (e.g. result, src, baseUrl, key, page, book, chapter, isLongClick)
             bindings.forEach { (key, value) ->
@@ -53,34 +94,131 @@ class JsSandbox(private val runner: RuleRunner? = null) {
             }
 
             // Inject standard Legado 'java' bridge object
-            ScriptableObject.putProperty(scope, "java", createJavaBridge(scope, execContext))
+            ScriptableObject.putProperty(scope, "java", createJavaBridge(scope, context))
+
+            // Legado 书源的 jsLib 惯用 `new JavaImporter()` + `with(importer){ ... }` 组织工具函数库。
+            // 沙箱禁用了真实 Java 反射，此处提供空实现的安全替身：只要不再抛 ReferenceError，
+            // 整个 with 块就能正常完成函数定义，后续登录动作才可能执行。
+            ScriptableObject.putProperty(scope, "JavaImporter", createJavaImporterStub(scope))
 
             // Inject 'source' and 'cookie' bridge objects if sourceId is available
-            val sourceId = execContext?.sourceId ?: bindings["sourceId"]?.toString() ?: bindings["baseUrl"]?.toString() ?: bindings["bookSourceUrl"]?.toString()
+            val sourceId = context?.sourceId ?: bindings["sourceId"]?.toString() ?: bindings["baseUrl"]?.toString() ?: bindings["bookSourceUrl"]?.toString()
             if (!sourceId.isNullOrBlank()) {
-                val db = execContext?.database ?: runner?.database
-                ScriptableObject.putProperty(scope, "source", createSourceBridge(scope, sourceId, db, execContext))
+                val db = context?.database ?: runner?.database
+                ScriptableObject.putProperty(scope, "source", createSourceBridge(scope, sourceId, db, context))
                 ScriptableObject.putProperty(scope, "cookie", createCookieBridge(scope, sourceId, db))
             }
 
-            val result = context.evaluateString(scope, cleanScript, "rule.js", 1, null)
+            // Legado 的 book 对象：书源 JS 会用 book.getVariable('custom') 读取书籍级变量
+            ScriptableObject.putProperty(scope, "book", createBookBridge(scope, context))
+            // chapter 对象：正文规则会引用 chapter.index / chapter.title
+            ScriptableObject.putProperty(scope, "chapter", createChapterBridge(scope, context))
+
+            val result = cx.evaluateString(scope, cleanScript, "rule.js", 1, null)
             if (result == null || result == Context.getUndefinedValue()) {
                 val globalResult = ScriptableObject.getProperty(scope, "result")
                 if (globalResult != null && globalResult != Context.getUndefinedValue()) {
-                    return jsValueToString(context, scope, globalResult)
+                    return jsValueToString(cx, scope, globalResult)
                 }
                 return null
             }
-            return jsValueToString(context, scope, result)
+            return jsValueToString(cx, scope, result)
         } catch (e: Exception) {
+            // 不能静默吞掉：否则登录按钮全部「执行成功」却毫无动作，用户无从判断原因。
+            // 记录到执行上下文，由调用方决定是展示还是忽略。
+            val detail = e.message?.takeIf { it.isNotBlank() } ?: e.javaClass.simpleName
+            context?.lastError = detail
+            lastError = detail
             return null
         } finally {
             Context.exit()
         }
     }
 
-    private fun jsValueToString(context: Context, scope: Scriptable, value: Any?): String? = when (value) {
-        null, Context.getUndefinedValue() -> null
+    /** 最近一次 eval 的失败原因，供无法拿到执行上下文的调用方读取。 */
+    @Volatile
+    var lastError: String? = null
+        private set
+
+    /** `chapter` 桥接对象：正文规则会引用 chapter.index / chapter.title，缺失会让整段脚本中断。 */
+    private fun createChapterBridge(scope: Scriptable, execContext: JsExecutionContext?): NativeObject {
+        val chapter = NativeObject()
+        chapter.parentScope = scope
+        ScriptableObject.putProperty(chapter, "index", execContext?.chapterIndex ?: 0)
+        ScriptableObject.putProperty(chapter, "title", execContext?.chapterTitle ?: "")
+        ScriptableObject.putProperty(chapter, "url", execContext?.chapterUrl ?: "")
+        ScriptableObject.putProperty(chapter, "start", 0)
+        ScriptableObject.putProperty(chapter, "end", 0)
+        return chapter
+    }
+
+    /**
+     * `book` 桥接对象。     *
+     * Legado 书源 JS 经常通过 `book.getVariable('custom')` 读取书籍级变量来决定请求参数；
+     * 这里提供真实可存取的变量表，而不是让它抛错中断整段脚本。
+     */
+    private fun createBookBridge(scope: Scriptable, execContext: JsExecutionContext?): NativeObject {
+        val book = NativeObject()
+        book.parentScope = scope
+        ScriptableObject.putProperty(book, "type", execContext?.bookType ?: 0)
+        ScriptableObject.putProperty(book, "name", execContext?.bookName ?: "")
+        ScriptableObject.putProperty(book, "author", execContext?.bookAuthor ?: "")
+        ScriptableObject.putProperty(book, "bookUrl", execContext?.bookUrl ?: "")
+        ScriptableObject.putProperty(book, "tocUrl", execContext?.bookTocUrl ?: "")
+        ScriptableObject.putProperty(book, "durChapterIndex", execContext?.chapterIndex ?: 0)
+        ScriptableObject.putProperty(book, "durChapterTitle", "")
+        ScriptableObject.putProperty(book, "order", 0)
+        val readConfig = NativeObject()
+        readConfig.parentScope = scope
+        ScriptableObject.putProperty(book, "readConfig", readConfig)
+
+        ScriptableObject.putProperty(book, "getVariable", object : BaseFunction() {
+            override fun call(cx: Context, s: Scriptable, thisObj: Scriptable, args: Array<out Any?>): Any {
+                val key = args.firstOrNull()?.toString() ?: return "null"
+                return execContext?.bookVariables?.get(key) ?: "null"
+            }
+        })
+        ScriptableObject.putProperty(book, "setVariable", object : BaseFunction() {
+            override fun call(cx: Context, s: Scriptable, thisObj: Scriptable, args: Array<out Any?>): Any {
+                val key = args.firstOrNull()?.toString()
+                if (key != null) {
+                    execContext?.bookVariables?.put(key, args.getOrNull(1)?.toString() ?: "")
+                }
+                return Context.getUndefinedValue()
+            }
+        })
+        val noop = object : BaseFunction() {
+            override fun call(cx: Context, s: Scriptable, thisObj: Scriptable, args: Array<out Any?>): Any =
+                Context.getUndefinedValue()
+        }
+        ScriptableObject.putProperty(book, "setUseReplaceRule", noop)
+        return book
+    }
+
+    /**
+     * `JavaImporter` 的安全替身。     *
+     * Legado 的 Rhino 环境提供 `JavaImporter`，大量书源的 jsLib 用它配合 `with` 语句组织工具函数库。
+     * 沙箱出于安全禁用真实 Java 反射，因此这里只返回一个**空的**导入器：importClass/importPackage
+     * 为空操作，不暴露任何 Java 能力，但足以让脚本不再抛 ReferenceError、正常完成函数定义。
+     */
+    private fun createJavaImporterStub(scope: Scriptable): BaseFunction = object : BaseFunction() {
+        override fun call(cx: Context, s: Scriptable, thisObj: Scriptable, args: Array<out Any?>): Any {
+            val importer = NativeObject()
+            importer.parentScope = scope
+            val noop = object : BaseFunction() {
+                override fun call(cx: Context, s: Scriptable, thisObj: Scriptable, args: Array<out Any?>): Any =
+                    Context.getUndefinedValue()
+            }
+            ScriptableObject.putProperty(importer, "importClass", noop)
+            ScriptableObject.putProperty(importer, "importPackage", noop)
+            return importer
+        }
+
+        override fun construct(cx: Context, s: Scriptable, args: Array<out Any?>): Scriptable =
+            call(cx, s, s, args) as Scriptable
+    }
+
+    private fun jsValueToString(context: Context, scope: Scriptable, value: Any?): String? = when (value) {        null, Context.getUndefinedValue() -> null
         is CharSequence -> value.toString()
         is Number, is Boolean -> value.toString()
         else -> runCatching {
@@ -350,6 +488,17 @@ class JsSandbox(private val runner: RuleRunner? = null) {
         ScriptableObject.putProperty(api, "startBrowser", browserFn)
         ScriptableObject.putProperty(api, "startBrowserAwait", browserFn)
         ScriptableObject.putProperty(api, "openWeb", browserFn)
+        // 聚合类书源常用的其它打开网页别名
+        ScriptableObject.putProperty(api, "showBrowser", browserFn)
+        ScriptableObject.putProperty(api, "showReadingBrowser", browserFn)
+        ScriptableObject.putProperty(api, "startBrowserDp", browserFn)
+
+        // java.getWebViewUA()：部分书源用它给站点请求伪装 WebView 的 UA
+        ScriptableObject.putProperty(api, "getWebViewUA", object : BaseFunction() {
+            override fun call(cx: Context, scope: Scriptable, thisObj: Scriptable, args: Array<out Any?>): Any =
+                "Mozilla/5.0 (Linux; Android 13; Pixel 5 Build/TQ3A.230805.001; wv) AppleWebKit/537.36 " +
+                    "(KHTML, like Gecko) Version/4.0 Chrome/131.0.0.0 Mobile Safari/537.36"
+        })
 
         // java.copyText(text)
         ScriptableObject.putProperty(api, "copyText", object : BaseFunction() {
@@ -407,6 +556,31 @@ class JsSandbox(private val runner: RuleRunner? = null) {
             override fun call(cx: Context, scope: Scriptable, thisObj: Scriptable, args: Array<out Any?>): Any {
                 val input = args.firstOrNull()?.toString() ?: return ""
                 return Base64.getEncoder().encodeToString(input.toByteArray(Charsets.UTF_8))
+            }
+        })
+
+        // java.hexDecodeToString(hex) / java.hexEncodeToString(str)
+        // 聚合类书源用 data:;hex,... 之类的载荷在搜索→详情→目录→正文之间传递参数
+        ScriptableObject.putProperty(api, "hexDecodeToString", object : BaseFunction() {
+            override fun call(cx: Context, scope: Scriptable, thisObj: Scriptable, args: Array<out Any?>): Any {
+                val input = args.firstOrNull()?.toString() ?: return ""
+                val clean = input.trim().removePrefix("0x")
+                // 载荷可能是十六进制，也可能已经被上层解码成普通文本（如 JSON），
+                // 非十六进制时原样返回，避免把正确的数据破坏成乱码。
+                if (clean.isEmpty() || clean.length % 2 != 0 || !clean.all { it.isDigit() || it in 'a'..'f' || it in 'A'..'F' }) {
+                    return input
+                }
+                return runCatching {
+                    String(ByteArray(clean.length / 2) { index ->
+                        clean.substring(index * 2, index * 2 + 2).toInt(16).toByte()
+                    }, Charsets.UTF_8)
+                }.getOrDefault(input)
+            }
+        })
+        ScriptableObject.putProperty(api, "hexEncodeToString", object : BaseFunction() {
+            override fun call(cx: Context, scope: Scriptable, thisObj: Scriptable, args: Array<out Any?>): Any {
+                val input = args.firstOrNull()?.toString() ?: return ""
+                return input.toByteArray(Charsets.UTF_8).joinToString("") { "%02x".format(it) }
             }
         })
 

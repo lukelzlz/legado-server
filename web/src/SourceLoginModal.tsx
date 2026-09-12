@@ -1,5 +1,6 @@
-import React, { useState, useEffect, useCallback, useMemo } from 'react'
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { api, SourceLoginUiItem, SourceLoginUiResponse } from './api'
+import { SourceWebViewModal } from './SourceWebViewModal'
 
 interface SourceLoginModalProps {
   sourceId: string
@@ -25,6 +26,10 @@ export const SourceLoginModal: React.FC<SourceLoginModalProps> = ({
   const [cookieInputText, setCookieInputText] = useState('')
   const [bookmarkletModalOpen, setBookmarkletModalOpen] = useState(false)
   const [showPasswords, setShowPasswords] = useState<Record<string, boolean>>({})
+  const [webViewOpen, setWebViewOpen] = useState(false)
+  const [webViewStartUrl, setWebViewStartUrl] = useState<string | undefined>(undefined)
+  /** 触发内置浏览器的登录动作，登录完成后需要带 Cookie 重跑一次 */
+  const pendingBrowserActionRef = useRef<string | null>(null)
 
   const loadLoginUi = useCallback(async () => {
     try {
@@ -51,6 +56,13 @@ export const SourceLoginModal: React.FC<SourceLoginModalProps> = ({
     loadLoginUi()
   }, [loadLoginUi])
 
+  /** 用户手动打开内置浏览器（不带触发动作），入口地址交给书源配置决定 */
+  const openBuiltInBrowser = useCallback(() => {
+    pendingBrowserActionRef.current = null
+    setWebViewStartUrl(undefined)
+    setWebViewOpen(true)
+  }, [])
+
   const bookmarkletCode = useMemo(() => {
     const serverOrigin = window.location.origin
     const targetSourceId = encodeURIComponent(sourceId)
@@ -61,7 +73,7 @@ export const SourceLoginModal: React.FC<SourceLoginModalProps> = ({
     setFormData(prev => ({ ...prev, [key]: val }))
   }
 
-  const handleAction = async (actionCode?: string, isLongClick = false) => {
+  const handleAction = async (actionCode?: string, isLongClick = false, allowBuiltInBrowser = true) => {
     if (!actionCode && actionCode !== '') return
     try {
       setExecuting(true)
@@ -72,14 +84,25 @@ export const SourceLoginModal: React.FC<SourceLoginModalProps> = ({
       }
 
       const res = await api.executeSourceLoginAction(sourceId, actionCode, formData, isLongClick)
-      if (res.toastMessages && res.toastMessages.length > 0) {
+      if (res.error) {
+        // 书源脚本失败时必须显式告知，否则按钮会「看起来成功但毫无反应」
+        onToast(`书源脚本执行失败：${res.error}`, 'error')
+      } else if (res.toastMessages && res.toastMessages.length > 0) {
         res.toastMessages.forEach(msg => onToast(msg, res.success ? 'success' : 'info'))
       } else if (res.success) {
         onToast('操作执行成功', 'success')
       }
 
       if (res.openUrl) {
-        window.open(res.openUrl, '_blank', 'noopener,noreferrer')
+        // 书源 JS 通过 java.startBrowserAwait(url) 请求打开网页：在本应用内置浏览器中打开，
+        // 而不是弹到外部标签页，这样登录产生的 Cookie 能直接落到书源 Credential 里。
+        if (allowBuiltInBrowser) {
+          pendingBrowserActionRef.current = actionCode
+          setWebViewStartUrl(res.openUrl)
+          setWebViewOpen(true)
+        } else {
+          window.open(res.openUrl, '_blank', 'noopener,noreferrer')
+        }
       }
       if (res.copyText) {
         await navigator.clipboard.writeText(res.copyText)
@@ -103,13 +126,17 @@ export const SourceLoginModal: React.FC<SourceLoginModalProps> = ({
       setExecuting(true)
       await api.saveSourceLoginInfo(sourceId, formData)
       const res = await api.executeSourceLoginAction(sourceId, 'login(true)', formData, false)
-      if (res.toastMessages && res.toastMessages.length > 0) {
+      if (res.error) {
+        onToast(`书源脚本执行失败：${res.error}`, 'error')
+      } else if (res.toastMessages && res.toastMessages.length > 0) {
         res.toastMessages.forEach(msg => onToast(msg, res.success ? 'success' : 'info'))
       } else {
         onToast('登录信息已保存并尝试登录', 'success')
       }
       if (res.openUrl) {
-        window.open(res.openUrl, '_blank', 'noopener,noreferrer')
+        pendingBrowserActionRef.current = 'login(true)'
+        setWebViewStartUrl(res.openUrl)
+        setWebViewOpen(true)
       }
       if (res.copyText) {
         await navigator.clipboard.writeText(res.copyText)
@@ -328,6 +355,14 @@ export const SourceLoginModal: React.FC<SourceLoginModalProps> = ({
           <div className="source-login-actions">
             <button
               type="button"
+              className="source-login-action-btn"
+              title="用内置浏览器登录（推荐）"
+              onClick={openBuiltInBrowser}
+            >
+              🖥
+            </button>
+            <button
+              type="button"
               className="source-login-action-btn primary"
               title="保存并登录"
               disabled={executing || loading}
@@ -413,9 +448,9 @@ export const SourceLoginModal: React.FC<SourceLoginModalProps> = ({
                     type="button"
                     className="subtle-button"
                     style={{ fontSize: '12px', padding: '4px 10px' }}
-                    onClick={() => window.open(uiResponse.loginUrl, '_blank', 'noopener,noreferrer')}
+                    onClick={openBuiltInBrowser}
                   >
-                    🌐 打开站点登录页
+                    🖥 用内置浏览器登录
                   </button>
                 )}
               </div>
@@ -485,6 +520,16 @@ export const SourceLoginModal: React.FC<SourceLoginModalProps> = ({
                 handleSaveAndLogin()
               }}
             >
+              <div style={{ flex: '1 1 100%', width: '100%' }}>
+                <button
+                  type="button"
+                  className="primary-button"
+                  style={{ width: '100%' }}
+                  onClick={openBuiltInBrowser}
+                >
+                  🖥 用内置浏览器登录（推荐）
+                </button>
+              </div>
               {uiResponse.loginUi.map((item, idx) => renderControl(item, idx))}
             </form>
           )}
@@ -579,6 +624,25 @@ export const SourceLoginModal: React.FC<SourceLoginModalProps> = ({
               </div>
             </div>
           </div>
+        )}
+        {webViewOpen && (
+          <SourceWebViewModal
+            sourceId={sourceId}
+            sourceName={sourceName}
+            startUrl={webViewStartUrl}
+            onClose={() => setWebViewOpen(false)}
+            onToast={onToast}
+            onLoggedIn={async () => {
+              await loadLoginUi()
+              // 内置浏览器登录成功后，带着已落库的 Cookie 重跑当初触发浏览器的动作，
+              // 让书源的 login()/fq_login() 等 JS 能真正完成登录校验。
+              const pending = pendingBrowserActionRef.current
+              if (pending) {
+                pendingBrowserActionRef.current = null
+                await handleAction(pending, false, false)
+              }
+            }}
+          />
         )}
       </div>
     </div>

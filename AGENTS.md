@@ -84,6 +84,10 @@ AI 与人类协作时必须明确当前达到的完成度阶梯，严禁混淆�
 - **[TTS/朗读] 开启朗读时视口首个完整可见段落智能对齐**：当用户在阅读中途点击开启 TTS 朗读时，阅读器会基于当前排版视图模式（滚动模式避开顶部 56px 导航栏、翻页模式限定分栏视口内）精准计算视口内第一个完整可见的段落（或章节标题 `<h1>`），并以此为朗读起始分片，避免每次开启都跳回章首或历史断点的突兀体验。
 - **[TTS/朗读] 长音频流首帧 144 字节静音垫底与 X-Accel-Buffering: no 反代防缓冲**：连续音频流与 SSE 进度通道必须显式声明 `X-Accel-Buffering: no` 与 `Cache-Control: no-cache, no-transform` 穿透 Nginx 缓冲；服务端在客户端建立音频流连接瞬间先下发 144 字节合规 LAME MP3 静音帧（Silence Preamble），使浏览器 `<audio>` 秒入就绪态并即刻激活系统控制中心（MediaSession）。
 - **[TTS/流式广播] 多连接探针与会话生命周期解耦**：浏览器 HTML5 `<audio>` 建立流式连接时常先发起探针（Probe）请求探测 MIME/Range，紧接着发起正式播放流。服务端朗读音频广播流严禁使用单消费者 `Channel` 或单连接原子互斥锁（否则第二次连接抛 `IllegalStateException("音频流已连接")` 触发 HTTP 500）；必须采用 `MutableSharedFlow(replay = 16)` 广播管道，且单连接断开（CancellationException）严禁误触发 `close("audio_disconnected")` 销毁全局会话，确保探针与主播放流平滑流转。
+- **[反向代理/沙箱] Iframe 隔离严禁开启 `allow-same-origin`**：反向代理第三方不可信 Web 页面时，iframe 必须禁用 `allow-same-origin`，将其置于 opaque origin（`null`）下，杜绝被代理页面的恶意 JS 触碰宿主 DOM 与会话。
+- **[沙箱/安全] `JavaImporter` 必须采用安全空替身模式**：Legado 书源中大量 `jsLib` 工具库使用 `with (JavaImporter(...))` 组织代码。沙箱严禁开启真实 Java 反射（防止 RCE 漏洞），必须返回 `importClass`/`importPackage` 均为 no-op 的安全空替身，既规避 `ReferenceError` 崩溃，又确保纯沙箱环境安全。
+- **[Cookie 管理] Set-Cookie 存库前必须剥离指令属性**：上游响应中的 `Path=/; HttpOnly; SameSite=Lax; Max-Age=3600` 等指令属性若直接整串入库，会导致后续作为客户端请求头 `Cookie:` 发送时将属性一并带出引发上游 400 报错。
+- **[HTTP 规范/Ktor] 巨型 Data URL 必须转由服务端托管避免请求行超限**：书源 JS 生成的自包含 Base64 网页动辄数万字符，直接拼入 iframe URL 会触发 Ktor 8192 字符上限报 400，必须先通过 POST 上传服务端内存托管，前端仅引用短 key。
 
 ---
 
@@ -141,6 +145,7 @@ AI 与人类协作时必须明确当前达到的完成度阶梯，严禁混淆�
 | 2026-09-05 | Feat | 开启 TTS 朗读时自动对齐当前视口最上方首个完整可见段落 | [`docs/acceptance/ACCEPT-008-tts-continuous-playback-stability.md`](file:///Users/zhangran/Documents/antigravity/joyful-galileo/docs/acceptance/ACCEPT-008-tts-continuous-playback-stability.md) | Accepted & Pushed |
 | 2026-09-09 | Fix | TTS 播放管线穿透、反向代理防缓冲与首帧静音垫底优化 | [`docs/sessions/SESSION-008-tts-buffering-proxy-and-silence-preamble.md`](file:///Users/zhangran/Documents/antigravity/joyful-galileo/docs/sessions/SESSION-008-tts-buffering-proxy-and-silence-preamble.md) | Accepted & Pushed |
 | 2026-09-09 | Fix | 根治浏览器探针并发锁（500）与连接断开误自毁：SharedFlow 广播解耦 | [`docs/acceptance/ACCEPT-009-tts-stream-buffering-proxy-and-multi-stream-resilience.md`](file:///Users/zhangran/Documents/antigravity/joyful-galileo/docs/acceptance/ACCEPT-009-tts-stream-buffering-proxy-and-multi-stream-resilience.md) | Accepted & Pushed |
+| 2026-09-12 | Feat | 内置浏览器反向代理登录与复杂聚合书源生态兼容 (#2) | [`docs/sessions/SESSION-010-source-webview-login-and-aggregate-compat.md`](file:///Users/zhangran/Documents/antigravity/joyful-galileo/docs/sessions/SESSION-010-source-webview-login-and-aggregate-compat.md) | Accepted & Pushed |
 
 ---
 

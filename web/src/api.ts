@@ -63,6 +63,19 @@ export type SourceLoginCheckResult = {
   message?: string
 }
 
+export type SourceBrowserSession = {
+  token: string
+  startUrl: string
+  expiresInSeconds: number
+  inlineOnly?: boolean
+}
+
+export type SourceBrowserCookies = {
+  count: number
+  domains: string[]
+  cookies: Record<string, string>
+}
+
 let csrfToken: string | null = null
 export const setCsrfToken = (token: string | null) => { csrfToken = token }
 
@@ -144,6 +157,16 @@ export const api = {
   clearSourceLoginHeader: (sourceId: string) => request<{ ok: boolean }>(`/api/sources/${encodeURIComponent(sourceId)}/login-header`, { method: 'DELETE' }),
   executeSourceLoginAction: (sourceId: string, action: string, loginData: Record<string, string>, isLongClick = false) => request<SourceLoginActionResult>(`/api/sources/${encodeURIComponent(sourceId)}/login-action`, { method: 'POST', body: JSON.stringify({ action, loginData, isLongClick }) }),
   checkSourceLogin: (sourceId: string) => request<SourceLoginCheckResult>(`/api/sources/${encodeURIComponent(sourceId)}/login-check`),
+  createSourceBrowserSession: (sourceId: string, url?: string) => request<SourceBrowserSession>(`/api/sources/${encodeURIComponent(sourceId)}/browser/session`, { method: 'POST', body: JSON.stringify({ url }) }),
+  closeSourceBrowserSession: (sourceId: string, token: string) => request<void>(`/api/sources/${encodeURIComponent(sourceId)}/browser/session?t=${encodeURIComponent(token)}`, { method: 'DELETE' }),
+  sourceBrowserCookies: (sourceId: string) => request<SourceBrowserCookies>(`/api/sources/${encodeURIComponent(sourceId)}/browser/cookies`),
+  sourceBrowserPageUrl: (sourceId: string, token: string, target: string) =>
+    `/api/sources/${encodeURIComponent(sourceId)}/browser/page?t=${encodeURIComponent(token)}&u=${encodeURIComponent(target)}`,
+  /** 书源 JS 生成的数据地址页面：交给服务端解码托管，避免超长 URL 触发请求行 8192 上限 */
+  registerSourceBrowserInline: (sourceId: string, token: string, url: string) =>
+    request<{ key: string }>(`/api/sources/${encodeURIComponent(sourceId)}/browser/inline`, { method: 'POST', body: JSON.stringify({ token, url }) }),
+  sourceBrowserInlineUrl: (sourceId: string, token: string, key: string) =>
+    `/api/sources/${encodeURIComponent(sourceId)}/browser/page?t=${encodeURIComponent(token)}&i=${encodeURIComponent(key)}`,
   search: (keyword: string, sourceIds?: string[], signal?: AbortSignal) => request<SearchResult[]>('/api/search', { method: 'POST', body: JSON.stringify({ keyword, sourceIds }), signal }),
   details: (sourceId: string, bookUrl: string, signal?: AbortSignal) => request<BookDetails>('/api/books/details', { method: 'POST', body: JSON.stringify({ sourceId, bookUrl }), signal }),
   chapters: (sourceId: string, bookUrl: string, signal?: AbortSignal) => request<Chapter[]>('/api/books/chapters', { method: 'POST', body: JSON.stringify({ sourceId, bookUrl }), signal }),

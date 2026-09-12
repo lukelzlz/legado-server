@@ -2034,4 +2034,136 @@ mark.search-highlight { background: var(--accent-soft); color: var(--accent); fo
   }
 }
 
+/* ---------------------------------------------------------------- 内置登录浏览器 (WebView) */
+
+.source-webview-dialog {
+  width: min(1180px, 96vw);
+  height: min(86vh, 900px);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  box-shadow: 0 24px 64px rgba(0, 0, 0, .32);
+  animation: scaleUp .2s cubic-bezier(0.25, 1, 0.5, 1);
+}
+
+.source-webview-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface-muted);
+  flex-shrink: 0;
+}
+
+.source-webview-nav-group { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
+
+.source-webview-icon-btn {
+  width: 32px;
+  height: 32px;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--ink);
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+  transition: background .15s ease, border-color .15s ease;
+}
+.source-webview-icon-btn:hover:not(:disabled) { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
+.source-webview-icon-btn:disabled { opacity: .38; cursor: not-allowed; }
+
+.source-webview-address-form { flex: 1; min-width: 0; display: flex; }
+.source-webview-address {
+  width: 100%;
+  min-width: 0;
+  height: 32px;
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--ink);
+  font-size: 12px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  outline: 0;
+}
+.source-webview-address:focus { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft); }
+
+.source-webview-actions { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
+
+.source-webview-cookie-badge {
+  padding: 4px 9px;
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--line));
+  border-radius: 20px;
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.source-webview-login-btn { height: 32px; padding: 0 14px; font-size: 13px; white-space: nowrap; }
+
+.source-webview-body {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  background: #fff;
+}
+
+.source-webview-frame { width: 100%; height: 100%; border: 0; display: block; background: #fff; }
+
+.source-webview-loading {
+  position: absolute;
+  z-index: 2;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: color-mix(in srgb, var(--surface) 94%, transparent);
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.source-webview-placeholder {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 32px;
+  text-align: center;
+  background: var(--surface);
+}
+.source-webview-placeholder-title { font-size: 15px; font-weight: 650; color: var(--danger); }
+.source-webview-placeholder-text { max-width: 560px; color: var(--muted); font-size: 13px; line-height: 1.7; }
+.source-webview-placeholder-text code {
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--surface-muted);
+  color: var(--accent-ink);
+  font-size: 12px;
+}
+
+.source-webview-footnote {
+  flex-shrink: 0;
+  padding: 9px 16px;
+  border-top: 1px solid var(--line);
+  background: var(--surface-muted);
+  color: var(--muted);
+  font-size: 11.5px;
+  line-height: 1.6;
+}
+
+@media (max-width: 720px) {
+  .source-webview-dialog { width: 100vw; height: 100vh; border-radius: 0; border: 0; }
+  .source-webview-toolbar { flex-wrap: wrap; gap: 8px; }
+  .source-webview-address-form { order: 3; flex: 1 1 100%; }
+  .source-webview-login-btn { padding: 0 10px; }
+}
+
 

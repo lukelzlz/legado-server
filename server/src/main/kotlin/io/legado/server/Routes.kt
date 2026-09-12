@@ -26,6 +26,7 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
+import java.net.URLEncoder
 import java.util.concurrent.atomic.AtomicInteger
 
 fun Route.apiRoutes(
@@ -38,6 +39,7 @@ fun Route.apiRoutes(
     edgeTts: EdgeTtsService = EdgeTtsService(),
     ttsSessions: TtsSessionService = TtsSessionService(edgeTts),
 ) {
+    val webView = WebViewProxy(database)
     route("/api") {
         get("/sources") {
             if (auth.requireSession(call) == null) return@get
@@ -186,6 +188,117 @@ fun Route.apiRoutes(
                 val source = database.getSource(call.parameters["id"]!!) ?: run { call.respond(HttpStatusCode.NotFound, ApiError("not_found", "书源不存在")); return@get }
                 val check = runner.checkLoginStatus(source.json)
                 call.respond(check)
+            }
+            route("/browser") {
+                post("/session") {
+                    if (auth.requireSession(call, true) == null) return@post
+                    val source = database.getSource(call.parameters["id"]!!) ?: run { call.respond(HttpStatusCode.NotFound, ApiError("not_found", "书源不存在")); return@post }
+                    val sourceObj = runCatching { Json.parseToJsonElement(source.json).jsonObject }.getOrNull()
+                    val loginUrl = (sourceObj?.get("loginUrl") as? JsonPrimitive)?.contentOrNull?.trim()?.takeIf { it.startsWith("http") }
+                    val sourceUrl = (sourceObj?.get("bookSourceUrl") as? JsonPrimitive)?.contentOrNull?.trim()
+                    val homeUrl = sourceUrl?.takeIf { it.startsWith("http://") || it.startsWith("https://") }
+                    // 书源 JS 里的 java.startBrowserAwait(url) 会给出真实入口，优先级最高
+                    val requestedRaw = runCatching { call.receive<SourceBrowserSessionRequest>() }.getOrNull()?.url?.trim()
+                    val requestedHttp = requestedRaw?.takeIf { it.startsWith("http://") || it.startsWith("https://") }
+                    val inlineOnly = requestedRaw != null && requestedHttp == null && webView.isInlineDataUrl(requestedRaw)
+                    if (requestedRaw != null && requestedHttp == null && !inlineOnly) {
+                        call.respond(HttpStatusCode.BadRequest, ApiError("unsupported_url", "内置浏览器仅支持 HTTP(S) 地址或书源脚本生成的内置页面"))
+                        return@post
+                    }
+                    val startUrl = requestedHttp ?: loginUrl ?: homeUrl ?: WebViewProxy.defaultStartUrl(source.json)
+                    if (startUrl == null && !inlineOnly) {
+                        call.respond(HttpStatusCode.BadRequest, ApiError("no_login_url", "该书源未配置 loginUrl，且书源内容中没有任何网址，无法打开内置浏览器"))
+                        return@post
+                    }
+                    val token = webView.issueTicket(source.id, source.json, startUrl)
+                    call.application.log.info("webview session opened for source: {}, start: {}, inline: {}", source.id, startUrl ?: "(内置页面)", inlineOnly)
+                    call.respond(
+                        SourceBrowserSessionResponse(
+                            token = token,
+                            startUrl = startUrl ?: "",
+                            expiresInSeconds = 1800,
+                            inlineOnly = inlineOnly,
+                        )
+                    )
+                }
+                delete("/session") {
+                    if (auth.requireSession(call, true) == null) return@delete
+                    call.request.queryParameters["t"]?.let { webView.revokeTicket(it) }
+                    call.respond(HttpStatusCode.NoContent)
+                }
+                get("/cookies") {
+                    if (auth.requireSession(call) == null) return@get
+                    val sourceId = call.parameters["id"]!!
+                    val jar = withContext(Dispatchers.IO) { webView.jarSnapshot(sourceId) }
+                    call.respond(SourceBrowserCookieResponse(count = jar.size, domains = jar.keys.toList(), cookies = jar))
+                }
+                get("/page") {
+                    val sourceId = call.parameters["id"]!!
+                    val token = call.request.queryParameters["t"]
+                    if (token.isNullOrBlank()) {
+                        call.respond(HttpStatusCode.BadRequest, ApiError("missing_parameter", "缺少 token 参数"))
+                        return@get
+                    }
+                    // i = 服务端托管的内置页面（书源 JS 生成的数据地址，直接进 URL 会超出请求行上限）
+                    val inlineKey = call.request.queryParameters["i"]
+                    if (!inlineKey.isNullOrBlank()) {
+                        call.respondProxied { webView.openInlinePage(sourceId, token, inlineKey) }
+                        return@get
+                    }
+                    val target = call.request.queryParameters["u"]
+                    if (target.isNullOrBlank()) {
+                        call.respond(HttpStatusCode.BadRequest, ApiError("missing_parameter", "缺少 u 参数"))
+                        return@get
+                    }
+                    call.respondProxied { webView.openPage(sourceId, token, target) }
+                }
+                post("/inline") {
+                    if (auth.requireSession(call, true) == null) return@post
+                    val sourceId = call.parameters["id"]!!
+                    val req = call.receive<SourceBrowserInlineRequest>()
+                    try {
+                        val key = webView.registerInlinePage(sourceId, req.token, req.url)
+                        call.respond(SourceBrowserInlineResponse(key = key))
+                    } catch (error: WebViewException) {
+                        call.respond(HttpStatusCode.BadRequest, ApiError("inline_page_failed", error.message ?: "内置页面无法打开"))
+                    }
+                }
+                get("/res") {
+                    val sourceId = call.parameters["id"]!!
+                    val token = call.request.queryParameters["t"]
+                    val target = call.request.queryParameters["u"]
+                    if (token.isNullOrBlank() || target.isNullOrBlank()) {
+                        call.respond(HttpStatusCode.BadRequest, ApiError("missing_parameter", "缺少 token 或 u 参数"))
+                        return@get
+                    }
+                    call.respondProxied { webView.openResource(sourceId, token, target) }
+                }
+                get("/submit") {
+                    val sourceId = call.parameters["id"]!!
+                    val token = call.request.queryParameters["t"]
+                    val base = call.request.queryParameters["u"]
+                    if (token.isNullOrBlank() || base.isNullOrBlank()) {
+                        call.respond(HttpStatusCode.BadRequest, ApiError("missing_parameter", "缺少 token 或 u 参数"))
+                        return@get
+                    }
+                    val extras = call.request.queryParameters.entries()
+                        .filter { it.key != "t" && it.key != "u" }
+                        .flatMap { entry -> entry.value.map { "${URLEncoder.encode(entry.key, Charsets.UTF_8)}=${URLEncoder.encode(it, Charsets.UTF_8)}" } }
+                    val target = if (extras.isEmpty()) base else base + (if (base.contains('?')) "&" else "?") + extras.joinToString("&")
+                    call.respondProxied { webView.submitForm(sourceId, token, target, "GET", null, ByteArray(0)) }
+                }
+                post("/submit") {
+                    val sourceId = call.parameters["id"]!!
+                    val token = call.request.queryParameters["t"]
+                    val target = call.request.queryParameters["u"]
+                    if (token.isNullOrBlank() || target.isNullOrBlank()) {
+                        call.respond(HttpStatusCode.BadRequest, ApiError("missing_parameter", "缺少 token 或 u 参数"))
+                        return@post
+                    }
+                    val body = call.receiveStream().readBytes()
+                    val contentType = call.request.headers[HttpHeaders.ContentType]
+                    call.respondProxied { webView.submitForm(sourceId, token, target, "POST", contentType, body) }
+                }
             }
         }
         post("/search") {
@@ -701,3 +814,44 @@ internal fun tryCacheCover(coverCache: CoverCache, primaryUrl: String?, alternat
 }
 
 private fun jsonEvent(message: String): String = Json.encodeToString(message)
+
+/**
+ * 把代理结果写回响应；失败时返回一张可读的 HTML 错误页（因为它会被渲染进内置浏览器 iframe）。
+ */
+private suspend fun ApplicationCall.respondProxied(block: () -> ProxiedPayload) {
+    // iframe 处于 sandbox 不透明源下，页面内 JS 发起的请求需要 CORS 放行；
+    // 这些端点本身由一次性令牌鉴权，不依赖管理会话，因此放开 * 不会泄露权限。
+    response.headers.append(HttpHeaders.AccessControlAllowOrigin, "*")
+    try {
+        val payload = withContext(Dispatchers.IO) { block() }
+        respondBytes(
+            bytes = payload.body,
+            contentType = runCatching { ContentType.parse(payload.contentType) }.getOrNull(),
+            status = HttpStatusCode.fromValue(payload.status),
+        )
+    } catch (error: WebViewException) {
+        application.log.warn("webview proxy failed: {}", error.message)
+        respondText(
+            text = webViewErrorPage(error.message ?: "内置浏览器请求失败"),
+            contentType = ContentType.Text.Html.withCharset(Charsets.UTF_8),
+            status = HttpStatusCode.BadGateway,
+        )
+    }
+}
+
+private fun webViewErrorPage(message: String): String {
+    val escaped = message
+        .replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    return """
+        <!doctype html>
+        <html lang="zh-CN"><head><meta charset="utf-8"><title>内置浏览器无法打开页面</title>
+        <style>
+          body{margin:0;padding:32px;font-family:system-ui,-apple-system,"Segoe UI",sans-serif;
+               background:#0f1115;color:#e6e8eb;display:flex;align-items:center;justify-content:center;min-height:100vh}
+          .card{max-width:520px;background:#171a21;border:1px solid #262b36;border-radius:12px;padding:24px}
+          h1{margin:0 0 12px;font-size:16px;color:#f87171}
+          p{margin:0;font-size:13px;line-height:1.7;color:#9aa4b2;word-break:break-all}
+        </style></head>
+        <body><div class="card"><h1>无法打开该页面</h1><p>$escaped</p></div></body></html>
+    """.trimIndent()
+}

@@ -766,9 +766,35 @@ class Database(private val path: String) : Closeable, AutoCloseable {
         val jar = getSourceCookieJar(sourceId)
         if (jar.isEmpty()) return null
         if (jar.containsKey(url)) return jar[url]
-        val host = runCatching { java.net.URI(url).host }.getOrNull() ?: url
-        if (jar.containsKey(host)) return jar[host]
-        return jar.entries.firstOrNull { (k, _) -> host.contains(k) || k.contains(host) || url.contains(k) }?.value
+        val host = runCatching { java.net.URI(url).host }.getOrNull()?.lowercase()?.takeIf { it.isNotBlank() } ?: return null
+        // 精确域名优先，再逐级回退到父域（a.b.com -> b.com），与浏览器 Cookie 语义一致
+        val ordered = mutableListOf<String>()
+        jar[host]?.let { ordered += it }
+        val parts = host.split('.')
+        for (index in 1..parts.size - 2) {
+            jar[parts.subList(index, parts.size).joinToString(".")]?.let { ordered += it }
+        }
+        if (ordered.isEmpty()) return null
+        val merged = linkedMapOf<String, String>()
+        ordered.reversed().forEach { merged.putAll(parseCookieString(it)) }
+        return merged.entries.joinToString("; ") { "${it.key}=${it.value}" }.ifBlank { null }
+    }
+
+    /**
+     * 从 Set-Cookie 响应头中提取第一个 name=value 对。
+     * 整行入库会把 Path / Expires / HttpOnly 等属性误当成 Cookie 一并发送。
+     */
+    fun extractCookiePair(setCookieHeader: String): String? {
+        val first = setCookieHeader.substringBefore(';').trim()
+        val separator = first.indexOf('=')
+        if (separator <= 0) return null
+        if (first.substring(0, separator).isBlank()) return null
+        return first
+    }
+
+    fun setSourceCookieFromSetCookie(sourceId: String, url: String, setCookieHeader: String): Boolean {
+        val pair = extractCookiePair(setCookieHeader) ?: return false
+        return setSourceCookie(sourceId, url, pair)
     }
 
     fun setSourceCookie(sourceId: String, url: String, cookie: String): Boolean {

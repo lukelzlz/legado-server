@@ -109,6 +109,38 @@ data class SourceLoginCookieResponse(
     val count: Int = 0,
 )
 
+@Serializable
+data class SourceBrowserSessionResponse(
+    val token: String,
+    val startUrl: String,
+    val expiresInSeconds: Int,
+    /** true 表示入口是书源脚本生成的内置页面，由服务端托管，startUrl 为空 */
+    val inlineOnly: Boolean = false,
+)
+
+@Serializable
+data class SourceBrowserSessionRequest(
+    val url: String? = null,
+)
+
+@Serializable
+data class SourceBrowserInlineRequest(
+    val token: String,
+    val url: String,
+)
+
+@Serializable
+data class SourceBrowserInlineResponse(
+    val key: String,
+)
+
+@Serializable
+data class SourceBrowserCookieResponse(
+    val count: Int,
+    val domains: List<String>,
+    val cookies: Map<String, String>,
+)
+
 data class SourceLoginStateRecord(
     val sourceId: String,
     val loginInfo: Map<String, String>,

@@ -218,10 +218,20 @@ class RuleRunner(private val responseFetcher: ((String) -> String)? = null, inte
         JsonNull -> null
     }
 
-    fun content(sourceJson: String, chapterUrl: String): ChapterContent {
+    fun content(sourceJson: String, chapterUrl: String, bookName: String? = null): ChapterContent {
         val source = sourceJson.objectValue()
-        source.string("mainJs")?.takeIf { it.isNotBlank() }?.let { return JsSourceRunner(this, source).content(chapterUrl) }
         val sourceUrl = source.string("bookSourceUrl")
+        val sourceName = source.string("bookSourceName")
+        val replaceRules = database?.getEnabledReplaceRulesForScope(bookName, sourceUrl, sourceName).orEmpty()
+
+        if (source.string("mainJs")?.isNotBlank() == true) {
+            val result = JsSourceRunner(this, source).content(chapterUrl)
+            if (replaceRules.isEmpty()) return result
+            val cleanedTitle = result.title?.let { ContentProcessor.processTitle(it, replaceRules, jsSandbox, bookName) }
+            val cleanedText = ContentProcessor.processContent(result.content, replaceRules, jsSandbox, bookName, result.title)
+            return ChapterContent(cleanedTitle, cleanedText)
+        }
+
         return jsSandbox.withSourceContext(
             sourceContext(source, sourceUrl).let { it.copy(chapterUrl = chapterUrl) },
         ) {
@@ -261,7 +271,15 @@ class RuleRunner(private val responseFetcher: ((String) -> String)? = null, inte
                 val detail = jsSandbox.lastError?.let { "，脚本异常：$it" } ?: ""
                 throw RuleExecutionException("正文规则未提取到内容$detail")
             }
-            ChapterContent(root.value(rule.string("title"), jsSandbox, body, chapterUrl), text)
+
+            var title = root.value(rule.string("title"), jsSandbox, body, chapterUrl)
+            if (replaceRules.isNotEmpty()) {
+                text = ContentProcessor.processContent(text, replaceRules, jsSandbox, bookName, title)
+                if (title != null) {
+                    title = ContentProcessor.processTitle(title, replaceRules, jsSandbox, bookName)
+                }
+            }
+            ChapterContent(title, text)
         }
     }
 

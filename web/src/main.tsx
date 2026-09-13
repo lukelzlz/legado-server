@@ -11,6 +11,7 @@ import { cleanAuthor, cleanTitle, defaultSearchFilters, filterSearchGroups, isEx
 import { groupSearchResults, SourceChoice, SourceChoiceStatus, useSearchStore } from './searchStore'
 import { SourceSwitchModal } from './SourceSwitchModal'
 import { SourceLoginModal } from './SourceLoginModal'
+import { ReplaceRulesModal } from './ReplaceRulesModal'
 import { toast, ToastContainer } from './Toast'
 import './styles.css'
 
@@ -1395,6 +1396,7 @@ function App() {
       return null
     }
   })
+  const [showReplaceRules, setShowReplaceRules] = useState(false)
   const search = useSearchStore()
 
   useEffect(() => {
@@ -1534,6 +1536,7 @@ function App() {
         searching={search.loading}
         onSettingsChange={setSettings}
         onNavigate={navigate}
+        onOpenReplaceRules={() => setShowReplaceRules(true)}
         onLogout={() => void logout()}
       />
       {page === 'sources' ? (
@@ -1545,6 +1548,10 @@ function App() {
       ) : (
         <LibraryPage sources={sources} onOpen={(book, index) => openReader(book, index, 'library')} />
       )}
+      <ReplaceRulesModal
+        isOpen={showReplaceRules}
+        onClose={() => setShowReplaceRules(false)}
+      />
     </div>
   )
 }

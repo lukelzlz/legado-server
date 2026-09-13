@@ -327,3 +327,58 @@ data class TtsSessionEvent(
     val message: String? = null,
 )
 
+@Serializable
+data class ReplaceRule(
+    val id: String = "",
+    val name: String = "",
+    val group: String? = null,
+    val pattern: String = "",
+    val replacement: String = "",
+    val isRegex: Boolean = true,
+    val scope: String? = null,
+    val excludeScope: String? = null,
+    val scopeTitle: Boolean = false,
+    val scopeContent: Boolean = true,
+    val isEnabled: Boolean = true,
+    val order: Int = 0,
+    val timeoutMillisecond: Long = 3000L,
+    val createdAt: Long = 0L,
+    val updatedAt: Long = 0L,
+)
+
+@Serializable
+data class ReplaceRuleToggleRequest(
+    val ids: List<String>,
+    val enabled: Boolean,
+)
+
+@Serializable
+data class ReplaceRuleImportRequest(
+    val rules: List<ReplaceRule>? = null,
+    val url: String? = null,
+)
+
+@Serializable
+data class ReplaceRuleImportResponse(
+    val imported: Int,
+    val updated: Int,
+    val skipped: Int,
+    val total: Int,
+)
+
+@Serializable
+data class ReplaceRulePreviewRequest(
+    val text: String,
+    val rule: ReplaceRule? = null,
+    val bookName: String? = null,
+    val sourceUrl: String? = null,
+)
+
+@Serializable
+data class ReplaceRulePreviewResponse(
+    val originalText: String,
+    val cleanedText: String,
+    val changed: Boolean,
+    val appliedRules: List<String> = emptyList(),
+)
+

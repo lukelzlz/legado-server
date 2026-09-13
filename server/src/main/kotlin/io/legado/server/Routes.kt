@@ -445,6 +445,86 @@ fun Route.apiRoutes(
                 }
             }
         }
+        route("/replace-rules") {
+            get {
+                if (auth.requireSession(call) == null) return@get
+                val q = call.request.queryParameters["q"]
+                val group = call.request.queryParameters["group"]
+                val scope = call.request.queryParameters["scope"] ?: call.request.queryParameters["bookName"]
+                call.respond(database.listReplaceRules(q, group, scope))
+            }
+            get("/{id}") {
+                if (auth.requireSession(call) == null) return@get
+                val id = call.parameters["id"] ?: return@get call.respond(HttpStatusCode.BadRequest, ApiError("invalid_id", "缺少规则 ID"))
+                database.getReplaceRule(id)?.let { call.respond(it) } ?: call.respond(HttpStatusCode.NotFound, ApiError("not_found", "规则不存在"))
+            }
+            post {
+                if (auth.requireSession(call, true) == null) return@post
+                val rule = call.receive<ReplaceRule>()
+                if (rule.pattern.isBlank()) {
+                    call.respond(HttpStatusCode.BadRequest, ApiError("invalid_rule", "匹配模式不能为空"))
+                    return@post
+                }
+                call.respond(database.saveReplaceRule(rule))
+            }
+            put("/{id}") {
+                if (auth.requireSession(call, true) == null) return@put
+                val id = call.parameters["id"] ?: return@put call.respond(HttpStatusCode.BadRequest, ApiError("invalid_id", "缺少规则 ID"))
+                val rule = call.receive<ReplaceRule>().copy(id = id)
+                if (rule.pattern.isBlank()) {
+                    call.respond(HttpStatusCode.BadRequest, ApiError("invalid_rule", "匹配模式不能为空"))
+                    return@put
+                }
+                call.respond(database.saveReplaceRule(rule))
+            }
+            delete("/{id}") {
+                if (auth.requireSession(call, true) == null) return@delete
+                val id = call.parameters["id"] ?: return@delete call.respond(HttpStatusCode.BadRequest, ApiError("invalid_id", "缺少规则 ID"))
+                if (database.deleteReplaceRule(id)) call.respond(HttpStatusCode.NoContent)
+                else call.respond(HttpStatusCode.NotFound, ApiError("not_found", "规则不存在"))
+            }
+            post("/delete-batch") {
+                if (auth.requireSession(call, true) == null) return@post
+                val ids = call.receive<List<String>>()
+                val count = database.deleteReplaceRules(ids)
+                call.respond(mapOf("deleted" to count))
+            }
+            post("/toggle") {
+                if (auth.requireSession(call, true) == null) return@post
+                val req = call.receive<ReplaceRuleToggleRequest>()
+                val count = database.toggleReplaceRules(req.ids, req.enabled)
+                call.respond(mapOf("updated" to count))
+            }
+            get("/export") {
+                if (auth.requireSession(call) == null) return@get
+                val ids = call.request.queryParameters.getAll("id")
+                call.respondText(
+                    text = Json.encodeToString(database.exportReplaceRules(ids)),
+                    contentType = ContentType.Application.Json.withCharset(Charsets.UTF_8),
+                )
+            }
+            post("/import") {
+                if (auth.requireSession(call, true) == null) return@post
+                val bodyText = call.receiveText()
+                val parsedRules = parseImportedReplaceRules(bodyText)
+                val response = database.importReplaceRules(parsedRules)
+                call.respond(response)
+            }
+            post("/preview") {
+                if (auth.requireSession(call) == null) return@post
+                val req = call.receive<ReplaceRulePreviewRequest>()
+                val rules = if (req.rule != null) listOf(req.rule) else database.getEnabledReplaceRulesForScope(req.bookName, req.sourceUrl)
+                val jsSandbox = JsSandbox(runner)
+                val cleaned = ContentProcessor.processContent(req.text, rules, jsSandbox = jsSandbox, bookName = req.bookName)
+                val appliedNames = rules.filter { ContentProcessor.applyRule(req.text, it, jsSandbox = jsSandbox, bookName = req.bookName) != req.text }.map { it.name.ifBlank { it.pattern } }
+                call.respond(ReplaceRulePreviewResponse(
+                    originalText = req.text,
+                    cleanedText = cleaned,
+                    changed = cleaned != req.text,
+                    appliedRules = appliedNames,
+                ))
+            }
+        }
         post("/books/content") {
             if (auth.requireSession(call, true) == null) return@post
             val request = call.receive<ContentRequest>()
@@ -456,12 +536,15 @@ fun Route.apiRoutes(
                 call.respond(HttpStatusCode.NotFound, ApiError("not_found", "书源不存在"))
                 return@post
             }
+            val bookName = request.bookUrl?.let { url ->
+                database.listBookshelf().firstOrNull { it.sourceId == request.sourceId && it.bookUrl == url }?.name
+            }
             val cached = request.bookUrl?.let { database.cachedContent(request.sourceId, it, request.chapterUrl) }
             if (cached != null && cached.content.isNotBlank()) {
                 call.respond(cached)
             } else call.respondCatching {
                 try {
-                    runner.content(source.json, request.chapterUrl).also { content ->
+                    runner.content(source.json, request.chapterUrl, bookName).also { content ->
                         request.bookUrl?.let { database.cacheBookContent(request.sourceId, it, request.chapterUrl, content) }
                     }
                 } catch (error: Throwable) {
@@ -855,3 +938,66 @@ private fun webViewErrorPage(message: String): String {
         <body><div class="card"><h1>无法打开该页面</h1><p>$escaped</p></div></body></html>
     """.trimIndent()
 }
+
+private suspend fun parseImportedReplaceRules(bodyText: String): List<ReplaceRule> {
+    val cleanText = bodyText.trim().removePrefix("\uFEFF")
+    if (cleanText.isBlank()) return emptyList()
+
+    val json = Json { ignoreUnknownKeys = true; isLenient = true }
+    val jsonElement = runCatching { json.parseToJsonElement(cleanText) }.getOrNull() ?: return emptyList()
+
+    // Check if it's an object with "url"
+    if (jsonElement is kotlinx.serialization.json.JsonObject) {
+        val url = jsonElement["url"]?.let { if (it is JsonPrimitive) it.contentOrNull else null }
+        if (!url.isNullOrBlank()) {
+            validateSubscriptionUrl(url)
+            val client = java.net.http.HttpClient.newBuilder().connectTimeout(java.time.Duration.ofSeconds(10)).build()
+            val req = java.net.http.HttpRequest.newBuilder().uri(java.net.URI(url)).GET().build()
+            val resp = withContext(Dispatchers.IO) { client.send(req, java.net.http.HttpResponse.BodyHandlers.ofString(Charsets.UTF_8)) }
+            return parseImportedReplaceRules(resp.body())
+        }
+    }
+
+    val array = when (jsonElement) {
+        is kotlinx.serialization.json.JsonArray -> jsonElement
+        is kotlinx.serialization.json.JsonObject -> {
+            (jsonElement["rules"] ?: jsonElement["data"] ?: jsonElement["replaceRules"] ?: jsonElement["items"]) as? kotlinx.serialization.json.JsonArray
+        }
+        else -> null
+    } ?: return emptyList()
+
+    return array.mapNotNull { item ->
+        if (item !is kotlinx.serialization.json.JsonObject) return@mapNotNull null
+        val pattern = item["pattern"]?.let { if (it is JsonPrimitive) it.contentOrNull else null } ?: return@mapNotNull null
+        if (pattern.isBlank()) return@mapNotNull null
+        val id = item["id"]?.let { if (it is JsonPrimitive) it.contentOrNull else null } ?: ""
+        val name = item["name"]?.let { if (it is JsonPrimitive) it.contentOrNull else null } ?: pattern
+        val group = item["group"]?.let { if (it is JsonPrimitive) it.contentOrNull else null } ?: item["groupName"]?.let { if (it is JsonPrimitive) it.contentOrNull else null }
+        val replacement = item["replacement"]?.let { if (it is JsonPrimitive) it.contentOrNull else null } ?: ""
+        val isRegex = item["isRegex"]?.let { if (it is JsonPrimitive) it.contentOrNull?.toBooleanStrictOrNull() ?: (it.contentOrNull?.toIntOrNull() != 0) else null } ?: true
+        val scope = item["scope"]?.let { if (it is JsonPrimitive) it.contentOrNull else null }
+        val excludeScope = item["excludeScope"]?.let { if (it is JsonPrimitive) it.contentOrNull else null }
+        val scopeTitle = item["scopeTitle"]?.let { if (it is JsonPrimitive) it.contentOrNull?.toBooleanStrictOrNull() ?: (it.contentOrNull?.toIntOrNull() == 1) else null } ?: false
+        val scopeContent = item["scopeContent"]?.let { if (it is JsonPrimitive) it.contentOrNull?.toBooleanStrictOrNull() ?: (it.contentOrNull?.toIntOrNull() != 0) else null } ?: true
+        val isEnabled = item["isEnabled"]?.let { if (it is JsonPrimitive) it.contentOrNull?.toBooleanStrictOrNull() ?: (it.contentOrNull?.toIntOrNull() != 0) else null } ?: true
+        val order = item["order"]?.let { if (it is JsonPrimitive) it.contentOrNull?.toIntOrNull() else null } ?: item["sortOrder"]?.let { if (it is JsonPrimitive) it.contentOrNull?.toIntOrNull() else null } ?: 0
+        val timeoutMs = item["timeoutMillisecond"]?.let { if (it is JsonPrimitive) it.contentOrNull?.toLongOrNull() else null } ?: item["timeout_ms"]?.let { if (it is JsonPrimitive) it.contentOrNull?.toLongOrNull() else null } ?: 3000L
+
+        ReplaceRule(
+            id = id,
+            name = name,
+            group = group,
+            pattern = pattern,
+            replacement = replacement,
+            isRegex = isRegex,
+            scope = scope,
+            excludeScope = excludeScope,
+            scopeTitle = scopeTitle,
+            scopeContent = scopeContent,
+            isEnabled = isEnabled,
+            order = order,
+            timeoutMillisecond = timeoutMs,
+        )
+    }
+}
+

@@ -82,6 +82,12 @@ class JsSandbox(private val runner: RuleRunner? = null) {
         val library = context?.jsLib?.takeIf { it.isNotBlank() }
         val cleanScript = if (library == null) rawScript else "$library\n$rawScript"
 
+        val executableScript = if (Regex("""\breturn\b""").containsMatchIn(cleanScript)) {
+            "(function(){\n$cleanScript\n})()"
+        } else {
+            cleanScript
+        }
+
         val cx = Context.enter()
         try {
             cx.optimizationLevel = -1
@@ -114,7 +120,7 @@ class JsSandbox(private val runner: RuleRunner? = null) {
             // chapter 对象：正文规则会引用 chapter.index / chapter.title
             ScriptableObject.putProperty(scope, "chapter", createChapterBridge(scope, context))
 
-            val result = cx.evaluateString(scope, cleanScript, "rule.js", 1, null)
+            val result = cx.evaluateString(scope, executableScript, "rule.js", 1, null)
             if (result == null || result == Context.getUndefinedValue()) {
                 val globalResult = ScriptableObject.getProperty(scope, "result")
                 if (globalResult != null && globalResult != Context.getUndefinedValue()) {

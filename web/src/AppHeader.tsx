@@ -11,6 +11,7 @@ export interface AppHeaderProps {
   searching?: boolean
   onSettingsChange: (next: ReaderSettings) => void
   onNavigate: (page: AppPage) => void
+  onOpenReplaceRules?: () => void
   onLogout: () => void
 }
 
@@ -26,6 +27,7 @@ export function AppHeader({
   searching,
   onSettingsChange,
   onNavigate,
+  onOpenReplaceRules,
   onLogout,
 }: AppHeaderProps) {
   const [menuOpen, setMenuOpen] = useState(false)
@@ -164,6 +166,24 @@ export function AppHeader({
                     )
                   })}
                 </div>
+              </div>
+
+              <div className="menu-divider" />
+
+              <div className="menu-section">
+                <button
+                  type="button"
+                  className="menu-logout-btn"
+                  style={{ color: 'var(--text-color, #e6e8eb)' }}
+                  role="menuitem"
+                  onClick={() => {
+                    setMenuOpen(false)
+                    onOpenReplaceRules?.()
+                  }}
+                >
+                  <Icon name="edit" />
+                  <span>替换净化规则</span>
+                </button>
               </div>
 
               <div className="menu-divider" />

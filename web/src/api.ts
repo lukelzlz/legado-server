@@ -11,6 +11,45 @@ export type ImportResponse = { imported: number; updated: number; skipped: numbe
 export type SourceSubscription = { id: number; url: string; enabled: boolean; createdAt: number; updatedAt: number; lastSuccessAt?: number; lastAttemptAt?: number; lastError?: string; lastImported: number; contentHash?: string }
 export type SearchStreamEvent = { type: 'start' | 'results' | 'progress' | 'done' | 'error'; totalSources: number; completedSources: number; matchedSources: number; emptySources: number; failedSources: number; resultCount: number; results: SearchResult[]; message?: string }
 
+export type ReplaceRule = {
+  id: string
+  name: string
+  group?: string
+  pattern: string
+  replacement: string
+  isRegex: boolean
+  scope?: string
+  excludeScope?: string
+  scopeTitle?: boolean
+  scopeContent?: boolean
+  isEnabled: boolean
+  order: number
+  timeoutMillisecond?: number
+  createdAt?: number
+  updatedAt?: number
+}
+
+export type ReplaceRuleImportResponse = {
+  imported: number
+  updated: number
+  skipped: number
+  total: number
+}
+
+export type ReplaceRulePreviewRequest = {
+  text: string
+  rule?: Partial<ReplaceRule>
+  bookName?: string
+  sourceUrl?: string
+}
+
+export type ReplaceRulePreviewResponse = {
+  originalText: string
+  cleanedText: string
+  changed: boolean
+  appliedRules: string[]
+}
+
 export type FlexChildStyle = {
   layout_flexGrow?: number
   layout_flexShrink?: number
@@ -182,6 +221,23 @@ export const api = {
   updateBookshelfInfo: (data: { sourceId: string; bookUrl: string; name: string; author?: string; coverUrl?: string }) => request<BookshelfItem>('/api/bookshelf/info', { method: 'PUT', body: JSON.stringify(data) }),
   switchBookshelfSource: (value: BookshelfSourceSwitch) => request<BookshelfItem>('/api/bookshelf/switch-source', { method: 'POST', body: JSON.stringify(value) }),
   cover: (key: string) => `/api/covers/${encodeURIComponent(key)}`,
+  getReplaceRules: (params?: { q?: string; group?: string; scope?: string }) => {
+    const sp = new URLSearchParams()
+    if (params?.q) sp.set('q', params.q)
+    if (params?.group) sp.set('group', params.group)
+    if (params?.scope) sp.set('scope', params.scope)
+    const qs = sp.toString()
+    return request<ReplaceRule[]>(`/api/replace-rules${qs ? `?${qs}` : ''}`)
+  },
+  getReplaceRule: (id: string) => request<ReplaceRule>(`/api/replace-rules/${encodeURIComponent(id)}`),
+  createReplaceRule: (rule: Partial<ReplaceRule>) => request<ReplaceRule>('/api/replace-rules', { method: 'POST', body: JSON.stringify(rule) }),
+  updateReplaceRule: (id: string, rule: Partial<ReplaceRule>) => request<ReplaceRule>(`/api/replace-rules/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(rule) }),
+  deleteReplaceRule: (id: string) => request<void>(`/api/replace-rules/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  deleteReplaceRulesBatch: (ids: string[]) => request<{ deleted: number }>('/api/replace-rules/delete-batch', { method: 'POST', body: JSON.stringify(ids) }),
+  toggleReplaceRules: (ids: string[], enabled: boolean) => request<{ updated: number }>('/api/replace-rules/toggle', { method: 'POST', body: JSON.stringify({ ids, enabled }) }),
+  importReplaceRulesText: (text: string) => request<ReplaceRuleImportResponse>('/api/replace-rules/import', { method: 'POST', body: text }),
+  importReplaceRulesUrl: (url: string) => request<ReplaceRuleImportResponse>('/api/replace-rules/import', { method: 'POST', body: JSON.stringify({ url }) }),
+  previewReplaceRule: (req: ReplaceRulePreviewRequest) => request<ReplaceRulePreviewResponse>('/api/replace-rules/preview', { method: 'POST', body: JSON.stringify(req) }),
   getTtsVoices: () => request<TtsVoice[]>('/api/tts/voices'),
   createTtsSession: (signal?: AbortSignal) => request<TtsSessionInfo>('/api/tts/session', { method: 'POST', body: '{}', signal }),
   appendTtsSessionChunk: (sessionId: string, chunk: TtsSessionChunkRequest) => request<{ accepted: boolean }>(`/api/tts/session/${encodeURIComponent(sessionId)}/chunks`, { method: 'POST', body: JSON.stringify(chunk) }),

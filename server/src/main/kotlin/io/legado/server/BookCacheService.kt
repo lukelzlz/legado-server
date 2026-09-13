@@ -60,6 +60,7 @@ class BookCacheService(private val database: Database, private val runner: RuleR
             val lastProgressUpdate = AtomicLong(0L)
             val semaphore = Semaphore(CACHE_CONCURRENCY)
 
+            val bookName = database.listBookshelf().firstOrNull { it.sourceId == book.sourceId && it.bookUrl == book.bookUrl }?.name
             coroutineScope {
                 val batches = remaining.chunked(CACHE_CONCURRENCY)
                 for ((index, batch) in batches.withIndex()) {
@@ -68,7 +69,7 @@ class BookCacheService(private val database: Database, private val runner: RuleR
                         async {
                             semaphore.withPermit {
                                 try {
-                                    val content = withContext(Dispatchers.IO) { runner.content(source.json, chapter.url) }
+                                    val content = withContext(Dispatchers.IO) { runner.content(source.json, chapter.url, bookName) }
                                     if (content.content.toByteArray().size <= MAX_CHAPTER_BYTES) {
                                         database.cacheBookContent(
                                             book.sourceId, book.bookUrl, chapter.url,

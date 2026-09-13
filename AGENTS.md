@@ -89,6 +89,7 @@ AI 与人类协作时必须明确当前达到的完成度阶梯，严禁混淆�
 - **[Cookie 管理] Set-Cookie 存库前必须剥离指令属性**：上游响应中的 `Path=/; HttpOnly; SameSite=Lax; Max-Age=3600` 等指令属性若直接整串入库，会导致后续作为客户端请求头 `Cookie:` 发送时将属性一并带出引发上游 400 报错。
 - **[HTTP 规范/Ktor] 巨型 Data URL 必须转由服务端托管避免请求行超限**：书源 JS 生成的自包含 Base64 网页动辄数万字符，直接拼入 iframe URL 会触发 Ktor 8192 字符上限报 400，必须先通过 POST 上传服务端内存托管，前端仅引用短 key。
 - **[CI/构建] Gradle Wrapper 必须保持官方 distributions 下载源**：`gradle-wrapper.properties` 中的 `distributionUrl` 若配置为国内镜像（如腾讯云 `mirrors.cloud.tencent.com`），在 GitHub Actions 等海外 Runner 环境中会出现网络超时（Connection timed out）导致 CI 崩溃，必须始终保持官方 `https://services.gradle.org/distributions/` 地址。
+- **[替换规则/沙箱] Rhino JS 沙箱顶级 return 包装与反爬反义词对调字典**：Legado 生态中的 `@js:` 替换规则普遍使用 `return map[result] || result` 组织代码。Rhino 沙箱在顶层执行 `return` 时会抛 `return not in function` 语法错误，沙箱必须检测并在必要时将代码包装进 `(function(){ ... })()` 匿名闭包执行；同时替换净化必须在 `RuleRunner.content()` 与 `BookCacheService` 离线下载落库前执行，避免脏文本污染持久化缓存，同时使后续 TTS 朗读自动获得清洗后的正文。
 
 ---
 
@@ -106,6 +107,7 @@ AI 与人类协作时必须明确当前达到的完成度阶梯，严禁混淆�
 | PROPOSAL-007 | 服务端会话级连续 TTS 音频流与移动端后台稳定播放 | [`docs/proposals/PROPOSAL-007-server-session-tts-stream-and-mobile-background-playback.md`](file:///Users/zhangran/Documents/antigravity/joyful-galileo/docs/proposals/PROPOSAL-007-server-session-tts-stream-and-mobile-background-playback.md) | Implemented |
 | PROPOSAL-008 | TTS 连续播放稳定性、相对时钟锚定与缓冲弹性架构 | [`docs/proposals/PROPOSAL-008-tts-continuous-playback-stability-and-drift-compensation.md`](file:///Users/zhangran/Documents/antigravity/joyful-galileo/docs/proposals/PROPOSAL-008-tts-continuous-playback-stability-and-drift-compensation.md) | Implemented |
 | PROPOSAL-009 | TTS 播放管线穿透、反向代理防缓冲与首帧静音垫底优化 | [`docs/proposals/PROPOSAL-009-tts-stream-buffering-proxy-and-gesture-unlock.md`](file:///Users/zhangran/Documents/antigravity/joyful-galileo/docs/proposals/PROPOSAL-009-tts-stream-buffering-proxy-and-gesture-unlock.md) | Accepted |
+| PROPOSAL-010 | 替换净化规则引擎与社区规则库导入体系 | [`docs/proposals/PROPOSAL-010-replace-rules-engine-and-community-purification.md`](file:///Users/zhangran/Documents/antigravity/joyful-galileo/docs/proposals/PROPOSAL-010-replace-rules-engine-and-community-purification.md) | Accepted |
 
 ### 架构决策记录 (ADR)
 | 编号 | 决策标题 | 关联文档 | 状态 |
@@ -119,6 +121,7 @@ AI 与人类协作时必须明确当前达到的完成度阶梯，严禁混淆�
 | ADR-007 | 服务端会话级连续 MP3 音频流与独立进度事件通道 | [`docs/decisions/ADR-007-session-scoped-continuous-tts-audio-stream.md`](file:///Users/zhangran/Documents/antigravity/joyful-galileo/docs/decisions/ADR-007-session-scoped-continuous-tts-audio-stream.md) | Accepted |
 | ADR-008 | TTS 单句相对时钟锚定、前瞻扩容与停滞看门狗架构 | [`docs/decisions/ADR-008-tts-relative-clock-and-buffer-resilience.md`](file:///Users/zhangran/Documents/antigravity/joyful-galileo/docs/decisions/ADR-008-tts-relative-clock-and-buffer-resilience.md) | Accepted |
 | ADR-009 | TTS 音频流首帧静音垫底与反向代理穿透架构 | [`docs/decisions/ADR-009-tts-stream-resilience-and-zero-latency-preamble.md`](file:///Users/zhangran/Documents/antigravity/joyful-galileo/docs/decisions/ADR-009-tts-stream-resilience-and-zero-latency-preamble.md) | Accepted |
+| ADR-010 | 替换净化执行管道选型、作用域匹配与沙箱安全 | [`docs/decisions/ADR-010-replace-rules-pipeline-and-scope-matching.md`](file:///Users/zhangran/Documents/antigravity/joyful-galileo/docs/decisions/ADR-010-replace-rules-pipeline-and-scope-matching.md) | Accepted |
 
 ### 工作记忆与历史推演归档 (Sessions Chronicle)
 | 日期 / ID | 类型 | 标题 / 议题 | 关联文档 | 状态 |
@@ -148,6 +151,7 @@ AI 与人类协作时必须明确当前达到的完成度阶梯，严禁混淆�
 | 2026-09-09 | Fix | 根治浏览器探针并发锁（500）与连接断开误自毁：SharedFlow 广播解耦 | [`docs/acceptance/ACCEPT-009-tts-stream-buffering-proxy-and-multi-stream-resilience.md`](file:///Users/zhangran/Documents/antigravity/joyful-galileo/docs/acceptance/ACCEPT-009-tts-stream-buffering-proxy-and-multi-stream-resilience.md) | Accepted & Pushed |
 | 2026-09-12 | Feat | 内置浏览器反向代理登录与复杂聚合书源生态兼容 (#2) | [`docs/sessions/SESSION-010-source-webview-login-and-aggregate-compat.md`](file:///Users/zhangran/Documents/antigravity/joyful-galileo/docs/sessions/SESSION-010-source-webview-login-and-aggregate-compat.md) | Accepted & Pushed |
 | 2026-09-12 | Fix | 恢复 Gradle Wrapper 官方下载源，修复 Actions 境外构建超时 | - | Pushed |
+| 2026-09-12 | Feat | 替换净化规则引擎、反爬混淆还原与Rhino沙箱执行管道 | [`docs/sessions/SESSION-011-replace-rules-engine-and-anti-crawler-restoration.md`](file:///Users/zhangran/Documents/antigravity/joyful-galileo/docs/sessions/SESSION-011-replace-rules-engine-and-anti-crawler-restoration.md) | Accepted & Pushed |
 
 ---
 

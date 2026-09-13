@@ -10,6 +10,7 @@ import { processChapterForTts, TtsChapterData } from './ttsTextProcessor'
 import { ITtsEngine, WebSpeechEngine, HttpAudioTtsEngine, TtsPlayState, TtsSpeakMode, isPlayInterruptedError } from './ttsEngine'
 import { TtsSettingsModal, SleepTimerOption } from './TtsSettingsModal'
 import { TtsPlayerBar } from './TtsPlayerBar'
+import { ReplaceRulesModal } from './ReplaceRulesModal'
 
 export type OpenBook = { details: BookDetails; bookUrl: string; chapters: Chapter[]; progress?: ReadingProgress }
 
@@ -198,6 +199,7 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
   const [remainingSeconds, setRemainingSeconds] = useState<number | null>(null)
   const [showTtsSettings, setShowTtsSettings] = useState(false)
   const [showSourceSwitch, setShowSourceSwitch] = useState(false)
+  const [showReplaceRules, setShowReplaceRules] = useState(false)
   const [cacheStatus, setCacheStatus] = useState<{ state: string; cached: number; total: number; error?: string }>({
     state: 'idle',
     cached: 0,
@@ -1151,6 +1153,7 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
       </div>
       <strong className="reader-header-title" title={bookName}>{bookName}</strong>
       <div className="reader-header-actions">
+        <IconButton label="替换净化" icon="edit" onClick={() => setShowReplaceRules(true)} />
         <IconButton label="切换书源" icon="sliders" onClick={() => setShowSourceSwitch(true)} />
         <IconButton label="阅读设置" icon="settings" onClick={() => setActiveDrawer(d => d === 'settings' ? null : 'settings')} />
         <IconButton
@@ -1360,6 +1363,34 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
         onSleepTimerChange={setSleepTimer}
         remainingSeconds={remainingSeconds}
         onClose={() => setShowTtsSettings(false)}
+      />
+    )}
+
+    {/* Replace Rules Modal */}
+    {showReplaceRules && (
+      <ReplaceRulesModal
+        isOpen={showReplaceRules}
+        onClose={() => setShowReplaceRules(false)}
+        currentBookName={bookName}
+        currentSourceUrl={currentBook.details.sourceId}
+        onRulesChanged={() => {
+          if (chapter) {
+            setLoadedChapterUrl('')
+            setContent('')
+            setLoading(true)
+            api.content(currentBook.details.sourceId, chapter.url, currentBook.bookUrl)
+              .then(res => {
+                setContent(res.content)
+                setLoadedChapterUrl(chapter.url)
+              })
+              .catch(err => {
+                setMessage(err.message || '加载章节内容失败')
+              })
+              .finally(() => {
+                setLoading(false)
+              })
+          }
+        }}
       />
     )}
   </main>

@@ -11,6 +11,12 @@ import { ITtsEngine, WebSpeechEngine, HttpAudioTtsEngine, TtsPlayState, TtsSpeak
 import { TtsSettingsModal, SleepTimerOption } from './TtsSettingsModal'
 import { TtsPlayerBar } from './TtsPlayerBar'
 import { ReplaceRulesModal } from './ReplaceRulesModal'
+import { OfflineCacheModal } from './OfflineCacheModal'
+import {
+  downloadChaptersToOffline,
+  getOfflineChaptersSet,
+  putOfflineChapter,
+} from './offlineStorage'
 
 export type OpenBook = { details: BookDetails; bookUrl: string; chapters: Chapter[]; progress?: ReadingProgress }
 
@@ -58,23 +64,23 @@ function ReaderSettingsControls({
           className="rules-setting-btn"
           onClick={onOpenReplaceRules}
           style={{
-            width: '100%',
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'space-between',
+            width: '100%',
             padding: '10px 14px',
-            background: 'var(--bg-secondary, rgba(125,125,125,0.08))',
-            border: '1px solid var(--border-color, rgba(125,125,125,0.2))',
+            border: '1px solid var(--line)',
             borderRadius: '8px',
+            background: 'var(--panel)',
+            color: 'var(--text-color, #e6e8eb)',
             cursor: 'pointer',
-            fontSize: '0.9rem',
-            color: 'inherit',
+            fontSize: '14px',
           }}
         >
-          <span style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
             <Icon name="edit" />
-            <span>替换净化规则</span>
-          </span>
+            <span>替换净化规则管理</span>
+          </div>
           <Icon name="arrowRight" />
         </button>
         <small className="setting-hint">针对当前书籍/书源过滤广告与特定字符</small>
@@ -111,6 +117,7 @@ function ReaderContentSkeleton() {
 export interface VirtualChapterListProps {
   chapters: Chapter[]
   activeChapterIndex: number
+  cachedUrlsSet?: Set<string>
   onSelect: (index: number) => void
   itemHeight?: number
   overscan?: number
@@ -121,6 +128,7 @@ export interface VirtualChapterListProps {
 export function VirtualChapterList({
   chapters,
   activeChapterIndex,
+  cachedUrlsSet,
   onSelect,
   itemHeight = 38,
   overscan = 8,
@@ -199,18 +207,22 @@ export function VirtualChapterList({
       onScroll={handleScroll}
     >
       {topSpacer > 0 && <div style={{ height: topSpacer }} aria-hidden="true" />}
-      {visibleChapters.map(({ chapter }) => (
-        <button
-          key={chapter.url}
-          style={{ height: itemHeight }}
-          className={`reader-chapter-item ${chapter.index === activeChapterIndex ? 'current' : ''}`}
-          onClick={() => onSelect(chapter.index)}
-          title={chapter.title}
-        >
-          <i />
-          <span className="reader-chapter-title">{chapter.title}</span>
-        </button>
-      ))}
+      {visibleChapters.map(({ chapter }) => {
+        const isCached = cachedUrlsSet ? cachedUrlsSet.has(chapter.url) : false
+        return (
+          <button
+            key={chapter.url}
+            style={{ height: itemHeight }}
+            className={`reader-chapter-item ${chapter.index === activeChapterIndex ? 'current' : ''} ${isCached ? 'cached' : ''}`}
+            onClick={() => onSelect(chapter.index)}
+            title={`${chapter.title}${isCached ? ' (已离线缓存)' : ''}`}
+          >
+            <i />
+            <span className="reader-chapter-title">{chapter.title}</span>
+            {isCached && <span className="chapter-cached-badge" title="已离线缓存" />}
+          </button>
+        )
+      })}
       {bottomSpacer > 0 && <div style={{ height: bottomSpacer }} aria-hidden="true" />}
       {count === 0 && <p className="reader-status" style={{ padding: '24px 0' }}>无匹配章节</p>}
     </nav>
@@ -238,6 +250,16 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
   const [showTtsSettings, setShowTtsSettings] = useState(false)
   const [showSourceSwitch, setShowSourceSwitch] = useState(false)
   const [showReplaceRules, setShowReplaceRules] = useState(false)
+  const [cachedChapterUrls, setCachedChapterUrls] = useState<Set<string>>(new Set())
+  const [offlineStatsModal, setOfflineStatsModal] = useState(false)
+  const [localSyncing, setLocalSyncing] = useState(false)
+  const [localSyncProgress, setLocalSyncProgress] = useState({ current: 0, total: 0 })
+  const localSyncAbortRef = useRef<AbortController | null>(null)
+  const [customRangeOpen, setCustomRangeOpen] = useState(false)
+  const [customRangeStart, setCustomRangeStart] = useState(1)
+  const [customRangeEnd, setCustomRangeEnd] = useState(50)
+  const [offlineTtsConfirmOpen, setOfflineTtsConfirmOpen] = useState(false)
+
   const [cacheStatus, setCacheStatus] = useState<{ state: string; cached: number; total: number; error?: string }>({
     state: 'idle',
     cached: 0,
@@ -277,23 +299,36 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
   const chapter = currentBook.chapters[chapterIndex]
   const bookName = currentBook.details.name || '书籍正文'
 
-  // Sync cache status with bookshelf
+  // Sync cache status with bookshelf and local IndexedDB
   const syncCacheStatus = useCallback(async () => {
     try {
-      const shelf = await api.bookshelf()
+      const [shelf, cachedUrlsRes, localOfflineSet] = await Promise.all([
+        api.bookshelf().catch(() => []),
+        api.getCachedChapters(currentBook.details.sourceId, currentBook.bookUrl).catch(() => null),
+        getOfflineChaptersSet(currentBook.details.sourceId, currentBook.bookUrl).catch(() => new Set<string>()),
+      ])
+
+      const mergedSet = new Set<string>(localOfflineSet)
+      if (cachedUrlsRes?.cachedChapterUrls) {
+        for (const u of cachedUrlsRes.cachedChapterUrls) {
+          mergedSet.add(u)
+        }
+      }
+      setCachedChapterUrls(mergedSet)
+
       const item = shelf.find(s => s.sourceId === currentBook.details.sourceId && s.bookUrl === currentBook.bookUrl)
       if (item) {
         setInShelf(true)
         setCacheStatus(prev => {
           // If state changed to ready or failed, show notification
           if (prev.state === 'caching' && item.cacheState === 'ready') {
-            toast.success(`《${bookName}》全本离线缓存完成（共 ${item.cachedChapters} 章）`)
+            toast.success(`《${bookName}》离线缓存完成（共 ${item.cachedChapters} 章）`)
           } else if (prev.state === 'caching' && item.cacheState === 'failed') {
             toast.warning(`《${bookName}》缓存中断：${item.cacheError || '部分章节未下载'}`)
           }
           return {
             state: item.cacheState,
-            cached: item.cachedChapters,
+            cached: Math.max(item.cachedChapters, mergedSet.size),
             total: item.totalChapters || currentBook.chapters.length,
             error: item.cacheError,
           }
@@ -558,6 +593,10 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
 
   const toggleTts = useCallback(() => {
     if (!ttsActive) {
+      if (typeof navigator !== 'undefined' && !navigator.onLine && settings.ttsEngine !== 'webSpeech') {
+        setOfflineTtsConfirmOpen(true)
+        return
+      }
       setTtsActive(true)
       const startIdx = getInitialTtsChunkIndex()
       playTtsChunk(startIdx)
@@ -568,7 +607,7 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
     } else {
       playTtsChunk(currentChunkIndex)
     }
-  }, [ttsActive, ttsPlayState, playTtsChunk, currentChunkIndex, pauseTts, resumeTts, getInitialTtsChunkIndex])
+  }, [ttsActive, ttsPlayState, playTtsChunk, currentChunkIndex, pauseTts, resumeTts, getInitialTtsChunkIndex, settings.ttsEngine])
 
   const handleParagraphClick = useCallback((pIdx: number) => {
     // Only jump to paragraph if TTS is already active; don't auto-start reading on arbitrary clicks
@@ -676,12 +715,85 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
   }
 
   const handleCacheBook = async () => {
+    await handleCacheRange('all')
+  }
+
+  const handleCacheRange = async (mode: 'next50' | 'next100' | 'all' | 'custom', start?: number, end?: number) => {
+    let s = chapterIndex
+    let count: number | undefined
+    let e: number | undefined
+
+    if (mode === 'next50') {
+      count = 50
+    } else if (mode === 'next100') {
+      count = 100
+    } else if (mode === 'all') {
+      s = 0
+      count = undefined
+    } else if (mode === 'custom') {
+      s = Math.max(0, (start ?? 1) - 1)
+      e = Math.max(s, (end ?? currentBook.chapters.length) - 1)
+      count = undefined
+    }
+
     try {
-      await api.cacheBookshelfBook(currentBook.details.sourceId, currentBook.bookUrl)
-      setCacheStatus(prev => ({ ...prev, state: 'caching', error: undefined, total: currentBook.chapters.length }))
-      toast.info(`已加入离线缓存队列，正在下载《${bookName}》...`)
+      await api.cacheBookshelfRange({
+        sourceId: currentBook.details.sourceId,
+        bookUrl: currentBook.bookUrl,
+        startIndex: s,
+        endIndex: e,
+        count,
+      })
+      toast.success(
+        mode === 'all'
+          ? '已加入全本离线缓存队列'
+          : mode === 'next50'
+          ? '已开始缓存后续 50 章'
+          : mode === 'next100'
+          ? '已开始缓存后续 100 章'
+          : `已开始缓存第 ${s + 1} ~ ${(e ?? 0) + 1} 章`
+      )
+      setCacheStatus(prev => ({ ...prev, state: 'caching', error: undefined }))
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : '无法开始缓存')
+      toast.error(err instanceof Error ? err.message : '发起缓存失败')
+    }
+  }
+
+  const handleSyncToLocal = async (rangeChapters?: Chapter[]) => {
+    const targetChapters = rangeChapters || currentBook.chapters.slice(chapterIndex, chapterIndex + 50)
+    localSyncAbortRef.current?.abort()
+    const controller = new AbortController()
+    localSyncAbortRef.current = controller
+
+    setLocalSyncing(true)
+    setLocalSyncProgress({ current: 0, total: targetChapters.length })
+
+    try {
+      const res = await downloadChaptersToOffline(
+        currentBook.details.sourceId,
+        currentBook.bookUrl,
+        targetChapters,
+        async (chUrl) => {
+          return api.content(currentBook.details.sourceId, chUrl, currentBook.bookUrl, controller.signal)
+        },
+        (comp, tot) => {
+          setLocalSyncProgress({ current: comp, total: tot })
+        },
+        controller.signal
+      )
+      if (!controller.signal.aborted) {
+        toast.success(`离线同步完成：成功 ${res.successful} 章，跳过/已缓存 ${targetChapters.length - res.failed - res.successful} 章`)
+        const offlineSet = await getOfflineChaptersSet(currentBook.details.sourceId, currentBook.bookUrl)
+        setCachedChapterUrls(offlineSet)
+      }
+    } catch (err) {
+      if (!controller.signal.aborted) {
+        toast.error('离线同步中断')
+      }
+    } finally {
+      if (!controller.signal.aborted) {
+        setLocalSyncing(false)
+      }
     }
   }
 
@@ -1231,6 +1343,7 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
       <VirtualChapterList
         chapters={filteredChapters}
         activeChapterIndex={chapterIndex}
+        cachedUrlsSet={cachedChapterUrls}
         onSelect={index => {
           changeChapter(index)
           if (!settings.sidebarPinned) {
@@ -1247,7 +1360,7 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
           {cacheStatus.state === 'caching' ? (
             <div className="drawer-cache-progress">
               <div className="cache-progress-text">
-                <span>正在离线缓存</span>
+                <span>正在服务端缓存</span>
                 <strong>{cachePercent}% ({cacheStatus.cached}/{cacheStatus.total || currentBook.chapters.length}章)</strong>
               </div>
               <div className="cache-progress-bar-track">
@@ -1255,18 +1368,110 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
               </div>
               <button className="cache-cancel-btn" onClick={() => void handleCancelCache()}>取消缓存</button>
             </div>
+          ) : localSyncing ? (
+            <div className="drawer-cache-progress">
+              <div className="cache-progress-text">
+                <span>正在下载到本设备 (PWA)</span>
+                <strong>{localSyncProgress.current} / {localSyncProgress.total} 章</strong>
+              </div>
+              <div className="cache-progress-bar-track">
+                <div
+                  className="cache-progress-bar-fill"
+                  style={{ width: `${Math.min(100, Math.round((localSyncProgress.current / Math.max(1, localSyncProgress.total)) * 100))}%` }}
+                />
+              </div>
+              <button className="cache-cancel-btn" onClick={() => { localSyncAbortRef.current?.abort(); setLocalSyncing(false) }}>取消本地下载</button>
+            </div>
           ) : (
             <div className="drawer-cache-idle">
-              <button className="cache-action-btn" onClick={() => void handleCacheBook()}>
-                <Icon name="download" />
-                <span>
-                  {cacheStatus.state === 'ready'
-                    ? `已离线缓存 ${cacheStatus.cached} 章 (重新缓存)`
-                    : cacheStatus.state === 'failed'
-                    ? `重试离线缓存 (${cacheStatus.cached}/${cacheStatus.total || currentBook.chapters.length})`
-                    : '下载全本离线缓存'}
-                </span>
-              </button>
+              <div className="cache-range-btn-grid">
+                <button
+                  type="button"
+                  className="cache-range-btn"
+                  title="缓存当前章节后续 50 章"
+                  onClick={() => void handleCacheRange('next50')}
+                >
+                  后 50 章
+                </button>
+                <button
+                  type="button"
+                  className="cache-range-btn"
+                  title="缓存当前章节后续 100 章"
+                  onClick={() => void handleCacheRange('next100')}
+                >
+                  后 100 章
+                </button>
+                <button
+                  type="button"
+                  className="cache-range-btn"
+                  title="缓存全本小说"
+                  onClick={() => void handleCacheRange('all')}
+                >
+                  全本缓存
+                </button>
+                <button
+                  type="button"
+                  className="cache-range-btn"
+                  title="自定义章节范围"
+                  onClick={() => setCustomRangeOpen(prev => !prev)}
+                >
+                  自定义...
+                </button>
+              </div>
+
+              {customRangeOpen && (
+                <div className="cache-custom-range-box">
+                  <div className="range-inputs">
+                    <span>第</span>
+                    <input
+                      type="number"
+                      min={1}
+                      max={currentBook.chapters.length}
+                      value={customRangeStart}
+                      onChange={e => setCustomRangeStart(Number(e.target.value))}
+                    />
+                    <span>至</span>
+                    <input
+                      type="number"
+                      min={customRangeStart}
+                      max={currentBook.chapters.length}
+                      value={customRangeEnd}
+                      onChange={e => setCustomRangeEnd(Number(e.target.value))}
+                    />
+                    <span>章</span>
+                  </div>
+                  <button
+                    type="button"
+                    className="primary-button range-start-btn"
+                    onClick={() => {
+                      setCustomRangeOpen(false)
+                      void handleCacheRange('custom', customRangeStart, customRangeEnd)
+                    }}
+                  >
+                    开始缓存
+                  </button>
+                </div>
+              )}
+
+              <div className="cache-local-sync-row">
+                <button
+                  type="button"
+                  className="cache-sync-btn"
+                  onClick={() => void handleSyncToLocal()}
+                  title="将已缓存章节下载到手机或电脑本地，断网脱机可读"
+                >
+                  <Icon name="download" />
+                  <span>下载到本设备 (离线脱机)</span>
+                </button>
+                <button
+                  type="button"
+                  className="cache-manage-btn"
+                  onClick={() => setOfflineStatsModal(true)}
+                  title="管理本设备离线缓存"
+                >
+                  <Icon name="sliders" />
+                </button>
+              </div>
             </div>
           )}
         </div>
@@ -1433,6 +1638,66 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
           }
         }}
       />
+    )}
+
+    {/* Offline Cache Stats Modal */}
+    {offlineStatsModal && (
+      <OfflineCacheModal
+        onClose={() => {
+          setOfflineStatsModal(false)
+          void syncCacheStatus()
+        }}
+      />
+    )}
+
+    {/* Offline TTS Fallback Confirmation Dialog */}
+    {offlineTtsConfirmOpen && (
+      <div className="modal-backdrop" onClick={() => setOfflineTtsConfirmOpen(false)}>
+        <div
+          className="source-login-modal"
+          style={{ maxWidth: '420px' }}
+          onClick={e => e.stopPropagation()}
+          role="dialog"
+          aria-modal="true"
+          aria-label="离线语音提示"
+        >
+          <header className="source-login-header">
+            <div className="source-login-title">
+              <span className="source-login-icon"><Icon name="volume2" /></span>
+              <div className="source-login-heading">
+                <h2>离线朗读提示</h2>
+                <small>当前设备处于离线状态</small>
+              </div>
+            </div>
+            <button type="button" className="subtle-button close-btn" onClick={() => setOfflineTtsConfirmOpen(false)} aria-label="关闭">
+              <Icon name="close" />
+            </button>
+          </header>
+          <div className="source-login-body">
+            <p style={{ margin: '8px 0', fontSize: '14px', lineHeight: '1.6', color: 'var(--text-color, #e6e8eb)' }}>
+              当前未连接到互联网，云端 Edge-TTS 朗读不可用。是否切换使用设备本地自带的<strong>系统语音 (Web Speech)</strong> 进行脱机朗读？
+            </p>
+          </div>
+          <footer className="source-login-footer">
+            <button type="button" className="subtle-button" onClick={() => setOfflineTtsConfirmOpen(false)}>
+              取消
+            </button>
+            <button
+              type="button"
+              className="primary-button"
+              onClick={() => {
+                setOfflineTtsConfirmOpen(false)
+                onSettingsChange({ ...settings, ttsEngine: 'webSpeech' })
+                setTtsActive(true)
+                const startIdx = getInitialTtsChunkIndex()
+                playTtsChunk(startIdx)
+              }}
+            >
+              使用系统离线语音
+            </button>
+          </footer>
+        </div>
+      </div>
     )}
   </main>
 }

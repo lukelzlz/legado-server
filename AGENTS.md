@@ -91,6 +91,7 @@ AI 与人类协作时必须明确当前达到的完成度阶梯，严禁混淆�
 - **[CI/构建] Gradle Wrapper 必须保持官方 distributions 下载源**：`gradle-wrapper.properties` 中的 `distributionUrl` 若配置为国内镜像（如腾讯云 `mirrors.cloud.tencent.com`），在 GitHub Actions 等海外 Runner 环境中会出现网络超时（Connection timed out）导致 CI崩溃，必须始终保持官方 `https://services.gradle.org/distributions/` 地址。
 - **[替换规则/沙箱] Rhino JS 沙箱顶级 return 包装与反爬反义词对调字典**：Legado 生态中的 `@js:` 替换规则普遍使用 `return map[result] || result` 组织代码。Rhino 沙箱在顶层执行 `return` 时会抛 `return not in function` 语法错误，沙箱必须检测并在必要时将代码包装进 `(function(){ ... })()` 匿名闭包执行；同时替换净化必须在 `RuleRunner.content()` 与 `BookCacheService` 离线下载落库前执行，避免脏文本污染持久化缓存，同时使后续 TTS 朗读自动获得清洗后的正文。
 - **[交互/导航] 核心系统能力一级导航呈现与阅读器抽屉收敛**：全局核心管理能力（书源、订阅、替换净化规则）必须在一级导航栏设立独立入口；而在沉浸式阅读器中，顶栏严格保持极简（目录、换源、设置、朗读），辅助净化规则统一收敛进「阅读设置」抽屉，杜绝顶栏拥挤。
+- **[PWA/离线缓存] 渐进式离线缓存与脱机阅读架构**：① Service Worker 缓存静态资源与应用壳，排除 `/api/tts/stream` 等实时长音频流；② 正文离线支持按「后50章/后100章/全本/自定义」4 并发切片下载，IndexedDB 存储纯净文本；③ 脱机断网期间阅读进度写入本地队列，网络恢复（`online` 事件）时静默 Flush 同步；④ 目录列表对已离线章节实时打绿点徽标（`●`）；⑤ 全面适配 `safe-area-inset-*` 与 `overscroll-behavior: none`，消除 iOS 橡皮筋下拉与刘海遮挡。
 
 ---
 
@@ -110,6 +111,7 @@ AI 与人类协作时必须明确当前达到的完成度阶梯，严禁混淆�
 | PROPOSAL-009 | TTS 播放管线穿透、反向代理防缓冲与首帧静音垫底优化 | [`docs/proposals/PROPOSAL-009-tts-stream-buffering-proxy-and-gesture-unlock.md`](file:///Users/zhangran/Documents/antigravity/joyful-galileo/docs/proposals/PROPOSAL-009-tts-stream-buffering-proxy-and-gesture-unlock.md) | Accepted |
 | PROPOSAL-010 | 替换净化规则引擎与社区规则库导入体系 | [`docs/proposals/PROPOSAL-010-replace-rules-engine-and-community-purification.md`](file:///Users/zhangran/Documents/antigravity/joyful-galileo/docs/proposals/PROPOSAL-010-replace-rules-engine-and-community-purification.md) | Accepted |
 | PROPOSAL-011 | 替换净化规则升级为一级独立页面与阅读器设置抽屉集成 | [`docs/proposals/PROPOSAL-011-first-class-replace-rules-page-and-reader-settings-integration.md`](file:///Users/zhangran/Documents/antigravity/joyful-galileo/docs/proposals/PROPOSAL-011-first-class-replace-rules-page-and-reader-settings-integration.md) | Accepted |
+| PROPOSAL-012 | 完整 PWA 渐进式 Web 应用能力、用户自主正文分段离线缓存与沉浸式全屏抽屉适配 | [`docs/proposals/PROPOSAL-012-pwa-capabilities-and-fullscreen-drawer-adaptation.md`](file:///Users/zhangran/Documents/antigravity/joyful-galileo/docs/proposals/PROPOSAL-012-pwa-capabilities-and-fullscreen-drawer-adaptation.md) | Accepted |
 
 ### 架构决策记录 (ADR)
 | 编号 | 决策标题 | 关联文档 | 状态 |
@@ -125,6 +127,7 @@ AI 与人类协作时必须明确当前达到的完成度阶梯，严禁混淆�
 | ADR-009 | TTS 音频流首帧静音垫底与反向代理穿透架构 | [`docs/decisions/ADR-009-tts-stream-resilience-and-zero-latency-preamble.md`](file:///Users/zhangran/Documents/antigravity/joyful-galileo/docs/decisions/ADR-009-tts-stream-resilience-and-zero-latency-preamble.md) | Accepted |
 | ADR-010 | 替换净化执行管道选型、作用域匹配与沙箱安全 | [`docs/decisions/ADR-010-replace-rules-pipeline-and-scope-matching.md`](file:///Users/zhangran/Documents/antigravity/joyful-galileo/docs/decisions/ADR-010-replace-rules-pipeline-and-scope-matching.md) | Accepted |
 | ADR-011 | 替换规则升级为主导航一级页面与阅读器设置抽屉模块化收敛 | [`docs/decisions/ADR-011-first-class-replace-rules-navigation-and-reader-settings.md`](file:///Users/zhangran/Documents/antigravity/joyful-galileo/docs/decisions/ADR-011-first-class-replace-rules-navigation-and-reader-settings.md) | Accepted |
+| ADR-012 | 采用 vite-plugin-pwa 构筑双层用户可控离线缓存体系与 Safe-Area 沉浸式安全区适配 | [`docs/decisions/ADR-012-vite-plugin-pwa-workbox-and-safe-area-layout.md`](file:///Users/zhangran/Documents/antigravity/joyful-galileo/docs/decisions/ADR-012-vite-plugin-pwa-workbox-and-safe-area-layout.md) | Accepted |
 
 ### 工作记忆与历史推演归档 (Sessions Chronicle)
 | 日期 / ID | 类型 | 标题 / 议题 | 关联文档 | 状态 |
@@ -156,6 +159,7 @@ AI 与人类协作时必须明确当前达到的完成度阶梯，严禁混淆�
 | 2026-09-12 | Fix | 恢复 Gradle Wrapper 官方下载源，修复 Actions 境外构建超时 | - | Pushed |
 | 2026-09-12 | Feat | 替换净化规则引擎、反爬混淆还原与Rhino沙箱执行管道 | [`docs/sessions/SESSION-011-replace-rules-engine-and-anti-crawler-restoration.md`](file:///Users/zhangran/Documents/antigravity/joyful-galileo/docs/sessions/SESSION-011-replace-rules-engine-and-anti-crawler-restoration.md) | Accepted & Pushed |
 | 2026-09-15 | Feat | 替换净化规则升级为一级独立页面与阅读器设置抽屉集成 | [`docs/sessions/SESSION-012-first-class-replace-rules-and-reader-settings.md`](file:///Users/zhangran/Documents/antigravity/joyful-galileo/docs/sessions/SESSION-012-first-class-replace-rules-and-reader-settings.md) | Accepted & Pushed |
+| 2026-09-15 | Feat | 完整 PWA 渐进式能力、用户自主正文分段离线缓存与沉浸式全屏抽屉适配 | [`docs/sessions/SESSION-013-pwa-and-offline-caching-architecture.md`](file:///root/legado-server/docs/sessions/SESSION-013-pwa-and-offline-caching-architecture.md) | Accepted & Pushed |
 
 ---
 

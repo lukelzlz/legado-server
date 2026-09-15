@@ -239,7 +239,28 @@ data class SourceLoginStateRecord(
     val author: String? = null,
     val coverUrl: String? = null,
 )
-data class CachedBookRequest(val sourceId: String, val bookUrl: String, val tocUrl: String)
+data class CachedBookRequest(
+    val sourceId: String,
+    val bookUrl: String,
+    val tocUrl: String,
+    val startIndex: Int? = null,
+    val endIndex: Int? = null,
+    val count: Int? = null,
+)
+@Serializable data class BookCacheRangeRequest(
+    val sourceId: String,
+    val bookUrl: String,
+    val startIndex: Int? = null,
+    val endIndex: Int? = null,
+    val count: Int? = null,
+)
+@Serializable data class CachedChaptersResponse(
+    val sourceId: String,
+    val bookUrl: String,
+    val cachedChapterUrls: List<String>,
+    val cachedCount: Int,
+    val totalChapters: Int = 0,
+)
 @Serializable data class BookshelfItem(
     val sourceId: String,
     val bookUrl: String,

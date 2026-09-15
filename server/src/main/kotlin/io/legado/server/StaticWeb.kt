@@ -7,14 +7,32 @@ import io.ktor.server.routing.*
 import io.ktor.server.http.content.*
 
 fun Route.staticWeb() {
-    val respondIndex: suspend (ApplicationCall) -> Unit = { call ->
+    val respondNoCache: suspend (ApplicationCall, String, ContentType?) -> Unit = { call, resource, contentType ->
         call.response.header(HttpHeaders.CacheControl, "no-cache, no-store, must-revalidate")
         call.response.header(HttpHeaders.Pragma, "no-cache")
         call.response.header(HttpHeaders.Expires, "0")
-        call.respondResource("static/index.html")
+        if (contentType != null) {
+            call.response.header(HttpHeaders.ContentType, contentType.toString())
+        }
+        call.respondResource(resource)
     }
+
+    val respondIndex: suspend (ApplicationCall) -> Unit = { call ->
+        respondNoCache(call, "static/index.html", ContentType.Text.Html.withCharset(Charsets.UTF_8))
+    }
+
     get("/index.html") { respondIndex(call) }
     head("/index.html") { respondIndex(call) }
+
+    get("/sw.js") { respondNoCache(call, "static/sw.js", ContentType.parse("application/javascript")) }
+    head("/sw.js") { respondNoCache(call, "static/sw.js", ContentType.parse("application/javascript")) }
+    get("/registerSW.js") { respondNoCache(call, "static/registerSW.js", ContentType.parse("application/javascript")) }
+    head("/registerSW.js") { respondNoCache(call, "static/registerSW.js", ContentType.parse("application/javascript")) }
+    get("/manifest.webmanifest") { respondNoCache(call, "static/manifest.webmanifest", ContentType.parse("application/manifest+json")) }
+    head("/manifest.webmanifest") { respondNoCache(call, "static/manifest.webmanifest", ContentType.parse("application/manifest+json")) }
+    get("/manifest.json") { respondNoCache(call, "static/manifest.webmanifest", ContentType.parse("application/manifest+json")) }
+    head("/manifest.json") { respondNoCache(call, "static/manifest.webmanifest", ContentType.parse("application/manifest+json")) }
+
     staticResources("/assets", "static/assets")
     staticResources("/", "static")
     get("/") { respondIndex(call) }

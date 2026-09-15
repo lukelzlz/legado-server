@@ -49,9 +49,24 @@ class BookCacheService(private val database: Database, private val runner: RuleR
                 database.saveTocCache(book.sourceId, book.bookUrl, chapters)
             }
 
+            // Slice chapters by range if specified
+            val targetChapters = if (book.startIndex != null || book.endIndex != null || book.count != null) {
+                val start = (book.startIndex ?: 0).coerceIn(0, chapters.size)
+                val end = if (book.endIndex != null) {
+                    (book.endIndex + 1).coerceIn(start, chapters.size)
+                } else if (book.count != null) {
+                    (start + book.count).coerceIn(start, chapters.size)
+                } else {
+                    chapters.size
+                }
+                if (start < end) chapters.subList(start, end) else emptyList()
+            } else {
+                chapters
+            }
+
             // Breakpoint resume: skip already-cached chapter URLs
             val alreadyCached = database.cachedChapterUrls(book.sourceId, book.bookUrl)
-            val remaining = chapters.filter { it.url !in alreadyCached }
+            val remaining = targetChapters.filter { it.url !in alreadyCached }
 
             database.beginBookCache(book.sourceId, book.bookUrl, chapters.size)
 

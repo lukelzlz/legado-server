@@ -6,7 +6,9 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
-    "check": "tsc -b --pretty false"
+    "check": "tsc -b --pretty false",
+    "test": "tsx test/run-all.ts",
+    "test:e2e": "tsx test/e2e-browser-stress.ts"
   },
   "dependencies": {
     "@vitejs/plugin-react": "4.6.0",
@@ -20,6 +22,8 @@
     "@types/react": "19.1.8",
     "@types/react-dom": "19.1.6",
     "c8": "^12.0.0",
-    "tsx": "^4.23.12"
+    "puppeteer-core": "^25.11.0",
+    "tsx": "^4.23.12",
+    "vite-plugin-pwa": "^1.3.0"
   }
 }

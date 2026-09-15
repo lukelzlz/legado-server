@@ -514,6 +514,20 @@ class Database(private val path: String) : Closeable, AutoCloseable {
             }
         }
     }
+    fun clearBookCacheContent(sourceId: String, bookUrl: String): Int = write { db ->
+        val deleted = db.prepareStatement("delete from book_content_cache where source_id = ? and book_url = ?").use { statement ->
+            statement.setString(1, sourceId)
+            statement.setString(2, bookUrl)
+            statement.executeUpdate()
+        }
+        db.prepareStatement("update book_cache_status set cached_chapters = 0, state = 'idle', last_error = null, updated_at = ? where source_id = ? and book_url = ?").use { statement ->
+            statement.setLong(1, System.currentTimeMillis())
+            statement.setString(2, sourceId)
+            statement.setString(3, bookUrl)
+            statement.executeUpdate()
+        }
+        deleted
+    }
     fun updateBookCacheProgress(sourceId: String, bookUrl: String, cachedCount: Int) = write { db ->
         db.prepareStatement("update book_cache_status set cached_chapters = ?, updated_at = ? where source_id = ? and book_url = ?").use { statement ->
             statement.setInt(1, cachedCount)

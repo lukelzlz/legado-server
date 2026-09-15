@@ -13,6 +13,9 @@ import { SourceSwitchModal } from './SourceSwitchModal'
 import { SourceLoginModal } from './SourceLoginModal'
 import { ReplaceRulesModal } from './ReplaceRulesModal'
 import { ReplaceRulesPage } from './ReplaceRulesPage'
+import { OfflineCacheModal } from './OfflineCacheModal'
+import { PwaManager } from './PwaManager'
+import { flushOfflineProgress } from './offlineStorage'
 import { toast, ToastContainer } from './Toast'
 import './styles.css'
 
@@ -1398,11 +1401,22 @@ function App() {
     }
   })
   const [showReplaceRules, setShowReplaceRules] = useState(false)
+  const [showOfflineCache, setShowOfflineCache] = useState(false)
   const search = useSearchStore()
 
   useEffect(() => {
     saveReaderSettings(settings)
   }, [settings])
+
+  useEffect(() => {
+    const handleOnline = () => {
+      void flushOfflineProgress(async (item) => {
+        await api.saveProgress(item.sourceId, item.bookUrl, item.chapterUrl, item.chapterIndex, item.scrollPosition)
+      })
+    }
+    window.addEventListener('online', handleOnline)
+    return () => window.removeEventListener('online', handleOnline)
+  }, [])
 
   useEffect(() => {
     void api.session().then(result => {
@@ -1531,6 +1545,7 @@ function App() {
   return (
     <div className={`app-shell theme-${settings.theme}`}>
       <ToastContainer />
+      <PwaManager />
       <AppHeader
         page={page}
         settings={settings}
@@ -1538,6 +1553,7 @@ function App() {
         onSettingsChange={setSettings}
         onNavigate={navigate}
         onOpenReplaceRules={() => setShowReplaceRules(true)}
+        onOpenOfflineCache={() => setShowOfflineCache(true)}
         onLogout={() => void logout()}
       />
       {page === 'sources' ? (
@@ -1555,6 +1571,9 @@ function App() {
         isOpen={showReplaceRules}
         onClose={() => setShowReplaceRules(false)}
       />
+      {showOfflineCache && (
+        <OfflineCacheModal onClose={() => setShowOfflineCache(false)} />
+      )}
     </div>
   )
 }

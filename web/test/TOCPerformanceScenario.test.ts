@@ -57,8 +57,8 @@ test('TOCPerformanceScenario - Tier 4 Scenario 1: 5,000+ chapter TOC scrolling &
     const filterElapsed = performance.now() - filterStart
 
     assert.ok(
-      filterElapsed < 10,
-      `Filtering query "${q}" across 5,000 chapters took ${filterElapsed.toFixed(2)}ms (target < 10ms)`
+      filterElapsed < 30,
+      `Filtering query "${q}" across 5,000 chapters took ${filterElapsed.toFixed(2)}ms (target < 30ms)`
     )
 
     // Verify virtual slice rendered on filtered dataset

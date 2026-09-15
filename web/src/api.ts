@@ -1,3 +1,12 @@
+import {
+  putOfflineChapter,
+  getOfflineChapter,
+  saveShelfSnapshot,
+  getShelfSnapshot,
+  enqueueOfflineProgress,
+  flushOfflineProgress,
+} from './offlineStorage'
+
 export type SourceSummary = { id: string; name: string; url: string; group?: string; enabled: boolean; isJsSource: boolean; hasLogin: boolean; updatedAt: number; version: number }
 export type SourceRecord = { id: string; json: string; version: number; updatedAt: number }
 export type SearchResult = { sourceId: string; name: string; author?: string; bookUrl: string; coverUrl?: string; intro?: string }
@@ -209,13 +218,61 @@ export const api = {
   search: (keyword: string, sourceIds?: string[], signal?: AbortSignal) => request<SearchResult[]>('/api/search', { method: 'POST', body: JSON.stringify({ keyword, sourceIds }), signal }),
   details: (sourceId: string, bookUrl: string, signal?: AbortSignal) => request<BookDetails>('/api/books/details', { method: 'POST', body: JSON.stringify({ sourceId, bookUrl }), signal }),
   chapters: (sourceId: string, bookUrl: string, signal?: AbortSignal) => request<Chapter[]>('/api/books/chapters', { method: 'POST', body: JSON.stringify({ sourceId, bookUrl }), signal }),
-  content: (sourceId: string, chapterUrl: string, bookUrl?: string, signal?: AbortSignal) => request<{ title?: string; content: string }>('/api/books/content', { method: 'POST', body: JSON.stringify({ sourceId, chapterUrl, bookUrl }), signal }),
+  content: async (sourceId: string, chapterUrl: string, bookUrl?: string, signal?: AbortSignal) => {
+    try {
+      const res = await request<{ title?: string; content: string }>('/api/books/content', { method: 'POST', body: JSON.stringify({ sourceId, chapterUrl, bookUrl }), signal })
+      if (res?.content && bookUrl) {
+        void putOfflineChapter(sourceId, bookUrl, chapterUrl, res.title || null, res.content)
+      }
+      return res
+    } catch (err) {
+      if (bookUrl) {
+        const offline = await getOfflineChapter(sourceId, bookUrl, chapterUrl)
+        if (offline && offline.content) {
+          return { title: offline.title ?? undefined, content: offline.content }
+        }
+      }
+      throw err
+    }
+  },
   progress: (sourceId: string, bookUrl: string, signal?: AbortSignal) => request<ReadingProgress | undefined>(`/api/reading-progress?sourceId=${encodeURIComponent(sourceId)}&bookUrl=${encodeURIComponent(bookUrl)}`, { signal }),
-  saveProgress: (sourceId: string, bookUrl: string, chapterUrl: string, chapterIndex: number, scrollPosition: number) => request<ReadingProgress>('/api/reading-progress', { method: 'PUT', body: JSON.stringify({ sourceId, bookUrl, chapterUrl, chapterIndex, scrollPosition }) }),
-  bookshelf: () => request<BookshelfItem[]>('/api/bookshelf'),
+  saveProgress: async (sourceId: string, bookUrl: string, chapterUrl: string, chapterIndex: number, scrollPosition: number) => {
+    const progressItem = { sourceId, bookUrl, chapterUrl, chapterIndex, scrollPosition, updatedAt: Date.now() }
+    enqueueOfflineProgress(progressItem)
+    try {
+      const res = await request<ReadingProgress>('/api/reading-progress', { method: 'PUT', body: JSON.stringify({ sourceId, bookUrl, chapterUrl, chapterIndex, scrollPosition }) })
+      void flushOfflineProgress(async (item) => {
+        await request<ReadingProgress>('/api/reading-progress', { method: 'PUT', body: JSON.stringify(item) })
+      })
+      return res
+    } catch {
+      return { sourceId, bookUrl, chapterUrl, chapterIndex, scrollPosition, updatedAt: progressItem.updatedAt }
+    }
+  },
+  bookshelf: async () => {
+    try {
+      const list = await request<BookshelfItem[]>('/api/bookshelf')
+      saveShelfSnapshot(list)
+      return list
+    } catch (err) {
+      const snapshot = getShelfSnapshot()
+      if (snapshot && snapshot.length > 0) {
+        return snapshot as BookshelfItem[]
+      }
+      throw err
+    }
+  },
   addToBookshelf: (book: BookshelfWrite) => request<BookshelfItem>('/api/bookshelf', { method: 'POST', body: JSON.stringify(book) }),
   removeFromBookshelf: (sourceId: string, bookUrl: string) => request<void>(`/api/bookshelf?sourceId=${encodeURIComponent(sourceId)}&bookUrl=${encodeURIComponent(bookUrl)}`, { method: 'DELETE' }),
   cacheBookshelfBook: (sourceId: string, bookUrl: string) => request<{ status: string }>('/api/bookshelf/cache', { method: 'POST', body: JSON.stringify({ sourceId, bookUrl }) }),
+  cacheBookshelfRange: (data: { sourceId: string; bookUrl: string; startIndex?: number; endIndex?: number; count?: number }) =>
+    request<{ status: string }>('/api/bookshelf/cache', { method: 'POST', body: JSON.stringify(data) }),
+  getCachedChapters: (sourceId: string, bookUrl: string) =>
+    request<{ sourceId: string; bookUrl: string; cachedChapterUrls: string[]; cachedCount: number; totalChapters: number }>(
+      `/api/bookshelf/cached-chapters?sourceId=${encodeURIComponent(sourceId)}&bookUrl=${encodeURIComponent(bookUrl)}`
+    ),
+  clearBookCacheData: (sourceId: string, bookUrl: string) =>
+    request<void>(`/api/bookshelf/cache?sourceId=${encodeURIComponent(sourceId)}&bookUrl=${encodeURIComponent(bookUrl)}&clearData=true`, { method: 'DELETE' }),
   cancelBookCache: (sourceId: string, bookUrl: string) => request<void>(`/api/bookshelf/cache?sourceId=${encodeURIComponent(sourceId)}&bookUrl=${encodeURIComponent(bookUrl)}`, { method: 'DELETE' }),
   setBookshelfCompleted: (sourceId: string, bookUrl: string, completed: boolean) => request<BookshelfItem>('/api/bookshelf/status', { method: 'PUT', body: JSON.stringify({ sourceId, bookUrl, completed }) }),
   updateBookshelfInfo: (data: { sourceId: string; bookUrl: string; name: string; author?: string; coverUrl?: string }) => request<BookshelfItem>('/api/bookshelf/info', { method: 'PUT', body: JSON.stringify(data) }),

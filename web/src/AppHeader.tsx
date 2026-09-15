@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react'
 import { Icon } from './icons'
 import { Logo } from './Logo'
+import { promptPwaInstall, subscribePwaInstall } from './PwaManager'
 import type { ReaderSettings } from './readerSettings'
 
 export type AppPage = 'sources' | 'subscriptions' | 'library' | 'shelf' | 'reader' | 'rules'
@@ -12,6 +13,7 @@ export interface AppHeaderProps {
   onSettingsChange: (next: ReaderSettings) => void
   onNavigate: (page: AppPage) => void
   onOpenReplaceRules?: () => void
+  onOpenOfflineCache?: () => void
   onLogout: () => void
 }
 
@@ -28,9 +30,20 @@ export function AppHeader({
   onSettingsChange,
   onNavigate,
   onOpenReplaceRules,
+  onOpenOfflineCache,
   onLogout,
 }: AppHeaderProps) {
   const [menuOpen, setMenuOpen] = useState(false)
+  const [canInstall, setCanInstall] = useState(false)
+
+  useEffect(() => {
+    return subscribePwaInstall(setCanInstall)
+  }, [])
+
+  const handlePwaInstall = async () => {
+    setMenuOpen(false)
+    await promptPwaInstall()
+  }
   const menuContainerRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -178,6 +191,33 @@ export function AppHeader({
               <div className="menu-divider" />
 
               <div className="menu-section">
+                {canInstall && (
+                  <button
+                    type="button"
+                    className="menu-logout-btn"
+                    style={{ color: '#14B8A6' }}
+                    role="menuitem"
+                    onClick={() => void handlePwaInstall()}
+                  >
+                    <Icon name="download" />
+                    <span>安装到桌面 / 主屏幕</span>
+                  </button>
+                )}
+                {onOpenOfflineCache && (
+                  <button
+                    type="button"
+                    className="menu-logout-btn"
+                    style={{ color: 'var(--text-color, #e6e8eb)' }}
+                    role="menuitem"
+                    onClick={() => {
+                      setMenuOpen(false)
+                      onOpenOfflineCache()
+                    }}
+                  >
+                    <Icon name="book" />
+                    <span>本地离线缓存管理</span>
+                  </button>
+                )}
                 <button
                   type="button"
                   className="menu-logout-btn"

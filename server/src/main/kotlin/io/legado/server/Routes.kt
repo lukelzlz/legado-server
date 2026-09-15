@@ -584,21 +584,44 @@ fun Route.apiRoutes(
         }
         post("/bookshelf/cache") {
             if (auth.requireSession(call, true) == null) return@post
-            val request = call.receive<BookRequest>()
+            val request = call.receive<BookCacheRangeRequest>()
             val item = database.listBookshelf().firstOrNull { it.sourceId == request.sourceId && it.bookUrl == request.bookUrl }
                 ?: return@post call.respond(HttpStatusCode.NotFound, ApiError("not_found", "书籍不在书架中"))
-            bookCache.enqueue(CachedBookRequest(item.sourceId, item.bookUrl, item.tocUrl))
+            bookCache.enqueue(CachedBookRequest(
+                item.sourceId,
+                item.bookUrl,
+                item.tocUrl,
+                request.startIndex,
+                request.endIndex,
+                request.count
+            ))
             call.respond(HttpStatusCode.Accepted, mapOf("status" to "queued"))
+        }
+        get("/bookshelf/cached-chapters") {
+            if (auth.requireSession(call, false) == null) return@get
+            val sourceId = call.request.queryParameters["sourceId"]
+            val bookUrl = call.request.queryParameters["bookUrl"]
+            if (sourceId.isNullOrBlank() || bookUrl.isNullOrBlank()) {
+                call.respond(HttpStatusCode.BadRequest, ApiError("invalid_bookshelf", "缺少书籍标识"))
+                return@get
+            }
+            val cachedUrls = database.cachedChapterUrls(sourceId, bookUrl).toList()
+            val total = database.getTocCache(sourceId, bookUrl)?.size ?: 0
+            call.respond(CachedChaptersResponse(sourceId, bookUrl, cachedUrls, cachedUrls.size, total))
         }
         delete("/bookshelf/cache") {
             if (auth.requireSession(call, true) == null) return@delete
             val sourceId = call.request.queryParameters["sourceId"]
             val bookUrl = call.request.queryParameters["bookUrl"]
+            val clearData = call.request.queryParameters["clearData"]?.toBooleanStrictOrNull() ?: false
             if (sourceId.isNullOrBlank() || bookUrl.isNullOrBlank()) {
                 call.respond(HttpStatusCode.BadRequest, ApiError("invalid_bookshelf", "缺少书籍标识"))
                 return@delete
             }
             bookCache.cancel(sourceId, bookUrl)
+            if (clearData) {
+                database.clearBookCacheContent(sourceId, bookUrl)
+            }
             call.respond(HttpStatusCode.NoContent)
         }
         put("/bookshelf/status") {

@@ -12,6 +12,7 @@ import { groupSearchResults, SourceChoice, SourceChoiceStatus, useSearchStore } 
 import { SourceSwitchModal } from './SourceSwitchModal'
 import { SourceLoginModal } from './SourceLoginModal'
 import { ReplaceRulesModal } from './ReplaceRulesModal'
+import { ReplaceRulesPage } from './ReplaceRulesPage'
 import { toast, ToastContainer } from './Toast'
 import './styles.css'
 
@@ -21,9 +22,9 @@ import { parseSourceJsonText, extractSourcesFromRaw, sanitizeImageUrl } from './
 export { extractSourcesFromRaw, parseSourceJsonText, sanitizeImageUrl }
 export type { SourceChoice, SourceChoiceStatus }
 
-type Page = 'sources' | 'subscriptions' | 'library' | 'shelf' | 'reader'
+type Page = 'sources' | 'subscriptions' | 'library' | 'shelf' | 'reader' | 'rules'
 const readerStorageKey = 'legado-open-book-v1'
-const pageFromHash = (): Page => location.hash === '#sources' ? 'sources' : location.hash === '#subscriptions' ? 'subscriptions' : location.hash === '#shelf' ? 'shelf' : location.hash === '#reader' ? 'reader' : 'library'
+const pageFromHash = (): Page => location.hash === '#sources' ? 'sources' : location.hash === '#subscriptions' ? 'subscriptions' : location.hash === '#rules' ? 'rules' : location.hash === '#shelf' ? 'shelf' : location.hash === '#reader' ? 'reader' : 'library'
 
 function SourceChoiceList({
   choices,
@@ -1543,6 +1544,8 @@ function App() {
         <SourcesPage selected={selected} onSelect={setSelected} onSourcesChange={setSources} />
       ) : page === 'subscriptions' ? (
         <SubscriptionPage onSourcesChange={refreshSources} />
+      ) : page === 'rules' ? (
+        <ReplaceRulesPage />
       ) : page === 'shelf' ? (
         <ShelfPage onOpen={item => void openShelfItem(item)} />
       ) : (

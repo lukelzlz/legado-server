@@ -24,6 +24,7 @@ import './ToastStore.test.ts'
 import './ShelfInstantOpen.test.ts'
 import './source-login.test.ts'
 import './source-import.test.ts'
+import './ReplaceRulesPage.test.ts'
 import './tts.test.ts'
 import './tts-stream.test.ts'
 

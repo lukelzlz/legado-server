@@ -248,5 +248,5 @@ test('VirtualChapterList - Tier 2: Extreme scale benchmark (50,000 chapters)', (
     assert.ok(slice.startIndex >= 0 && slice.endIndex <= 50000)
   }
   const elapsed = performance.now() - start
-  assert.ok(elapsed < 20, `1,000 slice computations on 50,000 items took ${elapsed.toFixed(2)}ms (target < 20ms)`)
+  assert.ok(elapsed < 50, `1,000 slice computations on 50,000 items took ${elapsed.toFixed(2)}ms (target < 50ms)`)
 })

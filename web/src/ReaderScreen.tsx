@@ -34,7 +34,15 @@ function SettingRange({ label, value, min, max, step, onChange, display }: { lab
   return <label className="setting-range"><span>{label}</span><output>{display}</output><input type="range" min={min} max={max} step={step} value={value} onChange={event => onChange(Number(event.target.value))} /></label>
 }
 
-function ReaderSettingsControls({ settings, onChange }: { settings: ReaderSettings; onChange: (next: ReaderSettings) => void }) {
+function ReaderSettingsControls({
+  settings,
+  onChange,
+  onOpenReplaceRules,
+}: {
+  settings: ReaderSettings
+  onChange: (next: ReaderSettings) => void
+  onOpenReplaceRules?: () => void
+}) {
   const update = (value: Partial<ReaderSettings>) => onChange({ ...settings, ...value })
   return <div className="drawer-scroll-content">
     <section className="setting-section"><span className="setting-label">主题</span><div className="theme-grid">{themes.map(([theme, label]) => <button key={theme} className={`theme-choice theme-${theme} ${settings.theme === theme ? 'selected' : ''}`} onClick={() => update({ theme })}><i>{settings.theme === theme && <Icon name="check" />}</i><small>{label}</small></button>)}</div></section>
@@ -42,6 +50,36 @@ function ReaderSettingsControls({ settings, onChange }: { settings: ReaderSettin
     <section className="setting-section compact-settings"><div className="font-stepper"><span>字号</span><button aria-label="减小字号" onClick={() => update({ fontSize: Math.max(15, settings.fontSize - 1) })}>−</button><output>{settings.fontSize}</output><button aria-label="增大字号" onClick={() => update({ fontSize: Math.min(28, settings.fontSize + 1) })}>+</button></div><SettingRange label="字间距" value={settings.letterSpacing} min={-.25} max={1.5} step={.05} display={settings.letterSpacing.toFixed(2)} onChange={letterSpacing => update({ letterSpacing })} /><SettingRange label="行间距" value={settings.lineHeight} min={1.45} max={2.4} step={.05} display={settings.lineHeight.toFixed(2)} onChange={lineHeight => update({ lineHeight })} /><SettingRange label="段间距" value={settings.paragraphSpacing} min={.7} max={2} step={.05} display={settings.paragraphSpacing.toFixed(2)} onChange={paragraphSpacing => update({ paragraphSpacing })} /><SettingRange label="左右边距" value={settings.contentPadding} min={20} max={120} step={2} display={`${settings.contentPadding}`} onChange={contentPadding => update({ contentPadding })} /><SettingRange label="版心宽度" value={settings.maxWidth} min={560} max={1400} step={20} display={`${settings.maxWidth}px`} onChange={maxWidth => update({ maxWidth })} /></section>
     <section className="setting-section"><span className="setting-label">翻页方式</span><div className="page-modes"><button className={settings.pageMode === 'scroll' ? 'selected' : ''} onClick={() => update({ pageMode: 'scroll' })}>连续滚动</button><button className={settings.pageMode === 'paginate' ? 'selected' : ''} onClick={() => update({ pageMode: 'paginate' })}>平移分页</button></div><small className="setting-hint">{settings.pageMode === 'paginate' ? '左右轻扫或点击屏幕两侧平滑翻页' : '垂直滚动阅读，点击上下可快速翻滚'}</small></section>
     <section className="setting-section"><span className="setting-label">分栏排版</span><div className="page-modes column-modes"><button className={settings.columnMode === 'auto' ? 'selected' : ''} onClick={() => update({ columnMode: 'auto' })}>自适应</button><button className={settings.columnMode === 'single' ? 'selected' : ''} onClick={() => update({ columnMode: 'single' })}>单栏</button><button className={settings.columnMode === 'double' ? 'selected' : ''} onClick={() => update({ columnMode: 'double' })}>双栏</button></div><small className="setting-hint">{settings.columnMode === 'auto' ? '宽屏 (≥800px) 自动开启双页分栏' : settings.columnMode === 'double' ? '固定双栏双页排版' : '固定单栏排版'}</small></section>
+    {onOpenReplaceRules && (
+      <section className="setting-section">
+        <span className="setting-label">内容净化</span>
+        <button
+          type="button"
+          className="rules-setting-btn"
+          onClick={onOpenReplaceRules}
+          style={{
+            width: '100%',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            padding: '10px 14px',
+            background: 'var(--bg-secondary, rgba(125,125,125,0.08))',
+            border: '1px solid var(--border-color, rgba(125,125,125,0.2))',
+            borderRadius: '8px',
+            cursor: 'pointer',
+            fontSize: '0.9rem',
+            color: 'inherit',
+          }}
+        >
+          <span style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <Icon name="edit" />
+            <span>替换净化规则</span>
+          </span>
+          <Icon name="arrowRight" />
+        </button>
+        <small className="setting-hint">针对当前书籍/书源过滤广告与特定字符</small>
+      </section>
+    )}
     <button className="reset-settings" onClick={() => onChange({ ...defaultReaderSettings, theme: settings.theme })}>恢复默认设置</button>
   </div>
 }
@@ -1153,7 +1191,6 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
       </div>
       <strong className="reader-header-title" title={bookName}>{bookName}</strong>
       <div className="reader-header-actions">
-        <IconButton label="替换净化" icon="edit" onClick={() => setShowReplaceRules(true)} />
         <IconButton label="切换书源" icon="sliders" onClick={() => setShowSourceSwitch(true)} />
         <IconButton label="阅读设置" icon="settings" onClick={() => setActiveDrawer(d => d === 'settings' ? null : 'settings')} />
         <IconButton
@@ -1252,7 +1289,11 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
         <div className="drawer-title"><Icon name="settings" /><strong>阅读设置</strong></div>
         <IconButton label="关闭设置" icon="close" onClick={() => setActiveDrawer(null)} />
       </header>
-      <ReaderSettingsControls settings={settings} onChange={onSettingsChange} />
+      <ReaderSettingsControls
+        settings={settings}
+        onChange={onSettingsChange}
+        onOpenReplaceRules={() => setShowReplaceRules(true)}
+      />
     </aside>
 
     {/* Backdrop for Drawers */}

@@ -3,7 +3,7 @@ import { Icon } from './icons'
 import { Logo } from './Logo'
 import type { ReaderSettings } from './readerSettings'
 
-export type AppPage = 'sources' | 'subscriptions' | 'library' | 'shelf' | 'reader'
+export type AppPage = 'sources' | 'subscriptions' | 'library' | 'shelf' | 'reader' | 'rules'
 
 export interface AppHeaderProps {
   page: AppPage
@@ -116,6 +116,13 @@ export function AppHeader({
         >
           订阅
         </button>
+        <button
+          type="button"
+          className={page === 'rules' ? 'active' : ''}
+          onClick={() => onNavigate('rules')}
+        >
+          规则
+        </button>
       </nav>
 
       <div className="header-actions" ref={menuContainerRef}>
@@ -178,7 +185,7 @@ export function AppHeader({
                   role="menuitem"
                   onClick={() => {
                     setMenuOpen(false)
-                    onOpenReplaceRules?.()
+                    onNavigate('rules')
                   }}
                 >
                   <Icon name="edit" />

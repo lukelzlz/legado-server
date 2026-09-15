@@ -1,0 +1,27 @@
+title: "[Q&A]: "
+labels: ["question"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        欢迎在此提问！无论关于 Docker 部署、反向代理（Nginx / Caddy）、环境配置还是 Web 端使用问题，都可以自由交流。
+  - type: textarea
+    id: question
+    attributes:
+      label: "你的疑问或咨询 / Your Question"
+      description: "清晰描述你想要了解或咨询的内容"
+      placeholder: "例如：如何在 群晖 NAS 上挂载本地持久化目录，或者如何配置 HTTPS 反代支持 TTS 流式朗读？"
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: "当前部署/使用环境（如有）"
+      placeholder: "- 操作系统:\n- 部署方式 (Docker / JAR):\n- 浏览器版本:"
+    validations:
+      required: false
+  - type: textarea
+    id: additional-context
+    attributes:
+      label: "补充信息或截图"
+      placeholder: "可以附加日志片段、配置截图等"

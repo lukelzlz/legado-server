@@ -1,0 +1,26 @@
+title: "[Show]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        欢迎晒出你的部署成果、自建书源、私有化阅读流、个性化主题或配合使用的周边工具！
+  - type: textarea
+    id: title-description
+    attributes:
+      label: "分享主题 / Topic"
+      description: "简要介绍你分享的内容"
+      placeholder: "例如：我的 NAS 自动化追更 + Legado-Server 部署实践 / 分享自制的净化规则组"
+    validations:
+      required: true
+  - type: textarea
+    id: show-content
+    attributes:
+      label: "分享内容与配置经验 / Content & Experience"
+      description: "分享你的配置文件（如 docker-compose.yml）、书源规则或使用心得（请脱敏个人凭据）"
+    validations:
+      required: true
+  - type: textarea
+    id: screenshots
+    attributes:
+      label: "截图展示 / Screenshots"
+      description: "贴上你的桌面/移动端阅读实拍或界面截图"

@@ -1,0 +1,13 @@
+title: "[Chat]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        欢迎来到综合讨论区！这里可以畅所欲言，探讨网文阅读、开源技术与社区动态。
+  - type: textarea
+    id: chat-content
+    attributes:
+      label: "讨论话题 / Topic"
+      description: "想和大家聊点什么？"
+    validations:
+      required: true

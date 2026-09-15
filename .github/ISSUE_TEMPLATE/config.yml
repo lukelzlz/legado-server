@@ -1,8 +1,14 @@
 blank_issues_enabled: false
 contact_links:
-  - name: 简繁转化
-    url: https://github.com/liuyueyi/quick-chinese-transfer/issues/new
-    about: 简繁转化问题请优先到quick-chinese-transfer反馈
-  - name: 常见问题 / Wiki
-    url: https://github.com/gedoor/legado/wiki
-    about: Read wiki if your are new here.
+  - name: "💬 社区讨论与答疑 / Discussions"
+    url: "https://github.com/lukelzlz/legado-server/discussions"
+    about: "部署提问、日常交流、阅读心得与书源分享请前往 GitHub Discussions"
+  - name: "💡 功能想法与脑暴 / Ideas"
+    url: "https://github.com/lukelzlz/legado-server/discussions/categories/ideas"
+    about: "在提交正式 Feature Request 前，欢迎在 Discussions 交流灵感与构想"
+  - name: "📖 项目文档与使用说明 / Documentation"
+    url: "https://github.com/lukelzlz/legado-server#readme"
+    about: "查看 Docker 部署、环境变量配置与快速开始指南"
+  - name: "📱 原版 Legado (开源阅读 Android)"
+    url: "https://github.com/gedoor/legado"
+    about: "本项目为 Legado 的无头服务端与 Web 客户端移植。如需反馈原版 Android 客户端问题请访问原项目"

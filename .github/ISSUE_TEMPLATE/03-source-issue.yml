@@ -1,0 +1,74 @@
+name: "📚 书源兼容性异常 / Book Source Issue"
+description: "反馈特定书源在 legado-server 服务端解析、搜索、换源或目录抓取失败"
+title: "[Source Issue]: "
+labels: ["book-source"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        本模板专门用于反馈**特定书源**在 legado-server 中的解析异常或沙箱兼容性问题。
+        请注意：部分书源可能依赖特定反爬或验证码，若原站已下线或封锁则属于源站问题。
+
+  - type: checkboxes
+    attributes:
+      label: "前置核对 / Checklist"
+      options:
+        - label: "该书源在原版 Legado (阅读 APP) 中确认能够正常解析"
+          required: true
+        - label: "已确认不是目标小说网站本身宕机或封锁 IP"
+          required: true
+
+  - type: input
+    id: source-name
+    attributes:
+      label: "书源名称 / Source Name"
+      placeholder: "例如：爱看书源 / 聚合VIP5.0"
+    validations:
+      required: true
+
+  - type: input
+    id: source-url
+    attributes:
+      label: "书源 URL / Source URL"
+      placeholder: "例如：https://example.com 或自定义标识"
+    validations:
+      required: true
+
+  - type: input
+    id: test-book
+    attributes:
+      label: "测试书名或搜索关键字 / Test Book Name"
+      placeholder: "例如：诡秘之主"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: failure-stage
+    attributes:
+      label: "异常发生阶段 / Failure Stage"
+      options:
+        - "搜索阶段 (搜索不到结果 / 搜索超时)"
+        - "书籍详情 & 发现 (解析元数据失败)"
+        - "目录加载 (TOC 列表为空 / 规则异常)"
+        - "正文抓取 (正文为空 / 反爬乱码 / 净化规则异常)"
+        - "登录鉴权 / Cookie 失效"
+    validations:
+      required: true
+
+  - type: textarea
+    id: source-json
+    attributes:
+      label: "书源 JSON 定义 (或导出链接) / Source JSON Definition"
+      description: "请提供该书源的 JSON 定义（可去除敏感凭据）"
+      placeholder: "```json\n{\n  \"bookSourceUrl\": \"...\",\n  ...\n}\n```"
+      render: json
+    validations:
+      required: true
+
+  - type: textarea
+    id: error-log
+    attributes:
+      label: "服务端沙箱报错日志 / Server Sandbox Log"
+      description: "请提供服务端输出的报错堆栈或网络返回"
+      placeholder: "```\n在此粘贴服务端日志\n```"
+      render: shell

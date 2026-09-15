@@ -1,0 +1,27 @@
+title: "[Idea]: "
+labels: ["idea"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        欢迎分享你对 legado-server 的任何奇思妙想、产品构思或架构探索！
+  - type: textarea
+    id: idea-summary
+    attributes:
+      label: "想法概述 / Idea Summary"
+      description: "一句话或简要总结你的想法"
+      placeholder: "例如：支持自定义阅读器 CSS 字体扩展或沉浸式翻页音效..."
+    validations:
+      required: true
+  - type: textarea
+    id: details
+    attributes:
+      label: "详细描述与应用场景 / Details & Use Cases"
+      description: "在什么场景下会用到？希望带来怎样的体验提升？"
+    validations:
+      required: true
+  - type: textarea
+    id: references
+    attributes:
+      label: "参考资料 / References"
+      description: "相关的开源项目、设计灵感、截图或链接"

@@ -69,6 +69,10 @@ const paths: Record<IconName, ReactNode> = {
   clock: <><circle cx="12" cy="12" r="10" /><polyline points="12 6 12 12 16 14" /></>,
 }
 
+/** 供插件 SDK 做图标名校验：插件传入的图标名不一定在宿主图标表内 */
+export const ICON_NAMES = Object.keys(paths) as IconName[]
+export type { IconName }
+
 export function Icon({ name, ...props }: { name: IconName } & SVGProps<SVGSVGElement>) {
   return <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.65" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" {...props}>{paths[name]}</svg>
 }

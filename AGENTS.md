@@ -75,6 +75,7 @@ AI 与人类协作时必须明确当前达到的完成度阶梯，严禁混淆�
 - **[翻页/排版] 跨章逆向翻页定位守卫**：从章节开头回翻到上一章时，必须携带 `targetPosition = 'bottom'` 标记，且必须在 DOM/分栏异步排版完成后再执行末尾定位，严禁在未完成排版前盲目计算滚动高度。
 - **[性能] 缓存优先直出与流式防抖**：进入阅读器时优先命中本地 `BookCacheService` 离线缓存分片，避免等待全量远程 TOC；流式搜索推送高频数据时前端需保持批量节流合并渲染。
 - **[凭据/序列化] 万能 Cookie 解析与强类型 DTO**：服务端 CookieJar 存库前必须通过 `parseCookieString` 统一归一化为 `k1=v1; k2=v2` 格式，杜绝存入原始 JSON 数组脏数据；Ktor 路由响应严禁使用非多态的 `Map<String, Any>`，必须使用 `@Serializable data class`。
+- **[序列化/Ktor] 任意 JSON 对象（插件设置等）必须用 `respondText` 下发 JSON 文本，不能用 `call.respond(Map<String, Any?>)`**：Ktor 的 kotlinx 转换器对 `Map<String, Any?>` 会退化为**按运行时值猜序列化器**（`SerializerLookupKt.guessSerializer`），一旦集合里同时出现字符串与布尔/数字就抛 `IllegalStateException: Serializing collections of different element types is not yet supported`。**阴险之处在于「同构」数据能正常通过**——只含字符串的设置对象完全没问题，所以用单类型 fixture 写的测试会漏掉它，直到真实用户配了一个布尔开关就变成「服务器内部错误」。排查手法：起一个独立数据目录 + 独立端口的临时实例把日志落盘（`Start-Process java -RedirectStandardError`），或加断言覆盖混合类型。修复方式：`respondText(PluginJson.write(value), ContentType.Application.Json.withCharset(Charsets.UTF_8))`。
 - **[TTS/朗读] Edge-TTS 协议与 Chrome 假死守卫**：Edge-TTS WebSocket 通信中 SSML 必须严格做 XML 特殊字符转义（`&`, `<`, `>`, `"`, `'`），并且 WebSocket 通信块必须加 `try-catch(abort)` 彻底规避超时句柄悬挂；浏览器端 `SpeechSynthesis` 在无心跳朗读超过 15 秒时会被 Chrome 自动静默冻结，前端必须保持定时短暂停与恢复的看门狗循环。
 - **[TTS/朗读] Edge-TTS WebSocket 握手版本必须与 Chromium 同步更新**：Edge-TTS 连接头中 `Sec-MS-GEC-Version`（如 `1-143.0.3650.75`）与 `User-Agent` 中的 Chrome 版本号必须保持一致；同时须携带随机 `Cookie: muid=<16字节大写hex>` 头，否则 WebSocket 握手被微软服务端拒绝导致合成静默失败（返回 0 字节音频）。版本信息参考 `edge-tts` Python 包的 `constants.py`。
 - **[TTS/朗读] 孤立标点切片导致 ERR_REQUEST_RANGE_NOT_SATISFIABLE 的三层防御**：TTS 分句正则可能将中文对话引号 `"` 切为孤立碎片，发送空/纯标点文本至 Edge-TTS 会返回 0 字节音频，前端 `URL.createObjectURL(0字节blob)` 后浏览器发出 Range 请求，得到 HTTP 416 崩溃。**必须在三处同时加守卫**：① `splitSentences` 过滤去标点后有效字符 `< 2` 的碎片；② `HttpAudioTtsEngine.speak/prefetch` 调用 `isEffectiveText()` 判断，无效时 `setTimeout(onEnd,0)` 跳过；③ 服务端 `EdgeTtsService.synthesize` 检测去标点后有效字符 `< 2` 直接返回 `ByteArray(0)` 不请求上游。
@@ -92,6 +93,15 @@ AI 与人类协作时必须明确当前达到的完成度阶梯，严禁混淆�
 - **[替换规则/沙箱] Rhino JS 沙箱顶级 return 包装与反爬反义词对调字典**：Legado 生态中的 `@js:` 替换规则普遍使用 `return map[result] || result` 组织代码。Rhino 沙箱在顶层执行 `return` 时会抛 `return not in function` 语法错误，沙箱必须检测并在必要时将代码包装进 `(function(){ ... })()` 匿名闭包执行；同时替换净化必须在 `RuleRunner.content()` 与 `BookCacheService` 离线下载落库前执行，避免脏文本污染持久化缓存，同时使后续 TTS 朗读自动获得清洗后的正文。
 - **[交互/导航] 核心系统能力一级导航呈现与阅读器抽屉收敛**：全局核心管理能力（书源、订阅、替换净化规则）必须在一级导航栏设立独立入口；而在沉浸式阅读器中，顶栏严格保持极简（目录、换源、设置、朗读），辅助净化规则统一收敛进「阅读设置」抽屉，杜绝顶栏拥挤。
 - **[PWA/离线缓存] 渐进式离线缓存与脱机阅读架构**：① Service Worker 缓存静态资源与应用壳，排除 `/api/tts/stream` 等实时长音频流；② 正文离线支持按「后50章/后100章/全本/自定义」4 并发切片下载，IndexedDB 存储纯净文本；③ 脱机断网期间阅读进度写入本地队列，网络恢复（`online` 事件）时静默 Flush 同步；④ 目录列表对已离线章节实时打绿点徽标（`●`）；⑤ 全面适配 `safe-area-inset-*` 与 `overscroll-behavior: none`，消除 iOS 橡皮筋下拉与刘海遮挡。
+- **[插件/并发] 单线程 executor 必须做重入内联，否则同步事件派发会自等待死锁**：每个 JS 插件在自己的单线程上执行（Rhino scope 非线程安全），但宿主事件是**同步**派发的——路由处理器里 `emit` 一个事件可能同步回调到本插件自己的监听器。此时若再向同一个单线程 executor `submit()` 后 `get()`，就会永远等待自己。所有脚本入口都必须先判断「当前线程是否已是插件线程」，是则直接内联执行。
+- **[插件/编码] 插件给的文本响应必须补 `charset=utf-8`**：JS 字符串按构造即 UTF-8，但插件作者常写 `{ status: 200, contentType: 'application/json', body: ... }`（不带 charset）。此时客户端会退回 Latin-1 解码，中文全部变成 `ä½ å¥½` 这样的乱码（PowerShell 的 web 客户端必现，浏览器也可能）。宿主必须统一为 `text/*`、`application/json`、`+json`、含 `javascript`/`xml` 的 content type 补上 `charset=utf-8`，二进制类型不动。
+- **[插件/路由] 停用的插件要回 503 而不是 404**：如果只在路由匹配阶段判断，一个「加载失败/被停用」的插件会伪装成「路由不存在」，把真实原因藏起来，排查时会在错误的方向上耗时间。必须在匹配路由之前先判断插件是否 active，并把 `plugin.error` 原样透出。
+- **[插件/前端] 宿主必须接受 `web.js` 的三种等价导出写法**：插件作者会自然地写 `export default function activate(sdk)`、`export function activate(sdk)` 或 `export default { activate }`。如果宿主只读具名导出，作者明明导出了 activate 却收到「web.js 未导出 activate 函数」——**报错与事实相反，会把人带到完全错误的方向**。归一化逻辑放在 `web/src/pluginModule.ts`（纯函数、可在 node 测试里直接断言），报错文案必须指明正确写法。
+- **[插件/文档] `settings` 是 SDK 顶层成员，不在 `api` 下**：`sdk.api` 只有 `get/post/put/del/plugin/pluginRaw`；`sdk.settings` 与 `sdk.api` 是平级关系。曾有一个插件写成 `api.settings.get()`，运行时抛 `Cannot read properties of undefined (reading 'get')`。`web.js` 是未编译的原生 ES module，**tsc 类型检查完全拦不住**这类错误，只能靠测试钉住 SDK 公共面（`web/test/plugin-sdk-surface.test.ts`）或把插件真跑一遍（用真实 SDK 激活 + 调用注册的 onClick + 渲染注册的页面）。
+- **[插件/编码] `plugin.json` 与 `server.js` 必须容忍 UTF-8 BOM**：Windows 上的旧版记事本、PowerShell 的 `Set-Content -Encoding UTF8`（PS 5.1 会写 BOM）都会给文件加 `\uFEFF`。带 BOM 的 JSON 解析失败时的报错完全看不出是编码问题，而 Rhino 会在脚本首字符上直接报语法错误。`PluginManifests.read`、`PluginManager` 读取 `server.js`、`PluginRoutes` 下发 `web.js` 三处都已 `removePrefix(BOM)`，与 `SourceCodec.parse` 对书源 JSON 的处理保持一致。
+- **[环境/操作] 不要用 shell 文本往返修改仓库里的 UTF-8 文件**：这台机器上 `pwsh -Command` 实际是 **Windows PowerShell 5.1**，`Get-Content`/`Set-Content` 默认按系统 ANSI（GBK）读写，会把「示例插件」变成「绀轰緥鎻掍欢」，并在多字节序列处吃掉后续字符——引号被吞导致 JSON 直接非法。改这类文件请用文件编辑工具（写出的就是无 BOM 的 UTF-8）；确实要用 PowerShell 时必须显式指定 `[IO.File]::ReadAllText($p, [Text.Encoding]::UTF8)` 与 `UTF8Encoding($false)`。
+- **[测试/Windows] 仓库里的 SQLite 测试在 Windows 上必然失败，且与业务无关**：相当一批既有测试（`DatabaseLifecycleTest`、`ApiRoutesHttpTest`、`BookCacheServiceTest`、`E2EScenariosTest` 等）在 `finally` 里直接 `Files.deleteIfExists(<temp>.sqlite)`，而测试自身**从不调用 `Database.close()`**。macOS 的 POSIX 语义允许删除仍被打开的文件，所以原开发环境不会暴露；Windows 会抛 `FileSystemException: 另一个程序正在使用此文件`。**排查回归时不要把它当成自己的锅**：用 `git worktree add --detach <dir> HEAD` 建一个干净基线跑同一套测试对比失败集合即可确认。新增测试的清理请写成尽力而为（`runCatching`），避免平台怪癖掩盖真实断言。
+- **[构建/网络] `services.gradle.org` 在国内网络下可能只有 ~2 KB/s，首次拉取 131MB wrapper 分发包会假死**：表现为 `gradle-8.14.4-bin.zip.part` 长时间停留在 0～几百 KB。**不要把 `gradle-wrapper.properties` 改成镜像**（官方源是 CI 的硬要求，见上一条）。正确做法是手动把分发包放进 wrapper 缓存目录，仓库文件保持不动：先从 `https://github.com/gradle/gradle-distributions/releases/download/v<版本>/gradle-<版本>-bin.zip` 下载，再放到 `%USERPROFILE%\.gradle\wrapper\dists\gradle-<版本>-bin\<哈希目录>\gradle-<版本>-bin.zip`（哈希目录就是 wrapper 已创建 `.part` 文件的那个目录），wrapper 会自动解压使用。
 
 ---
 
@@ -112,6 +122,7 @@ AI 与人类协作时必须明确当前达到的完成度阶梯，严禁混淆�
 | PROPOSAL-010 | 替换净化规则引擎与社区规则库导入体系 | [`docs/proposals/PROPOSAL-010-replace-rules-engine-and-community-purification.md`](file:///Users/zhangran/Documents/antigravity/joyful-galileo/docs/proposals/PROPOSAL-010-replace-rules-engine-and-community-purification.md) | Accepted |
 | PROPOSAL-011 | 替换净化规则升级为一级独立页面与阅读器设置抽屉集成 | [`docs/proposals/PROPOSAL-011-first-class-replace-rules-page-and-reader-settings-integration.md`](file:///Users/zhangran/Documents/antigravity/joyful-galileo/docs/proposals/PROPOSAL-011-first-class-replace-rules-page-and-reader-settings-integration.md) | Accepted |
 | PROPOSAL-012 | 完整 PWA 渐进式 Web 应用能力、用户自主正文分段离线缓存与沉浸式全屏抽屉适配 | [`docs/proposals/PROPOSAL-012-pwa-capabilities-and-fullscreen-drawer-adaptation.md`](file:///Users/zhangran/Documents/antigravity/joyful-galileo/docs/proposals/PROPOSAL-012-pwa-capabilities-and-fullscreen-drawer-adaptation.md) | Accepted |
+| PROPOSAL-013 | 插件系统与可扩展接口体系（双运行时 + 前端 SDK） | [`docs/proposals/PROPOSAL-013-plugin-system-and-extension-points.md`](file:///Users/zhangran/Documents/antigravity/joyful-galileo/docs/proposals/PROPOSAL-013-plugin-system-and-extension-points.md) | Implemented |
 
 ### 架构决策记录 (ADR)
 | 编号 | 决策标题 | 关联文档 | 状态 |
@@ -128,6 +139,7 @@ AI 与人类协作时必须明确当前达到的完成度阶梯，严禁混淆�
 | ADR-010 | 替换净化执行管道选型、作用域匹配与沙箱安全 | [`docs/decisions/ADR-010-replace-rules-pipeline-and-scope-matching.md`](file:///Users/zhangran/Documents/antigravity/joyful-galileo/docs/decisions/ADR-010-replace-rules-pipeline-and-scope-matching.md) | Accepted |
 | ADR-011 | 替换规则升级为主导航一级页面与阅读器设置抽屉模块化收敛 | [`docs/decisions/ADR-011-first-class-replace-rules-navigation-and-reader-settings.md`](file:///Users/zhangran/Documents/antigravity/joyful-galileo/docs/decisions/ADR-011-first-class-replace-rules-navigation-and-reader-settings.md) | Accepted |
 | ADR-012 | 采用 vite-plugin-pwa 构筑双层用户可控离线缓存体系与 Safe-Area 沉浸式安全区适配 | [`docs/decisions/ADR-012-vite-plugin-pwa-workbox-and-safe-area-layout.md`](file:///Users/zhangran/Documents/antigravity/joyful-galileo/docs/decisions/ADR-012-vite-plugin-pwa-workbox-and-safe-area-layout.md) | Accepted |
+| ADR-013 | 插件运行时选型：双运行时（Rhino JS + JVM JAR）与信任模型 | [`docs/decisions/ADR-013-plugin-runtime-dual-js-jar-and-trust-model.md`](file:///Users/zhangran/Documents/antigravity/joyful-galileo/docs/decisions/ADR-013-plugin-runtime-dual-js-jar-and-trust-model.md) | Accepted |
 
 ### 工作记忆与历史推演归档 (Sessions Chronicle)
 | 日期 / ID | 类型 | 标题 / 议题 | 关联文档 | 状态 |
@@ -160,6 +172,7 @@ AI 与人类协作时必须明确当前达到的完成度阶梯，严禁混淆�
 | 2026-09-12 | Feat | 替换净化规则引擎、反爬混淆还原与Rhino沙箱执行管道 | [`docs/sessions/SESSION-011-replace-rules-engine-and-anti-crawler-restoration.md`](file:///Users/zhangran/Documents/antigravity/joyful-galileo/docs/sessions/SESSION-011-replace-rules-engine-and-anti-crawler-restoration.md) | Accepted & Pushed |
 | 2026-09-15 | Feat | 替换净化规则升级为一级独立页面与阅读器设置抽屉集成 | [`docs/sessions/SESSION-012-first-class-replace-rules-and-reader-settings.md`](file:///Users/zhangran/Documents/antigravity/joyful-galileo/docs/sessions/SESSION-012-first-class-replace-rules-and-reader-settings.md) | Accepted & Pushed |
 | 2026-09-15 | Feat | 完整 PWA 渐进式能力、用户自主正文分段离线缓存与沉浸式全屏抽屉适配 | [`docs/sessions/SESSION-013-pwa-and-offline-caching-architecture.md`](file:///root/legado-server/docs/sessions/SESSION-013-pwa-and-offline-caching-architecture.md) | Accepted & Pushed |
+| 2026-09-16 | Feat | 插件系统落地：双运行时（JS 沙箱 + JVM JAR）与前端 SDK 扩展点 | [`docs/sessions/SESSION-014-plugin-system-implementation.md`](file:///Users/zhangran/Documents/antigravity/joyful-galileo/docs/sessions/SESSION-014-plugin-system-implementation.md) | Tested |
 
 ---
 
@@ -167,8 +180,10 @@ AI 与人类协作时必须明确当前达到的完成度阶梯，严禁混淆�
 
 This repository is dedicated to the standalone Legado Server ecosystem: the standalone backend server and the web client.
 
-- **`server/`**: Standalone headless backend server built with Ktor (`io.legado.server`), Kotlin JVM, and SQLite. Handles source parsing and execution (`RuleRunner` with Jsoup, JsonPath, and Rhino JS engine), authentication/sessions, book and cover caching, source subscription synchronization, and API routing.
-- **`web/`**: Web reader and management UI (`legado-server-web`) built with React 19, TypeScript, and Vite. Communicates with `server/` APIs to manage sources, search books across sources, debug rules, and read books.
+- **`server/`**: Standalone headless backend server built with Ktor (`io.legado.server`), Kotlin JVM, and SQLite. Handles source parsing and execution (`RuleRunner` with Jsoup, JsonPath, and Rhino JS engine), authentication/sessions, book and cover caching, source subscription synchronization, API routing, and the plugin host (`io.legado.server.plugins`).
+- **`web/`**: Web reader and management UI (`legado-server-web`) built with React 19, TypeScript, and Vite. Communicates with `server/` APIs to manage sources, search books across sources, debug rules, and read books. Also hosts the plugin runtime for the browser side (`pluginHost.ts`, `pluginSdk.ts`, `PluginUi.tsx`).
+- **`plugin-api/`**: Dependency-free, stable contract (interfaces, DTOs, permission/event constants, self-contained JSON codec) that JVM plugins compile against. Never add third-party dependencies here — plugin jars stay tiny and binary-compatible because of it.
+- **`plugins/`** (at runtime, `<dataDir>/plugins/<id>/`): where installed plugins live. The repository ships **no** example plugins: the plugin runtime is a host capability, and shipping samples would mean shipping code users did not ask for. Plugin authoring is documented in `docs/plugins/PLUGIN-SDK.md`.
 
 ---
 

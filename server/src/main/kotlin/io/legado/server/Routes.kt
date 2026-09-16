@@ -1,6 +1,8 @@
 package io.legado.server
 
 import io.ktor.http.*
+import io.legado.server.plugins.PluginManager
+import io.legado.server.plugins.pluginRoutes
 import io.ktor.server.application.*
 import io.ktor.server.http.content.LocalFileContent
 import io.ktor.server.request.*
@@ -36,11 +38,13 @@ fun Route.apiRoutes(
     coverCache: CoverCache,
     subscriptions: SubscriptionService,
     bookCache: BookCacheService,
+    plugins: PluginManager,
     edgeTts: EdgeTtsService = EdgeTtsService(),
     ttsSessions: TtsSessionService = TtsSessionService(edgeTts),
 ) {
     val webView = WebViewProxy(database)
     route("/api") {
+        pluginRoutes(plugins, auth)
         get("/sources") {
             if (auth.requireSession(call) == null) return@get
             call.respond(database.listSources(call.request.queryParameters["q"]))

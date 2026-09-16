@@ -1,0 +1,21 @@
+// Stable, dependency-free contract for JVM plugins.
+//
+// Plugins must be able to compile against this module alone: no Ktor, no SQLite, no
+// kotlinx-serialization. Everything crossing the boundary is expressed with plain Kotlin
+// types (String / Int / Boolean / ByteArray / Map / List) so a plugin jar stays small and
+// keeps binary compatibility across server releases within the same apiVersion.
+plugins {
+    alias libs.plugins.kotlin.jvm
+}
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(21)
+    }
+    sourceCompatibility = JavaVersion.VERSION_17
+    targetCompatibility = JavaVersion.VERSION_17
+}
+
+tasks.withType(org.jetbrains.kotlin.gradle.tasks.KotlinCompile).configureEach {
+    compilerOptions.jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
+}

@@ -186,6 +186,19 @@ class Database(private val path: String) : Closeable, AutoCloseable {
                 );
                 create index if not exists idx_replace_rule_enabled on replace_rule(is_enabled, sort_order asc);
                 create index if not exists idx_replace_rule_group on replace_rule(group_name);
+                create table if not exists plugin_state (
+                  plugin_id text primary key,
+                  enabled integer not null default 1,
+                  settings text not null default '{}',
+                  updated_at integer not null
+                );
+                create table if not exists plugin_kv (
+                  plugin_id text not null,
+                  kv_key text not null,
+                  value text,
+                  updated_at integer not null,
+                  primary key (plugin_id, kv_key)
+                );
             """.trimIndent())
         }
         migrateReadingProgress(db)
@@ -1216,6 +1229,99 @@ class Database(private val path: String) : Closeable, AutoCloseable {
             it.executeUpdate("update source set has_login = 1 where (payload like '%\"loginUi\"%' or payload like '%\"loginUrl\"%' or payload like '%\"loginCheckJs\"%') and (has_login is null or has_login = 0)")
         }
     }
+    // --- 插件持久化 -------------------------------------------------------------------------
+    // 插件目录本身不入库（磁盘即事实来源），这里只保存无法从磁盘推导的运行态：
+    // 启用开关、插件设置对象，以及插件私有的键值存储。
+
+    fun listPluginStates(): Map<String, PluginState> = connect { db ->
+        db.prepareStatement("select plugin_id, enabled, settings from plugin_state").use { stmt ->
+            stmt.executeQuery().use { rs ->
+                buildMap {
+                    while (rs.next()) {
+                        val id = rs.getString(1)
+                        put(id, PluginState(id, rs.getInt(2) != 0, rs.getString(3) ?: "{}"))
+                    }
+                }
+            }
+        }
+    }
+
+    fun getPluginState(pluginId: String): PluginState? = connect { db ->
+        db.prepareStatement("select plugin_id, enabled, settings from plugin_state where plugin_id = ?").use { stmt ->
+            stmt.setString(1, pluginId)
+            stmt.executeQuery().use { rs ->
+                if (rs.next()) PluginState(rs.getString(1), rs.getInt(2) != 0, rs.getString(3) ?: "{}") else null
+            }
+        }
+    }
+
+    fun savePluginState(pluginId: String, enabled: Boolean? = null, settings: String? = null): PluginState = write { db ->
+        val now = System.currentTimeMillis()
+        val existing = db.prepareStatement("select enabled, settings from plugin_state where plugin_id = ?").use { stmt ->
+            stmt.setString(1, pluginId)
+            stmt.executeQuery().use { rs ->
+                if (rs.next()) (rs.getInt(1) != 0) to (rs.getString(2) ?: "{}") else null
+            }
+        }
+        val nextEnabled = enabled ?: existing?.first ?: true
+        val nextSettings = settings ?: existing?.second ?: "{}"
+        db.prepareStatement(
+            "insert into plugin_state(plugin_id, enabled, settings, updated_at) values(?,?,?,?) " +
+                "on conflict(plugin_id) do update set enabled = excluded.enabled, settings = excluded.settings, updated_at = excluded.updated_at"
+        ).use { stmt ->
+            stmt.setString(1, pluginId)
+            stmt.setInt(2, if (nextEnabled) 1 else 0)
+            stmt.setString(3, nextSettings)
+            stmt.setLong(4, now)
+            stmt.executeUpdate()
+        }
+        PluginState(pluginId, nextEnabled, nextSettings)
+    }
+
+    /** 插件卸载时清理其运行态，避免目录被删除后残留孤儿行。 */
+    fun deletePluginState(pluginId: String) = write { db ->
+        db.prepareStatement("delete from plugin_state where plugin_id = ?").use { it.setString(1, pluginId); it.executeUpdate() }
+        db.prepareStatement("delete from plugin_kv where plugin_id = ?").use { it.setString(1, pluginId); it.executeUpdate() }
+        Unit
+    }
+
+    fun pluginKvGet(pluginId: String, key: String): String? = connect { db ->
+        db.prepareStatement("select value from plugin_kv where plugin_id = ? and kv_key = ?").use { stmt ->
+            stmt.setString(1, pluginId)
+            stmt.setString(2, key)
+            stmt.executeQuery().use { rs -> if (rs.next()) rs.getString(1) else null }
+        }
+    }
+
+    fun pluginKvSet(pluginId: String, key: String, value: String?) = write { db ->
+        if (value == null) {
+            db.prepareStatement("delete from plugin_kv where plugin_id = ? and kv_key = ?").use {
+                it.setString(1, pluginId); it.setString(2, key); it.executeUpdate()
+            }
+        } else {
+            db.prepareStatement(
+                "insert into plugin_kv(plugin_id, kv_key, value, updated_at) values(?,?,?,?) " +
+                    "on conflict(plugin_id, kv_key) do update set value = excluded.value, updated_at = excluded.updated_at"
+            ).use {
+                it.setString(1, pluginId); it.setString(2, key); it.setString(3, value)
+                it.setLong(4, System.currentTimeMillis()); it.executeUpdate()
+            }
+        }
+        Unit
+    }
+
+    fun pluginKvKeys(pluginId: String): List<String> = connect { db ->
+        db.prepareStatement("select kv_key from plugin_kv where plugin_id = ? order by kv_key").use { stmt ->
+            stmt.setString(1, pluginId)
+            stmt.executeQuery().use { rs -> buildList { while (rs.next()) add(rs.getString(1)) } }
+        }
+    }
+
+    fun pluginKvClear(pluginId: String) = write { db ->
+        db.prepareStatement("delete from plugin_kv where plugin_id = ?").use { it.setString(1, pluginId); it.executeUpdate() }
+        Unit
+    }
+
     private fun secret(): String = ByteArray(32).also(random::nextBytes).let { Base64.getUrlEncoder().withoutPadding().encodeToString(it) }
     private fun passwordHash(password: String): String {
         val salt = ByteArray(SALT_BYTES).also(random::nextBytes)
@@ -1241,4 +1347,7 @@ class Database(private val path: String) : Closeable, AutoCloseable {
 }
 
 class VersionConflict : RuntimeException()
+
+/** 插件在数据库中的运行态：是否启用，以及插件设置对象（JSON 文本）。 */
+data class PluginState(val pluginId: String, val enabled: Boolean, val settings: String)
 

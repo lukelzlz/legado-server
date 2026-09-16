@@ -16,5 +16,6 @@ dependencyResolutionManagement {
 
 rootProject.name = 'legado-server'
 
+include ':plugin-api'
 include ':server'
 

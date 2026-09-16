@@ -69,6 +69,7 @@ processResources {
 }
 
 dependencies {
+    implementation project(':plugin-api')
     implementation "io.ktor:ktor-server-cio:3.4.3"
     implementation "io.ktor:ktor-server-core:3.4.3"
     implementation "io.ktor:ktor-server-content-negotiation:3.4.3"

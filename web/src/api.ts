@@ -6,6 +6,7 @@ import {
   enqueueOfflineProgress,
   flushOfflineProgress,
 } from './offlineStorage'
+import type { PluginManifestSummary } from './pluginSdk'
 
 export type SourceSummary = { id: string; name: string; url: string; group?: string; enabled: boolean; isJsSource: boolean; hasLogin: boolean; updatedAt: number; version: number }
 export type SourceRecord = { id: string; json: string; version: number; updatedAt: number }
@@ -127,10 +128,16 @@ export type SourceBrowserCookies = {
 let csrfToken: string | null = null
 export const setCsrfToken = (token: string | null) => { csrfToken = token }
 
-async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
+/** 合并调用方 header 并附加 CSRF 令牌（GET/HEAD 不需要），插件 SDK 的 raw 请求也复用它 */
+export function csrfHeaders(init: RequestInit = {}): Headers {
   const headers = new Headers(init.headers)
-  if (init.body) headers.set('Content-Type', 'application/json')
   if (init.method && !['GET', 'HEAD'].includes(init.method)) headers.set('X-CSRF-Token', csrfToken ?? '')
+  return headers
+}
+
+export async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
+  const headers = csrfHeaders(init)
+  if (init.body) headers.set('Content-Type', 'application/json')
   const response = await fetch(path, { ...init, headers, credentials: 'same-origin' })
   if (!response.ok) {
     const body = await response.json().catch(() => ({ message: response.statusText })) as { message?: string }
@@ -278,6 +285,13 @@ export const api = {
   updateBookshelfInfo: (data: { sourceId: string; bookUrl: string; name: string; author?: string; coverUrl?: string }) => request<BookshelfItem>('/api/bookshelf/info', { method: 'PUT', body: JSON.stringify(data) }),
   switchBookshelfSource: (value: BookshelfSourceSwitch) => request<BookshelfItem>('/api/bookshelf/switch-source', { method: 'POST', body: JSON.stringify(value) }),
   cover: (key: string) => `/api/covers/${encodeURIComponent(key)}`,
+  plugins: () => request<PluginManifestSummary[]>('/api/plugins'),
+  reloadPlugins: () => request<{ reloaded: number }>('/api/plugins/reload', { method: 'POST' }),
+  enablePlugin: (id: string) => request<PluginManifestSummary>(`/api/plugins/${encodeURIComponent(id)}/enable`, { method: 'POST' }),
+  disablePlugin: (id: string) => request<PluginManifestSummary>(`/api/plugins/${encodeURIComponent(id)}/disable`, { method: 'POST' }),
+  pluginSettings: (id: string) => request<Record<string, unknown>>(`/api/plugins/${encodeURIComponent(id)}/settings`),
+  updatePluginSettings: (id: string, values: Record<string, unknown>) =>
+    request<Record<string, unknown>>(`/api/plugins/${encodeURIComponent(id)}/settings`, { method: 'PUT', body: JSON.stringify(values) }),
   getReplaceRules: (params?: { q?: string; group?: string; scope?: string }) => {
     const sp = new URLSearchParams()
     if (params?.q) sp.set('q', params.q)

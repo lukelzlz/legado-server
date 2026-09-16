@@ -2563,4 +2563,116 @@ mark.search-highlight { background: var(--accent-soft); color: var(--accent); fo
 }
 
 
+/* ==== 插件宿主：导航项 / 插件管理页 / 插件页面 / SDK 组件 ==== */
+
+/* 顶部导航里的插件按钮：文字前带一个小图标 */
+.app-page-header nav button svg { width: 15px; height: 15px; margin-right: 5px; }
+
+/* 插件菜单项数量不可控，下拉菜单超出视口时可滚动 */
+.header-menu-dropdown { max-height: calc(100vh - 86px); overflow-y: auto; }
+
+/* --- 插件页面容器与错误兜底 --- */
+.plugin-page-shell { width: min(1120px, 100%); display: grid; align-content: start; gap: 22px; padding: clamp(24px, 4vw, 56px); margin: 0 auto; }
+.plugin-page-pending { display: grid; place-items: center; gap: 14px; padding: 80px 20px; color: var(--muted); font-size: 13px; }
+.plugin-error-card { display: grid; place-items: center; gap: 12px; padding: 48px 28px; text-align: center; background: var(--surface); border: 1px solid color-mix(in srgb, var(--danger) 42%, var(--line)); border-radius: 8px; }
+.plugin-error-card > svg { width: 30px; height: 30px; color: var(--danger); }
+.plugin-error-card h2 { font-family: Georgia, "Noto Serif SC", serif; font-size: 20px; font-weight: 600; }
+.plugin-error-card p { max-width: 620px; color: var(--muted); font-size: 13px; line-height: 1.75; }
+.plugin-error-detail { max-width: 100%; overflow-x: auto; padding: 10px 14px; border-radius: 6px; background: var(--surface-muted); color: var(--danger); font: 12px/1.6 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; text-align: left; }
+
+/* --- 插件管理页 --- */
+.plugins-page { width: min(1000px, 100%); display: grid; align-content: start; gap: 24px; padding: clamp(28px, 5vw, 68px); margin: 0 auto; }
+.plugin-page-actions { display: flex; align-items: center; gap: 12px; }
+.plugin-page-actions svg.spin { animation: spin 1s linear infinite; }
+.plugin-muted { color: var(--muted); font-size: 12px; }
+.plugin-list { display: grid; gap: 14px; }
+.plugin-item { display: grid; gap: 10px; padding: 18px 20px; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; }
+.plugin-item.disabled { opacity: .72; }
+.plugin-item.has-error { border-color: color-mix(in srgb, var(--danger) 40%, var(--line)); }
+.plugin-item-head { display: flex; align-items: start; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+.plugin-title-row { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
+.plugin-title-btn { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; padding: 0; background: transparent; color: var(--ink); text-align: left; }
+.plugin-title-btn:hover strong { color: var(--accent-ink); }
+.plugin-title-row strong { font-family: Georgia, "Noto Serif SC", serif; font-size: 18px; font-weight: 600; }
+.plugin-version { color: var(--muted); font-size: 12px; }
+.plugin-badge { padding: 2px 8px; border: 1px solid var(--line); border-radius: 999px; background: var(--surface-muted); color: var(--muted); font-size: 11px; font-weight: 600; white-space: nowrap; }
+.plugin-badge.badge-enabled { border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); background: var(--accent-soft); color: var(--accent-ink); }
+.plugin-badge.badge-disabled { border-color: color-mix(in srgb, var(--danger) 35%, var(--line)); color: var(--danger); }
+.plugin-badge.badge-runtime { border-color: color-mix(in srgb, var(--accent) 30%, var(--line)); color: var(--accent-ink); }
+.plugin-badge.badge-loaded { color: var(--accent-ink); }
+.plugin-item-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.plugin-meta { display: flex; flex-wrap: wrap; gap: 6px 16px; color: var(--muted); font-size: 12px; }
+.plugin-desc { color: var(--ink); font-size: 13px; line-height: 1.7; }
+.plugin-dir { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font: 11.5px/1.6 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.plugin-tags { display: flex; flex-wrap: wrap; gap: 6px; }
+.plugin-tag { padding: 3px 9px; border: 1px solid var(--line); border-radius: 5px; background: var(--surface-muted); color: var(--muted); font-size: 11.5px; }
+.plugin-tag-perm { border-color: color-mix(in srgb, var(--accent) 26%, var(--line)); color: var(--accent-ink); }
+.plugin-error-text { padding: 8px 11px; border-radius: 6px; background: color-mix(in srgb, var(--danger) 10%, transparent); color: var(--danger); font-size: 12.5px; line-height: 1.6; word-break: break-word; }
+.plugin-registrations { display: grid; gap: 10px; padding: 14px; border: 1px dashed var(--line); border-radius: 7px; background: var(--surface-muted); }
+.plugin-reg-block { display: grid; gap: 6px; }
+.plugin-reg-label { color: var(--muted); font-size: 11px; font-weight: 650; text-transform: uppercase; letter-spacing: .5px; }
+.plugin-reg-item { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 12px; }
+.plugin-reg-item code { padding: 2px 7px; border-radius: 4px; background: var(--surface); color: var(--accent-ink); font: 11.5px/1.6 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; word-break: break-all; }
+.plugin-reg-item > svg { width: 15px; height: 15px; color: var(--accent); }
+
+/* --- 插件 SDK 按钮：在主色按钮的基础上提供更小的尺寸 --- */
+.plugin-btn-sm { min-height: 28px; padding: 0 10px; font-size: 12px; }
+.plugin-btn-md { min-height: 34px; }
+
+/* --- 插件页面 / 弹窗 / 卡片 / 表格等 SDK 组件 --- */
+.plugin-page-stack { display: grid; gap: 18px; }
+.plugin-code { max-width: 100%; overflow-x: auto; padding: 10px 12px; border-radius: 6px; background: var(--surface-muted); color: var(--ink); font: 11.5px/1.7 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.plugin-page-header { display: flex; align-items: end; justify-content: space-between; gap: 18px; flex-wrap: wrap; }
+.plugin-page-header h2 { font-family: Georgia, "Noto Serif SC", serif; font-size: clamp(22px, 2.4vw, 30px); font-weight: 600; }
+.plugin-page-header p { margin-top: 9px; color: var(--muted); font-size: 13.5px; }
+.plugin-page-header-actions { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
+.plugin-card-ui { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.plugin-card-ui-head { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 14px 18px; border-bottom: 1px solid var(--line); }
+.plugin-card-ui-head h3 { font-family: Georgia, "Noto Serif SC", serif; font-size: 16px; font-weight: 600; }
+.plugin-card-ui-actions { display: flex; align-items: center; gap: 8px; }
+.plugin-card-ui-body { padding: 16px 18px; }
+.plugin-spinner { display: flex; align-items: center; gap: 10px; padding: 22px 0; color: var(--muted); font-size: 13px; }
+.plugin-spinner-ring { width: 16px; height: 16px; flex: none; border: 2px solid var(--line); border-top-color: var(--accent); border-radius: 50%; animation: spin .8s linear infinite; }
+.plugin-empty { display: grid; place-items: center; gap: 8px; padding: 34px 22px; text-align: center; color: var(--muted); background: var(--surface); border: 1px solid var(--line); border-radius: 8px; }
+.plugin-empty > svg { width: 26px; height: 26px; color: var(--accent); }
+.plugin-empty p { font-size: 14px; color: var(--ink); }
+.plugin-empty small { font-size: 12px; }
+.plugin-table-wrap { overflow-x: auto; }
+.plugin-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.plugin-table th, .plugin-table td { padding: 9px 12px; border-bottom: 1px solid var(--line); text-align: left; }
+.plugin-table th { background: var(--surface-muted); color: var(--muted); font-size: 12px; font-weight: 600; }
+.plugin-table tbody tr:hover { background: var(--surface-muted); }
+
+.plugin-modal { width: min(560px, 94vw); max-height: 88vh; display: flex; flex-direction: column; overflow: hidden; background: var(--surface); border: 1px solid var(--line); border-radius: 14px; box-shadow: 0 24px 64px rgba(0, 0, 0, .32); animation: scaleUp .2s cubic-bezier(0.25, 1, 0.5, 1); }
+.plugin-modal-header { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 18px 22px; border-bottom: 1px solid var(--line); flex-shrink: 0; }
+.plugin-modal-header h2 { font-size: 18px; font-weight: 650; margin-top: 2px; }
+.plugin-modal-header .close-btn { width: 32px; height: 32px; padding: 0; display: grid; place-items: center; color: var(--muted); }
+.plugin-modal-body { flex: 1 1 auto; overflow-y: auto; padding: 20px 22px; display: grid; gap: 14px; }
+.plugin-modal-footer { display: flex; justify-content: flex-end; align-items: center; gap: 10px; padding: 14px 22px; border-top: 1px solid var(--line); background: var(--surface-muted); flex-shrink: 0; }
+
+/* --- 插件设置表单（按 settingsSchema 动态渲染） --- */
+.plugin-settings-form { display: grid; gap: 14px; }
+.plugin-field { display: grid; gap: 6px; color: var(--ink); font-size: 13px; font-weight: 600; }
+.plugin-field-label { display: flex; align-items: center; gap: 7px; }
+.plugin-field-label code { padding: 1px 5px; border-radius: 4px; background: var(--surface-muted); color: var(--muted); font: 11px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-weight: 500; }
+.plugin-field input, .plugin-field select, .plugin-field textarea { width: 100%; padding: 9px 11px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); color: var(--ink); font-size: 13px; font-weight: 400; outline: 0; }
+.plugin-field textarea { resize: vertical; font-family: inherit; line-height: 1.65; }
+.plugin-field input:focus, .plugin-field select:focus, .plugin-field textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft); }
+.plugin-field-hint { color: var(--muted); font-size: 11.5px; font-weight: 400; line-height: 1.6; }
+.plugin-switch { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 10px 12px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); cursor: pointer; font-size: 13px; font-weight: 600; color: var(--ink); }
+.plugin-switch input { position: absolute; width: 0; height: 0; opacity: 0; }
+.plugin-switch-track { position: relative; width: 36px; height: 20px; flex: none; border-radius: 999px; background: var(--line); transition: background .15s ease; }
+.plugin-switch-track::after { position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: var(--surface); box-shadow: 0 1px 3px rgba(0, 0, 0, .25); transition: transform .15s ease; content: ''; }
+.plugin-switch input:checked + .plugin-switch-track { background: var(--accent); }
+.plugin-switch input:checked + .plugin-switch-track::after { transform: translateX(16px); }
+.plugin-switch input:focus-visible + .plugin-switch-track { outline: 2px solid var(--accent); outline-offset: 2px; }
+.plugin-switch-label { font-weight: 600; }
+.plugin-switch .plugin-field-hint { flex-basis: 100%; }
+
+@media (max-width: 720px) {
+  .plugins-page { padding: 24px 16px; }
+  .plugin-item-head { flex-direction: column; align-items: stretch; }
+  .plugin-page-header { flex-direction: column; align-items: flex-start; }
+}
+
 

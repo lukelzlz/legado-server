@@ -2,16 +2,23 @@ import React, { useEffect, useRef, useState } from 'react'
 import { Icon } from './icons'
 import { Logo } from './Logo'
 import { promptPwaInstall, subscribePwaInstall } from './PwaManager'
+import { PluginIcon } from './PluginUi'
+import type { HostMenuItem, HostNavItem } from './pluginHost'
 import type { ReaderSettings } from './readerSettings'
 
-export type AppPage = 'sources' | 'subscriptions' | 'library' | 'shelf' | 'reader' | 'rules'
+export type AppPage = string
 
 export interface AppHeaderProps {
   page: AppPage
   settings: ReaderSettings
   searching?: boolean
+  /** 插件注册的导航项，追加在内置导航之后 */
+  navItems?: HostNavItem[]
+  /** 插件注册的菜单项，显示在右上角下拉菜单里 */
+  menuItems?: HostMenuItem[]
   onSettingsChange: (next: ReaderSettings) => void
   onNavigate: (page: AppPage) => void
+  onOpenPlugins?: () => void
   onOpenReplaceRules?: () => void
   onOpenOfflineCache?: () => void
   onLogout: () => void
@@ -27,8 +34,11 @@ export function AppHeader({
   page,
   settings,
   searching,
+  navItems = [],
+  menuItems = [],
   onSettingsChange,
   onNavigate,
+  onOpenPlugins,
   onOpenReplaceRules,
   onOpenOfflineCache,
   onLogout,
@@ -136,6 +146,18 @@ export function AppHeader({
         >
           规则
         </button>
+        {navItems.map(item => (
+          <button
+            key={`${item.pluginId}:${item.id}`}
+            type="button"
+            className={page === item.target ? 'active' : ''}
+            title={item.title || `${item.pluginName} 提供`}
+            onClick={() => onNavigate(item.target)}
+          >
+            {item.icon && <PluginIcon name={item.icon} />}
+            {item.label}
+          </button>
+        ))}
       </nav>
 
       <div className="header-actions" ref={menuContainerRef}>
@@ -231,7 +253,44 @@ export function AppHeader({
                   <Icon name="edit" />
                   <span>替换净化规则</span>
                 </button>
+                <button
+                  type="button"
+                  className="menu-logout-btn"
+                  role="menuitem"
+                  onClick={() => {
+                    setMenuOpen(false)
+                    onOpenPlugins?.()
+                  }}
+                >
+                  <Icon name="settings" />
+                  <span>插件管理</span>
+                </button>
               </div>
+
+              {menuItems.length > 0 && (
+                <>
+                  <div className="menu-divider" />
+                  <div className="menu-section">
+                    <div className="menu-section-label">插件</div>
+                    {menuItems.map(item => (
+                      <button
+                        key={`${item.pluginId}:${item.id}`}
+                        type="button"
+                        className="menu-logout-btn"
+                        role="menuitem"
+                        title={`${item.pluginName} 提供`}
+                        onClick={() => {
+                          setMenuOpen(false)
+                          item.onClick()
+                        }}
+                      >
+                        {item.icon && <PluginIcon name={item.icon} />}
+                        <span>{item.label}</span>
+                      </button>
+                    ))}
+                  </div>
+                </>
+              )}
 
               <div className="menu-divider" />
 

@@ -11,6 +11,7 @@ import io.ktor.server.response.*
 import io.ktor.server.routing.*
 import io.ktor.server.sessions.*
 import io.ktor.server.websocket.*
+import io.legado.server.plugins.PluginManager
 import kotlinx.serialization.json.Json
 
 fun main(args: Array<String>) {
@@ -33,10 +34,21 @@ fun Application.legadoApplication(config: ServerConfig = ServerConfig.fromEnviro
     val bookCache = BookCacheService(database, runner) { message -> log.info(message) }
     val edgeTts = EdgeTtsService()
     val ttsSessions = TtsSessionService(edgeTts)
+    val coverCache = CoverCache(config.coverCacheDirectory)
+    val plugins = PluginManager(
+        config = config,
+        database = database,
+        runner = runner,
+        coverCache = coverCache,
+        bookCache = bookCache,
+        subscriptions = subscriptions,
+        log = { message, error -> if (error == null) log.info(message) else log.error(message, error) },
+    )
     subscriptions.start()
     bookCache.start()
-    environment.monitor.subscribe(ApplicationStopping) { subscriptions.stop(); bookCache.stop(); ttsSessions.close(); database.close() }
-    environment.monitor.subscribe(ApplicationStopped) { subscriptions.stop(); bookCache.stop(); ttsSessions.close(); database.close() }
+    plugins.start()
+    environment.monitor.subscribe(ApplicationStopping) { plugins.close(); subscriptions.stop(); bookCache.stop(); ttsSessions.close(); database.close() }
+    environment.monitor.subscribe(ApplicationStopped) { plugins.close(); subscriptions.stop(); bookCache.stop(); ttsSessions.close(); database.close() }
 
     install(ContentNegotiation) {
         json(Json { ignoreUnknownKeys = true; explicitNulls = false })
@@ -59,7 +71,7 @@ fun Application.legadoApplication(config: ServerConfig = ServerConfig.fromEnviro
     routing {
         get("/healthz") { call.respond(mapOf("status" to "ok")) }
         authRoutes(auth)
-        apiRoutes(database, auth, runner, CoverCache(config.coverCacheDirectory), subscriptions, bookCache, edgeTts, ttsSessions)
+        apiRoutes(database, auth, runner, coverCache, subscriptions, bookCache, plugins, edgeTts, ttsSessions)
         staticWeb()
     }
 }

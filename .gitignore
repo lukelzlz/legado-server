@@ -23,6 +23,12 @@ node_modules/
 server/src/main/resources/static/
 .env
 .data/
+# Local runtime data directory used on Windows (SQLite WAL + covers + installed plugins)
+# Anchored to the repository root on purpose: an unanchored `dist/` would also hide the
+# tracked web/dist bundle, which the server embeds into its static resources.
+/ls_data/
+# Locally assembled runnable artifacts (built fat JAR and its backups)
+/dist/
 .agents/
 .worktrees/
 coverage/

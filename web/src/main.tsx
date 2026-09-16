@@ -17,6 +17,10 @@ import { OfflineCacheModal } from './OfflineCacheModal'
 import { PwaManager } from './PwaManager'
 import { flushOfflineProgress } from './offlineStorage'
 import { toast, ToastContainer } from './Toast'
+import { findPluginPage, usePluginHost } from './pluginHost'
+import { PluginsPage } from './PluginsPage'
+import { PluginPageFallback, PluginPageView } from './PluginPageView'
+import { parsePluginPageKey, pluginPageKey } from './pluginSdk'
 import './styles.css'
 
 import { clearStoredInspections, getInitialOrStoredInspections, inspectAllSourcesConcurrently, SourceHealthInspection } from './sourceInspector'
@@ -25,9 +29,18 @@ import { parseSourceJsonText, extractSourcesFromRaw, sanitizeImageUrl } from './
 export { extractSourcesFromRaw, parseSourceJsonText, sanitizeImageUrl }
 export type { SourceChoice, SourceChoiceStatus }
 
-type Page = 'sources' | 'subscriptions' | 'library' | 'shelf' | 'reader' | 'rules'
+type Page = string
 const readerStorageKey = 'legado-open-book-v1'
-const pageFromHash = (): Page => location.hash === '#sources' ? 'sources' : location.hash === '#subscriptions' ? 'subscriptions' : location.hash === '#rules' ? 'rules' : location.hash === '#shelf' ? 'shelf' : location.hash === '#reader' ? 'reader' : 'library'
+/**
+ * hash 路由：支持内置页面（含替换净化规则的 #rules 与插件管理的 #plugins）以及插件页面
+ * `#plugin:<pluginId>:<pageId>`，其余未知 hash 仍然回退到书库。
+ */
+const pageFromHash = (): Page => {
+  const hash = location.hash.replace(/^#/, '')
+  const pluginPage = parsePluginPageKey(hash)
+  if (pluginPage) return pluginPageKey(pluginPage.pluginId, pluginPage.pageId)
+  return hash === 'sources' ? 'sources' : hash === 'subscriptions' ? 'subscriptions' : hash === 'rules' ? 'rules' : hash === 'plugins' ? 'plugins' : hash === 'shelf' ? 'shelf' : hash === 'reader' ? 'reader' : 'library'
+}
 
 function SourceChoiceList({
   choices,
@@ -1403,6 +1416,8 @@ function App() {
   const [showReplaceRules, setShowReplaceRules] = useState(false)
   const [showOfflineCache, setShowOfflineCache] = useState(false)
   const search = useSearchStore()
+  // 登录成功后才加载插件：未登录时 /api/plugins 会返回 401
+  const pluginHost = usePluginHost(authenticated)
 
   useEffect(() => {
     saveReaderSettings(settings)
@@ -1542,6 +1557,8 @@ function App() {
     void api.sources().then(setSources).catch(() => undefined)
   }
 
+  const pluginPage = findPluginPage(pluginHost.pages, page)
+
   return (
     <div className={`app-shell theme-${settings.theme}`}>
       <ToastContainer />
@@ -1550,8 +1567,11 @@ function App() {
         page={page}
         settings={settings}
         searching={search.loading}
+        navItems={pluginHost.navItems}
+        menuItems={pluginHost.menuItems}
         onSettingsChange={setSettings}
         onNavigate={navigate}
+        onOpenPlugins={() => navigate('plugins')}
         onOpenReplaceRules={() => setShowReplaceRules(true)}
         onOpenOfflineCache={() => setShowOfflineCache(true)}
         onLogout={() => void logout()}
@@ -1564,6 +1584,22 @@ function App() {
         <ReplaceRulesPage />
       ) : page === 'shelf' ? (
         <ShelfPage onOpen={item => void openShelfItem(item)} />
+      ) : page === 'plugins' ? (
+        <PluginsPage
+          plugins={pluginHost.plugins}
+          navItems={pluginHost.navItems}
+          menuItems={pluginHost.menuItems}
+          pages={pluginHost.pages}
+          loadErrors={pluginHost.loadErrors}
+          onReload={pluginHost.reload}
+          onEnable={pluginHost.enable}
+          onDisable={pluginHost.disable}
+          onNavigate={navigate}
+        />
+      ) : pluginPage ? (
+        <PluginPageView key={pluginPage.key} page={pluginPage} navigate={navigate} />
+      ) : parsePluginPageKey(page) ? (
+        <PluginPageFallback pageKey={page} loading={pluginHost.loading} onHome={() => navigate('library')} />
       ) : (
         <LibraryPage sources={sources} onOpen={(book, index) => openReader(book, index, 'library')} />
       )}

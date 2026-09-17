@@ -7,10 +7,12 @@ import io.ktor.server.request.*
 import io.ktor.server.response.*
 import io.ktor.server.routing.*
 import io.ktor.server.sessions.*
+import java.util.Base64
 import java.util.concurrent.ConcurrentHashMap
 
 class AuthService(val database: Database, private val secureCookies: Boolean) {
     private val attempts = ConcurrentHashMap<String, Attempt>()
+    private val basicAuthorizations = ConcurrentHashMap<String, Long>()
 
     suspend fun requireSession(call: ApplicationCall, csrfRequired: Boolean = false): UserSession? {
         val session = call.sessions.get<UserSession>()
@@ -32,6 +34,25 @@ class AuthService(val database: Database, private val secureCookies: Boolean) {
         return database.hasValidCsrfToken(csrfToken)
     }
 
+    /**
+     * WebDAV 等非浏览器客户端只能走 HTTP Basic：用户名任意（便于各类客户端填写），密码为管理员密码。
+     * 校验通过的结果按请求头短时缓存，避免客户端每个文件操作都触发一次 PBKDF2 计算。
+     */
+    fun verifyBasicAuthorization(header: String?): Boolean {
+        if (header == null || !header.startsWith("Basic ", ignoreCase = true)) return false
+        val cachedUntil = basicAuthorizations[header]
+        if (cachedUntil != null && cachedUntil > System.currentTimeMillis()) return true
+        val decoded = runCatching { String(Base64.getDecoder().decode(header.substring(BASIC_PREFIX_LENGTH).trim()), Charsets.UTF_8) }.getOrNull()
+        val password = decoded?.substringAfter(':', "")
+        if (password.isNullOrEmpty() || !database.verifyPassword(password)) {
+            basicAuthorizations.remove(header)
+            return false
+        }
+        if (basicAuthorizations.size >= MAX_CACHED_AUTHORIZATIONS) basicAuthorizations.clear()
+        basicAuthorizations[header] = System.currentTimeMillis() + BASIC_AUTHORIZATION_TTL_MS
+        return true
+    }
+
     fun canAttempt(remoteHost: String): Boolean = attempts[remoteHost]?.let { it.until > System.currentTimeMillis() } != true
     fun failure(remoteHost: String) {
         attempts.compute(remoteHost) { _, old ->
@@ -42,7 +63,13 @@ class AuthService(val database: Database, private val secureCookies: Boolean) {
     fun success(remoteHost: String) { attempts.remove(remoteHost) }
     private data class Attempt(val count: Int, val until: Long)
 
-    companion object { const val COOKIE_NAME = "legado_session"; const val CSRF_HEADER = "X-CSRF-Token" }
+    companion object {
+        const val COOKIE_NAME = "legado_session"
+        const val CSRF_HEADER = "X-CSRF-Token"
+        private const val BASIC_PREFIX_LENGTH = 6
+        private const val BASIC_AUTHORIZATION_TTL_MS = 5 * 60 * 1000L
+        private const val MAX_CACHED_AUTHORIZATIONS = 32
+    }
 }
 
 fun Route.authRoutes(auth: AuthService) {

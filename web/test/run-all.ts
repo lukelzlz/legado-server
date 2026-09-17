@@ -28,6 +28,7 @@ import './ReplaceRulesPage.test.ts'
 import './tts.test.ts'
 import './tts-stream.test.ts'
 import './offline-pwa.test.ts'
+import './webdav-settings.test.ts'
 
 console.log('🚀 Running Legado Web Frontend Comprehensive Test Suite (Tier 1, 2, 4 + Challenger Stress)...\n')
 

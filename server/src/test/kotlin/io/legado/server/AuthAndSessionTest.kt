@@ -73,6 +73,7 @@ class AuthAndSessionTest {
                 port = 8080,
                 databasePath = dbPath,
                 coverCacheDirectory = tempDir,
+                webDavDirectory = tempDir.resolve("webdav"),
                 initialAdminPassword = "super-secret-password",
                 secureCookies = false,
             )

@@ -60,6 +60,13 @@
 - **PBKDF2 安全密码散列**：防彩虹表破解，支持安全 CLI 密码重置工具。
 - **全链路防护**：内置 Secure/HttpOnly 会话管理、CSRF 令牌防御与防暴力破解策略。
 
+### 🗂️ 7. 内置 WebDAV 文件服务
+- **零依赖挂载**：服务端进程内自带 WebDAV 协议端点（`/webdav`），无需额外进程、端口或容器，即可被 **Windows 资源管理器、macOS Finder、RaiDrive、Cyberduck、rclone** 以及 **Legado App 的 WebDAV 备份客户端**直接挂载读写。
+- **数据目录统一落盘**：客户端上传的数据全部存放于数据目录下的 `webdav/` 文件夹（Docker 中即 `/data/webdav`），随数据卷一起持久化、备份与迁移。
+- **协议能力完整**：支持目录枚举（`PROPFIND`）、上传（`PUT`，原子落盘）、下载（`GET` / `HEAD`，含 `Range` 断点续传）、新建目录（`MKCOL`）、移动/复制（`MOVE` / `COPY`）、删除（`DELETE`）与文件锁（`LOCK` / `UNLOCK`）。
+- **复用既有鉴权**：HTTP Basic 认证，用户名任意填写，密码即管理员密码；越界路径（`..` 穿越等）一律拒绝，无法写出 `webdav/` 目录。
+- **Web 端可视化设置页**：一级导航「文件」内置 WebDAV 面板 —— 展示服务状态与访问地址（一键复制）、已存数据统计、四类客户端接入指引，并可直接在页面上传、新建文件夹、浏览子目录、下载与删除文件（页面内写操作走「会话 + CSRF」鉴权，无需再次输入密码）。
+
 ---
 
 ## 🏗️ 架构设计
@@ -304,10 +311,53 @@ npm run build
 |---|---|---|
 | `LEGADO_HOST` | `0.0.0.0` | 服务端监听绑定的主机地址 |
 | `LEGADO_PORT` | `8080` | 服务端 HTTP / WebSocket 监听端口 |
-| `LEGADO_DATA_DIR` | `/data` | 数据持久化根目录（存放数据库与封面） |
+| `LEGADO_DATA_DIR` | `/data` | 数据持久化根目录（存放数据库 `legado.sqlite`、封面 `covers/` 与 WebDAV 数据 `webdav/`） |
 | `LEGADO_DATABASE` | `$LEGADO_DATA_DIR/legado.sqlite` | SQLite 数据库文件绝对路径 |
 | `ADMIN_PASSWORD` | 无 | 首次初始化时设置的管理员密码（至少 12 位） |
 | `LEGADO_SECURE_COOKIES` | `true` | 是否对 Session Cookie 启用 Secure 标记（公网 HTTPS 建议开启） |
+
+---
+
+## 🗂️ WebDAV 文件服务（内置）
+
+服务端内置 WebDAV 协议端点，用于把文件直接放进数据目录，无需 SFTP 或额外部署 NAS。
+
+### 连接参数
+
+| 项目 | 值 |
+| --- | --- |
+| 地址 | `http://<服务器地址>:8080/webdav` |
+| 用户名 | 任意（例如 `legado`，服务端不校验用户名） |
+| 密码 | `ADMIN_PASSWORD`（管理员密码） |
+| 存储位置 | `LEGADO_DATA_DIR/webdav`（Docker 中为 `/data/webdav`） |
+
+### 常见客户端接入
+
+- **Windows**：「此电脑」→ 右键 → 映射网络驱动器 → 地址填 `http://<服务器>:8080/webdav` → 使用其他凭据 → 任意用户名 + 管理员密码。
+- **macOS**：Finder → `Cmd + K` → `http://<服务器>:8080/webdav`。
+- **rclone**：
+  ```bash
+  rclone config create legado webdav url=http://127.0.0.1:8080/webdav vendor=other user=legado pass=$(rclone obscure '你的管理员密码')
+  rclone copy ./some-book.txt legado:books/
+  ```
+- **Web 端可视化面板**：登录后在顶部导航点击 **文件**（`#webdav`），可直接查看状态、复制上述连接地址、上传/下载/删除文件。
+- **浏览器自查**：直接打开 `http://<服务器>:8080/webdav/`，输入任意用户名 + 管理员密码即可看到目录清单。
+
+### 命令行速查
+
+```bash
+# 上传（首次 201，覆盖 204）
+curl -u legado:'你的管理员密码' -T ./book.txt http://127.0.0.1:8080/webdav/books/book.txt -w "%{http_code}\n"
+
+# 目录枚举（Depth: 0/1）
+curl -u legado:'你的管理员密码' -X PROPFIND -H "Depth: 1" http://127.0.0.1:8080/webdav/books
+
+# 断点续传下载
+curl -u legado:'你的管理员密码' -r 0-1023 -o part.bin http://127.0.0.1:8080/webdav/books/book.txt
+```
+
+> [!IMPORTANT]
+> WebDAV 使用 HTTP Basic 认证（凭据仅 Base64 编码，非加密）。**公网部署必须通过 HTTPS 反向代理访问**，并建议在反代层为 `/webdav` 单独限流；Nginx 需按需调大 `client_max_body_size` 以放开单文件上传体积。
 
 ---
 
@@ -325,7 +375,8 @@ npm run build
 │   │   ├── Models.kt            # 服务端核心领域数据模型
 │   │   ├── Routes.kt            # REST API 与 WebSocket 路由分发
 │   │   ├── RuleRunner.kt        # Legado 规则执行器 (Rhino JS + Jsoup)
-│   │   └── SubscriptionService.kt # 书源订阅定时与批量同步
+│   │   ├── SubscriptionService.kt # 书源订阅定时与批量同步
+│   │   └── WebDavServer.kt      # 内置 WebDAV 服务端 (数据目录 webdav 存储区)
 │   └── src/test/kotlin/         # 服务端单元测试与端到端场景测试
 ├── web/                         # Web 前端模块 (React 19 + TypeScript + Vite)
 │   ├── src/

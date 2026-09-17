@@ -403,3 +403,26 @@ data class ReplaceRulePreviewResponse(
     val appliedRules: List<String> = emptyList(),
 )
 
+/** WebDAV 存储区中的一个条目（供设置页面浏览使用）。 */
+@Serializable
+data class WebDavEntry(
+    val name: String,
+    val path: String,
+    val directory: Boolean,
+    val size: Long,
+    val modifiedAt: Long,
+)
+
+/** WebDAV 设置页面的服务状态与当前目录内容。 */
+@Serializable
+data class WebDavInfoResponse(
+    val url: String,
+    val directory: String,
+    val path: String,
+    val parent: String? = null,
+    val fileCount: Int,
+    val directoryCount: Int,
+    val totalBytes: Long,
+    val entries: List<WebDavEntry> = emptyList(),
+)
+

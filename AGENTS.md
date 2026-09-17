@@ -92,6 +92,14 @@ AI 与人类协作时必须明确当前达到的完成度阶梯，严禁混淆�
 - **[替换规则/沙箱] Rhino JS 沙箱顶级 return 包装与反爬反义词对调字典**：Legado 生态中的 `@js:` 替换规则普遍使用 `return map[result] || result` 组织代码。Rhino 沙箱在顶层执行 `return` 时会抛 `return not in function` 语法错误，沙箱必须检测并在必要时将代码包装进 `(function(){ ... })()` 匿名闭包执行；同时替换净化必须在 `RuleRunner.content()` 与 `BookCacheService` 离线下载落库前执行，避免脏文本污染持久化缓存，同时使后续 TTS 朗读自动获得清洗后的正文。
 - **[交互/导航] 核心系统能力一级导航呈现与阅读器抽屉收敛**：全局核心管理能力（书源、订阅、替换净化规则）必须在一级导航栏设立独立入口；而在沉浸式阅读器中，顶栏严格保持极简（目录、换源、设置、朗读），辅助净化规则统一收敛进「阅读设置」抽屉，杜绝顶栏拥挤。
 - **[PWA/离线缓存] 渐进式离线缓存与脱机阅读架构**：① Service Worker 缓存静态资源与应用壳，排除 `/api/tts/stream` 等实时长音频流；② 正文离线支持按「后50章/后100章/全本/自定义」4 并发切片下载，IndexedDB 存储纯净文本；③ 脱机断网期间阅读进度写入本地队列，网络恢复（`online` 事件）时静默 Flush 同步；④ 目录列表对已离线章节实时打绿点徽标（`●`）；⑤ 全面适配 `safe-area-inset-*` 与 `overscroll-behavior: none`，消除 iOS 橡皮筋下拉与刘海遮挡。
+- **[WebDAV/Ktor] 尾卡 `{path...}` 参数只捕获首段，WebDAV 路径必须从请求 URI 推导**：Ktor 3.4 中 `route("/webdav/{path...}")` 的 `call.parameters["path"]` 对 `/webdav/a/b` 只返回 `a`（实测），直接用会导致多级路径被静默截断为单级，表现为 `PUT /webdav/x/y/z.txt`、`MKCOL /webdav/x/y` 莫名返回 `405`（落到已存在的单级目录上）。必须改为 `request.path().removePrefix("/webdav").decodeURLPart().trim('/')`；且尾卡不匹配空尾段，根路径 `/webdav` 需单独注册一条路由。
+- **[WebDAV/客户端兼容] 三个必答响应头与最小 Class 2 锁**：① `OPTIONS` 必须返回 `DAV: 1, 2`、完整 `Allow` 与 `MS-Author-Via: DAV`，否则 Windows WebDAV 重定向器按只读处理；② `LOCK` 必须支持对「尚不存在的文件」加锁并返回 `201` + `Lock-Token: <opaquelocktoken:uuid>`，否则资源管理器新建文件流程失败；③ 锁只做登记与续租，`PUT/DELETE` 严禁因锁返回 `423`（客户端异常退出遗留的锁会让写入永久失败，nginx dav 同样不强制）；④ 目录必须用 `<D:resourcetype><D:collection/></D:resourcetype>` 表达且不返回 `getcontentlength`。
+- **[WebDAV/数据落盘] 上传原子化、Range 手写与根目录保护**：`PUT` 先写同目录 `.webdav-upload-*.part` 再 `ATOMIC_MOVE + REPLACE_EXISTING`，避免半截文件被阅读器读到；`GET` 用 `respondBytesWriter(contentType, status, contentLength)` 配合 `FileChannel.position(offset)` 手写单段 Range（`206`/`416`），无需额外插件；相对路径须拒绝 `..`、反斜杠与空字节并 `normalize()` 后校验 `startsWith(root)`；`/webdav` 根目录禁止 `PUT/DELETE/MKCOL/MOVE/COPY`。WebDAV 鉴权走 HTTP Basic（用户名任意 + 管理员密码 PBKDF2），成功结果须按 `Authorization` 头短时缓存，否则客户端每个文件操作都会触发一次 PBKDF2。
+- **[WebDAV/浏览器侧鉴权] 会话 Cookie + CSRF 双轨，页面写操作复用协议本身**：WebDAV 端点必须同时接受 HTTP Basic（外部客户端，天然免疫 CSRF）与**会话 Cookie**（Web 设置页，页面无需接触密码）。会话鉴权下**读**操作（浏览/下载）放行即可，**写**操作（`PUT/DELETE/MKCOL/MOVE/COPY/LOCK/PROPPATCH`）必须校验 `X-CSRF-Token`，缺失或错误返回 `403`，与 `SameSite=Strict` Cookie 构成双重防线。设置页的上传/建目录/删除**必须复用 `PUT`/`MKCOL`/`DELETE` 协议方法**，严禁另建平行 REST 写接口（否则出现两条落盘代码路径）；页面只读状态走 `GET /api/webdav/info?path=` JSON（目录优先排序、占用统计跳过 `.webdav-upload-*.part`），避免前端解析 `PROPFIND` XML。
+- **[PWA/更新] 自托管升级后「界面还是旧版」= Service Worker 预缓存，必须双向兜底**：`registerType: 'prompt'` 下新 SW 会停在 waiting 态，而旧的 precache 会继续把 `navigateFallback` 的 `index.html` 与旧 bundle 返回给浏览器——用户会表现为「新增的导航入口/页面完全不存在」，即使服务端已经返回了新的资源（可用 `curl` 抓 `/` 观察 `assets/index-*.js` 哈希与 bundle 内容自证）。三层兜底：① `PwaManager` 必须在**登录页也挂载**（否则未登录用户永远看不到更新提示）；② 注册成功后立即判定 `reg.waiting && navigator.serviceWorker.controller` 并弹出更新提示（覆盖「上次错过提示」的历史遗留 SW）；③ 页面 `focus` / `visibilitychange` 与每 5 分钟主动 `registration.update()`，避免长期打开的标签页停留在旧版本。排障时让用户用 DevTools → Application → Service Workers → 注销 + 清站点数据，或直接用无痕窗口/换端口验证。
+- **[测试/Puppeteer] tsx + `page.evaluate` 内禁止声明局部函数**：`tsx`（esbuild keepNames）会把被求值函数内的箭头函数/函数声明包成 `__name(...)`，而 `__name` 只存在于 Node 侧，导致浏览器内抛 `ReferenceError: __name is not defined`。`page.evaluate` / `$$eval` 的回调里严禁 `const fn = () => ...` 这类局部函数声明，应改为在 Node 侧多次调用 `$$eval`/`$eval` 组合结果。
+- **[前端/无头渲染] 组件渲染期严禁直接取 `location`**：`replace-rules`、WebDAV 等页面在 `web/test` 中以 `renderToStaticMarkup` 做静态渲染断言，组件内若直接读 `location.origin` 会在 Node 环境抛错；必须封装 `currentOrigin()`（`typeof location === 'undefined'` 时返回空串）后再使用。
+
 
 ---
 
@@ -112,7 +120,8 @@ AI 与人类协作时必须明确当前达到的完成度阶梯，严禁混淆�
 | PROPOSAL-010 | 替换净化规则引擎与社区规则库导入体系 | [`docs/proposals/PROPOSAL-010-replace-rules-engine-and-community-purification.md`](file:///Users/zhangran/Documents/antigravity/joyful-galileo/docs/proposals/PROPOSAL-010-replace-rules-engine-and-community-purification.md) | Accepted |
 | PROPOSAL-011 | 替换净化规则升级为一级独立页面与阅读器设置抽屉集成 | [`docs/proposals/PROPOSAL-011-first-class-replace-rules-page-and-reader-settings-integration.md`](file:///Users/zhangran/Documents/antigravity/joyful-galileo/docs/proposals/PROPOSAL-011-first-class-replace-rules-page-and-reader-settings-integration.md) | Accepted |
 | PROPOSAL-012 | 完整 PWA 渐进式 Web 应用能力、用户自主正文分段离线缓存与沉浸式全屏抽屉适配 | [`docs/proposals/PROPOSAL-012-pwa-capabilities-and-fullscreen-drawer-adaptation.md`](file:///Users/zhangran/Documents/antigravity/joyful-galileo/docs/proposals/PROPOSAL-012-pwa-capabilities-and-fullscreen-drawer-adaptation.md) | Accepted |
-| PROPOSAL-013 | 移动端全面屏死区安全区深度适配与替换净化规则 UI 体系化重构 | [`docs/proposals/PROPOSAL-013-mobile-safe-area-and-rules-ui-redesign.md`](file:///Users/zhangran/Documents/antigravity/joyful-galileo/docs/proposals/PROPOSAL-013-mobile-safe-area-and-rules-ui-redesign.md) | Accepted |
+| PROPOSAL-013 | 移动端全面屏死区安全区深度适配与替换净化规则 UI 体系化重构 | [`docs/proposals/PROPOSAL-013-mobile-safe-area-and-rules-ui-redesign.md`](file:///root/legado-server/docs/proposals/PROPOSAL-013-mobile-safe-area-and-rules-ui-redesign.md) | Accepted |
+| PROPOSAL-014 | 内置 WebDAV 服务端与数据目录 webdav 存储区（含 Web 端「文件」设置页面） | [`docs/proposals/PROPOSAL-014-webdav-storage-server.md`](file:///root/legado-server/docs/proposals/PROPOSAL-014-webdav-storage-server.md) | Tested & Deployed |
 
 ### 架构决策记录 (ADR)
 | 编号 | 决策标题 | 关联文档 | 状态 |
@@ -130,6 +139,7 @@ AI 与人类协作时必须明确当前达到的完成度阶梯，严禁混淆�
 | ADR-011 | 替换规则升级为主导航一级页面与阅读器设置抽屉模块化收敛 | [`docs/decisions/ADR-011-first-class-replace-rules-navigation-and-reader-settings.md`](file:///Users/zhangran/Documents/antigravity/joyful-galileo/docs/decisions/ADR-011-first-class-replace-rules-navigation-and-reader-settings.md) | Accepted |
 | ADR-012 | 采用 vite-plugin-pwa 构筑双层用户可控离线缓存体系与 Safe-Area 沉浸式安全区适配 | [`docs/decisions/ADR-012-vite-plugin-pwa-workbox-and-safe-area-layout.md`](file:///Users/zhangran/Documents/antigravity/joyful-galileo/docs/decisions/ADR-012-vite-plugin-pwa-workbox-and-safe-area-layout.md) | Accepted |
 | ADR-013 | 全面屏安全区变量统一继承体系与替换规则设计系统化重构 | [`docs/decisions/ADR-013-safe-area-layout-and-rules-design-system.md`](file:///Users/zhangran/Documents/antigravity/joyful-galileo/docs/decisions/ADR-013-safe-area-layout-and-rules-design-system.md) | Accepted |
+| ADR-014 | 进程内 WebDAV 服务端选型、Basic 鉴权与最小 Class 2 锁实现 | [`docs/decisions/ADR-014-webdav-server-class2-minimal.md`](file:///root/legado-server/docs/decisions/ADR-014-webdav-server-class2-minimal.md) | Accepted |
 
 ### 工作记忆与历史推演归档 (Sessions Chronicle)
 | 日期 / ID | 类型 | 标题 / 议题 | 关联文档 | 状态 |
@@ -163,6 +173,7 @@ AI 与人类协作时必须明确当前达到的完成度阶梯，严禁混淆�
 | 2026-09-15 | Feat | 替换净化规则升级为一级独立页面与阅读器设置抽屉集成 | [`docs/sessions/SESSION-012-first-class-replace-rules-and-reader-settings.md`](file:///Users/zhangran/Documents/antigravity/joyful-galileo/docs/sessions/SESSION-012-first-class-replace-rules-and-reader-settings.md) | Accepted & Pushed |
 | 2026-09-15 | Feat | 完整 PWA 渐进式能力、用户自主正文分段离线缓存与沉浸式全屏抽屉适配 | [`docs/sessions/SESSION-013-pwa-and-offline-caching-architecture.md`](file:///root/legado-server/docs/sessions/SESSION-013-pwa-and-offline-caching-architecture.md) | Accepted & Pushed |
 | 2026-09-16 | Feat | 移动端全面屏死区安全区深度适配与替换净化规则 UI 体系化重构 | [`docs/acceptance/ACCEPT-013-mobile-safe-area-and-rules-ui-redesign.md`](file:///root/legado-server/docs/acceptance/ACCEPT-013-mobile-safe-area-and-rules-ui-redesign.md) | Accepted & Pushed |
+| 2026-09-17 | Feat | 内置 WebDAV 服务端与 Web 端「文件」设置页面，数据目录新增 webdav 文件夹存放上传数据 | [`docs/acceptance/ACCEPT-014-webdav-storage.md`](file:///root/legado-server/docs/acceptance/ACCEPT-014-webdav-storage.md) · [`docs/sessions/SESSION-014-webdav-storage-server.md`](file:///root/legado-server/docs/sessions/SESSION-014-webdav-storage-server.md) | Tested & Deployed |
 
 ---
 

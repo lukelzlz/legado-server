@@ -4,7 +4,7 @@ import { Logo } from './Logo'
 import { promptPwaInstall, subscribePwaInstall } from './PwaManager'
 import type { ReaderSettings } from './readerSettings'
 
-export type AppPage = 'sources' | 'subscriptions' | 'library' | 'shelf' | 'reader' | 'rules'
+export type AppPage = 'sources' | 'subscriptions' | 'library' | 'shelf' | 'reader' | 'rules' | 'webdav'
 
 export interface AppHeaderProps {
   page: AppPage
@@ -136,6 +136,14 @@ export function AppHeader({
         >
           规则
         </button>
+        <button
+          type="button"
+          className={page === 'webdav' ? 'active' : ''}
+          title="WebDAV 文件服务"
+          onClick={() => onNavigate('webdav')}
+        >
+          文件
+        </button>
       </nav>
 
       <div className="header-actions" ref={menuContainerRef}>
@@ -230,6 +238,19 @@ export function AppHeader({
                 >
                   <Icon name="edit" />
                   <span>替换净化规则</span>
+                </button>
+                <button
+                  type="button"
+                  className="menu-logout-btn"
+                  style={{ color: 'var(--text-color, #e6e8eb)' }}
+                  role="menuitem"
+                  onClick={() => {
+                    setMenuOpen(false)
+                    onNavigate('webdav')
+                  }}
+                >
+                  <Icon name="folder" />
+                  <span>WebDAV 文件服务</span>
                 </button>
               </div>
 

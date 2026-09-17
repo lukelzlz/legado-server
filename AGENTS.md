@@ -92,6 +92,7 @@ AI 与人类协作时必须明确当前达到的完成度阶梯，严禁混淆�
 - **[替换规则/沙箱] Rhino JS 沙箱顶级 return 包装与反爬反义词对调字典**：Legado 生态中的 `@js:` 替换规则普遍使用 `return map[result] || result` 组织代码。Rhino 沙箱在顶层执行 `return` 时会抛 `return not in function` 语法错误，沙箱必须检测并在必要时将代码包装进 `(function(){ ... })()` 匿名闭包执行；同时替换净化必须在 `RuleRunner.content()` 与 `BookCacheService` 离线下载落库前执行，避免脏文本污染持久化缓存，同时使后续 TTS 朗读自动获得清洗后的正文。
 - **[交互/导航] 核心系统能力一级导航呈现与阅读器抽屉收敛**：全局核心管理能力（书源、订阅、替换净化规则）必须在一级导航栏设立独立入口；而在沉浸式阅读器中，顶栏严格保持极简（目录、换源、设置、朗读），辅助净化规则统一收敛进「阅读设置」抽屉，杜绝顶栏拥挤。
 - **[PWA/离线缓存] 渐进式离线缓存与脱机阅读架构**：① Service Worker 缓存静态资源与应用壳，排除 `/api/tts/stream` 等实时长音频流；② 正文离线支持按「后50章/后100章/全本/自定义」4 并发切片下载，IndexedDB 存储纯净文本；③ 脱机断网期间阅读进度写入本地队列，网络恢复（`online` 事件）时静默 Flush 同步；④ 目录列表对已离线章节实时打绿点徽标（`●`）；⑤ 全面适配 `safe-area-inset-*` 与 `overscroll-behavior: none`，消除 iOS 橡皮筋下拉与刘海遮挡。
+- **[GitHub/贡献者] Force Push 历史孤立对象导致首页 Contributors 残留**：早期导入或 Force Push 覆盖分支后，GitHub 后端 Git 裸仓库仍残留旧 Commit 悬挂对象，导致仓库首页侧边栏聚合了历史 70+ 位幽灵贡献者，而 Insights 图表仅遍历有效 HEAD 正常显示。通过将远程默认分支切换为 `main`（`gh api repos/:owner/:repo/branches/master/rename -f new_name=main`）并更新本地跟踪与 CI 触发分支，可强制 GitHub 后台重构索引并清除悬挂贡献者。
 
 ---
 
@@ -166,6 +167,8 @@ AI 与人类协作时必须明确当前达到的完成度阶梯，严禁混淆�
 | 2026-09-15 | Feat | 完整 PWA 渐进式能力、用户自主正文分段离线缓存与沉浸式全屏抽屉适配 | [`docs/sessions/SESSION-013-pwa-and-offline-caching-architecture.md`](file:///root/legado-server/docs/sessions/SESSION-013-pwa-and-offline-caching-architecture.md) | Accepted & Pushed |
 | 2026-09-16 | Feat | 移动端全面屏死区安全区深度适配与替换净化规则 UI 体系化重构 | [`docs/acceptance/ACCEPT-013-mobile-safe-area-and-rules-ui-redesign.md`](file:///root/legado-server/docs/acceptance/ACCEPT-013-mobile-safe-area-and-rules-ui-redesign.md) | Accepted & Pushed |
 | 2026-09-17 | Feat | 书源批量整理、分组维护与轻量连通性健康体检体系 | [`docs/sessions/SESSION-015-book-source-batch-management-and-health-check.md`](file:///root/legado-server/docs/sessions/SESSION-015-book-source-batch-management-and-health-check.md) | Accepted & Pushed |
+| 2026-09-17 | Quickfix | 修复大灰狼等聚合书源因默认上游节点（v5.czyl.cf）下线导致的搜索超时报空 | - | Pushed |
+| 2026-09-17 | Quickfix | 重置默认分支为 main 并同步 CI/CD 流水线，清除 GitHub 历史悬挂贡献者缓存 | - | Pushed |
 
 ---
 

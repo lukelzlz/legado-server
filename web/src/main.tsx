@@ -13,6 +13,7 @@ import { SourceSwitchModal } from './SourceSwitchModal'
 import { SourceLoginModal } from './SourceLoginModal'
 import { ReplaceRulesModal } from './ReplaceRulesModal'
 import { ReplaceRulesPage } from './ReplaceRulesPage'
+import { WebDavSettingsPage } from './WebDavSettingsPage'
 import { OfflineCacheModal } from './OfflineCacheModal'
 import { PwaManager } from './PwaManager'
 import { flushOfflineProgress } from './offlineStorage'
@@ -25,9 +26,9 @@ import { parseSourceJsonText, extractSourcesFromRaw, sanitizeImageUrl } from './
 export { extractSourcesFromRaw, parseSourceJsonText, sanitizeImageUrl }
 export type { SourceChoice, SourceChoiceStatus }
 
-type Page = 'sources' | 'subscriptions' | 'library' | 'shelf' | 'reader' | 'rules'
+type Page = 'sources' | 'subscriptions' | 'library' | 'shelf' | 'reader' | 'rules' | 'webdav'
 const readerStorageKey = 'legado-open-book-v1'
-const pageFromHash = (): Page => location.hash === '#sources' ? 'sources' : location.hash === '#subscriptions' ? 'subscriptions' : location.hash === '#rules' ? 'rules' : location.hash === '#shelf' ? 'shelf' : location.hash === '#reader' ? 'reader' : 'library'
+const pageFromHash = (): Page => location.hash === '#sources' ? 'sources' : location.hash === '#subscriptions' ? 'subscriptions' : location.hash === '#rules' ? 'rules' : location.hash === '#webdav' ? 'webdav' : location.hash === '#shelf' ? 'shelf' : location.hash === '#reader' ? 'reader' : 'library'
 
 function SourceChoiceList({
   choices,
@@ -1521,7 +1522,7 @@ function App() {
   }
 
   if (!ready) return <main className={`app-loading theme-${settings.theme}`}><span>正在打开阅读空间...</span></main>
-  if (!authenticated) return <div className={`app-shell theme-${settings.theme}`}><ToastContainer /><Login onLogin={() => { setAuthenticated(true); void api.sources().then(setSources).catch(() => undefined) }} /></div>
+  if (!authenticated) return <div className={`app-shell theme-${settings.theme}`}><ToastContainer /><PwaManager /><Login onLogin={() => { setAuthenticated(true); void api.sources().then(setSources).catch(() => undefined) }} /></div>
 
   if (page === 'reader' && reader) {
     return (
@@ -1562,6 +1563,8 @@ function App() {
         <SubscriptionPage onSourcesChange={refreshSources} />
       ) : page === 'rules' ? (
         <ReplaceRulesPage />
+      ) : page === 'webdav' ? (
+        <WebDavSettingsPage />
       ) : page === 'shelf' ? (
         <ShelfPage onOpen={item => void openShelfItem(item)} />
       ) : (

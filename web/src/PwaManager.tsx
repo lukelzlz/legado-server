@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react'
+import React, { useEffect, useRef, useState } from 'react'
 import { Icon } from './icons'
 import { Logo } from './Logo'
 
@@ -57,6 +57,7 @@ export function PwaManager() {
   })
   const [needRefresh, setNeedRefresh] = useState(false)
   const [registration, setRegistration] = useState<ServiceWorkerRegistration | null>(null)
+  const registrationRef = useRef<ServiceWorkerRegistration | null>(null)
 
   useEffect(() => {
     // 1. Listen for install prompt
@@ -77,8 +78,11 @@ export function PwaManager() {
     window.addEventListener('appinstalled', handleAppInstalled)
 
     // 2. Service Worker registration and update detection
+    let checkForUpdate: (() => void) | null = null
+    let updateTimer = 0
     if ('serviceWorker' in navigator && process.env.NODE_ENV !== 'test') {
       navigator.serviceWorker.register('/sw.js', { scope: '/' }).then(reg => {
+        registrationRef.current = reg
         setRegistration(reg)
 
         reg.addEventListener('updatefound', () => {
@@ -91,9 +95,21 @@ export function PwaManager() {
             })
           }
         })
+
+        // 旧版 Service Worker 已装好并处于等待态时（例如上次错过了更新提示），立即给出提示
+        if (reg.waiting && navigator.serviceWorker.controller) setNeedRefresh(true)
+
+        // 浏览器默认只在导航时检查更新，这里补一次立即检查
+        void reg.update().catch(() => undefined)
       }).catch(() => {
         // SW register failed or disabled
       })
+
+      // 页面长期打开 / 从后台切回时主动检查更新，避免「服务端已更新但页面仍是旧版」
+      checkForUpdate = () => { void registrationRef.current?.update().catch(() => undefined) }
+      window.addEventListener('focus', checkForUpdate)
+      document.addEventListener('visibilitychange', checkForUpdate)
+      updateTimer = window.setInterval(checkForUpdate, 5 * 60 * 1000)
 
       let refreshing = false
       navigator.serviceWorker.addEventListener('controllerchange', () => {
@@ -107,6 +123,11 @@ export function PwaManager() {
     return () => {
       window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt)
       window.removeEventListener('appinstalled', handleAppInstalled)
+      if (checkForUpdate) {
+        window.removeEventListener('focus', checkForUpdate)
+        document.removeEventListener('visibilitychange', checkForUpdate)
+      }
+      if (updateTimer) window.clearInterval(updateTimer)
     }
   }, [])
 

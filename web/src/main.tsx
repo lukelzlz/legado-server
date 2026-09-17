@@ -14,6 +14,8 @@ import { SourceLoginModal } from './SourceLoginModal'
 import { ReplaceRulesModal } from './ReplaceRulesModal'
 import { ReplaceRulesPage } from './ReplaceRulesPage'
 import { OfflineCacheModal } from './OfflineCacheModal'
+import { SourceHealthModal } from './SourceHealthModal'
+import { SourceGroupModal } from './SourceGroupModal'
 import { PwaManager } from './PwaManager'
 import { flushOfflineProgress } from './offlineStorage'
 import { toast, ToastContainer } from './Toast'
@@ -494,9 +496,16 @@ function SubscriptionPage({ onSourcesChange }: { onSourcesChange: () => void }) 
 function SourcesPage({ selected, onSelect, onSourcesChange }: { selected: SourceSummary | null; onSelect: (source: SourceSummary | null) => void; onSourcesChange: (sources: SourceSummary[]) => void }) {
   const [sources, setSources] = useState<SourceSummary[]>([])
   const [query, setQuery] = useState('')
+  const [groupFilter, setGroupFilter] = useState('')
   const [notice, setNotice] = useState('')
   const [importing, setImporting] = useState(false)
+  const [isBatchMode, setIsBatchMode] = useState(false)
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
+  const [showHealthModal, setShowHealthModal] = useState(false)
+  const [showGroupModal, setShowGroupModal] = useState(false)
+  const [busyBatch, setBusyBatch] = useState(false)
   const [loginModalSource, setLoginModalSource] = useState<SourceSummary | null>(null)
+
   const load = useCallback(async () => {
     try {
       const values = await api.sources(query)
@@ -506,10 +515,148 @@ function SourcesPage({ selected, onSelect, onSourcesChange }: { selected: Source
       setNotice(error instanceof Error ? error.message : '无法载入书源')
     }
   }, [onSourcesChange, query])
+
   useEffect(() => {
     const timer = window.setTimeout(() => { void load() }, 180)
     return () => window.clearTimeout(timer)
   }, [load])
+
+  const allGroups = useMemo(() => {
+    const set = new Set<string>()
+    for (const s of sources) {
+      if (s.group && s.group.trim()) set.add(s.group.trim())
+    }
+    return Array.from(set).sort()
+  }, [sources])
+
+  const filteredSources = useMemo(() => {
+    return sources.filter(source => {
+      if (groupFilter) {
+        if (groupFilter === '__none__' && source.group) return false
+        if (groupFilter !== '__none__' && (source.group ?? '') !== groupFilter) return false
+      }
+      if (query) {
+        const q = query.toLowerCase()
+        return source.name.toLowerCase().includes(q) || source.url.toLowerCase().includes(q) || (source.group ?? '').toLowerCase().includes(q)
+      }
+      return true
+    })
+  }, [sources, groupFilter, query])
+
+  const toggleSelect = (id: string) => {
+    setSelectedIds(prev => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
+  const handleSelectAll = () => {
+    setSelectedIds(new Set(filteredSources.map(s => s.id)))
+  }
+
+  const handleClearAll = () => {
+    setSelectedIds(new Set())
+  }
+
+  const handleInvertSelection = () => {
+    setSelectedIds(prev => {
+      const next = new Set<string>()
+      for (const s of filteredSources) {
+        if (!prev.has(s.id)) next.add(s.id)
+      }
+      return next
+    })
+  }
+
+  const handleBatchEnable = async () => {
+    if (selectedIds.size === 0) return
+    setBusyBatch(true)
+    try {
+      const resp = await api.batchSources('enable', Array.from(selectedIds))
+      toast.success(resp.message || `已批量启用 ${resp.affected} 个书源`)
+      await load()
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : '启用失败')
+    } finally {
+      setBusyBatch(false)
+    }
+  }
+
+  const handleBatchDisable = async () => {
+    if (selectedIds.size === 0) return
+    setBusyBatch(true)
+    try {
+      const resp = await api.batchSources('disable', Array.from(selectedIds))
+      toast.success(resp.message || `已批量停用 ${resp.affected} 个书源`)
+      await load()
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : '停用失败')
+    } finally {
+      setBusyBatch(false)
+    }
+  }
+
+  const handleBatchDelete = async () => {
+    if (selectedIds.size === 0) return
+    const selectedSources = sources.filter(s => selectedIds.has(s.id))
+    const namesSummary = selectedSources.slice(0, 3).map(s => s.name).join('、') + (selectedSources.length > 3 ? ` 等共 ${selectedSources.length} 项` : '')
+    if (!confirm(`确定要彻底删除选中的 ${selectedIds.size} 个书源吗？\n（${namesSummary}）\n删除后不可恢复！`)) return
+    setBusyBatch(true)
+    try {
+      const resp = await api.batchSources('delete', Array.from(selectedIds))
+      toast.success(resp.message || `已删除 ${resp.affected} 个书源`)
+      setSelectedIds(new Set())
+      if (selected && selectedIds.has(selected.id)) {
+        onSelect(null)
+      }
+      await load()
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : '删除失败')
+    } finally {
+      setBusyBatch(false)
+    }
+  }
+
+  const handleBatchExport = async () => {
+    if (selectedIds.size === 0) return
+    setBusyBatch(true)
+    try {
+      const exportStrings = await api.exportSources(Array.from(selectedIds))
+      const parsedList = exportStrings.map(str => {
+        try { return JSON.parse(str) } catch { return null }
+      }).filter(Boolean)
+      const blob = new Blob([JSON.stringify(parsedList, null, 2)], { type: 'application/json' })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `legado_sources_export_${new Date().toISOString().slice(0, 10)}.json`
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+      URL.revokeObjectURL(url)
+      toast.success(`已成功导出 ${parsedList.length} 个书源`)
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : '导出失败')
+    } finally {
+      setBusyBatch(false)
+    }
+  }
+
+  const handleBatchGroupConfirm = async (newGroup: string | null) => {
+    if (selectedIds.size === 0) return
+    setBusyBatch(true)
+    try {
+      const resp = await api.batchSources('set_group', Array.from(selectedIds), newGroup ?? undefined)
+      toast.success(resp.message || `已更新 ${resp.affected} 个书源的分组`)
+      await load()
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : '修改分组失败')
+    } finally {
+      setBusyBatch(false)
+    }
+  }
 
   const importSources = async (file: File | undefined) => {
     if (!file) return
@@ -556,18 +703,75 @@ function SourcesPage({ selected, onSelect, onSourcesChange }: { selected: Source
       setImporting(false)
     }
   }
-  const remove = async () => { if (!selected || !confirm(`删除“${selected.name}”？`)) return; try { await api.remove(selected.id); onSelect(null); await load() } catch (error) { setNotice(error instanceof Error ? error.message : '删除失败') } }
+
+  const remove = async () => {
+    if (!selected || !confirm(`删除“${selected.name}”？`)) return
+    try {
+      await api.remove(selected.id)
+      onSelect(null)
+      await load()
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : '删除失败')
+    }
+  }
+
   return (
-    <main className="sources-page">
+    <main className={`sources-page ${isBatchMode ? 'batch-mode-active' : ''}`}>
       <aside className="source-sidebar">
         <div className="source-sidebar-heading">
-          <span>书源</span>
-          <small>{sources.length}</small>
+          <div className="source-sidebar-title-row">
+            <span>书源</span>
+            <small>{sources.length}</small>
+          </div>
+          <div className="source-sidebar-top-actions">
+            <button
+              type="button"
+              className="subtle-button icon-button health-probe-btn"
+              title="书源连通性体检"
+              onClick={() => setShowHealthModal(true)}
+            >
+              <Icon name="activity" />
+              <span>体检</span>
+            </button>
+            <button
+              type="button"
+              className={`subtle-button ${isBatchMode ? 'active-batch-btn' : ''}`}
+              onClick={() => {
+                setIsBatchMode(prev => !prev)
+                setSelectedIds(new Set())
+              }}
+            >
+              {isBatchMode ? '退出批量' : '批量管理'}
+            </button>
+          </div>
         </div>
+
+        {allGroups.length > 0 && (
+          <div className="source-group-filter-bar">
+            <select
+              className="source-group-select"
+              value={groupFilter}
+              onChange={e => setGroupFilter(e.target.value)}
+              aria-label="按分组筛选书源"
+            >
+              <option value="">全部分组 ({sources.length})</option>
+              {allGroups.map(g => (
+                <option key={g} value={g}>
+                  {g} ({sources.filter(s => s.group === g).length})
+                </option>
+              ))}
+              <option value="__none__">
+                未分组 ({sources.filter(s => !s.group).length})
+              </option>
+            </select>
+          </div>
+        )}
+
         <div className="source-filter">
           <Icon name="search" />
           <input placeholder="筛选书源" value={query} onChange={event => setQuery(event.target.value)} />
         </div>
+
         <label className={`import-button ${importing ? 'disabled' : ''}`}>
           <Icon name="upload" />
           {importing ? '导入中...' : '导入 JSON'}
@@ -582,19 +786,59 @@ function SourcesPage({ selected, onSelect, onSourcesChange }: { selected: Source
             }}
           />
         </label>
+
         {notice && <p className="sidebar-notice">{notice}</p>}
+
         <nav className="source-list">
-          {sources.map(source => (
-            <button className={selected?.id === source.id ? 'selected' : ''} key={source.id} onClick={() => onSelect(source)}>
-              <div className="source-list-item-title">
-                <span>{source.name}</span>
-                {source.hasLogin && <span className="source-login-badge" title="支持登录鉴权">登录</span>}
-              </div>
-              <small>{source.group || (source.isJsSource ? 'JS 书源' : '书源')}</small>
-            </button>
-          ))}
+          {filteredSources.map(source => {
+            const isChecked = selectedIds.has(source.id)
+            const isCurrent = selected?.id === source.id
+
+            if (isBatchMode) {
+              return (
+                <div
+                  key={source.id}
+                  className={`source-list-item batch-item ${isChecked ? 'checked' : ''}`}
+                  onClick={() => toggleSelect(source.id)}
+                >
+                  <label className="batch-checkbox-wrap" onClick={e => e.stopPropagation()}>
+                    <input
+                      type="checkbox"
+                      checked={isChecked}
+                      onChange={() => toggleSelect(source.id)}
+                    />
+                  </label>
+                  <div className="source-list-item-content">
+                    <div className="source-list-item-title">
+                      <span>{source.name}</span>
+                      {!source.enabled && <span className="source-disabled-badge">已停用</span>}
+                      {source.hasLogin && <span className="source-login-badge" title="支持登录鉴权">登录</span>}
+                    </div>
+                    <small>{source.group || (source.isJsSource ? 'JS 书源' : '书源')}</small>
+                  </div>
+                </div>
+              )
+            }
+
+            return (
+              <button
+                className={isCurrent ? 'selected' : ''}
+                key={source.id}
+                type="button"
+                onClick={() => onSelect(source)}
+              >
+                <div className="source-list-item-title">
+                  <span>{source.name}</span>
+                  {!source.enabled && <span className="source-disabled-badge">已停用</span>}
+                  {source.hasLogin && <span className="source-login-badge" title="支持登录鉴权">登录</span>}
+                </div>
+                <small>{source.group || (source.isJsSource ? 'JS 书源' : '书源')}</small>
+              </button>
+            )
+          })}
         </nav>
       </aside>
+
       <section className="sources-content">
         <header className="page-title">
           <div>
@@ -616,6 +860,103 @@ function SourcesPage({ selected, onSelect, onSourcesChange }: { selected: Source
           onOpenLogin={source => setLoginModalSource(source)}
         />
       </section>
+
+      {/* Floating Batch Action Bar */}
+      {isBatchMode && (
+        <aside className="source-batch-bar" aria-label="书源批量操作工具栏">
+          <div className="batch-bar-left">
+            <span className="batch-bar-count">
+              已选 <strong>{selectedIds.size}</strong> / {filteredSources.length}
+            </span>
+            <div className="batch-select-helpers">
+              <button type="button" className="subtle-button compact" onClick={handleSelectAll}>
+                全选
+              </button>
+              <button type="button" className="subtle-button compact" onClick={handleClearAll}>
+                全不选
+              </button>
+              <button type="button" className="subtle-button compact" onClick={handleInvertSelection}>
+                反选
+              </button>
+            </div>
+          </div>
+          <div className="batch-bar-right">
+            <button
+              type="button"
+              className="subtle-button"
+              disabled={selectedIds.size === 0 || busyBatch}
+              onClick={() => void handleBatchEnable()}
+            >
+              批量启用
+            </button>
+            <button
+              type="button"
+              className="subtle-button"
+              disabled={selectedIds.size === 0 || busyBatch}
+              onClick={() => void handleBatchDisable()}
+            >
+              批量停用
+            </button>
+            <button
+              type="button"
+              className="subtle-button"
+              disabled={selectedIds.size === 0 || busyBatch}
+              onClick={() => setShowGroupModal(true)}
+            >
+              修改分组
+            </button>
+            <button
+              type="button"
+              className="subtle-button"
+              disabled={selectedIds.size === 0 || busyBatch}
+              onClick={() => void handleBatchExport()}
+            >
+              导出选中
+            </button>
+            <button
+              type="button"
+              className="danger-button"
+              disabled={selectedIds.size === 0 || busyBatch}
+              onClick={() => void handleBatchDelete()}
+            >
+              批量删除
+            </button>
+            <button
+              type="button"
+              className="secondary-button"
+              onClick={() => {
+                setIsBatchMode(false)
+                setSelectedIds(new Set())
+              }}
+            >
+              完成
+            </button>
+          </div>
+        </aside>
+      )}
+
+      {showHealthModal && (
+        <SourceHealthModal
+          sources={sources}
+          onClose={() => setShowHealthModal(false)}
+          onSourcesChange={() => void load()}
+          onToast={(msg, type) => {
+            if (type === 'error') toast.error(msg)
+            else if (type === 'success') toast.success(msg)
+            else toast.info(msg)
+          }}
+        />
+      )}
+
+      {showGroupModal && (
+        <SourceGroupModal
+          selectedCount={selectedIds.size}
+          existingGroups={allGroups}
+          onConfirm={handleBatchGroupConfirm}
+          onClose={() => setShowGroupModal(false)}
+        />
+      )}
+
       {loginModalSource && (
         <SourceLoginModal
           sourceId={loginModalSource.id}

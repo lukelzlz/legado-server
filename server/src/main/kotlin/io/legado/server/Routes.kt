@@ -45,6 +45,88 @@ fun Route.apiRoutes(
             if (auth.requireSession(call) == null) return@get
             call.respond(database.listSources(call.request.queryParameters["q"]))
         }
+        post("/sources/batch") {
+            if (auth.requireSession(call, true) == null) return@post
+            val req = call.receive<BatchSourceRequest>()
+            if (req.ids.isEmpty()) {
+                call.respond(HttpStatusCode.BadRequest, ApiError("empty_selection", "请先选择需要操作的书源"))
+                return@post
+            }
+            try {
+                val count = database.batchUpdateSources(req.ids, req.action, req.group)
+                val msg = when (req.action) {
+                    "enable" -> "已成功启用 $count 个书源"
+                    "disable" -> "已成功停用 $count 个书源"
+                    "delete" -> "已成功删除 $count 个书源"
+                    "set_group" -> if (req.group.isNullOrBlank()) "已清空 $count 个书源的分组" else "已将 $count 个书源移至分组“${req.group}”"
+                    else -> "已处理 $count 个书源"
+                }
+                call.application.log.info("source batch operation: action={}, count={}", req.action, count)
+                call.respond(BatchSourceResponse(ok = true, affected = count, action = req.action, message = msg))
+            } catch (error: IllegalArgumentException) {
+                call.respond(HttpStatusCode.BadRequest, ApiError("invalid_action", error.message ?: "无效的批量操作"))
+            } catch (error: Throwable) {
+                call.application.log.error("source batch operation failed", error)
+                call.respond(HttpStatusCode.InternalServerError, ApiError("batch_failed", error.message ?: "批量操作失败"))
+            }
+        }
+        post("/sources/health-check") {
+            if (auth.requireSession(call) == null) return@post
+            val req = runCatching { call.receive<SourceHealthCheckRequest>() }.getOrElse { SourceHealthCheckRequest() }
+            val timeoutMs = req.timeoutMs.coerceIn(1000L, 10000L)
+            val allSources = database.listSources(null)
+            val targetSources = if (!req.ids.isNullOrEmpty()) {
+                val idSet = req.ids.toSet()
+                allSources.filter { it.id in idSet }
+            } else {
+                allSources
+            }
+
+            val startTotalNs = System.nanoTime()
+            val semaphore = Semaphore(8)
+            val probeClient = java.net.http.HttpClient.newBuilder()
+                .connectTimeout(java.time.Duration.ofMillis(timeoutMs))
+                .followRedirects(java.net.http.HttpClient.Redirect.NORMAL)
+                .build()
+
+            val results = coroutineScope {
+                targetSources.map { summary ->
+                    async(Dispatchers.IO) {
+                        semaphore.withPermit {
+                            val record = database.getSource(summary.id)
+                            if (record == null) {
+                                SourceHealthCheckItem(
+                                    id = summary.id,
+                                    name = summary.name,
+                                    ok = false,
+                                    latencyMs = 0L,
+                                    statusCode = 0,
+                                    statusCategory = "failed",
+                                    error = "书源记录不存在",
+                                )
+                            } else {
+                                probeSingleSourceHealth(probeClient, summary.id, summary.name, record.json, timeoutMs)
+                            }
+                        }
+                    }
+                }.awaitAll()
+            }
+            val totalDurationMs = (System.nanoTime() - startTotalNs) / 1_000_000
+            val successCount = results.count { it.statusCategory == "valid" }
+            val slowCount = results.count { it.statusCategory == "slow" }
+            val failedCount = results.count { it.statusCategory == "failed" || it.statusCategory == "blocked" }
+
+            call.respond(
+                SourceHealthCheckResponse(
+                    total = results.size,
+                    successCount = successCount,
+                    slowCount = slowCount,
+                    failedCount = failedCount,
+                    durationMs = totalDurationMs,
+                    results = results,
+                )
+            )
+        }
         get("/sources/export") {
             if (auth.requireSession(call) == null) return@get
             call.respondText(
@@ -1023,4 +1105,184 @@ private suspend fun parseImportedReplaceRules(bodyText: String): List<ReplaceRul
         )
     }
 }
+
+private suspend fun probeSingleSourceHealth(
+    client: java.net.http.HttpClient,
+    sourceId: String,
+    sourceName: String,
+    rawJson: String,
+    timeoutMs: Long,
+): SourceHealthCheckItem {
+    val validation = SourceCodec.validate(rawJson)
+    if (!validation.valid) {
+        return SourceHealthCheckItem(
+            id = sourceId,
+            name = sourceName,
+            ok = false,
+            latencyMs = 0L,
+            statusCode = 0,
+            statusCategory = "failed",
+            error = validation.errors.firstOrNull() ?: "书源规则语法无效",
+        )
+    }
+
+    val sourceObj = runCatching { Json.parseToJsonElement(rawJson).jsonObject }.getOrNull()
+    val isJs = sourceObj?.get("mainJs")?.let { (it as? JsonPrimitive)?.contentOrNull?.isNotBlank() } == true
+    val bookSourceUrl = (sourceObj?.get("bookSourceUrl") as? JsonPrimitive)?.contentOrNull?.trim()
+    val searchUrl = (sourceObj?.get("searchUrl") as? JsonPrimitive)?.contentOrNull?.trim()
+
+    val candidateUrl = when {
+        bookSourceUrl?.startsWith("http://", ignoreCase = true) == true || bookSourceUrl?.startsWith("https://", ignoreCase = true) == true -> bookSourceUrl
+        searchUrl?.startsWith("http://", ignoreCase = true) == true || searchUrl?.startsWith("https://", ignoreCase = true) == true -> searchUrl.substringBefore("{{").substringBefore("@").substringBefore(",")
+        else -> null
+    }
+
+    if (candidateUrl == null) {
+        return if (isJs) {
+            SourceHealthCheckItem(
+                id = sourceId,
+                name = sourceName,
+                ok = true,
+                latencyMs = 1L,
+                statusCode = 200,
+                statusCategory = "valid",
+                error = null,
+            )
+        } else {
+            SourceHealthCheckItem(
+                id = sourceId,
+                name = sourceName,
+                ok = false,
+                latencyMs = 0L,
+                statusCode = 0,
+                statusCategory = "failed",
+                error = "未配置可达的 HTTP(S) 地址",
+            )
+        }
+    }
+
+    val startNs = System.nanoTime()
+    return try {
+        val cleanUrl = candidateUrl.substringBefore("#").trim()
+        val targetUri = java.net.URI.create(cleanUrl)
+        try {
+            NetworkSecurity.resolveAndValidateSafeHttpTarget(targetUri, "书源")
+        } catch (ssrfEx: IllegalArgumentException) {
+            return SourceHealthCheckItem(
+                id = sourceId,
+                name = sourceName,
+                ok = false,
+                latencyMs = 0L,
+                statusCode = 0,
+                statusCategory = "failed",
+                error = ssrfEx.message ?: "安全校验未通过",
+            )
+        }
+
+        val req = java.net.http.HttpRequest.newBuilder(targetUri)
+            .timeout(java.time.Duration.ofMillis(timeoutMs))
+            .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36")
+            .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+            .GET()
+            .build()
+
+        val resp = withContext(Dispatchers.IO) {
+            client.send(req, java.net.http.HttpResponse.BodyHandlers.discarding())
+        }
+        val latencyMs = (System.nanoTime() - startNs) / 1_000_000
+        val code = resp.statusCode()
+
+        when (code) {
+            in 200..399 -> {
+                val category = if (latencyMs > 2500) "slow" else "valid"
+                SourceHealthCheckItem(
+                    id = sourceId,
+                    name = sourceName,
+                    ok = true,
+                    latencyMs = latencyMs,
+                    statusCode = code,
+                    statusCategory = category,
+                    error = null,
+                )
+            }
+            401, 403 -> {
+                SourceHealthCheckItem(
+                    id = sourceId,
+                    name = sourceName,
+                    ok = false,
+                    latencyMs = latencyMs,
+                    statusCode = code,
+                    statusCategory = "blocked",
+                    error = "访问受限 (HTTP $code)",
+                )
+            }
+            else -> {
+                SourceHealthCheckItem(
+                    id = sourceId,
+                    name = sourceName,
+                    ok = false,
+                    latencyMs = latencyMs,
+                    statusCode = code,
+                    statusCategory = "failed",
+                    error = "响应异常 (HTTP $code)",
+                )
+            }
+        }
+    } catch (ex: java.net.http.HttpTimeoutException) {
+        val latencyMs = (System.nanoTime() - startNs) / 1_000_000
+        SourceHealthCheckItem(
+            id = sourceId,
+            name = sourceName,
+            ok = false,
+            latencyMs = latencyMs,
+            statusCode = 0,
+            statusCategory = "failed",
+            error = "连接超时 (>${timeoutMs}ms)",
+        )
+    } catch (ex: java.net.UnknownHostException) {
+        SourceHealthCheckItem(
+            id = sourceId,
+            name = sourceName,
+            ok = false,
+            latencyMs = 0L,
+            statusCode = 0,
+            statusCategory = "failed",
+            error = "域名解析失败 (${ex.message ?: "DNS Error"})",
+        )
+    } catch (ex: javax.net.ssl.SSLException) {
+        val latencyMs = (System.nanoTime() - startNs) / 1_000_000
+        SourceHealthCheckItem(
+            id = sourceId,
+            name = sourceName,
+            ok = false,
+            latencyMs = latencyMs,
+            statusCode = 0,
+            statusCategory = "failed",
+            error = "SSL证书或握手失败 (${ex.message ?: "SSL Error"})",
+        )
+    } catch (ex: java.net.ConnectException) {
+        val latencyMs = (System.nanoTime() - startNs) / 1_000_000
+        SourceHealthCheckItem(
+            id = sourceId,
+            name = sourceName,
+            ok = false,
+            latencyMs = latencyMs,
+            statusCode = 0,
+            statusCategory = "failed",
+            error = "连接被拒绝 (${ex.message ?: "Connection Refused"})",
+        )
+    } catch (ex: Throwable) {
+        val latencyMs = (System.nanoTime() - startNs) / 1_000_000
+        SourceHealthCheckItem(
+            id = sourceId,
+            name = sourceName,
+            ok = false,
+            latencyMs = latencyMs,
+            statusCode = 0,
+            statusCategory = "failed",
+            error = ex.message ?: "探测异常",
+        )
+    }
+}
+
 

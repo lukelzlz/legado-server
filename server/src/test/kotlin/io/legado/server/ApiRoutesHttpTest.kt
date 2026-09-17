@@ -509,5 +509,111 @@ class ApiRoutesHttpTest {
             tempDir.toFile().deleteRecursively()
         }
     }
+
+    @Test
+    fun `batch source operations and health check endpoint`() = testApplication {
+        val dbPath = Files.createTempFile("legado-routes-source-batch", ".sqlite").toString()
+        val tempDir = Files.createTempDirectory("legado-routes-covers")
+        try {
+            val config = ServerConfig(
+                host = "0.0.0.0", port = 8080, databasePath = dbPath,
+                coverCacheDirectory = tempDir, initialAdminPassword = "test-password-1234", secureCookies = false
+            )
+            application { legadoApplication(config) }
+            val client = createClient {
+                install(ContentNegotiation) { json(Json { ignoreUnknownKeys = true; explicitNulls = false }) }
+                install(HttpCookies)
+            }
+
+            val csrf = setupAuthenticatedClient(client, "test-password-1234")
+
+            // 1. Import test sources
+            val sources = listOf(
+                """{"bookSourceUrl":"https://batch1.com","bookSourceName":"批量源1","bookSourceGroup":"旧分组","searchUrl":"/search?key={{key}}","ruleSearch":{"bookList":"$.data","name":"$.title","bookUrl":"/b/{{$.id}}"}}""",
+                """{"bookSourceUrl":"https://batch2.com","bookSourceName":"批量源2","bookSourceGroup":"旧分组","searchUrl":"/search?key={{key}}","ruleSearch":{"bookList":"$.data","name":"$.title","bookUrl":"/b/{{$.id}}"}}""",
+                """{"bookSourceUrl":"https://batch3.com","bookSourceName":"批量源3","searchUrl":"/search?key={{key}}","ruleSearch":{"bookList":"$.data","name":"$.title","bookUrl":"/b/{{$.id}}"}}"""
+            )
+            val importResp = client.post("/api/sources/import") {
+                header(AuthService.CSRF_HEADER, csrf)
+                contentType(ContentType.Application.Json)
+                setBody(ImportRequest(sources))
+            }
+            assertEquals(HttpStatusCode.OK, importResp.status)
+
+            // 2. Batch Disable
+            val disableResp = client.post("/api/sources/batch") {
+                header(AuthService.CSRF_HEADER, csrf)
+                contentType(ContentType.Application.Json)
+                setBody(BatchSourceRequest(action = "disable", ids = listOf("https://batch1.com", "https://batch2.com")))
+            }
+            assertEquals(HttpStatusCode.OK, disableResp.status)
+            val disableBody = disableResp.body<BatchSourceResponse>()
+            assertTrue(disableBody.ok)
+            assertEquals(2, disableBody.affected)
+
+            // Verify list sources reflects disabled
+            val listResp1 = client.get("/api/sources")
+            val list1 = listResp1.body<List<SourceSummary>>()
+            assertFalse(list1.first { it.id == "https://batch1.com" }.enabled)
+            assertFalse(list1.first { it.id == "https://batch2.com" }.enabled)
+            assertTrue(list1.first { it.id == "https://batch3.com" }.enabled)
+
+            // 3. Batch Enable
+            val enableResp = client.post("/api/sources/batch") {
+                header(AuthService.CSRF_HEADER, csrf)
+                contentType(ContentType.Application.Json)
+                setBody(BatchSourceRequest(action = "enable", ids = listOf("https://batch1.com")))
+            }
+            assertEquals(HttpStatusCode.OK, enableResp.status)
+            val enableBody = enableResp.body<BatchSourceResponse>()
+            assertEquals(1, enableBody.affected)
+
+            // 4. Batch Set Group
+            val groupResp = client.post("/api/sources/batch") {
+                header(AuthService.CSRF_HEADER, csrf)
+                contentType(ContentType.Application.Json)
+                setBody(BatchSourceRequest(action = "set_group", ids = listOf("https://batch1.com", "https://batch3.com"), group = "精品新组"))
+            }
+            assertEquals(HttpStatusCode.OK, groupResp.status)
+            val groupBody = groupResp.body<BatchSourceResponse>()
+            assertEquals(2, groupBody.affected)
+
+            val listResp2 = client.get("/api/sources")
+            val list2 = listResp2.body<List<SourceSummary>>()
+            assertEquals("精品新组", list2.first { it.id == "https://batch1.com" }.group)
+            assertEquals("精品新组", list2.first { it.id == "https://batch3.com" }.group)
+            assertEquals("旧分组", list2.first { it.id == "https://batch2.com" }.group)
+
+            // 5. Health Check Endpoint
+            val healthResp = client.post("/api/sources/health-check") {
+                header(AuthService.CSRF_HEADER, csrf)
+                contentType(ContentType.Application.Json)
+                setBody(SourceHealthCheckRequest(ids = listOf("https://batch1.com"), timeoutMs = 1000L))
+            }
+            assertEquals(HttpStatusCode.OK, healthResp.status)
+            val healthBody = healthResp.body<SourceHealthCheckResponse>()
+            assertEquals(1, healthBody.total)
+            assertEquals(1, healthBody.results.size)
+            assertEquals("https://batch1.com", healthBody.results.first().id)
+
+            // 6. Batch Delete
+            val deleteResp = client.post("/api/sources/batch") {
+                header(AuthService.CSRF_HEADER, csrf)
+                contentType(ContentType.Application.Json)
+                setBody(BatchSourceRequest(action = "delete", ids = listOf("https://batch1.com", "https://batch2.com", "https://batch3.com")))
+            }
+            assertEquals(HttpStatusCode.OK, deleteResp.status)
+            val deleteBody = deleteResp.body<BatchSourceResponse>()
+            assertEquals(3, deleteBody.affected)
+
+            val listResp3 = client.get("/api/sources")
+            val list3 = listResp3.body<List<SourceSummary>>()
+            assertEquals(0, list3.size)
+        } finally {
+            Files.deleteIfExists(Path.of(dbPath))
+            tempDir.toFile().deleteRecursively()
+        }
+    }
 }
+
 

@@ -20,6 +20,40 @@ export type ImportResponse = { imported: number; updated: number; skipped: numbe
 export type SourceSubscription = { id: number; url: string; enabled: boolean; createdAt: number; updatedAt: number; lastSuccessAt?: number; lastAttemptAt?: number; lastError?: string; lastImported: number; contentHash?: string }
 export type SearchStreamEvent = { type: 'start' | 'results' | 'progress' | 'done' | 'error'; totalSources: number; completedSources: number; matchedSources: number; emptySources: number; failedSources: number; resultCount: number; results: SearchResult[]; message?: string }
 
+export type BatchSourceAction = 'enable' | 'disable' | 'delete' | 'set_group'
+export type BatchSourceRequest = {
+  action: BatchSourceAction
+  ids: string[]
+  group?: string
+}
+
+export type BatchSourceResponse = {
+  ok: boolean
+  affected: number
+  action: string
+  message?: string
+}
+
+export type SourceHealthCheckItem = {
+  id: string
+  name: string
+  ok: boolean
+  latencyMs: number
+  statusCode: number
+  statusCategory: 'valid' | 'slow' | 'failed' | 'blocked'
+  error?: string
+}
+
+export type SourceHealthCheckResponse = {
+  total: number
+  successCount: number
+  slowCount: number
+  failedCount: number
+  durationMs: number
+  results: SourceHealthCheckItem[]
+}
+
+
 export type ReplaceRule = {
   id: string
   name: string
@@ -190,6 +224,12 @@ export const api = {
   source: (id: string) => request<SourceRecord>(`/api/sources/${encodeURIComponent(id)}`),
   save: (id: string, json: string, version?: number) => request<SourceRecord>(`/api/sources/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify({ json, version }) }),
   remove: (id: string) => request<void>(`/api/sources/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  batchSources: (action: BatchSourceAction, ids: string[], group?: string) =>
+    request<BatchSourceResponse>('/api/sources/batch', { method: 'POST', body: JSON.stringify({ action, ids, group }) }),
+  healthCheckSources: (ids?: string[], timeoutMs = 5000) =>
+    request<SourceHealthCheckResponse>('/api/sources/health-check', { method: 'POST', body: JSON.stringify({ ids, timeoutMs }) }),
+  exportSources: (ids?: string[]) =>
+    request<string[]>(`/api/sources/export${ids && ids.length > 0 ? `?${ids.map(id => `id=${encodeURIComponent(id)}`).join('&')}` : ''}`),
   validate: (id: string) => request<{ valid: boolean; errors: string[]; warnings: string[] }>(`/api/sources/${encodeURIComponent(id)}/validate`, { method: 'POST' }),
   import: (sources: string[]) => request<ImportResponse>('/api/sources/import', { method: 'POST', body: JSON.stringify({ sources }) }),
   subscriptions: () => request<SourceSubscription[]>('/api/subscriptions'),

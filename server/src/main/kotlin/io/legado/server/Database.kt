@@ -301,6 +301,69 @@ class Database(private val path: String) : Closeable, AutoCloseable {
     }
 
     fun deleteSource(id: String): Boolean = write { db -> db.prepareStatement("delete from source where id = ?").use { it.setString(1, id); it.executeUpdate() == 1 } }
+
+    fun batchUpdateSources(ids: List<String>, action: String, group: String? = null): Int {
+        val distinctIds = ids.filter { it.isNotBlank() }.distinct()
+        if (distinctIds.isEmpty()) return 0
+        val now = System.currentTimeMillis()
+        var affectedTotal = 0
+        write { db ->
+            db.autoCommit = false
+            try {
+                distinctIds.chunked(200).forEach { chunk ->
+                    val placeholders = chunk.joinToString(",") { "?" }
+                    when (action) {
+                        "enable" -> {
+                            val sql = "update source set enabled = 1, updated_at = ? where id in ($placeholders)"
+                            db.prepareStatement(sql).use { stmt ->
+                                stmt.setLong(1, now)
+                                chunk.forEachIndexed { i, id -> stmt.setString(i + 2, id) }
+                                affectedTotal += stmt.executeUpdate()
+                            }
+                        }
+                        "disable" -> {
+                            val sql = "update source set enabled = 0, updated_at = ? where id in ($placeholders)"
+                            db.prepareStatement(sql).use { stmt ->
+                                stmt.setLong(1, now)
+                                chunk.forEachIndexed { i, id -> stmt.setString(i + 2, id) }
+                                affectedTotal += stmt.executeUpdate()
+                            }
+                        }
+                        "set_group" -> {
+                            val targetGroup = group?.trim()?.takeIf { it.isNotBlank() }
+                            val sql = "update source set source_group = ?, updated_at = ? where id in ($placeholders)"
+                            db.prepareStatement(sql).use { stmt ->
+                                stmt.setString(1, targetGroup)
+                                stmt.setLong(2, now)
+                                chunk.forEachIndexed { i, id -> stmt.setString(i + 3, id) }
+                                affectedTotal += stmt.executeUpdate()
+                            }
+                        }
+                        "delete" -> {
+                            val delSql = "delete from source where id in ($placeholders)"
+                            db.prepareStatement(delSql).use { stmt ->
+                                chunk.forEachIndexed { i, id -> stmt.setString(i + 1, id) }
+                                affectedTotal += stmt.executeUpdate()
+                            }
+                            val delLoginSql = "delete from source_login_state where source_id in ($placeholders)"
+                            db.prepareStatement(delLoginSql).use { stmt ->
+                                chunk.forEachIndexed { i, id -> stmt.setString(i + 1, id) }
+                                stmt.executeUpdate()
+                            }
+                        }
+                        else -> throw IllegalArgumentException("不支持的批量操作: $action")
+                    }
+                }
+                db.commit()
+            } catch (error: Throwable) {
+                db.rollback()
+                throw error
+            } finally {
+                db.autoCommit = true
+            }
+        }
+        return affectedTotal
+    }
     fun saveProgress(progress: ReadingProgress): ReadingProgress = write { db ->
         val now = System.currentTimeMillis()
         db.prepareStatement("""insert into reading_progress(source_id,book_url,chapter_url,chapter_index,scroll_position,updated_at) values(?,?,?,?,?,?)

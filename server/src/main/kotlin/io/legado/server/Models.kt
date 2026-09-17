@@ -403,3 +403,46 @@ data class ReplaceRulePreviewResponse(
     val appliedRules: List<String> = emptyList(),
 )
 
+@Serializable
+data class BatchSourceRequest(
+    val action: String, // "enable", "disable", "delete", "set_group"
+    val ids: List<String>,
+    val group: String? = null,
+)
+
+@Serializable
+data class BatchSourceResponse(
+    val ok: Boolean,
+    val affected: Int,
+    val action: String,
+    val message: String? = null,
+)
+
+@Serializable
+data class SourceHealthCheckRequest(
+    val ids: List<String>? = null,
+    val timeoutMs: Long = 5000L,
+)
+
+@Serializable
+data class SourceHealthCheckItem(
+    val id: String,
+    val name: String,
+    val ok: Boolean,
+    val latencyMs: Long,
+    val statusCode: Int = 0,
+    val statusCategory: String, // "valid", "slow", "failed", "blocked"
+    val error: String? = null,
+)
+
+@Serializable
+data class SourceHealthCheckResponse(
+    val total: Int,
+    val successCount: Int,
+    val slowCount: Int,
+    val failedCount: Int,
+    val durationMs: Long,
+    val results: List<SourceHealthCheckItem>,
+)
+
+

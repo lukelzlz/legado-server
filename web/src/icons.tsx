@@ -33,8 +33,10 @@ type IconName =
   | 'skipForward'
   | 'stop'
   | 'clock'
+  | 'activity'
 
 const paths: Record<IconName, ReactNode> = {
+  activity: <path d="M22 12h-4l-3 9L9 3l-3 9H2" />,
   arrowLeft: <path d="m15 18-6-6 6-6" />,
   arrowRight: <path d="m9 18 6-6-6-6" />,
   book: <><path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H20v16H6.5A2.5 2.5 0 0 0 4 21.5v-16Z" /><path d="M4 19h16" /></>,

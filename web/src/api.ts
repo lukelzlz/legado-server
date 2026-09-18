@@ -54,6 +54,9 @@ export type SourceHealthCheckResponse = {
 }
 
 
+export type WebDavEntry = { name: string; path: string; directory: boolean; size: number; modifiedAt: number }
+export type WebDavInfo = { url: string; directory: string; path: string; parent?: string | null; fileCount: number; directoryCount: number; totalBytes: number; entries: WebDavEntry[] }
+
 export type ReplaceRule = {
   id: string
   name: string
@@ -156,6 +159,29 @@ export type SourceBrowserCookies = {
   count: number
   domains: string[]
   cookies: Record<string, string>
+}
+
+
+/** WebDAV 相对路径 → 逐段编码的 URL 路径（空段会被丢弃，避免出现 `//`）。 */
+export const encodeWebDavPath = (path: string) =>
+  path.split('/').filter(segment => segment.length > 0).map(encodeURIComponent).join('/')
+
+/** 拼出可直接下载/预览的 WebDAV 地址（浏览器带会话 Cookie 访问，无需 Basic 凭据）。 */
+export const webDavFileUrl = (path: string) => `/webdav/${encodeWebDavPath(path)}`
+
+/** 在 WebDAV 相对路径下拼接子项名称。 */
+export const joinWebDavPath = (base: string, name: string) =>
+  [...base.split('/').filter(Boolean), name].join('/')
+
+/** WebDAV 写操作：浏览器侧走会话鉴权，必须显式携带 CSRF 头。 */
+async function webDavWrite(path: string, init: RequestInit): Promise<void> {
+  const headers = new Headers(init.headers)
+  headers.set('X-CSRF-Token', csrfToken ?? '')
+  const response = await fetch(webDavFileUrl(path), { ...init, headers, credentials: 'same-origin' })
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({ message: `操作失败（HTTP ${response.status}）` })) as { message?: string }
+    throw new Error(body.message ?? `操作失败（HTTP ${response.status}）`)
+  }
 }
 
 let csrfToken: string | null = null
@@ -318,6 +344,10 @@ export const api = {
   updateBookshelfInfo: (data: { sourceId: string; bookUrl: string; name: string; author?: string; coverUrl?: string }) => request<BookshelfItem>('/api/bookshelf/info', { method: 'PUT', body: JSON.stringify(data) }),
   switchBookshelfSource: (value: BookshelfSourceSwitch) => request<BookshelfItem>('/api/bookshelf/switch-source', { method: 'POST', body: JSON.stringify(value) }),
   cover: (key: string) => `/api/covers/${encodeURIComponent(key)}`,
+  webDavInfo: (path = '') => request<WebDavInfo>(`/api/webdav/info${path ? `?path=${encodeURIComponent(path)}` : ''}`),
+  webDavUpload: (path: string, file: File) => webDavWrite(path, { method: 'PUT', body: file }),
+  webDavCreateFolder: (path: string) => webDavWrite(path, { method: 'MKCOL' }),
+  webDavDelete: (path: string) => webDavWrite(path, { method: 'DELETE' }),
   getReplaceRules: (params?: { q?: string; group?: string; scope?: string }) => {
     const sp = new URLSearchParams()
     if (params?.q) sp.set('q', params.q)

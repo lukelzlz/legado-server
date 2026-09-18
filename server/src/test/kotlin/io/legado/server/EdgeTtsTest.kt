@@ -94,7 +94,7 @@ class EdgeTtsTest {
         try {
             val config = ServerConfig(
                 host = "0.0.0.0", port = 8080, databasePath = dbPath,
-                coverCacheDirectory = tempDir, initialAdminPassword = "admin-tts-pass", secureCookies = false
+                coverCacheDirectory = tempDir, webDavDirectory = tempDir.resolve("webdav"), initialAdminPassword = "admin-tts-pass", secureCookies = false
             )
             application { legadoApplication(config) }
             val client = createClient {

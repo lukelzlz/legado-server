@@ -29,6 +29,7 @@ class ReplaceRuleE2EIntegrationTest {
                 port = 8080,
                 databasePath = dbPath,
                 coverCacheDirectory = tempDir,
+                webDavDirectory = tempDir.resolve("webdav"),
                 initialAdminPassword = "adminPassword123!",
                 secureCookies = false,
             )

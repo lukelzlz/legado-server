@@ -182,7 +182,7 @@ class SourceLoginTest {
         val tempDir = Files.createTempDirectory("legado-routes-login-covers")
         val config = ServerConfig(
             host = "0.0.0.0", port = 8080, databasePath = dbPath,
-            coverCacheDirectory = tempDir, initialAdminPassword = "admin123", secureCookies = false
+            coverCacheDirectory = tempDir, webDavDirectory = tempDir.resolve("webdav"), initialAdminPassword = "admin123", secureCookies = false
         )
 
         application {

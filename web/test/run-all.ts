@@ -31,4 +31,4 @@ import './offline-pwa.test.ts'
 import './source-batch-health.test.ts'
 
 console.log('🚀 Running Legado Web Frontend Comprehensive Test Suite (Tier 1, 2, 4 + Challenger Stress)...\n')
-
+import './webdav-settings.test.ts'

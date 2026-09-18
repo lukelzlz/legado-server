@@ -52,6 +52,12 @@ docker run -d --name test-legado -p 8080:8080 \
 curl -s -o /dev/null -w "%{http_code}\n" http://127.0.0.1:8080/index.html
 ```
 
+> **Windows 本机执行注意（详见 [`docs/sessions/SESSION-HIST-008`](file:///root/legado-server/docs/sessions/SESSION-HIST-008-windows-environment-and-verification-baseline.md)）**：
+> - JDK 固定用 **Amazon Corretto 21**；`JAVA_HOME` 未持久化时需前缀 `$env:JAVA_HOME="C:\Program Files\Amazon Corretto\jdk21.0.12_9"`；
+> - `./gradlew :server:test` 在本机**长期固定 52 个失败**（测试删不掉被占用的 SQLite，macOS 不暴露）。**判定回归必须与「干净基线 worktree 的失败集合」逐条比对，禁止只看失败数量**；
+> - 前端依赖缺失时先 `npm --prefix web install --ignore-scripts`（esbuild 的 postinstall 会被拦截），再跑 `check` / `tsx test/run-all.ts`；
+> - 明文 HTTP 联调统一带 `LEGADO_SECURE_COOKIES=false`，否则浏览器不回传 Secure Cookie、表现为「登录后立刻掉线」。
+
 ---
 
 ## 4. 完成度状态阶梯 (Completion States)
@@ -93,6 +99,19 @@ AI 与人类协作时必须明确当前达到的完成度阶梯，严禁混淆�
 - **[交互/导航] 核心系统能力一级导航呈现与阅读器抽屉收敛**：全局核心管理能力（书源、订阅、替换净化规则）必须在一级导航栏设立独立入口；而在沉浸式阅读器中，顶栏严格保持极简（目录、换源、设置、朗读），辅助净化规则统一收敛进「阅读设置」抽屉，杜绝顶栏拥挤。
 - **[PWA/离线缓存] 渐进式离线缓存与脱机阅读架构**：① Service Worker 缓存静态资源与应用壳，排除 `/api/tts/stream` 等实时长音频流；② 正文离线支持按「后50章/后100章/全本/自定义」4 并发切片下载，IndexedDB 存储纯净文本；③ 脱机断网期间阅读进度写入本地队列，网络恢复（`online` 事件）时静默 Flush 同步；④ 目录列表对已离线章节实时打绿点徽标（`●`）；⑤ 全面适配 `safe-area-inset-*` 与 `overscroll-behavior: none`，消除 iOS 橡皮筋下拉与刘海遮挡。
 - **[GitHub/贡献者] Force Push 历史孤立对象导致首页 Contributors 残留**：早期导入或 Force Push 覆盖分支后，GitHub 后端 Git 裸仓库仍残留旧 Commit 悬挂对象，导致仓库首页侧边栏聚合了历史 70+ 位幽灵贡献者，而 Insights 图表仅遍历有效 HEAD 正常显示。通过将远程默认分支切换为 `main`（`gh api repos/:owner/:repo/branches/master/rename -f new_name=main`）并更新本地跟踪与 CI 触发分支，可强制 GitHub 后台重构索引并清除悬挂贡献者。
+- **[WebDAV/Ktor] 尾卡 `{path...}` 参数只捕获首段，WebDAV 路径必须从请求 URI 推导**：Ktor 3.4 中 `route("/webdav/{path...}")` 的 `call.parameters["path"]` 对 `/webdav/a/b` 只返回 `a`（实测），直接用会导致多级路径被静默截断为单级，表现为 `PUT /webdav/x/y/z.txt`、`MKCOL /webdav/x/y` 莫名返回 `405`（落到已存在的单级目录上）。必须改为 `request.path().removePrefix("/webdav").decodeURLPart().trim('/')`；且尾卡不匹配空尾段，根路径 `/webdav` 需单独注册一条路由。
+- **[WebDAV/客户端兼容] 三个必答响应头与最小 Class 2 锁**：① `OPTIONS` 必须返回 `DAV: 1, 2`、完整 `Allow` 与 `MS-Author-Via: DAV`，否则 Windows WebDAV 重定向器按只读处理；② `LOCK` 必须支持对「尚不存在的文件」加锁并返回 `201` + `Lock-Token: <opaquelocktoken:uuid>`，否则资源管理器新建文件流程失败；③ 锁只做登记与续租，`PUT/DELETE` 严禁因锁返回 `423`（客户端异常退出遗留的锁会让写入永久失败，nginx dav 同样不强制）；④ 目录必须用 `<D:resourcetype><D:collection/></D:resourcetype>` 表达且不返回 `getcontentlength`。
+- **[WebDAV/数据落盘] 上传原子化、Range 手写与根目录保护**：`PUT` 先写同目录 `.webdav-upload-*.part` 再 `ATOMIC_MOVE + REPLACE_EXISTING`，避免半截文件被阅读器读到；`GET` 用 `respondBytesWriter(contentType, status, contentLength)` 配合 `FileChannel.position(offset)` 手写单段 Range（`206`/`416`），无需额外插件；相对路径须拒绝 `..`、反斜杠与空字节并 `normalize()` 后校验 `startsWith(root)`；`/webdav` 根目录禁止 `PUT/DELETE/MKCOL/MOVE/COPY`。WebDAV 鉴权走 HTTP Basic（用户名任意 + 管理员密码 PBKDF2），成功结果须按 `Authorization` 头短时缓存，否则客户端每个文件操作都会触发一次 PBKDF2。
+- **[WebDAV/浏览器侧鉴权] 会话 Cookie + CSRF 双轨，页面写操作复用协议本身**：WebDAV 端点必须同时接受 HTTP Basic（外部客户端，天然免疫 CSRF）与**会话 Cookie**（Web 设置页，页面无需接触密码）。会话鉴权下**读**操作（浏览/下载）放行即可，**写**操作（`PUT/DELETE/MKCOL/MOVE/COPY/LOCK/PROPPATCH`）必须校验 `X-CSRF-Token`，缺失或错误返回 `403`，与 `SameSite=Strict` Cookie 构成双重防线。设置页的上传/建目录/删除**必须复用 `PUT`/`MKCOL`/`DELETE` 协议方法**，严禁另建平行 REST 写接口（否则出现两条落盘代码路径）；页面只读状态走 `GET /api/webdav/info?path=` JSON（目录优先排序、占用统计跳过 `.webdav-upload-*.part`），避免前端解析 `PROPFIND` XML。
+- **[PWA/更新] 自托管升级后「界面还是旧版」= Service Worker 预缓存，必须双向兜底**：`registerType: 'prompt'` 下新 SW 会停在 waiting 态，而旧的 precache 会继续把 `navigateFallback` 的 `index.html` 与旧 bundle 返回给浏览器——用户会表现为「新增的导航入口/页面完全不存在」，即使服务端已经返回了新的资源（可用 `curl` 抓 `/` 观察 `assets/index-*.js` 哈希与 bundle 内容自证）。三层兜底：① `PwaManager` 必须在**登录页也挂载**（否则未登录用户永远看不到更新提示）；② 注册成功后立即判定 `reg.waiting && navigator.serviceWorker.controller` 并弹出更新提示（覆盖「上次错过提示」的历史遗留 SW）；③ 页面 `focus` / `visibilitychange` 与每 5 分钟主动 `registration.update()`，避免长期打开的标签页停留在旧版本。排障时让用户用 DevTools → Application → Service Workers → 注销 + 清站点数据，或直接用无痕窗口/换端口验证。
+- **[测试/Puppeteer] tsx + `page.evaluate` 内禁止声明局部函数**：`tsx`（esbuild keepNames）会把被求值函数内的箭头函数/函数声明包成 `__name(...)`，而 `__name` 只存在于 Node 侧，导致浏览器内抛 `ReferenceError: __name is not defined`。`page.evaluate` / `$$eval` 的回调里严禁 `const fn = () => ...` 这类局部函数声明，应改为在 Node 侧多次调用 `$$eval`/`$eval` 组合结果。
+- **[前端/无头渲染] 组件渲染期严禁直接取 `location`**：`replace-rules`、WebDAV 等页面在 `web/test` 中以 `renderToStaticMarkup` 做静态渲染断言，组件内若直接读 `location.origin` 会在 Node 环境抛错；必须封装 `currentOrigin()`（`typeof location === 'undefined'` 时返回空串）后再使用。
+- **[测试/Windows] 服务端 52 个既有失败的真实根因：判定回归必须比「失败集合」而不是数量**：`./gradlew :server:test` 在本机长期固定 52 个失败，异常均为 `FileSystemException: *.sqlite: 另一个程序正在使用此文件`。根因是这些测试**从不调用 `database.close()`** 就在 `finally` 里删 SQLite（WAL 还有 `-wal`/`-shm`），Windows 不允许删除被占用文件，而 macOS 的 POSIX 语义允许，故原始开发环境永不暴露。**判定自己是否引入回归的唯一正确姿势**：起干净基线 worktree 跑同一套测试并逐条比对失败集合（历史实测：基线 154 用例/52 失败 vs 带新功能 160~162 用例/同样 52 失败且集合完全一致 ⇒ 零回归）。详见 [`SESSION-HIST-008`](file:///root/legado-server/docs/sessions/SESSION-HIST-008-windows-environment-and-verification-baseline.md)。
+- **[插件/契约] 跨端契约必须用「真实模块导出面」验证，不能只靠文档一致**：插件宿主读 `loaded.activate`（具名导出），而契约文档与示例写的是 `export default function activate(sdk)`（默认导出挂在 `loaded.default`）→ 表现为「web.js 未导出 activate 函数」。定位手法是用 node **真实 import 被服务端托管的模块**打印导出面。同类问题：SDK 的 `settings` 是**顶层成员**（与 `api` 平级），`sdk.api` 只有 `get/post/put/del/plugin/pluginRaw`，示例里写 `api.settings.get()` 必然 `undefined.get`。
+- **[插件/健壮性] 清单解析必须兼容 UTF-8 BOM，接口返回体必须带 charset**：Windows PowerShell 5.1 的 `Set-Content -Encoding UTF8` 会写 BOM，使 `plugin.json` 开头多出 `\uFEFF` 导致清单解析失败、全部插件被卸载（重载接口返回 `{"reloaded":0}`）；仓库侧要既修文件也修解析器（与 Legado 书源导入的 BOM 兼容同源）。另外返回 `application/json` 时若省略 `charset=utf-8`，Windows PowerShell 会按 Latin-1 解码让中文变成乱码。
+- **[部署/HTTP] 明文 HTTP 必须显式 `LEGADO_SECURE_COOKIES=false`，拦截者是浏览器而非服务端**：默认配置下服务端照常服务、登录也返回 200 并下发 `legado_session`，但该 Cookie 带 `Secure`，在 `http://` 下浏览器（以及 PowerShell 会话）**不会回传**，表现为「登录成功但立刻又是未登录」。局域网明文自建必须设为 `false`；公网走 HTTPS 反代并保持 `true`；命令行验证改用 `curl` 可绕开该干扰。
+- **[文档/分支] 插件分支的文档编号与 master 撞号，合并前必须重编号**：`feat/plugin-system` 分支上的 `PROPOSAL-011-plugin-system-and-extension-points.md`、`ADR-011-plugin-runtime-dual-js-jar-and-trust-model.md`、`SESSION-012-plugin-system-implementation.md` 与 master 上已占用的 011/012（替换规则引擎、替换规则一级页面）冲突，合并时须整体顺延（015+），否则索引自相矛盾。历史细节见 [`SESSION-HIST-007`](file:///root/legado-server/docs/sessions/SESSION-HIST-007-plugin-system-and-api-doc.md)。
+- **[工具/DSH] 历史会话挖掘（`/doc-init` 专用）**：DSH 会话记录位于 `%APPDATA%\dsh-desktop\harness\sessions\<工作区slug>\<session-id>\session.jsonl.zstd`，格式为**多帧 zstd**（一帧一条 JSONL）：`zstdDecompressSync` 只能解出第一帧（会话头），必须按魔数 `28 B5 2F FD` + 帧头/块头扫描帧边界后逐帧解压（Node 流式 zstd 解压器不支持拼接帧，会报 `Unknown frame descriptor`）；**切勿把会话内容交给 PowerShell 管道格式化（会 OOM）**，应让 Node 脚本写报告文件后再读。记录类型：`user/message`（`data.content[].text`）、`assistant/message`（`data.message.content[]`，内含 `tool-call` 项）、`tool/call`（`data.name` + `data.arguments` JSON 字符串）、`tool/result`、`todo/write`（`data.todos` 直接揭示工作范围）、`session/title`。
 
 ---
 
@@ -115,6 +134,7 @@ AI 与人类协作时必须明确当前达到的完成度阶梯，严禁混淆�
 | PROPOSAL-012 | 完整 PWA 渐进式 Web 应用能力、用户自主正文分段离线缓存与沉浸式全屏抽屉适配 | [`docs/proposals/PROPOSAL-012-pwa-capabilities-and-fullscreen-drawer-adaptation.md`](file:///Users/zhangran/Documents/antigravity/joyful-galileo/docs/proposals/PROPOSAL-012-pwa-capabilities-and-fullscreen-drawer-adaptation.md) | Accepted |
 | PROPOSAL-013 | 移动端全面屏死区安全区深度适配与替换净化规则 UI 体系化重构 | [`docs/proposals/PROPOSAL-013-mobile-safe-area-and-rules-ui-redesign.md`](file:///Users/zhangran/Documents/antigravity/joyful-galileo/docs/proposals/PROPOSAL-013-mobile-safe-area-and-rules-ui-redesign.md) | Accepted |
 | PROPOSAL-014 | 书源批量整理、分组维护与轻量连通性健康体检体系 | [`docs/proposals/PROPOSAL-014-book-source-batch-management-and-health-check.md`](file:///Users/zhangran/Documents/antigravity/joyful-galileo/docs/proposals/PROPOSAL-014-book-source-batch-management-and-health-check.md) | Accepted |
+| PROPOSAL-015 | 内置 WebDAV 服务端与数据目录 webdav 存储区（含 Web 端「文件」设置页面） | [`docs/proposals/PROPOSAL-015-webdav-storage-server.md`](file:///root/legado-server/docs/proposals/PROPOSAL-015-webdav-storage-server.md) | Tested & Deployed |
 
 ### 架构决策记录 (ADR)
 | 编号 | 决策标题 | 关联文档 | 状态 |
@@ -133,6 +153,7 @@ AI 与人类协作时必须明确当前达到的完成度阶梯，严禁混淆�
 | ADR-012 | 采用 vite-plugin-pwa 构筑双层用户可控离线缓存体系与 Safe-Area 沉浸式安全区适配 | [`docs/decisions/ADR-012-vite-plugin-pwa-workbox-and-safe-area-layout.md`](file:///Users/zhangran/Documents/antigravity/joyful-galileo/docs/decisions/ADR-012-vite-plugin-pwa-workbox-and-safe-area-layout.md) | Accepted |
 | ADR-013 | 全面屏安全区变量统一继承体系与替换规则设计系统化重构 | [`docs/decisions/ADR-013-safe-area-layout-and-rules-design-system.md`](file:///Users/zhangran/Documents/antigravity/joyful-galileo/docs/decisions/ADR-013-safe-area-layout-and-rules-design-system.md) | Accepted |
 | ADR-014 | 书源批量事务管道、轻量并发探针与浮动管理状态机 | [`docs/decisions/ADR-014-source-batch-operations-and-lightweight-probe-pipeline.md`](file:///Users/zhangran/Documents/antigravity/joyful-galileo/docs/decisions/ADR-014-source-batch-operations-and-lightweight-probe-pipeline.md) | Accepted |
+| ADR-015 | 进程内 WebDAV 服务端选型、Basic 鉴权与最小 Class 2 锁实现 | [`docs/decisions/ADR-015-webdav-server-class2-minimal.md`](file:///root/legado-server/docs/decisions/ADR-015-webdav-server-class2-minimal.md) | Accepted |
 
 ### 工作记忆与历史推演归档 (Sessions Chronicle)
 | 日期 / ID | 类型 | 标题 / 议题 | 关联文档 | 状态 |
@@ -164,11 +185,19 @@ AI 与人类协作时必须明确当前达到的完成度阶梯，严禁混淆�
 | 2026-09-12 | Fix | 恢复 Gradle Wrapper 官方下载源，修复 Actions 境外构建超时 | - | Pushed |
 | 2026-09-12 | Feat | 替换净化规则引擎、反爬混淆还原与Rhino沙箱执行管道 | [`docs/sessions/SESSION-011-replace-rules-engine-and-anti-crawler-restoration.md`](file:///Users/zhangran/Documents/antigravity/joyful-galileo/docs/sessions/SESSION-011-replace-rules-engine-and-anti-crawler-restoration.md) | Accepted & Pushed |
 | 2026-09-15 | Feat | 替换净化规则升级为一级独立页面与阅读器设置抽屉集成 | [`docs/sessions/SESSION-012-first-class-replace-rules-and-reader-settings.md`](file:///Users/zhangran/Documents/antigravity/joyful-galileo/docs/sessions/SESSION-012-first-class-replace-rules-and-reader-settings.md) | Accepted & Pushed |
+| 2026-09-14 | Init | 环境搭建（winget 装 Git、Corretto 21）、克隆并启动 legado-server、生成可见窗口 `start-legado.cmd` | [`docs/sessions/SESSION-HIST-008-windows-environment-and-verification-baseline.md`](file:///root/legado-server/docs/sessions/SESSION-HIST-008-windows-environment-and-verification-baseline.md) | Archived |
+| 2026-09-15 | Feat | 插件系统（服务端）：`plugin-api` 轻量契约模块、JAR(ServiceLoader)/JS 双运行时、宿主 API 与 `/api/plugins*` 路由 | [`docs/sessions/SESSION-HIST-007-plugin-system-and-api-doc.md`](file:///root/legado-server/docs/sessions/SESSION-HIST-007-plugin-system-and-api-doc.md) | 分支未合并 |
+| 2026-09-15 | Feat | 插件系统（前端）：插件宿主、插件 SDK、插件管理页、动态导航项与 hash 路由 | [`docs/sessions/SESSION-HIST-007-plugin-system-and-api-doc.md`](file:///root/legado-server/docs/sessions/SESSION-HIST-007-plugin-system-and-api-doc.md) | 分支未合并 |
+| 2026-09-16 | Docs | 生成 `reader/API.md`（79 个应用端点 + 5 条静态路由 + 插件 10 端点，刻意放在仓库外） | [`docs/sessions/SESSION-HIST-007-plugin-system-and-api-doc.md`](file:///root/legado-server/docs/sessions/SESSION-HIST-007-plugin-system-and-api-doc.md) | Done |
+| 2026-09-16 | Fix | 插件系统四类排错：activate 导出契约不一致、`api.settings` 误用、`Map<String,Any>` 序列化 500、`plugin.json` BOM 导致插件全卸载 | [`docs/sessions/SESSION-HIST-007-plugin-system-and-api-doc.md`](file:///root/legado-server/docs/sessions/SESSION-HIST-007-plugin-system-and-api-doc.md) | 分支未合并 |
+| 2026-09-16 | Fix | 定位并证实服务端 52 个既有测试失败的根因（Windows 删除被占用 SQLite），确立「干净基线 worktree 比对失败集合」的回归判定方法论 | [`docs/sessions/SESSION-HIST-008-windows-environment-and-verification-baseline.md`](file:///root/legado-server/docs/sessions/SESSION-HIST-008-windows-environment-and-verification-baseline.md) | Archived |
 | 2026-09-15 | Feat | 完整 PWA 渐进式能力、用户自主正文分段离线缓存与沉浸式全屏抽屉适配 | [`docs/sessions/SESSION-013-pwa-and-offline-caching-architecture.md`](file:///root/legado-server/docs/sessions/SESSION-013-pwa-and-offline-caching-architecture.md) | Accepted & Pushed |
 | 2026-09-16 | Feat | 移动端全面屏死区安全区深度适配与替换净化规则 UI 体系化重构 | [`docs/acceptance/ACCEPT-013-mobile-safe-area-and-rules-ui-redesign.md`](file:///root/legado-server/docs/acceptance/ACCEPT-013-mobile-safe-area-and-rules-ui-redesign.md) | Accepted & Pushed |
 | 2026-09-17 | Feat | 书源批量整理、分组维护与轻量连通性健康体检体系 | [`docs/sessions/SESSION-015-book-source-batch-management-and-health-check.md`](file:///root/legado-server/docs/sessions/SESSION-015-book-source-batch-management-and-health-check.md) | Accepted & Pushed |
 | 2026-09-17 | Quickfix | 修复大灰狼等聚合书源因默认上游节点（v5.czyl.cf）下线导致的搜索超时报空 | - | Pushed |
 | 2026-09-17 | Quickfix | 重置默认分支为 main 并同步 CI/CD 流水线，清除 GitHub 历史悬挂贡献者缓存 | - | Pushed |
+| 2026-09-17 | Feat | 内置 WebDAV 服务端与 Web 端「文件」设置页面，数据目录新增 webdav 文件夹存放上传数据 | [`docs/acceptance/ACCEPT-015-webdav-storage.md`](file:///root/legado-server/docs/acceptance/ACCEPT-015-webdav-storage.md) · [`docs/sessions/SESSION-016-webdav-storage-server.md`](file:///root/legado-server/docs/sessions/SESSION-016-webdav-storage-server.md) | Tested & Deployed |
+| 2026-09-18 | Init | `/doc-init` 增量：挖掘 DSH 历史会话（5 份可用会话 / 18,577 帧 / 67 条用户诉求 / 1,060 次工具调用），补录插件系统时代与 Windows 验证基线，新增 HIST-007/008 两部历史归档并增量更新 AGENTS 索引与部落知识 | [`docs/sessions/SESSION-HIST-007-plugin-system-and-api-doc.md`](file:///root/legado-server/docs/sessions/SESSION-HIST-007-plugin-system-and-api-doc.md) · [`docs/sessions/SESSION-HIST-008-windows-environment-and-verification-baseline.md`](file:///root/legado-server/docs/sessions/SESSION-HIST-008-windows-environment-and-verification-baseline.md) | Local（未推送） |
 
 ---
 

@@ -192,6 +192,7 @@ data class SourceLoginStateRecord(
     val tocUrl: String,
     val coverUrl: String? = null,
     val alternateSources: List<SearchResult>? = null,
+    val groupName: String? = null,
 )
 @Serializable data class BookshelfSourceSwitchRequest(
     val oldSourceId: String,
@@ -206,6 +207,7 @@ data class SourceLoginStateRecord(
     val name: String,
     val author: String? = null,
     val coverUrl: String? = null,
+    val groupName: String? = null,
 )
 data class CachedBookRequest(val sourceId: String, val bookUrl: String, val tocUrl: String)
 @Serializable data class BookshelfItem(
@@ -224,6 +226,42 @@ data class CachedBookRequest(val sourceId: String, val bookUrl: String, val tocU
     val cacheError: String? = null,
     val completed: Boolean = false,
     val alternateSources: List<SearchResult> = emptyList(),
+    val groupName: String? = null,
+)
+
+@Serializable
+data class BookGroup(
+    val id: Long,
+    val name: String,
+    val sortOrder: Int,
+    val bookCount: Int = 0,
+)
+
+@Serializable
+data class BookGroupCreateRequest(val name: String)
+
+@Serializable
+data class BookGroupRenameRequest(val oldName: String, val newName: String)
+
+@Serializable
+data class BookGroupsOrderRequest(val groupNames: List<String>)
+
+@Serializable
+data class BookGroupUpdateRequest(
+    val sourceId: String,
+    val bookUrl: String,
+    val groupName: String? = null,
+)
+
+@Serializable
+data class BookKeyRequest(val sourceId: String, val bookUrl: String)
+
+@Serializable
+data class BookshelfBatchRequest(
+    val action: String, // "move_group", "mark_completed", "delete"
+    val items: List<BookKeyRequest>,
+    val targetGroup: String? = null,
+    val completed: Boolean? = null,
 )
 
 @Serializable

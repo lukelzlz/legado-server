@@ -438,6 +438,86 @@ fun Route.apiRoutes(
             bookCache.enqueue(CachedBookRequest(book.sourceId, book.bookUrl, book.tocUrl))
             call.respond(item)
         }
+        get("/bookshelf/groups") {
+            if (auth.requireSession(call) == null) return@get
+            call.respond(database.listBookGroups())
+        }
+        post("/bookshelf/groups") {
+            if (auth.requireSession(call, true) == null) return@post
+            val request = call.receive<BookGroupCreateRequest>()
+            if (request.name.isBlank()) {
+                call.respond(HttpStatusCode.BadRequest, ApiError("invalid_group", "分组名称不能为空"))
+                return@post
+            }
+            try {
+                val group = database.createBookGroup(request.name)
+                call.respond(HttpStatusCode.Created, group)
+            } catch (e: Exception) {
+                call.respond(HttpStatusCode.Conflict, ApiError("group_exists", e.message ?: "分组已存在或创建失败"))
+            }
+        }
+        put("/bookshelf/groups/rename") {
+            if (auth.requireSession(call, true) == null) return@put
+            val request = call.receive<BookGroupRenameRequest>()
+            if (request.oldName.isBlank() || request.newName.isBlank()) {
+                call.respond(HttpStatusCode.BadRequest, ApiError("invalid_group", "分组名称不能为空"))
+                return@put
+            }
+            try {
+                val updated = database.renameBookGroup(request.oldName, request.newName)
+                call.respond(updated)
+            } catch (_: NoSuchElementException) {
+                call.respond(HttpStatusCode.NotFound, ApiError("not_found", "原分组不存在"))
+            } catch (e: Exception) {
+                call.respond(HttpStatusCode.BadRequest, ApiError("group_error", e.message ?: "重命名分组失败"))
+            }
+        }
+        put("/bookshelf/groups/order") {
+            if (auth.requireSession(call, true) == null) return@put
+            val request = call.receive<BookGroupsOrderRequest>()
+            val groups = database.updateBookGroupsOrder(request.groupNames)
+            call.respond(groups)
+        }
+        delete("/bookshelf/groups") {
+            if (auth.requireSession(call, true) == null) return@delete
+            val name = call.request.queryParameters["name"]
+            if (name.isNullOrBlank()) {
+                call.respond(HttpStatusCode.BadRequest, ApiError("invalid_group", "分组名称不能为空"))
+                return@delete
+            }
+            if (database.deleteBookGroup(name)) {
+                call.respond(HttpStatusCode.NoContent)
+            } else {
+                call.respond(HttpStatusCode.NotFound, ApiError("not_found", "分组不存在"))
+            }
+        }
+        put("/bookshelf/group") {
+            if (auth.requireSession(call, true) == null) return@put
+            val request = call.receive<BookGroupUpdateRequest>()
+            if (request.sourceId.isBlank() || request.bookUrl.isBlank()) {
+                call.respond(HttpStatusCode.BadRequest, ApiError("invalid_bookshelf", "缺少书籍标识"))
+                return@put
+            }
+            database.updateBookGroup(request.sourceId, request.bookUrl, request.groupName)?.let { call.respond(it) }
+                ?: call.respond(HttpStatusCode.NotFound, ApiError("not_found", "书籍不在书架中"))
+        }
+        post("/bookshelf/batch") {
+            if (auth.requireSession(call, true) == null) return@post
+            val request = call.receive<BookshelfBatchRequest>()
+            if (request.items.isEmpty()) {
+                call.respond(mapOf("affected" to 0))
+                return@post
+            }
+            if (request.action == "delete") {
+                for (item in request.items) {
+                    bookCache.cancel(item.sourceId, item.bookUrl)
+                }
+            }
+            val affected = database.batchBookshelfOperation(request) { orphanKey ->
+                coverCache.delete(orphanKey)
+            }
+            call.respond(mapOf("affected" to affected))
+        }
         get("/covers/{key}") {
             if (auth.requireSession(call) == null) return@get
             val key = call.parameters["key"] ?: return@get call.respond(HttpStatusCode.NotFound)

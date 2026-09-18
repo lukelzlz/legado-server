@@ -83,6 +83,7 @@ AI 与人类协作时必须明确当前达到的完成度阶梯，严禁混淆�
 - **[TTS/朗读] HTML5 audio.play() 暂停打断与 AbortError 守卫**：浏览器原生规范中，当调用 `audio.pause()`、重置 `src` 或切章重置时，正在 pending 的 `audio.play()` Promise 会被浏览器自动 reject 抛出 DOMException (`AbortError: The play() request was interrupted by a call to pause(). https://goo.gl/LdLk22`)。这属于用户主动暂停或切流，必须在 `HttpAudioTtsEngine`（play catch、reportError、isPaused 状态跟踪）与 `ReaderScreen`（onError 回调）中多层静默拦截 `AbortError` 与 interrupted 关键词，严禁向用户弹窗报错。
 - **[TTS/朗读] 开启朗读时视口首个完整可见段落智能对齐**：当用户在阅读中途点击开启 TTS 朗读时，阅读器会基于当前排版视图模式（滚动模式避开顶部 56px 导航栏、翻页模式限定分栏视口内）精准计算视口内第一个完整可见的段落（或章节标题 `<h1>`），并以此为朗读起始分片，避免每次开启都跳回章首或历史断点的突兀体验。
 - **[容器/云原生] 阿里云计算巢与 ECI 部署**：ROS 模板必须包含完整 VPC/安全组声明、ECI 容器组规格与数据持久化挂载；国内推荐使用阿里云个人镜像加速源。
+- **[书架/分组与批量管理] 分组删除软解绑、预检重名与批量事务原子性**：删除 `book_group` 记录前必须在同一事务中先执行 `UPDATE book_shelf SET group_name=null WHERE group_name=? COLLATE NOCASE`，严禁级联删除组内图书与阅读进度；新建与重命名分组须显式执行 `SELECT count(*) ... COLLATE NOCASE` 预校验拦截重名并返回友好提示；批量改组/标记/删除须在单一事务中执行。
 
 ---
 
@@ -99,6 +100,7 @@ AI 与人类协作时必须明确当前达到的完成度阶梯，严禁混淆�
 | PROPOSAL-006 | 现代化 TTS 朗读引擎与沉浸式听书体验 | [`docs/proposals/PROPOSAL-006-tts-engine-and-immersive-reading-experience.md`](file:///Users/zhangran/Documents/antigravity/joyful-galileo/docs/proposals/PROPOSAL-006-tts-engine-and-immersive-reading-experience.md) | Implemented |
 | PROPOSAL-007 | 服务端会话级连续 TTS 音频流与移动端后台稳定播放 | [`docs/proposals/PROPOSAL-007-server-session-tts-stream-and-mobile-background-playback.md`](file:///Users/zhangran/Documents/antigravity/joyful-galileo/docs/proposals/PROPOSAL-007-server-session-tts-stream-and-mobile-background-playback.md) | Implemented |
 | PROPOSAL-008 | TTS 连续播放稳定性、相对时钟锚定与缓冲弹性架构 | [`docs/proposals/PROPOSAL-008-tts-continuous-playback-stability-and-drift-compensation.md`](file:///Users/zhangran/Documents/antigravity/joyful-galileo/docs/proposals/PROPOSAL-008-tts-continuous-playback-stability-and-drift-compensation.md) | Implemented |
+| PROPOSAL-009 | 书架分组管理与批量操作机制 | [`docs/proposals/PROPOSAL-009-bookshelf-grouping-and-batch-management.md`](file:///Users/zhangran/Documents/antigravity/joyful-galileo/docs/proposals/PROPOSAL-009-bookshelf-grouping-and-batch-management.md) | Accepted |
 
 ### 架构决策记录 (ADR)
 | 编号 | 决策标题 | 关联文档 | 状态 |
@@ -111,6 +113,7 @@ AI 与人类协作时必须明确当前达到的完成度阶梯，严禁混淆�
 | ADR-006 | 双模式 TTS 引擎、分片预缓冲与视口高亮联动架构 | [`docs/decisions/ADR-006-dual-tts-engine-and-audio-streaming-architecture.md`](file:///Users/zhangran/Documents/antigravity/joyful-galileo/docs/decisions/ADR-006-dual-tts-engine-and-audio-streaming-architecture.md) | Accepted |
 | ADR-007 | 服务端会话级连续 MP3 音频流与独立进度事件通道 | [`docs/decisions/ADR-007-session-scoped-continuous-tts-audio-stream.md`](file:///Users/zhangran/Documents/antigravity/joyful-galileo/docs/decisions/ADR-007-session-scoped-continuous-tts-audio-stream.md) | Accepted |
 | ADR-008 | TTS 单句相对时钟锚定、前瞻扩容与停滞看门狗架构 | [`docs/decisions/ADR-008-tts-relative-clock-and-buffer-resilience.md`](file:///Users/zhangran/Documents/antigravity/joyful-galileo/docs/decisions/ADR-008-tts-relative-clock-and-buffer-resilience.md) | Accepted |
+| ADR-009 | 书架分组存储模型、状态联动与原子批量操作设计 | [`docs/decisions/ADR-009-bookshelf-grouping-schema-and-batch-mutation.md`](file:///Users/zhangran/Documents/antigravity/joyful-galileo/docs/decisions/ADR-009-bookshelf-grouping-schema-and-batch-mutation.md) | Accepted |
 
 ### 工作记忆与历史推演归档 (Sessions Chronicle)
 | 日期 / ID | 类型 | 标题 / 议题 | 关联文档 | 状态 |
@@ -136,6 +139,7 @@ AI 与人类协作时必须明确当前达到的完成度阶梯，严禁混淆�
 | 2026-09-05 | Fix | 过滤 audio.play() 暂停与切流打断错误，消除 pause 打断时的 Toast 警告提示 | - | Pushed |
 | 2026-09-05 | Fix | 根治 TTS 连续播放约 2 分钟时钟漂移累积死锁与章末静音停滞：单句相对锚定、600ms看门狗与5分片前瞻 | [`docs/acceptance/ACCEPT-008-tts-continuous-playback-stability.md`](file:///Users/zhangran/Documents/antigravity/joyful-galileo/docs/acceptance/ACCEPT-008-tts-continuous-playback-stability.md) | Accepted & Pushed |
 | 2026-09-05 | Feat | 开启 TTS 朗读时自动对齐当前视口最上方首个完整可见段落 | [`docs/acceptance/ACCEPT-008-tts-continuous-playback-stability.md`](file:///Users/zhangran/Documents/antigravity/joyful-galileo/docs/acceptance/ACCEPT-008-tts-continuous-playback-stability.md) | Accepted & Pushed |
+| 2026-09-18 | Feat | 支持书架自定义分组与批量管理（SQLite持久化、安全降级、多选浮动操作栏） | [`docs/sessions/SESSION-008-bookshelf-grouping-and-batch-management.md`](file:///Users/zhangran/Documents/antigravity/joyful-galileo/docs/sessions/SESSION-008-bookshelf-grouping-and-batch-management.md) | Accepted & Pushed |
 
 ---
 

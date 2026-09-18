@@ -23,6 +23,7 @@ class ServerConfigAndStaticTest {
         assertEquals(8080, defaultConfig.port)
         assertTrue(defaultConfig.databasePath.endsWith("legado.sqlite"))
         assertTrue(defaultConfig.coverCacheDirectory.endsWith("covers"))
+        assertTrue(defaultConfig.webDavDirectory.endsWith("webdav"))
         assertNull(defaultConfig.initialAdminPassword)
         assertTrue(defaultConfig.secureCookies)
 

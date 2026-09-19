@@ -84,6 +84,7 @@ AI 与人类协作时必须明确当前达到的完成度阶梯，严禁混淆�
 - **[TTS/朗读] 开启朗读时视口首个完整可见段落智能对齐**：当用户在阅读中途点击开启 TTS 朗读时，阅读器会基于当前排版视图模式（滚动模式避开顶部 56px 导航栏、翻页模式限定分栏视口内）精准计算视口内第一个完整可见的段落（或章节标题 `<h1>`），并以此为朗读起始分片，避免每次开启都跳回章首或历史断点的突兀体验。
 - **[容器/云原生] 阿里云计算巢与 ECI 部署**：ROS 模板必须包含完整 VPC/安全组声明、ECI 容器组规格与数据持久化挂载；国内推荐使用阿里云个人镜像加速源。
 - **[书架/分组与批量管理] 分组删除软解绑、预检重名与批量事务原子性**：删除 `book_group` 记录前必须在同一事务中先执行 `UPDATE book_shelf SET group_name=null WHERE group_name=? COLLATE NOCASE`，严禁级联删除组内图书与阅读进度；新建与重命名分组须显式执行 `SELECT count(*) ... COLLATE NOCASE` 预校验拦截重名并返回友好提示；批量改组/标记/删除须在单一事务中执行。
+- **[构建/静态资源] Gradle 自动触发 buildWeb 与无条件打包 web/dist**：本地构建 JAR 时 Gradle 必须通过 `buildWeb` 任务自动执行 `npm run build`，且 `processResources` 须无条件引入 `web/dist`，严禁使用配置期 `if (file(...).exists())` 导致无预编译产物时打出无静态资源的空 JAR（引发 404 Not Found）；严禁在 `server/src/main/resources/` 遗留陈旧静态资源；本地未传 `LEGADO_DATA_DIR` 且 `/data` 不可写时安全降级至 `./data`。
 
 ---
 
@@ -140,6 +141,7 @@ AI 与人类协作时必须明确当前达到的完成度阶梯，严禁混淆�
 | 2026-09-05 | Fix | 根治 TTS 连续播放约 2 分钟时钟漂移累积死锁与章末静音停滞：单句相对锚定、600ms看门狗与5分片前瞻 | [`docs/acceptance/ACCEPT-008-tts-continuous-playback-stability.md`](file:///Users/zhangran/Documents/antigravity/joyful-galileo/docs/acceptance/ACCEPT-008-tts-continuous-playback-stability.md) | Accepted & Pushed |
 | 2026-09-05 | Feat | 开启 TTS 朗读时自动对齐当前视口最上方首个完整可见段落 | [`docs/acceptance/ACCEPT-008-tts-continuous-playback-stability.md`](file:///Users/zhangran/Documents/antigravity/joyful-galileo/docs/acceptance/ACCEPT-008-tts-continuous-playback-stability.md) | Accepted & Pushed |
 | 2026-09-18 | Feat | 支持书架自定义分组与批量管理（SQLite持久化、安全降级、多选浮动操作栏） | [`docs/sessions/SESSION-008-bookshelf-grouping-and-batch-management.md`](file:///Users/zhangran/Documents/antigravity/joyful-galileo/docs/sessions/SESSION-008-bookshelf-grouping-and-batch-management.md) | Accepted & Pushed |
+| 2026-09-19 | Fix | 修复本地构建 JAR 缺少前端静态资源报 Not Found：自动关联 buildWeb、无条件引入 web/dist 并优化数据目录降级 | - | Accepted & Pushed |
 
 ---
 

@@ -474,6 +474,7 @@ class Database(private val path: String) : Closeable, AutoCloseable {
             db.prepareStatement("delete from reading_progress where source_id=? and book_url=?").use { it.setString(1, sourceId); it.setString(2, bookUrl); it.executeUpdate() }
             db.prepareStatement("delete from book_content_cache where source_id=? and book_url=?").use { it.setString(1, sourceId); it.setString(2, bookUrl); it.executeUpdate() }
             db.prepareStatement("delete from book_cache_status where source_id=? and book_url=?").use { it.setString(1, sourceId); it.setString(2, bookUrl); it.executeUpdate() }
+            db.prepareStatement("delete from book_toc_cache where source_id=? and (toc_url=? or toc_url like ?)").use { it.setString(1, sourceId); it.setString(2, bookUrl); it.setString(3, "%$bookUrl%"); it.executeUpdate() }
             val orphan = key?.takeIf { value -> db.prepareStatement("select 1 from book_shelf where cover_key=?").use { it.setString(1, value); !it.executeQuery().next() } }
             orphan?.let { value -> db.prepareStatement("delete from cover_cache where cache_key=?").use { it.setString(1, value); it.executeUpdate() } }
             db.commit(); orphan
@@ -501,6 +502,7 @@ class Database(private val path: String) : Closeable, AutoCloseable {
             db.prepareStatement("delete from reading_progress where source_id=? and book_url=?").use { it.setString(1, oldSourceId); it.setString(2, oldBookUrl); it.executeUpdate() }
             db.prepareStatement("delete from book_content_cache where source_id=? and book_url=?").use { it.setString(1, oldSourceId); it.setString(2, oldBookUrl); it.executeUpdate() }
             db.prepareStatement("delete from book_cache_status where source_id=? and book_url=?").use { it.setString(1, oldSourceId); it.setString(2, oldBookUrl); it.executeUpdate() }
+            db.prepareStatement("delete from book_toc_cache where source_id=? and (toc_url=? or toc_url like ?)").use { it.setString(1, oldSourceId); it.setString(2, oldBookUrl); it.setString(3, "%$oldBookUrl%"); it.executeUpdate() }
             cover?.let { value -> db.prepareStatement("insert into cover_cache(cache_key,content_type) values(?,?) on conflict(cache_key) do update set content_type=excluded.content_type").use { it.setString(1, value.key); it.setString(2, value.contentType); it.executeUpdate() } }
             val newCoverKey = cover?.key ?: oldCover
             db.prepareStatement("""insert into book_shelf(source_id,book_url,name,author,toc_url,cover_url,cover_key,last_read_at,alternate_sources) values(?,?,?,?,?,?,?,?,?)
@@ -538,6 +540,131 @@ class Database(private val path: String) : Closeable, AutoCloseable {
             stmt.setString(3, Json.encodeToString(chapters))
             stmt.setLong(4, System.currentTimeMillis())
             stmt.executeUpdate()
+        }
+    }
+
+    fun importLocalBook(
+        bookId: String,
+        parsed: ParsedBook,
+        coverKey: String?,
+    ): BookshelfItem = write { db ->
+        db.autoCommit = false
+        try {
+            val sourceId = LocalBookParser.LOC_BOOK_SOURCE_ID
+            val bookUrl = "local://$bookId"
+            val tocUrl = "local://$bookId/toc"
+            val now = System.currentTimeMillis()
+
+            // 1. Insert/update book_shelf
+            db.prepareStatement("""
+                insert into book_shelf(source_id, book_url, name, author, toc_url, cover_url, cover_key, last_read_at, completed, alternate_sources)
+                values(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                on conflict(source_id, book_url) do update set
+                    name = excluded.name, author = excluded.author, toc_url = excluded.toc_url,
+                    cover_key = coalesce(excluded.cover_key, book_shelf.cover_key),
+                    last_read_at = excluded.last_read_at
+            """.trimIndent()).use { stmt ->
+                stmt.setString(1, sourceId)
+                stmt.setString(2, bookUrl)
+                stmt.setString(3, parsed.title)
+                stmt.setString(4, parsed.author)
+                stmt.setString(5, tocUrl)
+                stmt.setString(6, null)
+                stmt.setString(7, coverKey)
+                stmt.setLong(8, now)
+                stmt.setInt(9, 0)
+                stmt.setString(10, "[]")
+                stmt.executeUpdate()
+            }
+
+            // 2. Insert cover into cover_cache if present
+            if (coverKey != null && parsed.coverContentType != null) {
+                db.prepareStatement("insert into cover_cache(cache_key, content_type) values(?, ?) on conflict(cache_key) do update set content_type=excluded.content_type").use {
+                    it.setString(1, coverKey)
+                    it.setString(2, parsed.coverContentType)
+                    it.executeUpdate()
+                }
+            }
+
+            // 3. Insert TOC cache
+            val chapters = parsed.chapters.mapIndexed { idx, ch ->
+                Chapter(
+                    index = idx,
+                    title = ch.title,
+                    url = "local://$bookId/chapter_${idx + 1}"
+                )
+            }
+            db.prepareStatement("""
+                insert into book_toc_cache(source_id, toc_url, chapters_json, updated_at)
+                values(?, ?, ?, ?)
+                on conflict(source_id, toc_url) do update set
+                    chapters_json = excluded.chapters_json, updated_at = excluded.updated_at
+            """.trimIndent()).use { stmt ->
+                stmt.setString(1, sourceId)
+                stmt.setString(2, tocUrl)
+                stmt.setString(3, Json.encodeToString(chapters))
+                stmt.setLong(4, now)
+                stmt.executeUpdate()
+            }
+            db.prepareStatement("""
+                insert into book_toc_cache(source_id, toc_url, chapters_json, updated_at)
+                values(?, ?, ?, ?)
+                on conflict(source_id, toc_url) do update set
+                    chapters_json = excluded.chapters_json, updated_at = excluded.updated_at
+            """.trimIndent()).use { stmt ->
+                stmt.setString(1, sourceId)
+                stmt.setString(2, bookUrl)
+                stmt.setString(3, Json.encodeToString(chapters))
+                stmt.setLong(4, now)
+                stmt.executeUpdate()
+            }
+
+            // 4. Batch insert chapters into book_content_cache
+            db.prepareStatement("delete from book_content_cache where source_id = ? and book_url = ?").use {
+                it.setString(1, sourceId)
+                it.setString(2, bookUrl)
+                it.executeUpdate()
+            }
+            db.prepareStatement("""
+                insert into book_content_cache(source_id, book_url, chapter_url, title, content, cached_at)
+                values(?, ?, ?, ?, ?, ?)
+            """.trimIndent()).use { stmt ->
+                chapters.forEachIndexed { idx, ch ->
+                    val contentText = parsed.chapters.getOrNull(idx)?.content ?: ""
+                    stmt.setString(1, sourceId)
+                    stmt.setString(2, bookUrl)
+                    stmt.setString(3, ch.url)
+                    stmt.setString(4, ch.title)
+                    stmt.setString(5, contentText)
+                    stmt.setLong(6, now)
+                    stmt.addBatch()
+                }
+                stmt.executeBatch()
+            }
+
+            // 5. Update book_cache_status to ready
+            db.prepareStatement("""
+                insert into book_cache_status(source_id, book_url, total_chapters, cached_chapters, state, last_error, updated_at)
+                values(?, ?, ?, ?, 'ready', null, ?)
+                on conflict(source_id, book_url) do update set
+                    total_chapters = excluded.total_chapters, cached_chapters = excluded.cached_chapters,
+                    state = 'ready', last_error = null, updated_at = excluded.updated_at
+            """.trimIndent()).use { stmt ->
+                stmt.setString(1, sourceId)
+                stmt.setString(2, bookUrl)
+                stmt.setInt(3, chapters.size)
+                stmt.setInt(4, chapters.size)
+                stmt.setLong(5, now)
+                stmt.executeUpdate()
+            }
+
+            db.commit()
+            getBookshelf(db, sourceId, bookUrl)!!
+        } catch (e: Throwable) {
+            db.rollback()
+            throw e
+        } finally {
+            db.autoCommit = true
         }
     }
 

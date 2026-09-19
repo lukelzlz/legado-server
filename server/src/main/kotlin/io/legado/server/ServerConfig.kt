@@ -9,6 +9,7 @@ data class ServerConfig(
     val databasePath: String,
     val coverCacheDirectory: Path,
     val webDavDirectory: Path,
+    val localBooksDirectory: Path = coverCacheDirectory.resolveSibling("local_books"),
     val initialAdminPassword: String?,
     val secureCookies: Boolean,
 ) {
@@ -21,6 +22,7 @@ data class ServerConfig(
                 databasePath = env["LEGADO_DATABASE"] ?: dataDir.resolve("legado.sqlite").absolutePathString(),
                 coverCacheDirectory = dataDir.resolve("covers"),
                 webDavDirectory = dataDir.resolve("webdav"),
+                localBooksDirectory = dataDir.resolve("local_books"),
                 initialAdminPassword = env["ADMIN_PASSWORD"]?.takeIf { it.isNotBlank() },
                 secureCookies = env["LEGADO_SECURE_COOKIES"]?.toBooleanStrictOrNull() ?: true,
             )

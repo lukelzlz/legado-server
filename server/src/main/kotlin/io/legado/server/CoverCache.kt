@@ -39,6 +39,16 @@ class CoverCache(private val directory: Path, private val fetcher: ((String) -> 
     fun file(key: String): Path? = key.takeIf { it.matches(Regex("[0-9a-f]{64}")) }?.let(directory::resolve)?.takeIf(Files::exists)
     fun delete(key: String) { file(key)?.let(Files::deleteIfExists) }
 
+    fun saveCoverBytes(bytes: ByteArray, contentType: String = "image/jpeg"): String {
+        require(bytes.size <= MAX_BYTES) { "封面超过 5 MiB 限制" }
+        val key = sha256Bytes(bytes)
+        val stored = directory.resolve(key)
+        if (!Files.exists(stored)) {
+            Files.write(stored, bytes)
+        }
+        return key
+    }
+
     private fun download(url: String): Pair<String, ByteArray> {
         var uri = URI(url); validate(uri)
         repeat(4) {
@@ -54,5 +64,6 @@ class CoverCache(private val directory: Path, private val fetcher: ((String) -> 
         NetworkSecurity.resolveAndValidateSafeHttpTarget(uri, "封面")
     }
     private fun sha256(value: String) = MessageDigest.getInstance("SHA-256").digest(value.toByteArray()).joinToString("") { "%02x".format(it) }
+    private fun sha256Bytes(bytes: ByteArray) = MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
     private companion object { const val MAX_BYTES = 5 * 1024 * 1024 }
 }

@@ -1,28 +1,32 @@
 {
-  "name": "legado",
+  "name": "legado-server",
   "version": "1.0.0",
-  "devDependencies": {
-    "cz-conventional-changelog": "^3.1.0"
-  },
-  "config": {
-    "commitizen": {
-      "path": "./node_modules/cz-conventional-changelog"
-    }
-  },
-  "description": "[![Commitizen friendly](https://img.shields.io/badge/commitizen-friendly-brightgreen.svg)](http://commitizen.github.io/cz-cli/)",
+  "description": "Legado (开源阅读) Headless Server & Modern Web Reader",
+  "keywords": [
+    "legado",
+    "legado3",
+    "reader",
+    "novel-reader",
+    "book-source",
+    "headless",
+    "ktor",
+    "kotlin",
+    "react",
+    "pwa",
+    "tts",
+    "webdav",
+    "docker"
+  ],
   "main": "index.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/gedoor/legado.git"
+    "url": "git+https://github.com/lukelzlz/legado-server.git"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
   "bugs": {
-    "url": "https://github.com/gedoor/legado/issues"
+    "url": "https://github.com/lukelzlz/legado-server/issues"
   },
-  "homepage": "https://github.com/gedoor/legado#readme"
+  "homepage": "https://github.com/lukelzlz/legado-server#readme"
 }

@@ -469,3 +469,25 @@ data class WebDavInfoResponse(
     val entries: List<WebDavEntry> = emptyList(),
 )
 
+/** 本地图书导入返回条目 */
+@Serializable
+data class LocalBookImportItem(
+    val filename: String,
+    val success: Boolean,
+    val bookUrl: String? = null,
+    val name: String? = null,
+    val author: String? = null,
+    val totalChapters: Int = 0,
+    val error: String? = null,
+)
+
+/** 本地图书导入批量响应 */
+@Serializable
+data class LocalBookImportResponse(
+    val total: Int,
+    val imported: Int,
+    val failed: Int,
+    val results: List<LocalBookImportItem> = emptyList(),
+)
+
+

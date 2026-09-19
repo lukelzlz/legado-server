@@ -111,6 +111,7 @@ AI 与人类协作时必须明确当前达到的完成度阶梯，严禁混淆�
 - **[插件/健壮性] 清单解析必须兼容 UTF-8 BOM，接口返回体必须带 charset**：Windows PowerShell 5.1 的 `Set-Content -Encoding UTF8` 会写 BOM，使 `plugin.json` 开头多出 `\uFEFF` 导致清单解析失败、全部插件被卸载（重载接口返回 `{"reloaded":0}`）；仓库侧要既修文件也修解析器（与 Legado 书源导入的 BOM 兼容同源）。另外返回 `application/json` 时若省略 `charset=utf-8`，Windows PowerShell 会按 Latin-1 解码让中文变成乱码。
 - **[部署/HTTP] 明文 HTTP 必须显式 `LEGADO_SECURE_COOKIES=false`，拦截者是浏览器而非服务端**：默认配置下服务端照常服务、登录也返回 200 并下发 `legado_session`，但该 Cookie 带 `Secure`，在 `http://` 下浏览器（以及 PowerShell 会话）**不会回传**，表现为「登录成功但立刻又是未登录」。局域网明文自建必须设为 `false`；公网走 HTTPS 反代并保持 `true`；命令行验证改用 `curl` 可绕开该干扰。
 - **[文档/分支] 插件分支的文档编号与 master 撞号，合并前必须重编号**：`feat/plugin-system` 分支上的 `PROPOSAL-011-plugin-system-and-extension-points.md`、`ADR-011-plugin-runtime-dual-js-jar-and-trust-model.md`、`SESSION-012-plugin-system-implementation.md` 与 master 上已占用的 011/012（替换规则引擎、替换规则一级页面）冲突，合并时须整体顺延（015+），否则索引自相矛盾。历史细节见 [`SESSION-HIST-007`](file:///root/legado-server/docs/sessions/SESSION-HIST-007-plugin-system-and-api-doc.md)。
+- **[本地书籍/虚拟书源] `loc_book` 虚拟书源与解析入库一体化**：本地上传的电子书（TXT/EPUB）使用标准 `sourceId = "loc_book"` 与 `local://<book_id>` 路径，解析后目录与正文直接写入 `book_toc_cache` 与 `book_content_cache`，使阅读器与 Edge-TTS 能够无差别透明调用，杜绝针对本地书籍另起炉灶建立平行阅读接口；TXT 编码按 BOM -> UTF-8 Strict -> GB18030 Strict 梯度探测，无明确章节时按固定字数自然换行降级切分。
 - **[工具/DSH] 历史会话挖掘（`/doc-init` 专用）**：DSH 会话记录位于 `%APPDATA%\dsh-desktop\harness\sessions\<工作区slug>\<session-id>\session.jsonl.zstd`，格式为**多帧 zstd**（一帧一条 JSONL）：`zstdDecompressSync` 只能解出第一帧（会话头），必须按魔数 `28 B5 2F FD` + 帧头/块头扫描帧边界后逐帧解压（Node 流式 zstd 解压器不支持拼接帧，会报 `Unknown frame descriptor`）；**切勿把会话内容交给 PowerShell 管道格式化（会 OOM）**，应让 Node 脚本写报告文件后再读。记录类型：`user/message`（`data.content[].text`）、`assistant/message`（`data.message.content[]`，内含 `tool-call` 项）、`tool/call`（`data.name` + `data.arguments` JSON 字符串）、`tool/result`、`todo/write`（`data.todos` 直接揭示工作范围）、`session/title`。
 
 ---
@@ -135,6 +136,7 @@ AI 与人类协作时必须明确当前达到的完成度阶梯，严禁混淆�
 | PROPOSAL-013 | 移动端全面屏死区安全区深度适配与替换净化规则 UI 体系化重构 | [`docs/proposals/PROPOSAL-013-mobile-safe-area-and-rules-ui-redesign.md`](file:///Users/zhangran/Documents/antigravity/joyful-galileo/docs/proposals/PROPOSAL-013-mobile-safe-area-and-rules-ui-redesign.md) | Accepted |
 | PROPOSAL-014 | 书源批量整理、分组维护与轻量连通性健康体检体系 | [`docs/proposals/PROPOSAL-014-book-source-batch-management-and-health-check.md`](file:///Users/zhangran/Documents/antigravity/joyful-galileo/docs/proposals/PROPOSAL-014-book-source-batch-management-and-health-check.md) | Accepted |
 | PROPOSAL-015 | 内置 WebDAV 服务端与数据目录 webdav 存储区（含 Web 端「文件」设置页面） | [`docs/proposals/PROPOSAL-015-webdav-storage-server.md`](file:///root/legado-server/docs/proposals/PROPOSAL-015-webdav-storage-server.md) | Tested & Deployed |
+| PROPOSAL-016 | 本地图书导入与无缝阅读（TXT/EPUB 解析、智能分章与书架集成） | [`docs/proposals/PROPOSAL-016-local-book-import-txt-epub.md`](file:///root/legado-server/docs/proposals/PROPOSAL-016-local-book-import-txt-epub.md) | Tested |
 
 ### 架构决策记录 (ADR)
 | 编号 | 决策标题 | 关联文档 | 状态 |
@@ -154,6 +156,7 @@ AI 与人类协作时必须明确当前达到的完成度阶梯，严禁混淆�
 | ADR-013 | 全面屏安全区变量统一继承体系与替换规则设计系统化重构 | [`docs/decisions/ADR-013-safe-area-layout-and-rules-design-system.md`](file:///Users/zhangran/Documents/antigravity/joyful-galileo/docs/decisions/ADR-013-safe-area-layout-and-rules-design-system.md) | Accepted |
 | ADR-014 | 书源批量事务管道、轻量并发探针与浮动管理状态机 | [`docs/decisions/ADR-014-source-batch-operations-and-lightweight-probe-pipeline.md`](file:///Users/zhangran/Documents/antigravity/joyful-galileo/docs/decisions/ADR-014-source-batch-operations-and-lightweight-probe-pipeline.md) | Accepted |
 | ADR-015 | 进程内 WebDAV 服务端选型、Basic 鉴权与最小 Class 2 锁实现 | [`docs/decisions/ADR-015-webdav-server-class2-minimal.md`](file:///root/legado-server/docs/decisions/ADR-015-webdav-server-class2-minimal.md) | Accepted |
+| ADR-016 | 本地图书（TXT/EPUB）解析引擎、虚拟书源与解析入库一体化架构 | [`docs/decisions/ADR-016-local-book-parsing-and-storage-architecture.md`](file:///root/legado-server/docs/decisions/ADR-016-local-book-parsing-and-storage-architecture.md) | Accepted |
 
 ### 工作记忆与历史推演归档 (Sessions Chronicle)
 | 日期 / ID | 类型 | 标题 / 议题 | 关联文档 | 状态 |
@@ -198,6 +201,7 @@ AI 与人类协作时必须明确当前达到的完成度阶梯，严禁混淆�
 | 2026-09-17 | Quickfix | 重置默认分支为 main 并同步 CI/CD 流水线，清除 GitHub 历史悬挂贡献者缓存 | - | Pushed |
 | 2026-09-17 | Feat | 内置 WebDAV 服务端与 Web 端「文件」设置页面，数据目录新增 webdav 文件夹存放上传数据 | [`docs/acceptance/ACCEPT-015-webdav-storage.md`](file:///root/legado-server/docs/acceptance/ACCEPT-015-webdav-storage.md) · [`docs/sessions/SESSION-016-webdav-storage-server.md`](file:///root/legado-server/docs/sessions/SESSION-016-webdav-storage-server.md) | Tested & Deployed |
 | 2026-09-18 | Init | `/doc-init` 增量：挖掘 DSH 历史会话（5 份可用会话 / 18,577 帧 / 67 条用户诉求 / 1,060 次工具调用），补录插件系统时代与 Windows 验证基线，新增 HIST-007/008 两部历史归档并增量更新 AGENTS 索引与部落知识 | [`docs/sessions/SESSION-HIST-007-plugin-system-and-api-doc.md`](file:///root/legado-server/docs/sessions/SESSION-HIST-007-plugin-system-and-api-doc.md) · [`docs/sessions/SESSION-HIST-008-windows-environment-and-verification-baseline.md`](file:///root/legado-server/docs/sessions/SESSION-HIST-008-windows-environment-and-verification-baseline.md) | Local（未推送） |
+| 2026-09-19 | Feat | 本地图书（TXT/EPUB）导入解析、虚拟书源与书架无缝集成（智能编码探测、正则分章、纯 JVM EPUB 抽取、SVG 艺术封面） | [`docs/acceptance/ACCEPT-016-local-book-import-txt-epub.md`](file:///root/legado-server/docs/acceptance/ACCEPT-016-local-book-import-txt-epub.md) · [`docs/proposals/PROPOSAL-016-local-book-import-txt-epub.md`](file:///root/legado-server/docs/proposals/PROPOSAL-016-local-book-import-txt-epub.md) · [`docs/sessions/SESSION-017-local-book-import-txt-epub.md`](file:///root/legado-server/docs/sessions/SESSION-017-local-book-import-txt-epub.md) | Tested |
 
 ---
 

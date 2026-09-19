@@ -17,6 +17,8 @@ export type BookshelfItem = { sourceId: string; bookUrl: string; name: string; a
 export type BookshelfWrite = { sourceId: string; bookUrl: string; name: string; author?: string; tocUrl: string; coverUrl?: string; alternateSources?: SearchResult[] }
 export type BookshelfSourceSwitch = { oldSourceId: string; oldBookUrl: string; book: BookshelfWrite; alternateSources?: SearchResult[] }
 export type ImportResponse = { imported: number; updated: number; skipped: number; errors: string[] }
+export type LocalBookImportItem = { filename: string; success: boolean; bookUrl?: string; name?: string; author?: string; totalChapters: number; error?: string }
+export type LocalBookImportResponse = { total: number; imported: number; failed: number; results: LocalBookImportItem[] }
 export type SourceSubscription = { id: number; url: string; enabled: boolean; createdAt: number; updatedAt: number; lastSuccessAt?: number; lastAttemptAt?: number; lastError?: string; lastImported: number; contentHash?: string }
 export type SearchStreamEvent = { type: 'start' | 'results' | 'progress' | 'done' | 'error'; totalSources: number; completedSources: number; matchedSources: number; emptySources: number; failedSources: number; resultCount: number; results: SearchResult[]; message?: string }
 
@@ -343,6 +345,25 @@ export const api = {
   setBookshelfCompleted: (sourceId: string, bookUrl: string, completed: boolean) => request<BookshelfItem>('/api/bookshelf/status', { method: 'PUT', body: JSON.stringify({ sourceId, bookUrl, completed }) }),
   updateBookshelfInfo: (data: { sourceId: string; bookUrl: string; name: string; author?: string; coverUrl?: string }) => request<BookshelfItem>('/api/bookshelf/info', { method: 'PUT', body: JSON.stringify(data) }),
   switchBookshelfSource: (value: BookshelfSourceSwitch) => request<BookshelfItem>('/api/bookshelf/switch-source', { method: 'POST', body: JSON.stringify(value) }),
+  importLocalBooks: async (files: File[]): Promise<LocalBookImportResponse> => {
+    const formData = new FormData()
+    for (const file of files) {
+      formData.append('file', file, file.name)
+    }
+    const headers = new Headers()
+    if (csrfToken) headers.set('X-CSRF-Token', csrfToken)
+    const response = await fetch('/api/bookshelf/import-local', {
+      method: 'POST',
+      headers,
+      credentials: 'same-origin',
+      body: formData,
+    })
+    if (!response.ok) {
+      const err = await response.json().catch(() => ({ message: response.statusText })) as { message?: string }
+      throw new Error(err.message ?? '本地书籍上传失败')
+    }
+    return response.json() as Promise<LocalBookImportResponse>
+  },
   cover: (key: string) => `/api/covers/${encodeURIComponent(key)}`,
   webDavInfo: (path = '') => request<WebDavInfo>(`/api/webdav/info${path ? `?path=${encodeURIComponent(path)}` : ''}`),
   webDavUpload: (path: string, file: File) => webDavWrite(path, { method: 'PUT', body: file }),

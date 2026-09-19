@@ -1412,14 +1412,16 @@ function BookManageModal({
             <Icon name="arrowRight" />
           </button>
 
-          <button className="manage-action-row" onClick={() => { onClose(); onSwitchSource() }}>
-            <div className="action-icon"><Icon name="sliders" /></div>
-            <div className="action-text">
-              <strong>切换书源</strong>
-              <small>{item.alternateSources?.length ? `已有 ${item.alternateSources.length} 个备选书源，可全网检索` : '在其他书源中搜索匹配并无缝替换'}</small>
-            </div>
-            <Icon name="arrowRight" />
-          </button>
+          {item.sourceId !== 'loc_book' && (
+            <button className="manage-action-row" onClick={() => { onClose(); onSwitchSource() }}>
+              <div className="action-icon"><Icon name="sliders" /></div>
+              <div className="action-text">
+                <strong>切换书源</strong>
+                <small>{item.alternateSources?.length ? `已有 ${item.alternateSources.length} 个备选书源，可全网检索` : '在其他书源中搜索匹配并无缝替换'}</small>
+              </div>
+              <Icon name="arrowRight" />
+            </button>
+          )}
 
           {isCaching ? (
             <div className="manage-cache-box">
@@ -1485,6 +1487,9 @@ function ShelfPage({ onOpen }: { onOpen: (item: BookshelfItem) => void }) {
   const [switchingItem, setSwitchingItem] = useState<BookshelfItem | null>(null)
   const [managingItem, setManagingItem] = useState<BookshelfItem | null>(null)
   const [view, setView] = useState<'reading' | 'completed' | 'all'>('reading')
+  const [uploading, setUploading] = useState(false)
+  const [dragOver, setDragOver] = useState(false)
+  const fileInputRef = useRef<HTMLInputElement>(null)
   const previousStateRef = useRef<Map<string, string>>(new Map())
 
   const load = useCallback(async () => {
@@ -1509,6 +1514,34 @@ function ShelfPage({ onOpen }: { onOpen: (item: BookshelfItem) => void }) {
   useEffect(() => {
     void load()
   }, [load])
+
+  const handleImportFiles = async (files: FileList | File[]) => {
+    const list = Array.from(files).filter(f => {
+      const n = f.name.toLowerCase()
+      return n.endsWith('.txt') || n.endsWith('.epub') || n.endsWith('.text')
+    })
+    if (list.length === 0) {
+      toast.warning('请选择 .txt 或 .epub 格式的电子书文件')
+      return
+    }
+    setUploading(true)
+    toast.info(`正在解析并导入 ${list.length} 本本地书籍...`)
+    try {
+      const resp = await api.importLocalBooks(list)
+      if (resp.imported > 0) {
+        toast.success(`成功导入 ${resp.imported} 本本地书籍！`)
+      }
+      if (resp.failed > 0) {
+        const errorMsg = resp.results.filter(r => !r.success).map(r => `${r.filename}: ${r.error}`).join('; ')
+        toast.error(`部分书籍导入失败 (${resp.failed} 本): ${errorMsg}`)
+      }
+      await load()
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : '导入本地书籍失败')
+    } finally {
+      setUploading(false)
+    }
+  }
 
   const caching = items.some(item => item.cacheState === 'caching')
   useEffect(() => {
@@ -1595,14 +1628,54 @@ function ShelfPage({ onOpen }: { onOpen: (item: BookshelfItem) => void }) {
   const counts = { reading: items.filter(item => !item.completed).length, completed: items.filter(item => item.completed).length, all: items.length }
 
   return (
-    <main className="shelf-page">
+    <main
+      className={`shelf-page ${dragOver ? 'drag-active' : ''}`}
+      onDragOver={e => { e.preventDefault(); setDragOver(true) }}
+      onDragLeave={e => {
+        if (!e.currentTarget.contains(e.relatedTarget as Node)) {
+          setDragOver(false)
+        }
+      }}
+      onDrop={e => {
+        e.preventDefault()
+        setDragOver(false)
+        if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+          void handleImportFiles(e.dataTransfer.files)
+        }
+      }}
+    >
       <header className="page-title">
         <div>
           <span className="section-kicker">我的阅读</span>
           <h1>书架</h1>
-          <p>继续上次未读完的故事。</p>
+          <p>继续上次未读完的故事，或导入本地 TXT / EPUB 电子书。</p>
         </div>
-        <small>{visibleItems.length} 本书</small>
+        <div className="shelf-header-actions">
+          <input
+            ref={fileInputRef}
+            type="file"
+            multiple
+            accept=".txt,.epub,.text,application/epub+zip,text/plain"
+            style={{ display: 'none' }}
+            onChange={e => {
+              if (e.target.files && e.target.files.length > 0) {
+                void handleImportFiles(e.target.files)
+                e.target.value = ''
+              }
+            }}
+          />
+          <button
+            type="button"
+            className="shelf-import-btn"
+            disabled={uploading}
+            onClick={() => fileInputRef.current?.click()}
+            title="导入本地 TXT 或 EPUB 小说"
+          >
+            <Icon name="upload" />
+            <span>{uploading ? '导入中...' : '导入本地'}</span>
+          </button>
+          <small>{visibleItems.length} 本书</small>
+        </div>
       </header>
 
       <nav className="shelf-tabs" aria-label="书架分组">
@@ -1619,7 +1692,17 @@ function ShelfPage({ onOpen }: { onOpen: (item: BookshelfItem) => void }) {
         <section className="shelf-empty">
           <Icon name="book" />
           <h2>书架还是空的</h2>
-          <p>打开一本书开始阅读，它会自动出现在这里。</p>
+          <p>在书库检索添加在线小说，或直接导入本地 TXT / EPUB 文件。</p>
+          <button
+            type="button"
+            className="shelf-import-btn"
+            style={{ marginTop: '12px' }}
+            disabled={uploading}
+            onClick={() => fileInputRef.current?.click()}
+          >
+            <Icon name="upload" />
+            <span>{uploading ? '正在解析导入...' : '导入本地 TXT / EPUB'}</span>
+          </button>
         </section>
       ) : visibleItems.length === 0 ? (
         <section className="shelf-empty">
@@ -1631,6 +1714,7 @@ function ShelfPage({ onOpen }: { onOpen: (item: BookshelfItem) => void }) {
           {visibleItems.map(item => {
             const badge = cacheBadge(item)
             const isCaching = item.cacheState === 'caching'
+            const isLocal = item.sourceId === 'loc_book'
             const percent = Math.min(100, Math.round((item.cachedChapters / Math.max(1, item.totalChapters || 1)) * 100))
 
             return (
@@ -1644,6 +1728,7 @@ function ShelfPage({ onOpen }: { onOpen: (item: BookshelfItem) => void }) {
                   aria-label={`继续阅读 ${item.name}`}
                 >
                   {item.coverKey ? <img src={api.cover(item.coverKey)} alt="" /> : <span className="cover-fallback">{item.name.slice(0, 1)}</span>}
+                  {isLocal && <span className="shelf-card-tag-local">本地</span>}
                   {badge && <span className={`shelf-card-badge ${item.cacheState}`}>{badge}</span>}
                   {isCaching && (
                     <div className="shelf-card-progress-track">

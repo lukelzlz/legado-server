@@ -563,6 +563,11 @@ mark.search-highlight { background: var(--accent-soft); color: var(--accent); fo
 .shelf-card-badge.ready { background: rgba(36, 140, 72, 0.88); color: #fff; }
 .shelf-card-badge.caching { background: rgba(204, 130, 10, 0.9); color: #fff; }
 .shelf-card-badge.failed { background: rgba(210, 45, 45, 0.88); color: #fff; }
+.shelf-card-tag-local { position: absolute; top: 8px; left: 8px; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: 600; background: rgba(14, 116, 144, 0.9); color: #fff; letter-spacing: 0.5px; backdrop-filter: blur(6px); box-shadow: 0 2px 6px rgba(0,0,0,.15); }
+.shelf-header-actions { display: flex; align-items: center; gap: 12px; }
+.shelf-import-btn { display: inline-flex; align-items: center; gap: 6px; padding: 6px 14px; border-radius: 8px; font-size: 13px; font-weight: 550; cursor: pointer; border: 1px solid var(--line); background: var(--surface); color: var(--ink); transition: all .15s ease; }
+.shelf-import-btn:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+.shelf-page.drag-active { outline: 2px dashed var(--accent); outline-offset: -8px; background: color-mix(in srgb, var(--accent) 3%, transparent); }
 .shelf-card-info { padding: 12px 14px 6px; display: grid; gap: 4px; }
 .shelf-card-name { margin: 0; font-size: 15px; font-weight: 650; color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer; }
 .shelf-card-name:hover { color: var(--accent); }

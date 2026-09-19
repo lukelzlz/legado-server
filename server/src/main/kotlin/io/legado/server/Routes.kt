@@ -26,6 +26,12 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
+import io.ktor.http.content.PartData
+import io.ktor.http.content.forEachPart
+import io.ktor.http.content.streamProvider
+import java.nio.file.Files
+import java.nio.file.Path
+import java.util.UUID
 import java.net.URLEncoder
 import java.util.concurrent.atomic.AtomicInteger
 
@@ -38,6 +44,7 @@ fun Route.apiRoutes(
     bookCache: BookCacheService,
     edgeTts: EdgeTtsService = EdgeTtsService(),
     ttsSessions: TtsSessionService = TtsSessionService(edgeTts),
+    localBooksDirectory: Path = Path.of(".data/local_books"),
 ) {
     val webView = WebViewProxy(database)
     route("/api") {
@@ -488,22 +495,46 @@ fun Route.apiRoutes(
         }
         post("/books/details") {
             if (auth.requireSession(call, true) == null) return@post
-            val request = call.receive<BookRequest>(); val source = database.getSource(request.sourceId) ?: run { call.respond(HttpStatusCode.NotFound, ApiError("not_found", "书源不存在")); return@post }
+            val request = call.receive<BookRequest>()
+            if (request.sourceId == LocalBookParser.LOC_BOOK_SOURCE_ID) {
+                val shelf = database.listBookshelf().firstOrNull { it.sourceId == request.sourceId && it.bookUrl == request.bookUrl }
+                    ?: run { call.respond(HttpStatusCode.NotFound, ApiError("not_found", "本地书籍不存在")); return@post }
+                val cover = shelf.coverKey?.let { "/api/covers/$it" }
+                call.respond(BookDetails(
+                    sourceId = LocalBookParser.LOC_BOOK_SOURCE_ID,
+                    name = shelf.name,
+                    author = shelf.author,
+                    intro = null,
+                    coverUrl = cover,
+                    tocUrl = shelf.tocUrl,
+                ))
+                return@post
+            }
+            val source = database.getSource(request.sourceId) ?: run { call.respond(HttpStatusCode.NotFound, ApiError("not_found", "书源不存在")); return@post }
             call.respondCatching { runner.details(source.json, request.bookUrl) }
         }
         post("/books/chapters") {
             if (auth.requireSession(call, true) == null) return@post
             val request = call.receive<BookRequest>()
-            val source = database.getSource(request.sourceId) ?: run {
-                call.respond(HttpStatusCode.NotFound, ApiError("not_found", "书源不存在"))
-                return@post
-            }
             val cachedToc = database.getTocCache(request.sourceId, request.bookUrl)
+                ?: database.getTocCache(request.sourceId, request.bookUrl.removeSuffix("/toc") + "/toc")
             if (cachedToc != null && cachedToc.isNotEmpty()) {
                 call.respond(cachedToc)
                 return@post
             }
             val fallbackFromContent = database.getCachedChaptersFallback(request.sourceId, request.bookUrl)
+            if (request.sourceId == LocalBookParser.LOC_BOOK_SOURCE_ID) {
+                if (fallbackFromContent.isNotEmpty()) {
+                    call.respond(fallbackFromContent)
+                } else {
+                    call.respond(HttpStatusCode.NotFound, ApiError("not_found", "本地书籍目录不存在"))
+                }
+                return@post
+            }
+            val source = database.getSource(request.sourceId) ?: run {
+                call.respond(HttpStatusCode.NotFound, ApiError("not_found", "书源不存在"))
+                return@post
+            }
             call.respondCatching {
                 try {
                     withTimeout(4000) {
@@ -614,20 +645,37 @@ fun Route.apiRoutes(
                 call.respond(HttpStatusCode.BadRequest, ApiError("invalid_content", "缺少书源或章节地址"))
                 return@post
             }
+            val bookUrl = request.bookUrl ?: if (request.chapterUrl.startsWith("local://")) {
+                request.chapterUrl.substringBeforeLast('/')
+            } else null
+            val bookName = bookUrl?.let { url ->
+                database.listBookshelf().firstOrNull { it.sourceId == request.sourceId && it.bookUrl == url }?.name
+            }
+            val cached = bookUrl?.let { database.cachedContent(request.sourceId, it, request.chapterUrl) }
+
+            if (request.sourceId == LocalBookParser.LOC_BOOK_SOURCE_ID) {
+                if (cached != null) {
+                    val rules = database.getEnabledReplaceRulesForScope(bookName, "local://")
+                    val jsSandbox = JsSandbox(runner)
+                    val cleaned = ContentProcessor.processContent(cached.content, rules, jsSandbox = jsSandbox, bookName = bookName, chapterTitle = cached.title)
+                    val cleanedTitle = cached.title?.let { ContentProcessor.processTitle(it, rules, jsSandbox = jsSandbox, bookName = bookName) }
+                    call.respond(ChapterContent(title = cleanedTitle ?: cached.title, content = cleaned))
+                } else {
+                    call.respond(HttpStatusCode.NotFound, ApiError("not_found", "本地章节内容不存在"))
+                }
+                return@post
+            }
+
             val source = database.getSource(request.sourceId) ?: run {
                 call.respond(HttpStatusCode.NotFound, ApiError("not_found", "书源不存在"))
                 return@post
             }
-            val bookName = request.bookUrl?.let { url ->
-                database.listBookshelf().firstOrNull { it.sourceId == request.sourceId && it.bookUrl == url }?.name
-            }
-            val cached = request.bookUrl?.let { database.cachedContent(request.sourceId, it, request.chapterUrl) }
             if (cached != null && cached.content.isNotBlank()) {
                 call.respond(cached)
             } else call.respondCatching {
                 try {
                     runner.content(source.json, request.chapterUrl, bookName).also { content ->
-                        request.bookUrl?.let { database.cacheBookContent(request.sourceId, it, request.chapterUrl, content) }
+                        bookUrl?.let { database.cacheBookContent(request.sourceId, it, request.chapterUrl, content) }
                     }
                 } catch (error: Throwable) {
                     if (cached != null && cached.content.isNotBlank()) cached
@@ -656,11 +704,76 @@ fun Route.apiRoutes(
             }
             call.respond(item)
         }
+        post("/bookshelf/import-local") {
+            if (auth.requireSession(call, true) == null) return@post
+            val multipart = call.receiveMultipart()
+            val items = mutableListOf<LocalBookImportItem>()
+            var importedCount = 0
+            var failedCount = 0
+            multipart.forEachPart { part ->
+                if (part is PartData.FileItem) {
+                    val originalFilename = part.originalFileName ?: "book.txt"
+                    val bytes = part.streamProvider().readBytes()
+                    if (bytes.isNotEmpty()) {
+                        try {
+                            val parsed = LocalBookParser.parse(originalFilename, bytes)
+                            val bookId = UUID.randomUUID().toString().replace("-", "")
+                            val ext = if (originalFilename.contains('.')) "." + originalFilename.substringAfterLast('.') else ".txt"
+                            runCatching {
+                                Files.createDirectories(localBooksDirectory)
+                                Files.write(localBooksDirectory.resolve("$bookId$ext"), bytes)
+                            }
+
+                            val coverKey = if (parsed.coverBytes != null && parsed.coverBytes.isNotEmpty()) {
+                                coverCache.saveCoverBytes(parsed.coverBytes, parsed.coverContentType ?: "image/jpeg")
+                            } else null
+
+                            val item = database.importLocalBook(bookId, parsed, coverKey)
+                            importedCount++
+                            items.add(LocalBookImportItem(
+                                filename = originalFilename,
+                                success = true,
+                                bookUrl = item.bookUrl,
+                                name = item.name,
+                                author = item.author,
+                                totalChapters = item.totalChapters,
+                            ))
+                        } catch (error: Throwable) {
+                            failedCount++
+                            items.add(LocalBookImportItem(
+                                filename = originalFilename,
+                                success = false,
+                                error = error.message ?: "解析失败"
+                            ))
+                        }
+                    }
+                }
+                part.dispose()
+            }
+            call.respond(LocalBookImportResponse(
+                total = items.size,
+                imported = importedCount,
+                failed = failedCount,
+                results = items,
+            ))
+        }
         delete("/bookshelf") {
             if (auth.requireSession(call, true) == null) return@delete
             val sourceId = call.request.queryParameters["sourceId"]; val bookUrl = call.request.queryParameters["bookUrl"]
             if (sourceId.isNullOrBlank() || bookUrl.isNullOrBlank()) { call.respond(HttpStatusCode.BadRequest, ApiError("invalid_bookshelf", "缺少书籍标识")); return@delete }
             bookCache.cancel(sourceId, bookUrl)
+            if (sourceId == LocalBookParser.LOC_BOOK_SOURCE_ID) {
+                val bookId = bookUrl.removePrefix("local://").substringBefore('/')
+                if (bookId.isNotBlank()) {
+                    runCatching {
+                        if (Files.exists(localBooksDirectory)) {
+                            Files.list(localBooksDirectory).use { stream ->
+                                stream.filter { it.fileName.toString().startsWith(bookId) }.forEach { Files.deleteIfExists(it) }
+                            }
+                        }
+                    }
+                }
+            }
             database.removeBookshelf(sourceId, bookUrl)?.let(coverCache::delete)
             call.respond(HttpStatusCode.NoContent)
         }

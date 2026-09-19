@@ -81,6 +81,9 @@ object SourceCodec {
         )
     }
 
+    /** 对外复用：把书源标识（可带 `#` / `##` 注解）归一化为服务端使用的 sourceId（备份导入时对齐书架 origin）。 */
+    fun normalizeSourceId(raw: String): String = normalizeSourceUrl(raw)
+
     private fun normalizeSourceUrl(rawUrl: String): String = rawUrl
         .substringBefore("##")
         .substringBefore("#")

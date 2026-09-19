@@ -9,6 +9,7 @@ import {
   davBreadcrumbs,
   formatDavSize,
   formatDavTime,
+  isBackupArchive,
   webDavClientGuides,
 } from '../src/WebDavSettingsPage'
 import { encodeWebDavPath, joinWebDavPath, webDavFileUrl } from '../src/api'
@@ -93,6 +94,13 @@ test('WebDavSettingsPage - breadcrumbs describe the current directory chain', ()
     { name: '2026', path: 'books/2026' },
     { name: 'novels', path: 'books/2026/novels' },
   ])
+})
+
+test('WebDavSettingsPage - only zip archives expose the backup import entry', () => {
+  assert.ok(isBackupArchive('backup2026-07-12-rk3399pro_pcie.zip'), 'legado backup should be importable')
+  assert.ok(isBackupArchive('BACKUP.ZIP'), 'detection should ignore case')
+  assert.equal(isBackupArchive('book.txt'), false)
+  assert.equal(isBackupArchive('archive.zip.txt'), false)
 })
 
 test('WebDavSettingsPage - file paths are encoded for urls and joined from the browser', () => {

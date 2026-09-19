@@ -58,6 +58,15 @@ export type SourceHealthCheckResponse = {
 
 export type WebDavEntry = { name: string; path: string; directory: boolean; size: number; modifiedAt: number }
 export type WebDavInfo = { url: string; directory: string; path: string; parent?: string | null; fileCount: number; directoryCount: number; totalBytes: number; entries: WebDavEntry[] }
+export type BackupImportSummary = {
+  sources: number
+  sourcesUpdated: number
+  rules: number
+  rulesUpdated: number
+  books: number
+  booksUpdated: number
+  progress: number
+}
 
 export type ReplaceRule = {
   id: string
@@ -369,6 +378,7 @@ export const api = {
   webDavUpload: (path: string, file: File) => webDavWrite(path, { method: 'PUT', body: file }),
   webDavCreateFolder: (path: string) => webDavWrite(path, { method: 'MKCOL' }),
   webDavDelete: (path: string) => webDavWrite(path, { method: 'DELETE' }),
+  webDavImport: (path: string) => request<BackupImportSummary>('/api/webdav/import', { method: 'POST', body: JSON.stringify({ path }) }),
   getReplaceRules: (params?: { q?: string; group?: string; scope?: string }) => {
     const sp = new URLSearchParams()
     if (params?.q) sp.set('q', params.q)

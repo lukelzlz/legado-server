@@ -456,6 +456,38 @@ data class WebDavEntry(
     val modifiedAt: Long,
 )
 
+/** WebDAV 设置页「导入」：以存储区内的相对路径指定一份 Legado 备份包。 */
+@Serializable
+data class BackupImportRequest(val path: String)
+
+/** 备份导入结果统计（供页面提示使用）。 */
+@Serializable
+data class BackupImportSummary(
+    val sources: Int,
+    val sourcesUpdated: Int,
+    val rules: Int,
+    val rulesUpdated: Int,
+    val books: Int,
+    val booksUpdated: Int,
+    val progress: Int,
+)
+
+/** 备份包 `bookshelf.json` 中的一条书架记录（含阅读进度），仅用于导入。 */
+data class BackupShelfEntry(
+    val sourceId: String,
+    val bookUrl: String,
+    val name: String,
+    val author: String?,
+    val tocUrl: String,
+    val coverUrl: String?,
+    val completed: Boolean,
+    val chapterIndex: Int,
+    val readAt: Long,
+)
+
+/** 书架与阅读进度导入统计。 */
+data class LibraryImportResult(val imported: Int, val updated: Int, val progress: Int)
+
 /** WebDAV 设置页面的服务状态与当前目录内容。 */
 @Serializable
 data class WebDavInfoResponse(

@@ -144,7 +144,14 @@ data class SourceLoginStateRecord(
 )
 @Serializable data class ValidateResponse(val valid: Boolean, val errors: List<String>, val warnings: List<String>)
 @Serializable data class DebugRequest(val keyword: String = "测试")
-@Serializable data class SearchRequest(val keyword: String, val sourceIds: List<String>? = null)
+@Serializable data class SearchRequest(
+    val keyword: String = "",
+    val query: String = "",
+    val group: String? = null,
+    val sourceIds: List<String>? = null,
+) {
+    val effectiveKeyword: String get() = keyword.ifBlank { query }
+}
 @Serializable data class SearchStreamEvent(
     val type: String,
     val totalSources: Int = 0,

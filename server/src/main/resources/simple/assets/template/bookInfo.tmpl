@@ -11,6 +11,7 @@
     <div class="book-operate">
         <%if(!bookInfo.isInShelf){%>
             <a class="detail-button" onclick="saveBook()">加入书架</a>
+            <a class="detail-button" href="./reader.html?bookUrl=<%:=encodeBookUrl%>">开始阅读</a>
         <%}else{%>
             <a class="detail-button" href="./reader.html?bookUrl=<%:=encodeBookUrl%>">继续阅读</a>
             <a class="detail-button" onclick="refreshChapterList('<%:=bookInfo.bookUrl%>')">更新章节</a>

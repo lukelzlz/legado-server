@@ -191,9 +191,11 @@ fun Route.apiRoutes(
         post("/search") {
             if (auth.requireSession(call, true) == null) return@post
             val request = call.receive<SearchRequest>()
-            if (request.keyword.isBlank()) { call.respond(HttpStatusCode.BadRequest, ApiError("invalid_keyword", "请输入搜索关键词")); return@post }
+            val kw = request.effectiveKeyword
+            if (kw.isBlank()) { call.respond(HttpStatusCode.BadRequest, ApiError("invalid_keyword", "请输入搜索关键词")); return@post }
             val sourceRecords = database.listSearchSourceRecords(request.sourceIds)
-            val results = boundedConcurrentMap(sourceRecords, sourceSearchConcurrency()) { source -> readableSearchResults(runner, source.json, request.keyword) }.flatten()
+            val searchRecords = if (request.sourceIds == null && sourceRecords.size > 20) sourceRecords.take(20) else sourceRecords
+            val results = boundedConcurrentMap(searchRecords, sourceSearchConcurrency()) { source -> readableSearchResults(runner, source.json, kw) }.flatten()
             call.respond(results)
         }
         webSocket("/search/stream") {
@@ -203,12 +205,13 @@ fun Route.apiRoutes(
                 return@webSocket
             }
             val request = (incoming.receive() as? Frame.Text)?.readText()?.let { text -> runCatching { Json.decodeFromString<SearchRequest>(text) }.getOrNull() }
-            if (request?.keyword.isNullOrBlank()) {
+            val kw = request?.effectiveKeyword
+            if (kw.isNullOrBlank()) {
                 send(Frame.Text(Json.encodeToString(SearchStreamEvent("error", message = "请输入搜索关键词"))))
                 close(CloseReason(CloseReason.Codes.CANNOT_ACCEPT, "搜索条件无效"))
                 return@webSocket
             }
-            val sourceRecords = database.listSearchSourceRecords(request!!.sourceIds)
+            val sourceRecords = database.listSearchSourceRecords(request.sourceIds)
             send(Frame.Text(Json.encodeToString(SearchStreamEvent("start", totalSources = sourceRecords.size))))
             coroutineScope {
                 val events = Channel<SearchStreamEvent>(Channel.BUFFERED)

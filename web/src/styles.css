@@ -283,6 +283,30 @@ svg { width: 18px; height: 18px; flex: none; }
   width: 16px;
   height: 16px;
 }
+.menu-link-btn {
+  width: 100%;
+  min-height: 38px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 10px;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 550;
+  text-decoration: none;
+  transition: background 0.15s ease;
+  cursor: pointer;
+}
+.menu-link-btn:hover {
+  background: var(--surface-muted);
+}
+.menu-link-btn svg {
+  width: 16px;
+  height: 16px;
+  color: var(--muted);
+}
 .primary-button, .subtle-button, .danger-button { min-height: 34px; display: inline-flex; align-items: center; justify-content: center; gap: 7px; padding: 0 14px; border-radius: 5px; font-size: 13px; font-weight: 600; }
 .primary-button { background: var(--accent); color: #fff; }
 .primary-button:hover { background: var(--accent-ink); }

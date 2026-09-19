@@ -17,6 +17,7 @@ COPY gradle/ gradle/
 COPY gradle/libs.versions.toml gradle/libs.versions.toml
 COPY build.gradle settings.gradle ./
 COPY server/ server/
+COPY web/ web/
 COPY --from=web-build /src/web/dist/ web/dist/
 RUN --mount=type=cache,target=/home/gradle/.gradle gradle :server:installDist --no-daemon --no-build-cache
 

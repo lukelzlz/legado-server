@@ -81,5 +81,13 @@ class ServerConfigAndStaticTest {
         assertTrue(response.status == HttpStatusCode.OK || response.status == HttpStatusCode.NotFound)
         val indexResponse = client.get("/index.html")
         assertTrue(indexResponse.status == HttpStatusCode.OK || indexResponse.status == HttpStatusCode.NotFound)
+
+        val nonRedirectClient = createClient { followRedirects = false }
+        val kindleRedirect = nonRedirectClient.get("/kindle")
+        assertEquals(HttpStatusCode.Found, kindleRedirect.status)
+        assertEquals("/simple/", kindleRedirect.headers[HttpHeaders.Location])
+
+        val simpleIndex = client.get("/simple/index.html")
+        assertEquals(HttpStatusCode.OK, simpleIndex.status)
     }
 }

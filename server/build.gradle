@@ -39,6 +39,7 @@ tasks.withType(org.jetbrains.kotlin.gradle.tasks.KotlinCompile).configureEach {
 }
 
 application {
+    applicationName = 'legado-server'
     mainClass = 'io.legado.server.ApplicationKt'
 }
 
@@ -65,10 +66,15 @@ tasks.register('buildWeb') {
     description = "Builds the web frontend using npm."
     group = "build"
 
-    inputs.dir(file("${rootProject.projectDir}/web/src"))
-    inputs.file(file("${rootProject.projectDir}/web/package.json"))
-    inputs.file(file("${rootProject.projectDir}/web/index.html"))
-    inputs.file(file("${rootProject.projectDir}/web/vite.config.ts"))
+    def webSrc = file("${rootProject.projectDir}/web/src")
+    def webPkg = file("${rootProject.projectDir}/web/package.json")
+    def webHtml = file("${rootProject.projectDir}/web/index.html")
+    def webVite = file("${rootProject.projectDir}/web/vite.config.ts")
+
+    if (webSrc.exists()) inputs.dir(webSrc)
+    if (webPkg.exists()) inputs.file(webPkg)
+    if (webHtml.exists()) inputs.file(webHtml)
+    if (webVite.exists()) inputs.file(webVite)
     outputs.dir(webDistDir)
 
     doLast {

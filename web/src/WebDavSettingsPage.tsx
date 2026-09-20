@@ -77,6 +77,9 @@ export function davBreadcrumbs(path: string): Array<{ name: string; path: string
 /** 当前访问来源（服务端渲染 / 测试环境下退化为空串）。 */
 export const currentOrigin = () => (typeof location === 'undefined' ? '' : location.origin)
 
+/** 备份包识别：只给 `.zip` 提供「导入」入口，是否 Legado 备份由服务端二次校验。 */
+export const isBackupArchive = (name: string) => name.toLowerCase().endsWith('.zip')
+
 async function copyText(text: string, successMessage: string) {
   try {
     await navigator.clipboard.writeText(text)
@@ -163,6 +166,29 @@ export function WebDavSettingsPage() {
       void load(path)
     } catch (error) {
       toast.error(error instanceof Error ? error.message : '删除失败')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const handleImport = async (entry: { name: string; path: string }) => {
+    if (!window.confirm(`导入备份「${entry.name}」？\n会写入其中的书源、替换净化规则、书架与阅读进度（同名书源/规则按其 ID 覆盖，书架按书合并，进度只在更新时间较新时覆盖）。`)) return
+    setBusy(true)
+    try {
+      const summary = await api.webDavImport(entry.path)
+      const total = (a: number, b: number) => a + b
+      if (total(summary.sources, summary.sourcesUpdated) + total(summary.rules, summary.rulesUpdated) + total(summary.books, summary.booksUpdated) === 0) {
+        toast.warning('备份包里没有可导入的内容（已忽略 RSS / TTS / 主题等条目）')
+      } else {
+        toast.success(
+          `导入完成：书源 ${total(summary.sources, summary.sourcesUpdated)}，` +
+          `替换规则 ${total(summary.rules, summary.rulesUpdated)}，` +
+          `书籍 ${total(summary.books, summary.booksUpdated)}，阅读进度 ${summary.progress}`,
+        )
+      }
+      void load(path)
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : '备份导入失败')
     } finally {
       setBusy(false)
     }
@@ -296,6 +322,18 @@ export function WebDavSettingsPage() {
                   </span>
                 </div>
                 <div className="webdav-file-actions">
+                  {!entry.directory && isBackupArchive(entry.name) && (
+                    <button
+                      type="button"
+                      className="subtle-button"
+                      onClick={() => void handleImport(entry)}
+                      disabled={busy}
+                      title="导入 Legado 备份包中的书源、替换规则、书架与阅读进度"
+                    >
+                      <Icon name="importFile" />
+                      <span>导入</span>
+                    </button>
+                  )}
                   {!entry.directory && (
                     <a
                       className="subtle-button"

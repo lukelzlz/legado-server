@@ -795,6 +795,63 @@ class Database(private val path: String) : Closeable, AutoCloseable {
         return ImportResponse(imported, updated, rawSources.size - unique.size, errors)
     }
 
+    /**
+     * 备份导入：批量写入书架条目，并写入阅读进度（仅当备份时间不早于库中进度时覆盖，避免进度回退）。
+     * 备份包只带章节序号与字符偏移，因此 [BackupShelfEntry.chapterIndex] 之外的定位信息不落库。
+     */
+    fun importLibrary(entries: List<BackupShelfEntry>): LibraryImportResult {
+        if (entries.isEmpty()) return LibraryImportResult(0, 0, 0)
+        val now = System.currentTimeMillis()
+        var imported = 0
+        var updated = 0
+        var progressApplied = 0
+        write { db ->
+            db.autoCommit = false
+            try {
+                db.prepareStatement("select 1 from book_shelf where source_id = ? and book_url = ?").use { existing ->
+                    db.prepareStatement("""
+                        insert into book_shelf(source_id,book_url,name,author,toc_url,cover_url,cover_key,last_read_at,completed,alternate_sources)
+                        values(?,?,?,?,?,?,null,?,?,null)
+                        on conflict(source_id,book_url) do update set
+                          name=excluded.name, author=excluded.author, toc_url=excluded.toc_url,
+                          cover_url=coalesce(excluded.cover_url,book_shelf.cover_url),
+                          last_read_at=excluded.last_read_at, completed=excluded.completed
+                    """.trimIndent()).use { save ->
+                        entries.forEach { entry ->
+                            existing.setString(1, entry.sourceId); existing.setString(2, entry.bookUrl)
+                            if (existing.executeQuery().use { it.next() }) updated++ else imported++
+                            save.setString(1, entry.sourceId); save.setString(2, entry.bookUrl); save.setString(3, entry.name)
+                            save.setString(4, entry.author); save.setString(5, entry.tocUrl); save.setString(6, entry.coverUrl)
+                            save.setLong(7, if (entry.readAt > 0) entry.readAt else now)
+                            save.setInt(8, if (entry.completed) 1 else 0)
+                            save.addBatch()
+                        }
+                        save.executeBatch()
+                    }
+                }
+                val progressed = entries.filter { it.chapterIndex > 0 }
+                if (progressed.isNotEmpty()) {
+                    db.prepareStatement("""
+                        insert into reading_progress(source_id,book_url,chapter_url,chapter_index,scroll_position,updated_at)
+                        values(?,?,?,?,0,?)
+                        on conflict(source_id,book_url) do update set
+                          chapter_url=excluded.chapter_url, chapter_index=excluded.chapter_index, updated_at=excluded.updated_at
+                        where excluded.updated_at >= reading_progress.updated_at
+                    """.trimIndent()).use { stmt ->
+                        progressed.forEach { entry ->
+                            stmt.setString(1, entry.sourceId); stmt.setString(2, entry.bookUrl); stmt.setString(3, "")
+                            stmt.setInt(4, entry.chapterIndex); stmt.setLong(5, if (entry.readAt > 0) entry.readAt else now)
+                            stmt.addBatch()
+                        }
+                        progressApplied = stmt.executeBatch().sum()
+                    }
+                }
+                db.commit()
+            } catch (error: Throwable) { db.rollback(); throw error } finally { db.autoCommit = true }
+        }
+        return LibraryImportResult(imported, updated, progressApplied)
+    }
+
     fun listSubscriptions(enabledOnly: Boolean = false): List<SourceSubscription> = connect { db ->
         val sql = "select * from source_subscription" + (if (enabledOnly) " where enabled=1" else "") + " order by id"
         db.prepareStatement(sql).use { statement -> statement.executeQuery().use { rs -> buildList { while (rs.next()) add(rs.toSubscription()) } } }

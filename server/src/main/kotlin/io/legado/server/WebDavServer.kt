@@ -174,9 +174,13 @@ private class WebDavLocks {
  * WebDAV 服务端入口：`/webdav` 与 `/webdav/<路径>` 同时映射到数据目录下的 `webdav` 文件夹；
  * `/api/webdav/info` 为 Web 设置页面提供存储状态与目录列表。
  */
-fun Route.webDavRoutes(auth: AuthService, storage: WebDavStorage) {
+fun Route.webDavRoutes(auth: AuthService, storage: WebDavStorage, database: Database) {
     val locks = WebDavLocks()
-    route("/api/webdav") { get("/info") { call.serveWebDavInfo(auth, storage) } }
+    val backupImporter = BackupImporter(database)
+    route("/api/webdav") {
+        get("/info") { call.serveWebDavInfo(auth, storage) }
+        post("/import") { call.serveBackupImport(auth, storage, backupImporter) }
+    }
     route(WEBDAV_URI_PREFIX) { webDavEndpoints(auth, storage, locks) }
     route("$WEBDAV_URI_PREFIX/{path...}") { webDavEndpoints(auth, storage, locks) }
 }
@@ -194,6 +198,35 @@ private fun Route.webDavEndpoints(auth: AuthService, storage: WebDavStorage, loc
     head { call.serveHeadFile(auth, storage) }
     put { call.servePutFile(auth, storage) }
     delete { call.serveDeleteResource(auth, storage) }
+}
+
+/**
+ * 备份导入：把存储区里的 Legado 备份包（`*.zip`）解出书源、替换净化规则、书架与阅读进度并落库。
+ * 归属页面写操作，因此按会话鉴权 + CSRF 双轨校验；外部客户端用 Basic 调用同样放行。
+ */
+private suspend fun ApplicationCall.serveBackupImport(auth: AuthService, storage: WebDavStorage, importer: BackupImporter) {
+    if (!requireWebDavAuth(auth, write = true)) return
+    val request = runCatching { receive<BackupImportRequest>() }.getOrNull()
+        ?: return respond(HttpStatusCode.BadRequest, ApiError("invalid_backup", "缺少备份文件路径"))
+    val target = storage.resolve(request.path.trim('/')) ?: return respond(HttpStatusCode.Forbidden)
+    if (!Files.isRegularFile(target, LinkOption.NOFOLLOW_LINKS)) {
+        return respond(HttpStatusCode.NotFound, ApiError("invalid_backup", "备份文件不存在"))
+    }
+    if (!target.fileName.toString().lowercase().endsWith(".zip")) {
+        return respond(HttpStatusCode.BadRequest, ApiError("invalid_backup", "只支持 .zip 备份包"))
+    }
+    val summary = runCatching { withContext(Dispatchers.IO) { importer.import(target) } }.getOrElse { error ->
+        return respond(HttpStatusCode.BadRequest, ApiError("invalid_backup", error.message ?: "备份包解析失败"))
+    }
+    application.log.info(
+        "webdav backup imported: {} (sources={}, rules={}, books={}, progress={})",
+        request.path,
+        summary.sources + summary.sourcesUpdated,
+        summary.rules + summary.rulesUpdated,
+        summary.books + summary.booksUpdated,
+        summary.progress,
+    )
+    respond(summary)
 }
 
 private suspend fun ApplicationCall.serveWebDavOptions() {

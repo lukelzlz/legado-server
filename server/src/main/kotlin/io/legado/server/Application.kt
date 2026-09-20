@@ -60,7 +60,7 @@ fun Application.legadoApplication(config: ServerConfig = ServerConfig.fromEnviro
         get("/healthz") { call.respond(mapOf("status" to "ok")) }
         authRoutes(auth)
         apiRoutes(database, auth, runner, CoverCache(config.coverCacheDirectory), subscriptions, bookCache, edgeTts, ttsSessions, config.localBooksDirectory)
-        webDavRoutes(auth, WebDavStorage(config.webDavDirectory))
+        webDavRoutes(auth, WebDavStorage(config.webDavDirectory), database)
         staticWeb()
     }
 }

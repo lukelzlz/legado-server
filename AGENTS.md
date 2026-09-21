@@ -96,6 +96,16 @@ AI 与人类协作时必须明确当前达到的完成度阶梯，严禁混淆�
 - **[HTTP 规范/Ktor] 巨型 Data URL 必须转由服务端托管避免请求行超限**：书源 JS 生成的自包含 Base64 网页动辄数万字符，直接拼入 iframe URL 会触发 Ktor 8192 字符上限报 400，必须先通过 POST 上传服务端内存托管，前端仅引用短 key。
 - **[CI/构建] Gradle Wrapper 必须保持官方 distributions 下载源**：`gradle-wrapper.properties` 中的 `distributionUrl` 若配置为国内镜像（如腾讯云 `mirrors.cloud.tencent.com`），在 GitHub Actions 等海外 Runner 环境中会出现网络超时（Connection timed out）导致 CI崩溃，必须始终保持官方 `https://services.gradle.org/distributions/` 地址。
 - **[替换规则/沙箱] Rhino JS 沙箱顶级 return 包装与反爬反义词对调字典**：Legado 生态中的 `@js:` 替换规则普遍使用 `return map[result] || result` 组织代码。Rhino 沙箱在顶层执行 `return` 时会抛 `return not in function` 语法错误，沙箱必须检测并在必要时将代码包装进 `(function(){ ... })()` 匿名闭包执行；同时替换净化必须在 `RuleRunner.content()` 与 `BookCacheService` 离线下载落库前执行，避免脏文本污染持久化缓存，同时使后续 TTS 朗读自动获得清洗后的正文。
+  > **补充（2026-09-20，实测）**：包裹判定的**适用范围**与**实现方式**同样关键，两者都曾出错并导致聚合源正文为空：
+  > ① **绝不能把 jsLib 与规则脚本拼接后再判定**——聚合源 jsLib 里每个工具函数都含 `return`，拼接判定恒真 ⇒ 整段被包进 IIFE；
+  > ② **Rhino 在 IIFE 下的求值补全值会退化为 `undefined`**，而聚合源正文规则常以裸表达式（`data;`）结尾并依赖该补全值 ⇒ 正文取空。
+  > 正确做法：**jsLib 在同一 scope 内先单独求值**（只建立函数定义，其结果不参与补全值），
+  > 再**仅按规则脚本自身的顶层 `return`**（引号/注释/模板字面量感知的括号深度扫描）决定是否包裹。
+  > 回归测试：`server/src/test/kotlin/io/legado/server/JsSandboxCompletionValueTest.kt`（17 用例）。
+- **[沙箱/诊断] `eval` 成功时必须清空 `lastError`，否则调用方读到上一次失败的残留**：旧实现只在失败时写 `lastError`、成功路径不清空，排障时会拿到与本次无关的旧错误而误判（实测复现）。成功分支须显式置空。
+- **[聚合源/正文] `<js>` 求值为 null 时 `NodeValue.value` 会回退成「中间值」⇒ 坏书源可能静默把 `data:` 载荷当正文**：规则脚本因缺 jsLib 等抛 `ReferenceError` 时，`RuleRunner.content()` **不报错**，而是把 `data:;base64,…` 解码后的载荷原文当正文（`content()` 仅在 `text.isBlank()` 时才抛「未提取到内容」）。用户会看到 `{"book_id":…}` 之类原始载荷却无任何提示。**尚未修复**（改动波及所有书源的 `<js>` 回退语义，需独立立项）：排障时若正文「像 JSON」，应优先怀疑此处而非网络。
+- **[正文清洗] 删 `<div>` 的正则会把「整体包一层 div」的正文删光**：聚合源（如大灰狼）的正文规则常返回 `<div …>正文…</div>` 整体一层 HTML，而 `RuleRunner.cleanContent()` 里的 `replace(Regex("<div[\\s\\S]*?</div>"), "")` 会**连正文一起删除** ⇒ `text` 为空 ⇒ 报「正文规则未提取到内容」。修复：清洗改为两段式——结构性清洗后**若内容为空则退化为「只剥标签、保留文本」**（div/p 仅当换行分隔）。回归用例见 `JsSandboxCompletionValueTest`（外层 div 保留文本 / 结构性 div 仍被删除）。
+- **[排障] 「提示要登录」不等于「丢了登录态」**：该文案可能来自**上游接口的 `msg`**——上游仅在**未带有效 cookie** 时才回这句。判定时必须先做**对照实验**（带 cookie vs 不带 cookie 调同一接口），再核对本项目实际发出的请求头，**不要凭提示语下结论**。实测对照（大灰狼）：带 cookie → `获取内容失败: 内容为空`；不带 cookie → `您今日免登录访问次数已达上限…请登录后刷新页面`。另有 `data:;base64,…` 聚合源的 `source_login_state` 可通过 `sqlite3` 只读查询 `login_info`/`cookie_jar` 自证登录态是否入库。
 - **[交互/导航] 核心系统能力一级导航呈现与阅读器抽屉收敛**：全局核心管理能力（书源、订阅、替换净化规则）必须在一级导航栏设立独立入口；而在沉浸式阅读器中，顶栏严格保持极简（目录、换源、设置、朗读），辅助净化规则统一收敛进「阅读设置」抽屉，杜绝顶栏拥挤。
 - **[PWA/离线缓存] 渐进式离线缓存与脱机阅读架构**：① Service Worker 缓存静态资源与应用壳，排除 `/api/tts/stream` 等实时长音频流；② 正文离线支持按「后50章/后100章/全本/自定义」4 并发切片下载，IndexedDB 存储纯净文本；③ 脱机断网期间阅读进度写入本地队列，网络恢复（`online` 事件）时静默 Flush 同步；④ 目录列表对已离线章节实时打绿点徽标（`●`）；⑤ 全面适配 `safe-area-inset-*` 与 `overscroll-behavior: none`，消除 iOS 橡皮筋下拉与刘海遮挡。
 - **[GitHub/贡献者] Force Push 历史孤立对象导致首页 Contributors 残留**：早期导入或 Force Push 覆盖分支后，GitHub 后端 Git 裸仓库仍残留旧 Commit 悬挂对象，导致仓库首页侧边栏聚合了历史 70+ 位幽灵贡献者，而 Insights 图表仅遍历有效 HEAD 正常显示。通过将远程默认分支切换为 `main`（`gh api repos/:owner/:repo/branches/master/rename -f new_name=main`）并更新本地跟踪与 CI 触发分支，可强制 GitHub 后台重构索引并清除悬挂贡献者。
@@ -116,6 +126,8 @@ AI 与人类协作时必须明确当前达到的完成度阶梯，严禁混淆�
 - **[数据迁移/书架] 书架 `origin` 必须经 `normalizeSourceId` 归一化**：Legado App 的书架记录常携带带有 `##注解` 的书源 URL，落库前必须调用 `SourceCodec.normalizeSourceId` 剥离注解以与 `book_source` 主键对齐，杜绝书籍悬空。
 - **[数据迁移/进度] 跨端阅读进度写入必须带 `excluded.updated_at >= reading_progress.updated_at` 防回退守卫**：导入备份进度时严禁无条件覆盖，必须以更新时间戳为守卫防止旧备份冲掉新进度；同时 Android 的字符偏移量 `durChapterPos` 不得强塞入服务端的百分比 `scroll_position`。
 - **[工具/DSH] 历史会话挖掘（`/doc-init` 专用）**：DSH 会话记录位于 `%APPDATA%\dsh-desktop\harness\sessions\<工作区slug>\<session-id>\session.jsonl.zstd`，格式为**多帧 zstd**（一帧一条 JSONL）：`zstdDecompressSync` 只能解出第一帧（会话头），必须按魔数 `28 B5 2F FD` + 帧头/块头扫描帧边界后逐帧解压（Node 流式 zstd 解压器不支持拼接帧，会报 `Unknown frame descriptor`）；**切勿把会话内容交给 PowerShell 管道格式化（会 OOM）**，应让 Node 脚本写报告文件后再读。记录类型：`user/message`（`data.content[].text`）、`assistant/message`（`data.message.content[]`，内含 `tool-call` 项）、`tool/call`（`data.name` + `data.arguments` JSON 字符串）、`tool/result`、`todo/write`（`data.todos` 直接揭示工作范围）、`session/title`。
+- **[环境/JDK] 本机 `JAVA_HOME` 可能指向失效目录，Gradle 会直接报错而非回退 PATH**：实测（2026-09-21）`JAVA_HOME` 残留为 `C:\Program Files\Eclipse Adoptium\jdk-25.0.4.101-hotspot\`，而该目录内**没有 `bin\java.exe`**（环境被卸载或半安装），Gradle 报 `ERROR: JAVA_HOME is set to an invalid directory` 并终止（连 `compileKotlin` 都到不了），而 `java -version` 走 PATH 仍是正常的 Corretto 21。**解法**：每次构建前显式设 `$env:JAVA_HOME="C:\Program Files\Amazon Corretto\jdk21.0.12_9"`；排查时用 `Test-Path (Join-Path $env:JAVA_HOME 'bin\java.exe')` 验证，**不要因为 `Test-Path $env:JAVA_HOME` 为真就认为它可用**。
+- **[Git] 本机 git 传输到 github.com 会被重置，但 REST API 稳定可用（2026-09-21 复现并更新旧结论）**：`git push` / `git ls-remote` / `curl` 打 `github.com/.../*.git/info/refs` 均失败（`Empty reply from server`、`Recv failure: Connection was reset`、`Failed to connect to github.com:443 ... Could not connect to server`），连试 4 次无一成功、也非代理配置问题（无 `http.proxy`/系统代理）；而 `https://api.github.com` 连续 3 次调用全部成功。**注意此现象是间歇性的**：同一次会话里曾有一次 `git ls-remote` 意外成功，因此**单次成功不足以证明通道已恢复，单次失败也不宜立刻放弃**。另：无 token 时 `/user` 返回 **401**，故 API 侧只能读公开仓库，**推送与建 PR 仍必须有凭据**。结论：远端信息优先走 REST API；推送失败时不要拿本地旧 ref 当「上游没变化」的依据。
 
 ---
 
@@ -140,6 +152,7 @@ AI 与人类协作时必须明确当前达到的完成度阶梯，严禁混淆�
 | PROPOSAL-014 | 书源批量整理、分组维护与轻量连通性健康体检体系 | [`docs/proposals/PROPOSAL-014-book-source-batch-management-and-health-check.md`](file:///Users/zhangran/Documents/antigravity/joyful-galileo/docs/proposals/PROPOSAL-014-book-source-batch-management-and-health-check.md) | Accepted |
 | PROPOSAL-015 | 内置 WebDAV 服务端与数据目录 webdav 存储区（含 Web 端「文件」设置页面） | [`docs/proposals/PROPOSAL-015-webdav-storage-server.md`](file:///root/legado-server/docs/proposals/PROPOSAL-015-webdav-storage-server.md) | Tested & Deployed |
 | PROPOSAL-016 | 本地图书导入与无缝阅读（TXT/EPUB 解析、智能分章与书架集成） | [`docs/proposals/PROPOSAL-016-local-book-import-txt-epub.md`](file:///root/legado-server/docs/proposals/PROPOSAL-016-local-book-import-txt-epub.md) | Tested |
+| PROPOSAL-017 | 移植轻阅读书源规则解析/内容管线，修复聚合书源（大灰狼）正文提取为空 | [`docs/proposals/PROPOSAL-017-port-qingyue-rule-engine-and-fix-aggregate-content.md`](PROPOSAL-017-port-qingyue-rule-engine-and-fix-aggregate-content.md) | Implemented |
 
 ### 架构决策记录 (ADR)
 | 编号 | 决策标题 | 关联文档 | 状态 |
@@ -160,6 +173,7 @@ AI 与人类协作时必须明确当前达到的完成度阶梯，严禁混淆�
 | ADR-014 | 书源批量事务管道、轻量并发探针与浮动管理状态机 | [`docs/decisions/ADR-014-source-batch-operations-and-lightweight-probe-pipeline.md`](file:///Users/zhangran/Documents/antigravity/joyful-galileo/docs/decisions/ADR-014-source-batch-operations-and-lightweight-probe-pipeline.md) | Accepted |
 | ADR-015 | 进程内 WebDAV 服务端选型、Basic 鉴权与最小 Class 2 锁实现 | [`docs/decisions/ADR-015-webdav-server-class2-minimal.md`](file:///root/legado-server/docs/decisions/ADR-015-webdav-server-class2-minimal.md) | Accepted |
 | ADR-016 | 本地图书（TXT/EPUB）解析引擎、虚拟书源与解析入库一体化架构 | [`docs/decisions/ADR-016-local-book-parsing-and-storage-architecture.md`](file:///root/legado-server/docs/decisions/ADR-016-local-book-parsing-and-storage-architecture.md) | Accepted |
+| ADR-017 | 保留自主规则引擎，以「语义补齐 + 切分器移植」承接轻阅读书源管线 | [`docs/decisions/ADR-017-retain-self-engine-and-port-semantics.md`](ADR-017-retain-self-engine-and-port-semantics.md) | Accepted |
 
 ### 工作记忆与历史推演归档 (Sessions Chronicle)
 | 日期 / ID | 类型 | 标题 / 议题 | 关联文档 | 状态 |
@@ -206,6 +220,7 @@ AI 与人类协作时必须明确当前达到的完成度阶梯，严禁混淆�
 | 2026-09-18 | Init | `/doc-init` 增量：挖掘 DSH 历史会话（5 份可用会话 / 18,577 帧 / 67 条用户诉求 / 1,060 次工具调用），补录插件系统时代与 Windows 验证基线，新增 HIST-007/008 两部历史归档并增量更新 AGENTS 索引与部落知识 | [`docs/sessions/SESSION-HIST-007-plugin-system-and-api-doc.md`](file:///root/legado-server/docs/sessions/SESSION-HIST-007-plugin-system-and-api-doc.md) · [`docs/sessions/SESSION-HIST-008-windows-environment-and-verification-baseline.md`](file:///root/legado-server/docs/sessions/SESSION-HIST-008-windows-environment-and-verification-baseline.md) | Local（未推送） |
 | 2026-09-19 | Feat | 本地图书（TXT/EPUB）导入解析、虚拟书源与书架无缝集成（智能编码探测、正则分章、纯 JVM EPUB 抽取、SVG 艺术封面） | [`docs/acceptance/ACCEPT-016-local-book-import-txt-epub.md`](file:///root/legado-server/docs/acceptance/ACCEPT-016-local-book-import-txt-epub.md) · [`docs/proposals/PROPOSAL-016-local-book-import-txt-epub.md`](file:///root/legado-server/docs/proposals/PROPOSAL-016-local-book-import-txt-epub.md) · [`docs/sessions/SESSION-017-local-book-import-txt-epub.md`](file:///root/legado-server/docs/sessions/SESSION-017-local-book-import-txt-epub.md) | Tested |
 | 2026-09-20 | Feat | WebDAV「文件」页支持导入 Legado 备份包（书源/替换规则/书架/阅读进度）、纯内存流式解析与防回退守卫 (PR #6) | [`docs/sessions/SESSION-018-webdav-legado-backup-import.md`](file:///root/legado-server/docs/sessions/SESSION-018-webdav-legado-backup-import.md) | Accepted & Pushed |
+| 2026-09-20 | Fix | 修复聚合书源（大灰狼）正文为空 **两处根因**：① jsLib 与规则脚本分离求值、按规则脚本自身顶层 `return` 决定 IIFE 包裹、补全值语义恢复、`lastError` 成功即清空；② `cleanContent()` 删 `<div>` 会把「整体包一层 div」的正文删光，改为清洗为空时退化为只剥标签。新增 `JsSandboxCompletionValueTest`（19 用例） | [`docs/proposals/PROPOSAL-017-port-qingyue-rule-engine-and-fix-aggregate-content.md`](PROPOSAL-017-port-qingyue-rule-engine-and-fix-aggregate-content.md) · [`docs/decisions/ADR-017-retain-self-engine-and-port-semantics.md`](ADR-017-retain-self-engine-and-port-semantics.md) · [`docs/sessions/SESSION-019-dagou-content-root-cause.md`](SESSION-019-dagou-content-root-cause.md) · [`docs/acceptance/ACCEPT-017-aggregate-content-fix.md`](ACCEPT-017-aggregate-content-fix.md) | Tested |
 
 ---
 

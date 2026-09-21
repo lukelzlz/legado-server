@@ -668,18 +668,33 @@ class RuleRunner(private val responseFetcher: ((String) -> String)? = null, inte
         }
         return if (cssParts.isEmpty()) clean else cssParts.joinToString(" ")
     }
-    private fun String.cleanContent(): String = this
-        .replace(Regex("(?i)<script[\\s\\S]*?</script>"), "")
-        .replace(Regex("(?i)<style[\\s\\S]*?</style>"), "")
-        .replace(Regex("(?i)<div[\\s\\S]*?</div>"), "")
-        .replace(Regex("(?i)<br\\s*/?>"), "\n")
-        .replace(Regex("(?i)</?p[^>]*>"), "\n")
-        .replace(Regex("<[^>]+>"), "")
-        .let { org.jsoup.parser.Parser.unescapeEntities(it, false) }
-        .lines()
-        .map { it.trim() }
-        .filter { it.isNotBlank() }
-        .joinToString("\n\n")
+    /**
+     * 正文清洗：优先走「结构性删除」（去掉 script/style/div 容器），
+     * 但聚合源的正文**整体包在一个 `<div>` 里**（如大灰狼的 `<div rs-native>…</div>`），
+     * 直接删 div 会把正文一起删光 ⇒ 表现为「正文规则未提取到内容」。
+     * 因此当结构性删除后内容所剩无几时，退化为「只剥标签、保留文本」。
+     */
+    private fun String.cleanContent(): String {
+        val structural = this
+            .replace(Regex("(?i)<script[\\s\\S]*?</script>"), "")
+            .replace(Regex("(?i)<style[\\s\\S]*?</style>"), "")
+            .replace(Regex("(?i)<div[\\s\\S]*?</div>"), "")
+            .replace(Regex("(?i)<br\\s*/?>"), "\n")
+            .replace(Regex("(?i)</?p[^>]*>"), "\n")
+            .replace(Regex("<[^>]+>"), "")
+            .let { org.jsoup.parser.Parser.unescapeEntities(it, false) }
+            .lines().map { it.trim() }.filter { it.isNotBlank() }.joinToString("\n\n")
+        // 结构性删除把内容吃光了 ⇒ 说明正文被外层 div 包着，改走「只剥标签」
+        if (structural.isNotBlank()) return structural
+        return this
+            .replace(Regex("(?i)<script[\\s\\S]*?</script>"), "")
+            .replace(Regex("(?i)<style[\\s\\S]*?</style>"), "")
+            .replace(Regex("(?i)<br\\s*/?>"), "\n")
+            .replace(Regex("(?i)</?(p|div)[^>]*>"), "\n")
+            .replace(Regex("<[^>]+>"), "")
+            .let { org.jsoup.parser.Parser.unescapeEntities(it, false) }
+            .lines().map { it.trim() }.filter { it.isNotBlank() }.joinToString("\n\n")
+    }
     private fun String.absolute(base: String): String = try {
         val cleanBase = base.substringBefore("##").substringBefore("#").trim()
         if (cleanBase.startsWith("http://", ignoreCase = true) || cleanBase.startsWith("https://", ignoreCase = true)) {

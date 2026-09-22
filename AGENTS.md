@@ -206,6 +206,7 @@ AI 与人类协作时必须明确当前达到的完成度阶梯，严禁混淆�
 | 2026-09-18 | Init | `/doc-init` 增量：挖掘 DSH 历史会话（5 份可用会话 / 18,577 帧 / 67 条用户诉求 / 1,060 次工具调用），补录插件系统时代与 Windows 验证基线，新增 HIST-007/008 两部历史归档并增量更新 AGENTS 索引与部落知识 | [`docs/sessions/SESSION-HIST-007-plugin-system-and-api-doc.md`](file:///root/legado-server/docs/sessions/SESSION-HIST-007-plugin-system-and-api-doc.md) · [`docs/sessions/SESSION-HIST-008-windows-environment-and-verification-baseline.md`](file:///root/legado-server/docs/sessions/SESSION-HIST-008-windows-environment-and-verification-baseline.md) | Local（未推送） |
 | 2026-09-19 | Feat | 本地图书（TXT/EPUB）导入解析、虚拟书源与书架无缝集成（智能编码探测、正则分章、纯 JVM EPUB 抽取、SVG 艺术封面） | [`docs/acceptance/ACCEPT-016-local-book-import-txt-epub.md`](file:///root/legado-server/docs/acceptance/ACCEPT-016-local-book-import-txt-epub.md) · [`docs/proposals/PROPOSAL-016-local-book-import-txt-epub.md`](file:///root/legado-server/docs/proposals/PROPOSAL-016-local-book-import-txt-epub.md) · [`docs/sessions/SESSION-017-local-book-import-txt-epub.md`](file:///root/legado-server/docs/sessions/SESSION-017-local-book-import-txt-epub.md) | Tested |
 | 2026-09-20 | Feat | WebDAV「文件」页支持导入 Legado 备份包（书源/替换规则/书架/阅读进度）、纯内存流式解析与防回退守卫 (PR #6) | [`docs/sessions/SESSION-018-webdav-legado-backup-import.md`](file:///root/legado-server/docs/sessions/SESSION-018-webdav-legado-backup-import.md) | Accepted & Pushed |
+| 2026-09-22 | Docs | 根据最新 Git Commit 全面同步更新 README.md（增补本地书籍导入、Legado备份还原、WebDAV服务、Edge-TTS音频流、PWA脱机阅读、替换规则等）并独立生成全量英文版 README_EN.md | - | Accepted & Pushed |
 
 ---
 

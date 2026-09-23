@@ -80,13 +80,17 @@ class JsSandbox(private val runner: RuleRunner? = null) {
         // 书源的 jsLib 对所有规则 JS 可见（Legado 语义），集中在这里注入，
         // 避免每个调用点各自拼接、漏拼一处就整段脚本 ReferenceError。
         val library = context?.jsLib?.takeIf { it.isNotBlank() }
-        val cleanScript = if (library == null) rawScript else "$library\n$rawScript"
 
-        val executableScript = if (Regex("""\breturn\b""").containsMatchIn(cleanScript)) {
-            "(function(){\n$cleanScript\n})()"
-        } else {
-            cleanScript
-        }
+        // 关键：jsLib **不能**与规则脚本拼接后共同参与「是否包裹 IIFE」的判定。
+        // 聚合源 jsLib 里每个工具函数都含 return，拼接判定会命真 ⇒ 整段被包进 IIFE，
+        // 而 Rhino 在 IIFE 下的求值补全值会退化为 undefined，正文规则末尾的裸表达式
+        // （如 `data;`）就拿不到值。改为：jsLib 先在同一 scope 内单独求值（只建立函数
+        // 定义），规则脚本再按**自身的顶层 return** 决定是否包裹。
+        // 实测背景见 docs/sessions/SESSION-019-dagou-content-root-cause.md。
+        val executableScript =
+            if (hasTopLevelReturn(rawScript)) "(function(){\n$rawScript\n})()" else rawScript
+
+
 
         val cx = Context.enter()
         try {
@@ -120,7 +124,17 @@ class JsSandbox(private val runner: RuleRunner? = null) {
             // chapter 对象：正文规则会引用 chapter.index / chapter.title
             ScriptableObject.putProperty(scope, "chapter", createChapterBridge(scope, context))
 
+            // 先单独求值 jsLib：只建立函数定义，其结果不参与补全值。
+            // 失败不中断（部分源的 jsLib 依赖未实现的 API），但记录原因便于排障。
+            if (library != null) {
+                runCatching { cx.evaluateString(scope, library, "jsLib.js", 1, null) }
+                    .onFailure { e ->
+                        lastError = "jsLib 求值失败：" + (e.message ?: e.javaClass.simpleName)
+                    }
+            }
+
             val result = cx.evaluateString(scope, executableScript, "rule.js", 1, null)
+            lastError = null // 本次成功：清除旧值，避免调用方读到上一次失败的残留
             if (result == null || result == Context.getUndefinedValue()) {
                 val globalResult = ScriptableObject.getProperty(scope, "result")
                 if (globalResult != null && globalResult != Context.getUndefinedValue()) {
@@ -145,6 +159,73 @@ class JsSandbox(private val runner: RuleRunner? = null) {
     @Volatile
     var lastError: String? = null
         private set
+
+    companion object {
+        /**
+         * 判断脚本是否存在**顶层** `return`。
+         *
+         * 只有顶层 `return` 才需要把脚本包进 `(function(){…})()`（否则 Rhino 会抛
+         * `return not in function`，见部落知识 TK-06）。此前的判定用 `Regex("\\breturn\\b")`，
+         * 会命中函数体、字符串、注释里的 `return` ⇒ 整段（含 jsLib）被包裹，
+         * 导致 Rhino 的**求值补全值退化为 undefined**，聚合源正文因此取空。
+         * （实测过程见 docs/sessions/SESSION-019-dagou-content-root-cause.md。）
+         *
+         * 本实现为引号/注释/模板字面量感知的括号深度扫描：仅在深度 0 且
+         * 前后均非标识符字符时判定为顶层 return。
+         */
+        internal fun hasTopLevelReturn(script: String): Boolean {
+            var i = 0
+            var depth = 0
+            val n = script.length
+            while (i < n) {
+                when (val c = script[i]) {
+                    '\'', '"' -> {
+                        val quote = c
+                        i++
+                        while (i < n && script[i] != quote) {
+                            if (script[i] == '\\') i++
+                            i++
+                        }
+                        i++
+                    }
+                    '`' -> {
+                        i++
+                        while (i < n && script[i] != '`') {
+                            if (script[i] == '\\') i++
+                            i++
+                        }
+                        i++
+                    }
+                    '/' -> {
+                        val next = if (i + 1 < n) script[i + 1] else ' '
+                        if (next == '/') {
+                            i += 2
+                            while (i < n && script[i] != '\n') i++
+                        } else if (next == '*') {
+                            i += 2
+                            while (i + 1 < n && !(script[i] == '*' && script[i + 1] == '/')) i++
+                            i += 2
+                        } else {
+                            i++
+                        }
+                    }
+                    '(', '[', '{' -> { depth++; i++ }
+                    ')', ']', '}' -> { depth--; i++ }
+                    else -> {
+                        if (depth == 0 && c == 'r' && script.startsWith("return", i)) {
+                            val prev = script.substring(0, i).lastOrNull { !it.isWhitespace() }
+                            val after = script.getOrNull(i + 6)
+                            val prevIsWord = prev != null && (prev.isLetterOrDigit() || prev == '_' || prev == '$')
+                            val afterIsWord = after != null && (after.isLetterOrDigit() || after == '_' || after == '$')
+                            if (!prevIsWord && !afterIsWord) return true
+                        }
+                        i++
+                    }
+                }
+            }
+            return false
+        }
+    }
 
     /** `chapter` 桥接对象：正文规则会引用 chapter.index / chapter.title，缺失会让整段脚本中断。 */
     private fun createChapterBridge(scope: Scriptable, execContext: JsExecutionContext?): NativeObject {

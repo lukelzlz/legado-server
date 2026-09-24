@@ -87,11 +87,26 @@ tasks.register('buildWeb') {
             hasNpm = false
         }
 
+        def webNodeModules = file("${rootProject.projectDir}/web/node_modules")
         if (hasNpm && file("${rootProject.projectDir}/web/package.json").exists()) {
-            println "Building web frontend with npm..."
-            exec {
-                workingDir = file("${rootProject.projectDir}/web")
-                commandLine isWindows ? ['cmd', '/c', 'npm', 'run', 'build'] : ['npm', 'run', 'build']
+            if (webNodeModules.exists()) {
+                println "Building web frontend with npm..."
+                exec {
+                    workingDir = file("${rootProject.projectDir}/web")
+                    commandLine isWindows ? ['cmd', '/c', 'npm', 'run', 'build'] : ['npm', 'run', 'build']
+                }
+            } else if (webDistDir.exists() && file("${webDistDir}/index.html").exists()) {
+                println "Using pre-built web assets from ${webDistDir} (node_modules not found, skipping npm build)"
+            } else {
+                println "Installing web frontend dependencies and building with npm..."
+                exec {
+                    workingDir = file("${rootProject.projectDir}/web")
+                    commandLine isWindows ? ['cmd', '/c', 'npm', 'install', '--ignore-scripts', '--no-audit', '--fund=false'] : ['npm', 'install', '--ignore-scripts', '--no-audit', '--fund=false']
+                }
+                exec {
+                    workingDir = file("${rootProject.projectDir}/web")
+                    commandLine isWindows ? ['cmd', '/c', 'npm', 'run', 'build'] : ['npm', 'run', 'build']
+                }
             }
         } else if (webDistDir.exists()) {
             println "Using pre-built web assets from ${webDistDir}"

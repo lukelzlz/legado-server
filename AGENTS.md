@@ -131,7 +131,7 @@ AI 与人类协作时必须明确当前达到的完成度阶梯，严禁混淆�
 - **[Git] 本机 git 传输到 github.com 会被重置，但 REST API 稳定可用（2026-09-21 复现并更新旧结论）**：`git push` / `git ls-remote` / `curl` 打 `github.com/.../*.git/info/refs` 均失败（`Empty reply from server`、`Recv failure: Connection was reset`、`Failed to connect to github.com:443 ... Could not connect to server`），连试 4 次无一成功、也非代理配置问题（无 `http.proxy`/系统代理）；而 `https://api.github.com` 连续 3 次调用全部成功。**注意此现象是间歇性的**：同一次会话里曾有一次 `git ls-remote` 意外成功，因此**单次成功不足以证明通道已恢复，单次失败也不宜立刻放弃**。另：无 token 时 `/user` 返回 **401**，故 API 侧只能读公开仓库，**推送与建 PR 仍必须有凭据**。结论：远端信息优先走 REST API；推送失败时不要拿本地旧 ref 当「上游没变化」的依据。
 - **[容器/云原生] 阿里云计算巢与 ECI 部署**：ROS 模板必须包含完整 VPC/安全组声明、ECI 容器组规格与数据持久化挂载；国内推荐使用阿里云个人镜像加速源。
 - **[书架/分组与批量管理] 分组删除软解绑、预检重名与批量事务原子性**：删除 `book_group` 记录前必须在同一事务中先执行 `UPDATE book_shelf SET group_name=null WHERE group_name=? COLLATE NOCASE`，严禁级联删除组内图书与阅读进度；新建与重命名分组须显式执行 `SELECT count(*) ... COLLATE NOCASE` 预校验拦截重名并返回友好提示；批量改组/标记/删除须在单一事务中执行。
-- **[构建/静态资源] Gradle 自动触发 buildWeb 与无条件打包 web/dist**：本地构建 JAR 时 Gradle 必须通过 `buildWeb` 任务自动执行 `npm run build`，且 `processResources` 须无条件引入 `web/dist`，严禁使用配置期 `if (file(...).exists())` 导致无预编译产物时打出无静态资源的空 JAR（引发 404 Not Found）；严禁在 `server/src/main/resources/` 遗留陈旧静态资源；本地未传 `LEGADO_DATA_DIR` 且 `/data` 不可写时安全降级至 `./data`。
+- **[构建/静态资源] Gradle 自动触发 buildWeb 与无条件打包 web/dist**：本地构建 JAR 时 Gradle 必须通过 `buildWeb` 任务自动执行 `npm run build`，且 `processResources` 须无条件引入 `web/dist`，严禁使用配置期 `if (file(...).exists())` 导致无预编译产物时打出无静态资源的空 JAR（引发 404 Not Found）；`buildWeb` 任务必须先检查 `web/node_modules` 是否存在，若缺失但存在预编译 `web/dist`（如 CodeQL autobuild、纯 JVM CI 测试等环境）时优先直接复用 `web/dist`，避免因缺少依赖盲目执行 `npm run build` 导致构建崩溃；严禁在 `server/src/main/resources/` 遗留陈旧静态资源；本地未传 `LEGADO_DATA_DIR` 且 `/data` 不可写时安全降级至 `./data`。
 
 ---
 
@@ -234,6 +234,7 @@ AI 与人类协作时必须明确当前达到的完成度阶梯，严禁混淆�
 | 2026-09-20 | Fix | 修复聚合书源（大灰狼）正文为空 **两处根因**：① jsLib 与规则脚本分离求值、按规则脚本自身顶层 `return` 决定 IIFE 包裹、补全值语义恢复、`lastError` 成功即清空；② `cleanContent()` 删 `<div>` 会把「整体包一层 div」的正文删光，改为清洗为空时退化为只剥标签。新增 `JsSandboxCompletionValueTest`（19 用例） | [`docs/proposals/PROPOSAL-017-port-qingyue-rule-engine-and-fix-aggregate-content.md`](docs/proposals/PROPOSAL-017-port-qingyue-rule-engine-and-fix-aggregate-content.md) · [`docs/decisions/ADR-017-retain-self-engine-and-port-semantics.md`](docs/decisions/ADR-017-retain-self-engine-and-port-semantics.md) · [`docs/sessions/SESSION-019-dagou-content-root-cause.md`](docs/sessions/SESSION-019-dagou-content-root-cause.md) · [`docs/acceptance/ACCEPT-017-aggregate-content-fix.md`](docs/acceptance/ACCEPT-017-aggregate-content-fix.md) | Accepted & Pushed |
 | 2026-09-22 | Docs | 根据最新 Git Commit 全面同步更新 README.md（增补本地书籍导入、Legado备份还原、WebDAV服务、Edge-TTS音频流、PWA脱机阅读、替换规则等）并独立生成全量英文版 README_EN.md | - | Accepted & Pushed |
 | 2026-09-24 | Quickfix | 修复 GitHub CodeQL 扫描 3 处告警（字符串转义、URL子串检查与封面图XSS过滤） | - | Accepted & Pushed |
+| 2026-09-24 | Fix | 修复 CI 与 CodeQL 缺少 node_modules 时 buildWeb 盲目执行 npm build 崩溃问题 | - | Accepted & Pushed |
 
 ---
 

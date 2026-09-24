@@ -132,6 +132,8 @@ AI 与人类协作时必须明确当前达到的完成度阶梯，严禁混淆�
 - **[容器/云原生] 阿里云计算巢与 ECI 部署**：ROS 模板必须包含完整 VPC/安全组声明、ECI 容器组规格与数据持久化挂载；国内推荐使用阿里云个人镜像加速源。
 - **[书架/分组与批量管理] 分组删除软解绑、预检重名与批量事务原子性**：删除 `book_group` 记录前必须在同一事务中先执行 `UPDATE book_shelf SET group_name=null WHERE group_name=? COLLATE NOCASE`，严禁级联删除组内图书与阅读进度；新建与重命名分组须显式执行 `SELECT count(*) ... COLLATE NOCASE` 预校验拦截重名并返回友好提示；批量改组/标记/删除须在单一事务中执行。
 - **[构建/静态资源] Gradle 自动触发 buildWeb 与无条件打包 web/dist**：本地构建 JAR 时 Gradle 必须通过 `buildWeb` 任务自动执行 `npm run build`，且 `processResources` 须无条件引入 `web/dist`，严禁使用配置期 `if (file(...).exists())` 导致无预编译产物时打出无静态资源的空 JAR（引发 404 Not Found）；`buildWeb` 任务必须先检查 `web/node_modules` 是否存在，若缺失但存在预编译 `web/dist`（如 CodeQL autobuild、纯 JVM CI 测试等环境）时优先直接复用 `web/dist`，避免因缺少依赖盲目执行 `npm run build` 导致构建崩溃；严禁在 `server/src/main/resources/` 遗留陈旧静态资源；本地未传 `LEGADO_DATA_DIR` 且 `/data` 不可写时安全降级至 `./data`。
+- **[CSS/包含块] backdrop-filter 会破坏 position: fixed 的视口锚定**：任何放在带 `backdrop-filter` 或 `transform` 容器内的弹窗/抽屉（即便写了 `position: fixed`）都会被局限在该容器内。全局弹层与抽屉必须通过 `createPortal(..., document.body)` 挂载到根节点。
+- **[CSS/移动端媒体查询] 严禁在 @media 中简写覆盖根级 safe-area**：移动端媒体查询调整 `height` / `padding` 时，必须保留 `var(--safe-top)` / `var(--safe-bottom)` 计算式，杜绝硬编码 `padding: 0` 冲掉全面屏死区。
 
 ---
 
@@ -157,8 +159,7 @@ AI 与人类协作时必须明确当前达到的完成度阶梯，严禁混淆�
 | PROPOSAL-015 | 内置 WebDAV 服务端与数据目录 webdav 存储区（含 Web 端「文件」设置页面） | [`docs/proposals/PROPOSAL-015-webdav-storage-server.md`](file:///root/legado-server/docs/proposals/PROPOSAL-015-webdav-storage-server.md) | Tested & Deployed |
 | PROPOSAL-016 | 本地图书导入与无缝阅读（TXT/EPUB 解析、智能分章与书架集成） | [`docs/proposals/PROPOSAL-016-local-book-import-txt-epub.md`](file:///root/legado-server/docs/proposals/PROPOSAL-016-local-book-import-txt-epub.md) | Tested |
 | PROPOSAL-017 | 移植轻阅读书源规则解析/内容管线，修复聚合书源（大灰狼）正文提取为空 | [`docs/proposals/PROPOSAL-017-port-qingyue-rule-engine-and-fix-aggregate-content.md`](PROPOSAL-017-port-qingyue-rule-engine-and-fix-aggregate-content.md) | Implemented |
-| PROPOSAL-018 | 书架分组管理与批量操作机制 | [`docs/proposals/PROPOSAL-009-bookshelf-grouping-and-batch-management.md`](file:///Users/zhangran/Documents/antigravity/joyful-galileo/docs/proposals/PROPOSAL-009-bookshelf-grouping-and-batch-management.md) | Accepted |
-| PROPOSAL-019 | 支持 Kindle / 墨水屏版 Web UI (Simple-Web) 直连标准 REST API | [`docs/proposals/PROPOSAL-010-kindle-simple-web-ui.md`](file:///Users/zhangran/Documents/antigravity/joyful-galileo/docs/proposals/PROPOSAL-010-kindle-simple-web-ui.md) | Implemented |
+| PROPOSAL-018 | iOS PWA 更新机制修复、安全区适配与菜单项可见性优化 | [`docs/proposals/PROPOSAL-018-ios-pwa-update-and-safe-area-fixes.md`](file:///Users/zhangran/Documents/antigravity/joyful-galileo/docs/proposals/PROPOSAL-018-ios-pwa-update-and-safe-area-fixes.md) | Accepted |
 
 ### 架构决策记录 (ADR)
 | 编号 | 决策标题 | 关联文档 | 状态 |
@@ -180,8 +181,7 @@ AI 与人类协作时必须明确当前达到的完成度阶梯，严禁混淆�
 | ADR-015 | 进程内 WebDAV 服务端选型、Basic 鉴权与最小 Class 2 锁实现 | [`docs/decisions/ADR-015-webdav-server-class2-minimal.md`](file:///root/legado-server/docs/decisions/ADR-015-webdav-server-class2-minimal.md) | Accepted |
 | ADR-016 | 本地图书（TXT/EPUB）解析引擎、虚拟书源与解析入库一体化架构 | [`docs/decisions/ADR-016-local-book-parsing-and-storage-architecture.md`](file:///root/legado-server/docs/decisions/ADR-016-local-book-parsing-and-storage-architecture.md) | Accepted |
 | ADR-017 | 保留自主规则引擎，以「语义补齐 + 切分器移植」承接轻阅读书源管线 | [`docs/decisions/ADR-017-retain-self-engine-and-port-semantics.md`](ADR-017-retain-self-engine-and-port-semantics.md) | Accepted |
-| ADR-018 | 书架分组存储模型、状态联动与原子批量操作设计 | [`docs/decisions/ADR-009-bookshelf-grouping-schema-and-batch-mutation.md`](file:///Users/zhangran/Documents/antigravity/joyful-galileo/docs/decisions/ADR-009-bookshelf-grouping-schema-and-batch-mutation.md) | Accepted |
-| ADR-019 | Simple-Web 极简前端直接适配标准 REST API 与静态资源内置架构 | [`docs/decisions/ADR-010-kindle-simple-web-and-legacy-api-compatibility.md`](file:///Users/zhangran/Documents/antigravity/joyful-galileo/docs/decisions/ADR-010-kindle-simple-web-and-legacy-api-compatibility.md) | Accepted |
+| ADR-018 | iOS PWA 安全区级联覆盖重构与 Service Worker 双轨更新生命周期 | [`docs/decisions/ADR-018-ios-safe-area-and-pwa-lifecycle.md`](file:///Users/zhangran/Documents/antigravity/joyful-galileo/docs/decisions/ADR-018-ios-safe-area-and-pwa-lifecycle.md) | Accepted |
 
 ### 工作记忆与历史推演归档 (Sessions Chronicle)
 | 日期 / ID | 类型 | 标题 / 议题 | 关联文档 | 状态 |
@@ -235,6 +235,7 @@ AI 与人类协作时必须明确当前达到的完成度阶梯，严禁混淆�
 | 2026-09-22 | Docs | 根据最新 Git Commit 全面同步更新 README.md（增补本地书籍导入、Legado备份还原、WebDAV服务、Edge-TTS音频流、PWA脱机阅读、替换规则等）并独立生成全量英文版 README_EN.md | - | Accepted & Pushed |
 | 2026-09-24 | Quickfix | 修复 GitHub CodeQL 扫描 3 处告警（字符串转义、URL子串检查与封面图XSS过滤） | - | Accepted & Pushed |
 | 2026-09-24 | Fix | 修复 CI 与 CodeQL 缺少 node_modules 时 buildWeb 盲目执行 npm build 崩溃问题 | - | Accepted & Pushed |
+| 2026-09-24 | Fix | 修复 iOS PWA 安全区被覆盖、Backdrop-Filter 包含块陷阱与主题色彩隐形 | [`docs/sessions/SESSION-020-ios-pwa-safe-area-and-portal-fix.md`](file:///Users/zhangran/Documents/antigravity/joyful-galileo/docs/sessions/SESSION-020-ios-pwa-safe-area-and-portal-fix.md) | Accepted & Pushed |
 
 ---
 

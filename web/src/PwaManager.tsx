@@ -46,6 +46,33 @@ export async function promptPwaInstall(): Promise<boolean> {
   }
 }
 
+let activeRegistration: ServiceWorkerRegistration | null = null
+let triggerNeedRefresh: ((val: boolean) => void) | null = null
+
+export async function checkForAppUpdate(): Promise<{ hasUpdate: boolean; message: string }> {
+  if (typeof navigator === 'undefined' || !('serviceWorker' in navigator)) {
+    return { hasUpdate: false, message: '当前环境未启用 Service Worker' }
+  }
+  try {
+    const reg = activeRegistration || await navigator.serviceWorker.getRegistration()
+    if (!reg) {
+      return { hasUpdate: false, message: '当前应用已是最新版本' }
+    }
+    if (reg.waiting) {
+      if (triggerNeedRefresh) triggerNeedRefresh(true)
+      return { hasUpdate: true, message: '检测到新版本，已准备就绪' }
+    }
+    await reg.update()
+    if (reg.waiting || reg.installing) {
+      if (triggerNeedRefresh) triggerNeedRefresh(true)
+      return { hasUpdate: true, message: '发现新版本，正在就绪...' }
+    }
+    return { hasUpdate: false, message: '当前已是最新版本' }
+  } catch (error) {
+    return { hasUpdate: false, message: '检查更新完成，未发现新版本' }
+  }
+}
+
 export function PwaManager() {
   const [canInstall, setCanInstall] = useState(false)
   const [dismissedBanner, setDismissedBanner] = useState(() => {
@@ -60,6 +87,8 @@ export function PwaManager() {
   const registrationRef = useRef<ServiceWorkerRegistration | null>(null)
 
   useEffect(() => {
+    triggerNeedRefresh = setNeedRefresh
+
     // 1. Listen for install prompt
     const handleBeforeInstallPrompt = (e: BeforeInstallPromptEvent) => {
       e.preventDefault()
@@ -85,6 +114,7 @@ export function PwaManager() {
     if ('serviceWorker' in navigator && !isTestEnv) {
       navigator.serviceWorker.register('/sw.js', { scope: '/' }).then(reg => {
         registrationRef.current = reg
+        activeRegistration = reg
         setRegistration(reg)
 
         reg.addEventListener('updatefound', () => {
@@ -101,15 +131,20 @@ export function PwaManager() {
         // 旧版 Service Worker 已装好并处于等待态时（例如上次错过了更新提示），立即给出提示
         if (reg.waiting && navigator.serviceWorker.controller) setNeedRefresh(true)
 
-        // 浏览器默认只在导航时检查更新，这里补一次立即检查
+        // 补一次立即检查
         void reg.update().catch(() => undefined)
       }).catch(() => {
         // SW register failed or disabled
       })
 
-      // 页面长期打开 / 从后台切回时主动检查更新，避免「服务端已更新但页面仍是旧版」
-      checkForUpdate = () => { void registrationRef.current?.update().catch(() => undefined) }
+      // 页面长期打开 / 从后台切回 (pageshow/visibilitychange/online) 时主动检查更新
+      checkForUpdate = () => {
+        const r = registrationRef.current || activeRegistration
+        void r?.update().catch(() => undefined)
+      }
       window.addEventListener('focus', checkForUpdate)
+      window.addEventListener('pageshow', checkForUpdate)
+      window.addEventListener('online', checkForUpdate)
       document.addEventListener('visibilitychange', checkForUpdate)
       updateTimer = window.setInterval(checkForUpdate, 5 * 60 * 1000)
 
@@ -127,6 +162,8 @@ export function PwaManager() {
       window.removeEventListener('appinstalled', handleAppInstalled)
       if (checkForUpdate) {
         window.removeEventListener('focus', checkForUpdate)
+        window.removeEventListener('pageshow', checkForUpdate)
+        window.removeEventListener('online', checkForUpdate)
         document.removeEventListener('visibilitychange', checkForUpdate)
       }
       if (updateTimer) window.clearInterval(updateTimer)

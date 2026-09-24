@@ -146,7 +146,7 @@ svg { width: 18px; height: 18px; flex: none; }
 .header-menu-backdrop {
   position: fixed;
   inset: 0;
-  z-index: 199;
+  z-index: 998;
   background: rgba(0, 0, 0, 0.28);
   backdrop-filter: blur(2px);
   -webkit-backdrop-filter: blur(2px);
@@ -158,16 +158,16 @@ svg { width: 18px; height: 18px; flex: none; }
 }
 
 .header-menu-dropdown {
-  position: absolute;
-  top: calc(100% + 8px);
-  right: 0;
-  width: 260px;
+  position: fixed;
+  top: calc(62px + var(--safe-top) + 6px);
+  right: max(clamp(16px, 4vw, 48px), var(--safe-right));
+  width: 268px;
   background: var(--surface);
   border: 1px solid var(--line);
   border-radius: 12px;
   box-shadow: var(--shadow), 0 12px 32px rgba(0, 0, 0, 0.14);
   padding: 12px;
-  z-index: 200;
+  z-index: 999;
   display: flex;
   flex-direction: column;
   gap: 10px;
@@ -280,6 +280,37 @@ svg { width: 18px; height: 18px; flex: none; }
   background: var(--line);
   margin: 2px 0;
 }
+.menu-item-btn {
+  width: 100%;
+  min-height: 38px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 10px;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 550;
+  transition: background 0.15s ease, color 0.15s ease;
+  cursor: pointer;
+  text-align: left;
+}
+.menu-item-btn:hover {
+  background: var(--surface-muted);
+}
+.menu-item-btn svg {
+  width: 16px;
+  height: 16px;
+  color: var(--muted);
+  flex-shrink: 0;
+}
+.menu-item-btn.accent-text {
+  color: var(--accent);
+}
+.menu-item-btn.accent-text svg {
+  color: var(--accent);
+}
 .menu-logout-btn {
   width: 100%;
   min-height: 38px;
@@ -294,6 +325,7 @@ svg { width: 18px; height: 18px; flex: none; }
   font-weight: 550;
   transition: background 0.15s ease;
   cursor: pointer;
+  text-align: left;
 }
 .menu-logout-btn:hover {
   background: color-mix(in srgb, var(--danger) 10%, transparent);
@@ -301,6 +333,7 @@ svg { width: 18px; height: 18px; flex: none; }
 .menu-logout-btn svg {
   width: 16px;
   height: 16px;
+  flex-shrink: 0;
 }
 .menu-link-btn {
   width: 100%;
@@ -969,8 +1002,12 @@ mark.search-highlight { background: var(--accent-soft); color: var(--accent); fo
 
 @media (max-width: 720px) {
   .app-page-header {
-    height: 56px;
-    padding: 0 10px;
+    height: calc(56px + var(--safe-top));
+    padding-top: var(--safe-top);
+    padding-left: max(10px, var(--safe-left));
+    padding-right: max(10px, var(--safe-right));
+    padding-bottom: 0;
+    box-sizing: border-box;
     display: flex;
     justify-content: space-between;
     align-items: center;
@@ -1000,6 +1037,8 @@ mark.search-highlight { background: var(--accent-soft); color: var(--accent); fo
     left: 0;
     right: 0;
     width: 100%;
+    max-height: calc(85vh - var(--safe-top));
+    overflow-y: auto;
     border-radius: 18px 18px 0 0;
     padding: 20px 18px calc(20px + env(safe-area-inset-bottom, 0px));
     box-shadow: 0 -8px 36px rgba(0, 0, 0, 0.22);
@@ -1008,6 +1047,7 @@ mark.search-highlight { background: var(--accent-soft); color: var(--accent); fo
     border-bottom: none;
     animation: bottomSheetSlideUp 0.22s cubic-bezier(0.16, 1, 0.3, 1);
     gap: 14px;
+    z-index: 999;
   }
   @keyframes bottomSheetSlideUp {
     from { transform: translateY(100%); }
@@ -1017,6 +1057,11 @@ mark.search-highlight { background: var(--accent-soft); color: var(--accent); fo
     min-height: 54px;
     padding: 10px 4px;
     font-size: 13px;
+  }
+  .menu-item-btn {
+    min-height: 46px;
+    padding: 0 12px;
+    font-size: 14px;
   }
   .menu-logout-btn {
     min-height: 46px;
@@ -2531,10 +2576,10 @@ mark.search-highlight { background: var(--accent-soft); color: var(--accent); fo
 }
 .pwa-update-toast {
   position: fixed;
-  top: max(16px, var(--safe-top));
+  top: max(16px, calc(var(--safe-top) + 16px));
   left: 50%;
   transform: translateX(-50%);
-  z-index: 1000;
+  z-index: 10000;
   background: var(--surface);
   color: var(--ink);
   border: 1px solid var(--line);

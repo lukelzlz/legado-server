@@ -102,3 +102,24 @@ test('Login - Static rendering contains updated brand Logo', () => {
   assert.ok(html.includes('回到你的阅读空间'), 'Login screen should contain welcome text')
 })
 
+test('HeaderMenu - No hardcoded white-on-white text in AppHeader markup', async () => {
+  const { checkForAppUpdate } = await import('../src/PwaManager')
+  assert.equal(typeof checkForAppUpdate, 'function', 'checkForAppUpdate should be exported')
+  const result = await checkForAppUpdate()
+  assert.ok(typeof result.hasUpdate === 'boolean')
+  assert.ok(typeof result.message === 'string')
+
+  const settings: ReaderSettings = { ...defaultReaderSettings, theme: 'light' }
+  const element = React.createElement(AppHeader, {
+    page: 'library',
+    settings,
+    onSettingsChange: () => {},
+    onNavigate: () => {},
+    onLogout: () => {},
+  })
+  const html = renderToStaticMarkup(element)
+  assert.ok(!html.includes('#e6e8eb'), 'AppHeader should not contain hardcoded #e6e8eb color')
+  assert.ok(!html.includes('--text-color'), 'AppHeader should not reference undefined --text-color variable')
+})
+
+

@@ -773,6 +773,7 @@ mark.search-highlight { background: var(--accent-soft); color: var(--accent); fo
 .candidate-cover-card:hover { border-color: var(--accent); }
 .candidate-cover-card.selected { border-color: var(--accent); background: var(--accent-soft); box-shadow: 0 0 0 2px var(--accent); }
 .candidate-cover-card img { width: 60px; height: 80px; object-fit: cover; border-radius: 4px; }
+.candidate-cover-card .candidate-cover-fallback { width: 60px; height: 80px; display: grid; place-items: center; background: var(--surface); border-radius: 4px; font-weight: bold; color: var(--muted); }
 .candidate-cover-card small { font-size: 10px; color: var(--muted); max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 .edit-fields-section { display: grid; gap: 14px; border-top: 1px solid var(--line); padding-top: 16px; }

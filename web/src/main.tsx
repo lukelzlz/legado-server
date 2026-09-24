@@ -1314,7 +1314,13 @@ function BookInfoEditModal({
                             onClick={() => setCoverUrl(c.coverUrl)}
                             title={`使用来自【${c.sourceId}】的封面`}
                           >
-                            <img src={sanitizeImageUrl(c.coverUrl) || c.coverUrl} alt={c.sourceId} referrerPolicy="no-referrer" />
+                            {sanitizeImageUrl(c.coverUrl) ? (
+                              <img src={sanitizeImageUrl(c.coverUrl)!} alt={c.sourceId} referrerPolicy="no-referrer" />
+                            ) : (
+                              <div className="candidate-cover-fallback">
+                                <span>{(c.sourceId || '书').slice(0, 1)}</span>
+                              </div>
+                            )}
                             <small>{c.sourceId}</small>
                           </button>
                         )

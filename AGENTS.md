@@ -236,6 +236,7 @@ AI 与人类协作时必须明确当前达到的完成度阶梯，严禁混淆�
 | 2026-09-24 | Quickfix | 修复 GitHub CodeQL 扫描 3 处告警（字符串转义、URL子串检查与封面图XSS过滤） | - | Accepted & Pushed |
 | 2026-09-24 | Fix | 修复 CI 与 CodeQL 缺少 node_modules 时 buildWeb 盲目执行 npm build 崩溃问题 | - | Accepted & Pushed |
 | 2026-09-24 | Fix | 修复 iOS PWA 安全区被覆盖、Backdrop-Filter 包含块陷阱与主题色彩隐形 | [`docs/sessions/SESSION-020-ios-pwa-safe-area-and-portal-fix.md`](file:///Users/zhangran/Documents/antigravity/joyful-galileo/docs/sessions/SESSION-020-ios-pwa-safe-area-and-portal-fix.md) | Accepted & Pushed |
+| 2026-09-24 | Quickfix | 修复 GitHub CodeQL 4 处告警（Simple Web 正则特殊字符转义、HTML 注释多字符清洗循环、JS 字符串反斜杠双重转义与备选封面 XSS 守卫） | - | Pushed |
 
 ---
 

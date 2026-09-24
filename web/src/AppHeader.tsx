@@ -252,6 +252,15 @@ export function AppHeader({
                   <Icon name="folder" />
                   <span>WebDAV 文件服务</span>
                 </button>
+                <a
+                  href="/simple/"
+                  className="menu-link-btn"
+                  role="menuitem"
+                  title="切换到 Kindle / 墨水屏极简阅读器"
+                >
+                  <Icon name="book" />
+                  <span>Kindle / 墨水屏版</span>
+                </a>
               </div>
 
               <div className="menu-divider" />

@@ -127,11 +127,18 @@ class Database(private val path: String) : Closeable, AutoCloseable {
                 create table if not exists cover_cache (
                   cache_key text primary key, content_type text not null
                 );
+                create table if not exists book_group (
+                  id integer primary key autoincrement,
+                  name text not null unique collate nocase,
+                  sort_order integer not null default 0,
+                  created_at integer not null
+                );
+                create index if not exists idx_book_group_sort on book_group(sort_order asc, id asc);
                 create table if not exists book_shelf (
                   source_id text not null, book_url text not null, name text not null,
                   author text, toc_url text not null, cover_url text, cover_key text,
                   last_read_at integer not null, completed integer not null default 0,
-                  alternate_sources text,
+                  alternate_sources text, group_name text,
                   primary key (source_id, book_url)
                 );
                 create index if not exists book_shelf_last_read_idx on book_shelf(last_read_at desc);
@@ -199,6 +206,10 @@ class Database(private val path: String) : Closeable, AutoCloseable {
                 it.executeUpdate()
             }
         }
+    }
+
+    fun hasPassword(): Boolean = connect { db ->
+        db.prepareStatement("select 1 from app_user where id = 1").use { it.executeQuery().next() }
     }
 
     fun verifyPassword(password: String): Boolean = connect { db ->
@@ -384,9 +395,10 @@ class Database(private val path: String) : Closeable, AutoCloseable {
         try {
             cover?.let { value -> db.prepareStatement("insert into cover_cache(cache_key,content_type) values(?,?) on conflict(cache_key) do update set content_type=excluded.content_type").use { it.setString(1, value.key); it.setString(2, value.contentType); it.executeUpdate() } }
             val altJson = request.alternateSources?.let { Json.encodeToString(it) }
-            db.prepareStatement("""insert into book_shelf(source_id,book_url,name,author,toc_url,cover_url,cover_key,last_read_at,alternate_sources) values(?,?,?,?,?,?,?,?,?)
-                on conflict(source_id,book_url) do update set name=excluded.name,author=excluded.author,toc_url=excluded.toc_url,cover_url=excluded.cover_url,cover_key=coalesce(excluded.cover_key,book_shelf.cover_key),last_read_at=excluded.last_read_at,alternate_sources=coalesce(excluded.alternate_sources,book_shelf.alternate_sources)""").use {
-                it.setString(1, request.sourceId); it.setString(2, request.bookUrl); it.setString(3, request.name); it.setString(4, request.author); it.setString(5, request.tocUrl); it.setString(6, request.coverUrl); it.setString(7, cover?.key); it.setLong(8, now); it.setString(9, altJson); it.executeUpdate()
+            val cleanGroup = request.groupName?.trim()?.takeIf { it.isNotEmpty() }
+            db.prepareStatement("""insert into book_shelf(source_id,book_url,name,author,toc_url,cover_url,cover_key,last_read_at,alternate_sources,group_name) values(?,?,?,?,?,?,?,?,?,?)
+                on conflict(source_id,book_url) do update set name=excluded.name,author=excluded.author,toc_url=excluded.toc_url,cover_url=excluded.cover_url,cover_key=coalesce(excluded.cover_key,book_shelf.cover_key),last_read_at=excluded.last_read_at,alternate_sources=coalesce(excluded.alternate_sources,book_shelf.alternate_sources),group_name=coalesce(excluded.group_name,book_shelf.group_name)""").use {
+                it.setString(1, request.sourceId); it.setString(2, request.bookUrl); it.setString(3, request.name); it.setString(4, request.author); it.setString(5, request.tocUrl); it.setString(6, request.coverUrl); it.setString(7, cover?.key); it.setLong(8, now); it.setString(9, altJson); it.setString(10, cleanGroup); it.executeUpdate()
             }
             db.commit(); getBookshelf(db, request.sourceId, request.bookUrl)!!
         } catch (error: Throwable) { db.rollback(); throw error } finally { db.autoCommit = true }
@@ -411,7 +423,8 @@ class Database(private val path: String) : Closeable, AutoCloseable {
             it.executeUpdate() > 0
         }
     }
-    fun listBookshelf(): List<BookshelfItem> = connect { db -> db.prepareStatement("""select s.source_id,s.book_url,s.name,s.author,s.toc_url,s.cover_key,p.chapter_index,p.scroll_position,s.last_read_at,coalesce(c.cached_chapters,0),coalesce(c.total_chapters,0),coalesce(c.state,'idle'),c.last_error,s.completed,s.alternate_sources from book_shelf s left join reading_progress p on p.source_id=s.source_id and p.book_url=s.book_url left join book_cache_status c on c.source_id=s.source_id and c.book_url=s.book_url order by s.last_read_at desc""").use { query -> query.executeQuery().use { rs -> buildList { while (rs.next()) add(rs.toShelf()) } } } }
+    fun listBookshelf(): List<BookshelfItem> = connect { db -> db.prepareStatement("""select s.source_id,s.book_url,s.name,s.author,s.toc_url,s.cover_key,p.chapter_index,p.scroll_position,s.last_read_at,coalesce(c.cached_chapters,0),coalesce(c.total_chapters,0),coalesce(c.state,'idle'),c.last_error,s.completed,s.alternate_sources,s.group_name from book_shelf s left join reading_progress p on p.source_id=s.source_id and p.book_url=s.book_url left join book_cache_status c on c.source_id=s.source_id and c.book_url=s.book_url order by s.last_read_at desc""").use { query -> query.executeQuery().use { rs -> buildList { while (rs.next()) add(rs.toShelf()) } } } }
+    fun getShelfBookByUrl(bookUrl: String): BookshelfItem? = connect { db -> db.prepareStatement("""select s.source_id,s.book_url,s.name,s.author,s.toc_url,s.cover_key,p.chapter_index,p.scroll_position,s.last_read_at,coalesce(c.cached_chapters,0),coalesce(c.total_chapters,0),coalesce(c.state,'idle'),c.last_error,s.completed,s.alternate_sources,s.group_name from book_shelf s left join reading_progress p on p.source_id=s.source_id and p.book_url=s.book_url left join book_cache_status c on c.source_id=s.source_id and c.book_url=s.book_url where s.book_url=?""").use { it.setString(1, bookUrl); it.executeQuery().use { rs -> if (rs.next()) rs.toShelf() else null } } }
     fun setBookshelfCompleted(sourceId: String, bookUrl: String, completed: Boolean): BookshelfItem? = write { db ->
         db.prepareStatement("update book_shelf set completed=? where source_id=? and book_url=?").use {
             it.setInt(1, if (completed) 1 else 0); it.setString(2, sourceId); it.setString(3, bookUrl); it.executeUpdate()
@@ -423,12 +436,14 @@ class Database(private val path: String) : Closeable, AutoCloseable {
         try {
             var found = false
             var oldCover: String? = null
-            db.prepareStatement("select cover_key from book_shelf where source_id=? and book_url=?").use {
+            var oldGroup: String? = null
+            db.prepareStatement("select cover_key, group_name from book_shelf where source_id=? and book_url=?").use {
                 it.setString(1, request.sourceId); it.setString(2, request.bookUrl)
                 it.executeQuery().use { rs ->
                     if (rs.next()) {
                         found = true
                         oldCover = rs.getString(1)
+                        oldGroup = rs.getString(2)
                     }
                 }
             }
@@ -441,14 +456,16 @@ class Database(private val path: String) : Closeable, AutoCloseable {
             }
 
             val newCoverKey = cover?.key ?: (if (request.coverUrl != null && request.coverUrl.isBlank()) null else oldCover)
+            val newGroup = if (request.groupName != null) request.groupName.trim().takeIf { it.isNotEmpty() } else oldGroup
 
-            db.prepareStatement("update book_shelf set name=?, author=?, cover_url=?, cover_key=? where source_id=? and book_url=?").use {
+            db.prepareStatement("update book_shelf set name=?, author=?, cover_url=?, cover_key=?, group_name=? where source_id=? and book_url=?").use {
                 it.setString(1, request.name)
                 it.setString(2, request.author)
                 it.setString(3, request.coverUrl)
                 it.setString(4, newCoverKey)
-                it.setString(5, request.sourceId)
-                it.setString(6, request.bookUrl)
+                it.setString(5, newGroup)
+                it.setString(6, request.sourceId)
+                it.setString(7, request.bookUrl)
                 it.executeUpdate()
             }
 
@@ -484,7 +501,17 @@ class Database(private val path: String) : Closeable, AutoCloseable {
         val now = System.currentTimeMillis()
         db.autoCommit = false
         try {
-            val oldCover = db.prepareStatement("select cover_key from book_shelf where source_id=? and book_url=?").use { it.setString(1, oldSourceId); it.setString(2, oldBookUrl); it.executeQuery().use { rs -> if (rs.next()) rs.getString(1) else null } }
+            var oldCover: String? = null
+            var oldGroup: String? = null
+            db.prepareStatement("select cover_key, group_name from book_shelf where source_id=? and book_url=?").use {
+                it.setString(1, oldSourceId); it.setString(2, oldBookUrl)
+                it.executeQuery().use { rs ->
+                    if (rs.next()) {
+                        oldCover = rs.getString(1)
+                        oldGroup = rs.getString(2)
+                    }
+                }
+            }
             val existingAlts = db.prepareStatement("select alternate_sources from book_shelf where source_id=? and book_url=?").use {
                 it.setString(1, oldSourceId); it.setString(2, oldBookUrl)
                 it.executeQuery().use { rs ->
@@ -497,6 +524,7 @@ class Database(private val path: String) : Closeable, AutoCloseable {
                 .filter { it.sourceId != request.sourceId || it.bookUrl != request.bookUrl }
                 .distinctBy { "${it.sourceId}\u0000${it.bookUrl}" }
             val altJson = Json.encodeToString(combinedAlts)
+            val cleanGroup = request.groupName?.trim()?.takeIf { it.isNotEmpty() } ?: oldGroup
 
             db.prepareStatement("delete from book_shelf where source_id=? and book_url=?").use { it.setString(1, oldSourceId); it.setString(2, oldBookUrl); it.executeUpdate() }
             db.prepareStatement("delete from reading_progress where source_id=? and book_url=?").use { it.setString(1, oldSourceId); it.setString(2, oldBookUrl); it.executeUpdate() }
@@ -505,14 +533,240 @@ class Database(private val path: String) : Closeable, AutoCloseable {
             db.prepareStatement("delete from book_toc_cache where source_id=? and (toc_url=? or toc_url like ?)").use { it.setString(1, oldSourceId); it.setString(2, oldBookUrl); it.setString(3, "%$oldBookUrl%"); it.executeUpdate() }
             cover?.let { value -> db.prepareStatement("insert into cover_cache(cache_key,content_type) values(?,?) on conflict(cache_key) do update set content_type=excluded.content_type").use { it.setString(1, value.key); it.setString(2, value.contentType); it.executeUpdate() } }
             val newCoverKey = cover?.key ?: oldCover
-            db.prepareStatement("""insert into book_shelf(source_id,book_url,name,author,toc_url,cover_url,cover_key,last_read_at,alternate_sources) values(?,?,?,?,?,?,?,?,?)
-                on conflict(source_id,book_url) do update set name=excluded.name,author=excluded.author,toc_url=excluded.toc_url,cover_url=coalesce(excluded.cover_url,book_shelf.cover_url),cover_key=coalesce(excluded.cover_key,book_shelf.cover_key),last_read_at=excluded.last_read_at,alternate_sources=excluded.alternate_sources""").use {
-                it.setString(1, request.sourceId); it.setString(2, request.bookUrl); it.setString(3, request.name); it.setString(4, request.author); it.setString(5, request.tocUrl); it.setString(6, request.coverUrl); it.setString(7, newCoverKey); it.setLong(8, now); it.setString(9, altJson); it.executeUpdate()
+            db.prepareStatement("""insert into book_shelf(source_id,book_url,name,author,toc_url,cover_url,cover_key,last_read_at,alternate_sources,group_name) values(?,?,?,?,?,?,?,?,?,?)
+                on conflict(source_id,book_url) do update set name=excluded.name,author=excluded.author,toc_url=excluded.toc_url,cover_url=coalesce(excluded.cover_url,book_shelf.cover_url),cover_key=coalesce(excluded.cover_key,book_shelf.cover_key),last_read_at=excluded.last_read_at,alternate_sources=excluded.alternate_sources,group_name=coalesce(excluded.group_name,book_shelf.group_name)""").use {
+                it.setString(1, request.sourceId); it.setString(2, request.bookUrl); it.setString(3, request.name); it.setString(4, request.author); it.setString(5, request.tocUrl); it.setString(6, request.coverUrl); it.setString(7, newCoverKey); it.setLong(8, now); it.setString(9, altJson); it.setString(10, cleanGroup); it.executeUpdate()
             }
             val orphan = oldCover?.takeIf { value -> value != newCoverKey && db.prepareStatement("select 1 from book_shelf where cover_key=?").use { it.setString(1, value); !it.executeQuery().next() } }
             orphan?.let { value -> db.prepareStatement("delete from cover_cache where cache_key=?").use { it.setString(1, value); it.executeUpdate() } }
             db.commit(); getBookshelf(db, request.sourceId, request.bookUrl)!! to orphan
         } catch (error: Throwable) { db.rollback(); throw error } finally { db.autoCommit = true }
+    }
+
+    fun listBookGroups(): List<BookGroup> = connect { db ->
+        db.prepareStatement("""
+            select g.id, g.name, g.sort_order, count(s.book_url) as book_count
+            from book_group g
+            left join book_shelf s on s.group_name = g.name collate nocase
+            group by g.id, g.name, g.sort_order
+            order by g.sort_order asc, g.id asc
+        """).use { stmt ->
+            stmt.executeQuery().use { rs ->
+                buildList {
+                    while (rs.next()) {
+                        add(
+                            BookGroup(
+                                id = rs.getLong(1),
+                                name = rs.getString(2),
+                                sortOrder = rs.getInt(3),
+                                bookCount = rs.getInt(4)
+                            )
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    fun getBookGroup(name: String): BookGroup? = connect { db ->
+        db.prepareStatement("""
+            select g.id, g.name, g.sort_order, count(s.book_url) as book_count
+            from book_group g
+            left join book_shelf s on s.group_name = g.name collate nocase
+            where g.name = ? collate nocase
+            group by g.id, g.name, g.sort_order
+        """).use { stmt ->
+            stmt.setString(1, name.trim())
+            stmt.executeQuery().use { rs ->
+                if (rs.next()) {
+                    BookGroup(
+                        id = rs.getLong(1),
+                        name = rs.getString(2),
+                        sortOrder = rs.getInt(3),
+                        bookCount = rs.getInt(4)
+                    )
+                } else null
+            }
+        }
+    }
+
+    fun createBookGroup(name: String): BookGroup = write { db ->
+        val trimmed = name.trim()
+        require(trimmed.isNotBlank()) { "分组名称不能为空" }
+        val exists = db.prepareStatement("select count(*) from book_group where name=? collate nocase").use { stmt ->
+            stmt.setString(1, trimmed)
+            stmt.executeQuery().use { rs -> rs.next() && rs.getInt(1) > 0 }
+        }
+        require(!exists) { "分组「$trimmed」已存在" }
+        val maxOrder = db.prepareStatement("select coalesce(max(sort_order), 0) from book_group").use { stmt ->
+            stmt.executeQuery().use { rs -> if (rs.next()) rs.getInt(1) else 0 }
+        }
+        val now = System.currentTimeMillis()
+        db.prepareStatement("insert into book_group(name, sort_order, created_at) values(?, ?, ?)").use { stmt ->
+            stmt.setString(1, trimmed)
+            stmt.setInt(2, maxOrder + 1)
+            stmt.setLong(3, now)
+            stmt.executeUpdate()
+        }
+        db.prepareStatement("select id, name, sort_order from book_group where name=? collate nocase").use { stmt ->
+            stmt.setString(1, trimmed)
+            stmt.executeQuery().use { rs ->
+                if (rs.next()) BookGroup(rs.getLong(1), rs.getString(2), rs.getInt(3), 0)
+                else throw IllegalStateException("创建分组失败")
+            }
+        }
+    }
+
+    fun renameBookGroup(oldName: String, newName: String): BookGroup = write { db ->
+        val oldTrimmed = oldName.trim()
+        val newTrimmed = newName.trim()
+        require(oldTrimmed.isNotBlank()) { "原分组名称不能为空" }
+        require(newTrimmed.isNotBlank()) { "新分组名称不能为空" }
+        if (oldTrimmed.equals(newTrimmed, ignoreCase = true)) {
+            val group = getBookGroup(newTrimmed) ?: throw NoSuchElementException("原分组不存在")
+            return@write group
+        }
+        val exists = db.prepareStatement("select count(*) from book_group where name=? collate nocase").use { stmt ->
+            stmt.setString(1, newTrimmed)
+            stmt.executeQuery().use { rs -> rs.next() && rs.getInt(1) > 0 }
+        }
+        require(!exists) { "分组「$newTrimmed」已存在" }
+        db.autoCommit = false
+        try {
+            db.prepareStatement("update book_group set name=? where name=? collate nocase").use { stmt ->
+                stmt.setString(1, newTrimmed)
+                stmt.setString(2, oldTrimmed)
+                val count = stmt.executeUpdate()
+                if (count == 0) throw NoSuchElementException("原分组不存在")
+            }
+            db.prepareStatement("update book_shelf set group_name=? where group_name=? collate nocase").use { stmt ->
+                stmt.setString(1, newTrimmed)
+                stmt.setString(2, oldTrimmed)
+                stmt.executeUpdate()
+            }
+            db.commit()
+            getBookGroup(newTrimmed) ?: throw IllegalStateException("更新分组失败")
+        } catch (e: Exception) {
+            db.rollback()
+            throw e
+        } finally {
+            db.autoCommit = true
+        }
+    }
+
+    fun deleteBookGroup(name: String): Boolean = write { db ->
+        val trimmed = name.trim()
+        if (trimmed.isBlank()) return@write false
+        db.autoCommit = false
+        try {
+            db.prepareStatement("update book_shelf set group_name=null where group_name=? collate nocase").use { stmt ->
+                stmt.setString(1, trimmed)
+                stmt.executeUpdate()
+            }
+            val deleted = db.prepareStatement("delete from book_group where name=? collate nocase").use { stmt ->
+                stmt.setString(1, trimmed)
+                stmt.executeUpdate() > 0
+            }
+            db.commit()
+            deleted
+        } catch (e: Throwable) {
+            db.rollback()
+            throw e
+        } finally {
+            db.autoCommit = true
+        }
+    }
+
+    fun updateBookGroupsOrder(groupNames: List<String>): List<BookGroup> = write { db ->
+        db.autoCommit = false
+        try {
+            groupNames.forEachIndexed { index, groupName ->
+                db.prepareStatement("update book_group set sort_order=? where name=? collate nocase").use { stmt ->
+                    stmt.setInt(1, index + 1)
+                    stmt.setString(2, groupName.trim())
+                    stmt.executeUpdate()
+                }
+            }
+            db.commit()
+        } catch (e: Throwable) {
+            db.rollback()
+            throw e
+        } finally {
+            db.autoCommit = true
+        }
+        listBookGroups()
+    }
+
+    fun updateBookGroup(sourceId: String, bookUrl: String, groupName: String?): BookshelfItem? = write { db ->
+        val cleanGroup = groupName?.trim()?.takeIf { it.isNotEmpty() }
+        db.prepareStatement("update book_shelf set group_name=? where source_id=? and book_url=?").use { stmt ->
+            stmt.setString(1, cleanGroup)
+            stmt.setString(2, sourceId)
+            stmt.setString(3, bookUrl)
+            stmt.executeUpdate()
+        }
+        getBookshelf(db, sourceId, bookUrl)
+    }
+
+    fun batchBookshelfOperation(request: BookshelfBatchRequest, onRemoveCover: (String) -> Unit = {}): Int = write { db ->
+        if (request.items.isEmpty()) return@write 0
+        db.autoCommit = false
+        try {
+            var affected = 0
+            when (request.action) {
+                "move_group" -> {
+                    val target = request.targetGroup?.trim()?.takeIf { it.isNotEmpty() }
+                    db.prepareStatement("update book_shelf set group_name=? where source_id=? and book_url=?").use { stmt ->
+                        for (item in request.items) {
+                            stmt.setString(1, target)
+                            stmt.setString(2, item.sourceId)
+                            stmt.setString(3, item.bookUrl)
+                            stmt.addBatch()
+                        }
+                        affected = stmt.executeBatch().count { it > 0 || it == java.sql.Statement.SUCCESS_NO_INFO }
+                    }
+                }
+                "mark_completed" -> {
+                    val comp = if (request.completed == true) 1 else 0
+                    db.prepareStatement("update book_shelf set completed=? where source_id=? and book_url=?").use { stmt ->
+                        for (item in request.items) {
+                            stmt.setInt(1, comp)
+                            stmt.setString(2, item.sourceId)
+                            stmt.setString(3, item.bookUrl)
+                            stmt.addBatch()
+                        }
+                        affected = stmt.executeBatch().count { it > 0 || it == java.sql.Statement.SUCCESS_NO_INFO }
+                    }
+                }
+                "delete" -> {
+                    val orphanCovers = mutableListOf<String>()
+                    for (item in request.items) {
+                        val key = db.prepareStatement("select cover_key from book_shelf where source_id=? and book_url=?").use {
+                            it.setString(1, item.sourceId); it.setString(2, item.bookUrl)
+                            it.executeQuery().use { rs -> if (rs.next()) rs.getString(1) else null }
+                        }
+                        db.prepareStatement("delete from book_shelf where source_id=? and book_url=?").use { it.setString(1, item.sourceId); it.setString(2, item.bookUrl); it.executeUpdate() }
+                        db.prepareStatement("delete from reading_progress where source_id=? and book_url=?").use { it.setString(1, item.sourceId); it.setString(2, item.bookUrl); it.executeUpdate() }
+                        db.prepareStatement("delete from book_content_cache where source_id=? and book_url=?").use { it.setString(1, item.sourceId); it.setString(2, item.bookUrl); it.executeUpdate() }
+                        db.prepareStatement("delete from book_cache_status where source_id=? and book_url=?").use { it.setString(1, item.sourceId); it.setString(2, item.bookUrl); it.executeUpdate() }
+                        val orphan = key?.takeIf { value -> db.prepareStatement("select 1 from book_shelf where cover_key=?").use { it.setString(1, value); !it.executeQuery().next() } }
+                        orphan?.let { value ->
+                            db.prepareStatement("delete from cover_cache where cache_key=?").use { it.setString(1, value); it.executeUpdate() }
+                            orphanCovers.add(value)
+                        }
+                        affected++
+                    }
+                    orphanCovers.forEach(onRemoveCover)
+                }
+            }
+            db.commit()
+            affected
+        } catch (e: Throwable) {
+            db.rollback()
+            throw e
+        } finally {
+            db.autoCommit = true
+        }
     }
     fun coverContentType(key: String): String? = connect { db -> db.prepareStatement("select content_type from cover_cache where cache_key=?").use { it.setString(1, key); it.executeQuery().use { rs -> if (rs.next()) rs.getString(1) else null } } }
 
@@ -1213,6 +1467,7 @@ class Database(private val path: String) : Closeable, AutoCloseable {
             cacheError = getString(13),
             completed = getInt(14) != 0,
             alternateSources = altSources,
+            groupName = runCatching { getString(16) }.getOrNull()?.trim()?.takeIf { it.isNotEmpty() },
         )
     }
     private fun java.sql.ResultSet.toReplaceRule(): ReplaceRule = ReplaceRule(
@@ -1432,7 +1687,7 @@ class Database(private val path: String) : Closeable, AutoCloseable {
         }
     }
 
-    private fun getBookshelf(db: Connection, sourceId: String, bookUrl: String): BookshelfItem? = db.prepareStatement("""select s.source_id,s.book_url,s.name,s.author,s.toc_url,s.cover_key,p.chapter_index,p.scroll_position,s.last_read_at,coalesce(c.cached_chapters,0),coalesce(c.total_chapters,0),coalesce(c.state,'idle'),c.last_error,s.completed,s.alternate_sources from book_shelf s left join reading_progress p on p.source_id=s.source_id and p.book_url=s.book_url left join book_cache_status c on c.source_id=s.source_id and c.book_url=s.book_url where s.source_id=? and s.book_url=?""").use { it.setString(1, sourceId); it.setString(2, bookUrl); it.executeQuery().use { rs -> if (rs.next()) rs.toShelf() else null } }
+    private fun getBookshelf(db: Connection, sourceId: String, bookUrl: String): BookshelfItem? = db.prepareStatement("""select s.source_id,s.book_url,s.name,s.author,s.toc_url,s.cover_key,p.chapter_index,p.scroll_position,s.last_read_at,coalesce(c.cached_chapters,0),coalesce(c.total_chapters,0),coalesce(c.state,'idle'),c.last_error,s.completed,s.alternate_sources,s.group_name from book_shelf s left join reading_progress p on p.source_id=s.source_id and p.book_url=s.book_url left join book_cache_status c on c.source_id=s.source_id and c.book_url=s.book_url where s.source_id=? and s.book_url=?""").use { it.setString(1, sourceId); it.setString(2, bookUrl); it.executeQuery().use { rs -> if (rs.next()) rs.toShelf() else null } }
     private fun migrateReadingProgress(db: Connection) {
         val columns = db.createStatement().use { statement ->
             statement.executeQuery("pragma table_info(reading_progress)").use { result ->
@@ -1447,6 +1702,7 @@ class Database(private val path: String) : Closeable, AutoCloseable {
         val columns = db.createStatement().use { statement -> statement.executeQuery("pragma table_info(book_shelf)").use { rs -> buildSet { while (rs.next()) add(rs.getString("name")) } } }
         if ("completed" !in columns) db.createStatement().use { it.executeUpdate("alter table book_shelf add column completed integer not null default 0") }
         if ("alternate_sources" !in columns) db.createStatement().use { it.executeUpdate("alter table book_shelf add column alternate_sources text") }
+        if ("group_name" !in columns) db.createStatement().use { it.executeUpdate("alter table book_shelf add column group_name text") }
     }
     private fun migrateSourceTable(db: Connection) {
         val columns = db.createStatement().use { statement ->

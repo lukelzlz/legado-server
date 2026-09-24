@@ -492,6 +492,103 @@ class DatabaseTest {
         }
     }
 
+    @Test
+    fun `book groups CRUD sorting and book assignment`() {
+        val path = temporaryDatabase()
+        try {
+            val database = Database(path); database.initialize("password-for-test")
+            val g1 = database.createBookGroup("修仙")
+            val g2 = database.createBookGroup("科幻")
+            assertEquals("修仙", g1.name)
+            assertEquals("科幻", g2.name)
+
+            val book1 = BookshelfWriteRequest("s1", "https://b1", "凡人修仙", "忘语", "https://b1/toc", groupName = "修仙")
+            val book2 = BookshelfWriteRequest("s1", "https://b2", "三体", "刘慈欣", "https://b2/toc", groupName = "科幻")
+            val book3 = BookshelfWriteRequest("s1", "https://b3", "星门", "老鹰", "https://b3/toc", groupName = "修仙")
+            val book4 = BookshelfWriteRequest("s1", "https://b4", "未分组书", "未知", "https://b4/toc")
+            database.saveBookshelf(book1, null)
+            database.saveBookshelf(book2, null)
+            database.saveBookshelf(book3, null)
+            database.saveBookshelf(book4, null)
+
+            val groups = database.listBookGroups()
+            assertEquals(2, groups.size)
+            val xian = groups.first { it.name == "修仙" }
+            val huan = groups.first { it.name == "科幻" }
+            assertEquals(2, xian.bookCount)
+            assertEquals(1, huan.bookCount)
+
+            // Rename group
+            val renamed = database.renameBookGroup("修仙", "仙侠修真")
+            assertEquals("仙侠修真", renamed.name)
+            assertEquals(2, renamed.bookCount)
+
+            val shelf = database.listBookshelf()
+            val b1 = shelf.first { it.bookUrl == "https://b1" }
+            assertEquals("仙侠修真", b1.groupName)
+
+            // Update single book group
+            database.updateBookGroup("s1", "https://b4", "科幻")
+            assertEquals("科幻", database.listBookshelf().first { it.bookUrl == "https://b4" }.groupName)
+
+            // Reorder
+            val reordered = database.updateBookGroupsOrder(listOf("科幻", "仙侠修真"))
+            assertEquals("科幻", reordered[0].name)
+            assertEquals("仙侠修真", reordered[1].name)
+
+            // Delete group - books move to ungrouped (null)
+            database.deleteBookGroup("科幻")
+            val afterDeleteShelf = database.listBookshelf()
+            assertNull(afterDeleteShelf.first { it.bookUrl == "https://b2" }.groupName)
+            assertNull(afterDeleteShelf.first { it.bookUrl == "https://b4" }.groupName)
+
+            database.close()
+        } finally {
+            Files.deleteIfExists(java.nio.file.Path.of(path))
+        }
+    }
+
+    @Test
+    fun `batch bookshelf operations`() {
+        val path = temporaryDatabase()
+        try {
+            val database = Database(path); database.initialize("password-for-test")
+            database.createBookGroup("历史")
+            val b1 = BookshelfWriteRequest("s1", "https://b1", "书1", "作1", "https://b1/toc")
+            val b2 = BookshelfWriteRequest("s1", "https://b2", "书2", "作2", "https://b2/toc")
+            val b3 = BookshelfWriteRequest("s1", "https://b3", "书3", "作3", "https://b3/toc")
+            database.saveBookshelf(b1, null)
+            database.saveBookshelf(b2, null)
+            database.saveBookshelf(b3, null)
+
+            val keys = listOf(BookKeyRequest("s1", "https://b1"), BookKeyRequest("s1", "https://b2"))
+
+            // Batch move group
+            val moved = database.batchBookshelfOperation(BookshelfBatchRequest("move_group", keys, targetGroup = "历史"))
+            assertEquals(2, moved)
+            val shelfAfterMove = database.listBookshelf()
+            assertEquals("历史", shelfAfterMove.first { it.bookUrl == "https://b1" }.groupName)
+            assertEquals("历史", shelfAfterMove.first { it.bookUrl == "https://b2" }.groupName)
+            assertNull(shelfAfterMove.first { it.bookUrl == "https://b3" }.groupName)
+
+            // Batch mark completed
+            val marked = database.batchBookshelfOperation(BookshelfBatchRequest("mark_completed", keys, completed = true))
+            assertEquals(2, marked)
+            val shelfAfterMark = database.listBookshelf()
+            assertTrue(shelfAfterMark.first { it.bookUrl == "https://b1" }.completed)
+            assertTrue(shelfAfterMark.first { it.bookUrl == "https://b2" }.completed)
+
+            // Batch delete
+            val deleted = database.batchBookshelfOperation(BookshelfBatchRequest("delete", listOf(BookKeyRequest("s1", "https://b3"))))
+            assertEquals(1, deleted)
+            assertEquals(2, database.listBookshelf().size)
+
+            database.close()
+        } finally {
+            Files.deleteIfExists(java.nio.file.Path.of(path))
+        }
+    }
+
     private fun temporaryDatabase(): String = Files.createTempFile("legado-server-test", ".sqlite").toString()
 }
 

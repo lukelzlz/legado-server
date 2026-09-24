@@ -39,6 +39,7 @@ tasks.withType(org.jetbrains.kotlin.gradle.tasks.KotlinCompile).configureEach {
 }
 
 application {
+    applicationName = 'legado-server'
     mainClass = 'io.legado.server.ApplicationKt'
 }
 
@@ -59,12 +60,52 @@ tasks.register('fatJar', Jar) {
     with tasks.jar
 }
 
-processResources {
-    duplicatesStrategy = DuplicatesStrategy.INCLUDE
-    if (file("${rootProject.projectDir}/web/dist").exists()) {
-        from("${rootProject.projectDir}/web/dist") {
-            into("static")
+def webDistDir = file("${rootProject.projectDir}/web/dist")
+
+tasks.register('buildWeb') {
+    description = "Builds the web frontend using npm."
+    group = "build"
+
+    def webSrc = file("${rootProject.projectDir}/web/src")
+    def webPkg = file("${rootProject.projectDir}/web/package.json")
+    def webHtml = file("${rootProject.projectDir}/web/index.html")
+    def webVite = file("${rootProject.projectDir}/web/vite.config.ts")
+
+    if (webSrc.exists()) inputs.dir(webSrc)
+    if (webPkg.exists()) inputs.file(webPkg)
+    if (webHtml.exists()) inputs.file(webHtml)
+    if (webVite.exists()) inputs.file(webVite)
+    outputs.dir(webDistDir)
+
+    doLast {
+        def isWindows = org.gradle.internal.os.OperatingSystem.current().isWindows()
+        def hasNpm = false
+        try {
+            def process = new ProcessBuilder(isWindows ? ['cmd', '/c', 'where', 'npm'] : ['which', 'npm']).start()
+            hasNpm = (process.waitFor() == 0)
+        } catch (Exception ignored) {
+            hasNpm = false
         }
+
+        if (hasNpm && file("${rootProject.projectDir}/web/package.json").exists()) {
+            println "Building web frontend with npm..."
+            exec {
+                workingDir = file("${rootProject.projectDir}/web")
+                commandLine isWindows ? ['cmd', '/c', 'npm', 'run', 'build'] : ['npm', 'run', 'build']
+            }
+        } else if (webDistDir.exists()) {
+            println "Using pre-built web assets from ${webDistDir}"
+        } else {
+            logger.warn("WARNING: Neither npm nor pre-built web/dist was found. Web static files will not be bundled!")
+        }
+    }
+}
+
+processResources {
+    dependsOn tasks.named('buildWeb')
+    duplicatesStrategy = DuplicatesStrategy.INCLUDE
+    from(webDistDir) {
+        into("static")
     }
 }
 

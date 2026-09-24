@@ -58,8 +58,9 @@ fun Application.legadoApplication(config: ServerConfig = ServerConfig.fromEnviro
     }
     routing {
         get("/healthz") { call.respond(mapOf("status" to "ok")) }
+        val coverCache = CoverCache(config.coverCacheDirectory)
         authRoutes(auth)
-        apiRoutes(database, auth, runner, CoverCache(config.coverCacheDirectory), subscriptions, bookCache, edgeTts, ttsSessions, config.localBooksDirectory)
+        apiRoutes(database, auth, runner, coverCache, subscriptions, bookCache, edgeTts, ttsSessions, config.localBooksDirectory)
         webDavRoutes(auth, WebDavStorage(config.webDavDirectory), database)
         staticWeb()
     }

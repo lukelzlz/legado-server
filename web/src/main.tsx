@@ -1,6 +1,6 @@
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
-import { api, BookDetails, BookshelfItem, Chapter, SearchResult, SearchStreamEvent, setCsrfToken, SourceRecord, SourceSubscription, SourceSummary } from './api'
+import { api, BookDetails, BookGroup, BookshelfItem, Chapter, SearchResult, SearchStreamEvent, setCsrfToken, SourceRecord, SourceSubscription, SourceSummary } from './api'
 import { Icon } from './icons'
 import { Logo } from './Logo'
 import { Login } from './Login'
@@ -1169,15 +1169,18 @@ function LibraryPage({ sources, onOpen }: { sources: SourceSummary[]; onOpen: (b
 
 function BookInfoEditModal({
   item,
+  groups,
   onSaved,
   onClose,
 }: {
   item: BookshelfItem
+  groups: BookGroup[]
   onSaved: (updated: BookshelfItem) => void
   onClose: () => void
 }) {
   const [name, setName] = useState(item.name)
   const [author, setAuthor] = useState(item.author || '')
+  const [groupName, setGroupName] = useState<string | undefined>(item.groupName)
   const [coverUrl, setCoverUrl] = useState<string | null>(null) // null = keep existing, '' = clear, string = new URL
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
@@ -1217,6 +1220,7 @@ function BookInfoEditModal({
         name: trimmedName,
         author: author.trim() || undefined,
         coverUrl: coverUrl === null ? undefined : coverUrl,
+        groupName: groupName || undefined,
       })
       toast.success(`《${updated.name}》信息已更新`)
       onSaved(updated)
@@ -1321,7 +1325,7 @@ function BookInfoEditModal({
               </div>
             </div>
 
-            {/* Title & Author Fields */}
+            {/* Title & Author & Group Fields */}
             <div className="edit-fields-section">
               <label className="edit-form-label">
                 <span>书名 <span className="required-mark">*</span></span>
@@ -1342,6 +1346,20 @@ function BookInfoEditModal({
                   onChange={e => setAuthor(e.target.value)}
                   placeholder="作者（可选）"
                 />
+              </label>
+
+              <label className="edit-form-label">
+                <span>所属分组</span>
+                <select
+                  value={groupName || ''}
+                  onChange={e => setGroupName(e.target.value || undefined)}
+                  className="edit-select-input"
+                >
+                  <option value="">(未分组)</option>
+                  {groups.map(g => (
+                    <option key={g.id} value={g.name}>{g.name}</option>
+                  ))}
+                </select>
               </label>
             </div>
 
@@ -1364,6 +1382,7 @@ function BookInfoEditModal({
 
 function BookManageModal({
   item,
+  groups,
   onClose,
   onSwitchSource,
   onCache,
@@ -1373,6 +1392,7 @@ function BookManageModal({
   onRemove,
 }: {
   item: BookshelfItem
+  groups: BookGroup[]
   onClose: () => void
   onSwitchSource: () => void
   onCache: () => void
@@ -1403,6 +1423,35 @@ function BookManageModal({
         </header>
 
         <div className="manage-sheet-actions">
+          {/* Quick Group Selector */}
+          <div className="manage-group-row">
+            <div className="action-icon"><Icon name="bookmark" /></div>
+            <div className="action-text">
+              <strong>所属分组</strong>
+              <small>当前：{item.groupName || '未分组'}</small>
+            </div>
+            <select
+              value={item.groupName || ''}
+              onChange={async (e) => {
+                const newGroup = e.target.value || null
+                try {
+                  const updated = await api.updateBookGroup(item.sourceId, item.bookUrl, newGroup)
+                  onUpdateInfo(updated)
+                  toast.success(newGroup ? `已移入「${newGroup}」分组` : '已移入「未分组」')
+                } catch (err) {
+                  toast.error(err instanceof Error ? err.message : '更新分组失败')
+                }
+              }}
+              className="manage-group-select"
+              aria-label="修改所属分组"
+            >
+              <option value="">未分组</option>
+              {groups.map(g => (
+                <option key={g.id} value={g.name}>{g.name}</option>
+              ))}
+            </select>
+          </div>
+
           <button className="manage-action-row" onClick={() => setEditingInfo(true)}>
             <div className="action-icon"><Icon name="edit" /></div>
             <div className="action-text">
@@ -1452,7 +1501,7 @@ function BookManageModal({
             <div className="action-icon"><Icon name="check" /></div>
             <div className="action-text">
               <strong>{item.completed ? '恢复为正在阅读' : '标记为已读完'}</strong>
-              <small>{item.completed ? '移回「正在阅读」分组' : '移至「已读完」分组'}</small>
+              <small>{item.completed ? '状态恢复为正在阅读' : '状态标记为已读完'}</small>
             </div>
             <Icon name="arrowRight" />
           </button>
@@ -1471,6 +1520,7 @@ function BookManageModal({
       {editingInfo && (
         <BookInfoEditModal
           item={item}
+          groups={groups}
           onSaved={updated => {
             onUpdateInfo(updated)
           }}
@@ -1481,20 +1531,286 @@ function BookManageModal({
   )
 }
 
+function GroupManageModal({
+  groups,
+  onClose,
+  onGroupsChanged,
+}: {
+  groups: BookGroup[]
+  onClose: () => void
+  onGroupsChanged: () => Promise<void>
+}) {
+  const [newGroupName, setNewGroupName] = useState('')
+  const [adding, setAdding] = useState(false)
+  const [editingId, setEditingId] = useState<number | null>(null)
+  const [editingName, setEditingName] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+
+  const handleAddGroup = async (e: FormEvent) => {
+    e.preventDefault()
+    const trimmed = newGroupName.trim()
+    if (!trimmed) return
+    setAdding(true)
+    setError('')
+    try {
+      await api.createBookGroup(trimmed)
+      setNewGroupName('')
+      await onGroupsChanged()
+      toast.success(`分组「${trimmed}」创建成功`)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '创建分组失败')
+    } finally {
+      setAdding(false)
+    }
+  }
+
+  const handleRename = async (group: BookGroup) => {
+    const trimmed = editingName.trim()
+    if (!trimmed || trimmed === group.name) {
+      setEditingId(null)
+      return
+    }
+    setBusy(true)
+    setError('')
+    try {
+      await api.renameBookGroup(group.name, trimmed)
+      setEditingId(null)
+      await onGroupsChanged()
+      toast.success(`分组已重命名为「${trimmed}」`)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '重命名失败')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const handleDelete = async (group: BookGroup) => {
+    const confirmMsg = group.bookCount > 0
+      ? `确定删除分组「${group.name}」吗？组内 ${group.bookCount} 本书籍将自动归入“未分组”，书籍不会被删除。`
+      : `确定删除分组「${group.name}」吗？`
+    if (!confirm(confirmMsg)) return
+    setBusy(true)
+    setError('')
+    try {
+      await api.deleteBookGroup(group.name)
+      await onGroupsChanged()
+      toast.info(`已删除分组「${group.name}」`)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '删除失败')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const handleMove = async (index: number, direction: 'up' | 'down') => {
+    const targetIndex = direction === 'up' ? index - 1 : index + 1
+    if (targetIndex < 0 || targetIndex >= groups.length) return
+    const reordered = [...groups]
+    const temp = reordered[index]
+    reordered[index] = reordered[targetIndex]
+    reordered[targetIndex] = temp
+    setBusy(true)
+    try {
+      await api.reorderBookGroups(reordered.map(g => g.name))
+      await onGroupsChanged()
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : '调整排序失败')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="modal-backdrop top-layer-modal-backdrop" onClick={onClose}>
+      <div className="group-manage-modal" onClick={e => e.stopPropagation()} role="dialog" aria-modal="true" aria-label="管理书架分组">
+        <header className="group-manage-header">
+          <div>
+            <span className="section-kicker">书架分类</span>
+            <h2>书架分组管理</h2>
+          </div>
+          <button className="subtle-button close-btn" onClick={onClose} aria-label="关闭"><Icon name="close" /></button>
+        </header>
+
+        <div className="group-manage-body">
+          <form className="group-add-form" onSubmit={handleAddGroup}>
+            <input
+              type="text"
+              value={newGroupName}
+              onChange={e => setNewGroupName(e.target.value)}
+              placeholder="输入新分组名称..."
+              maxLength={20}
+              disabled={adding || busy}
+            />
+            <button type="submit" className="primary-button" disabled={!newGroupName.trim() || adding || busy}>
+              {adding ? '创建中...' : '新建分组'}
+            </button>
+          </form>
+
+          {error && <p className="form-error">{error}</p>}
+
+          <div className="group-list">
+            {groups.length === 0 ? (
+              <p className="group-list-empty">暂无自定义分组，创建后可自由归类书籍</p>
+            ) : (
+              groups.map((group, idx) => (
+                <div key={group.id} className="group-item-row">
+                  {editingId === group.id ? (
+                    <div className="group-item-editing">
+                      <input
+                        type="text"
+                        value={editingName}
+                        onChange={e => setEditingName(e.target.value)}
+                        autoFocus
+                        maxLength={20}
+                        onKeyDown={e => {
+                          if (e.key === 'Enter') void handleRename(group)
+                          if (e.key === 'Escape') setEditingId(null)
+                        }}
+                      />
+                      <button type="button" className="subtle-button confirm-btn" onClick={() => void handleRename(group)} disabled={busy} title="保存">
+                        <Icon name="check" />
+                      </button>
+                      <button type="button" className="subtle-button" onClick={() => setEditingId(null)} title="取消">
+                        <Icon name="close" />
+                      </button>
+                    </div>
+                  ) : (
+                    <>
+                      <div className="group-item-info">
+                        <span className="group-item-name">{group.name}</span>
+                        <span className="group-item-count">{group.bookCount} 本</span>
+                      </div>
+                      <div className="group-item-actions">
+                        <button
+                          type="button"
+                          className="subtle-button"
+                          disabled={idx === 0 || busy}
+                          onClick={() => void handleMove(idx, 'up')}
+                          title="上移"
+                        >
+                          ↑
+                        </button>
+                        <button
+                          type="button"
+                          className="subtle-button"
+                          disabled={idx === groups.length - 1 || busy}
+                          onClick={() => void handleMove(idx, 'down')}
+                          title="下移"
+                        >
+                          ↓
+                        </button>
+                        <button
+                          type="button"
+                          className="subtle-button"
+                          onClick={() => {
+                            setEditingId(group.id)
+                            setEditingName(group.name)
+                          }}
+                          title="重命名"
+                        >
+                          <Icon name="edit" />
+                        </button>
+                        <button
+                          type="button"
+                          className="subtle-button danger-icon-btn"
+                          onClick={() => void handleDelete(group)}
+                          title="删除分组"
+                        >
+                          <Icon name="close" />
+                        </button>
+                      </div>
+                    </>
+                  )}
+                </div>
+              ))
+            )}
+          </div>
+        </div>
+
+        <footer className="group-manage-footer">
+          <button type="button" className="primary-button" onClick={onClose}>完成</button>
+        </footer>
+      </div>
+    </div>
+  )
+}
+
+function BatchMoveGroupModal({
+  groups,
+  selectedCount,
+  onClose,
+  onSelectGroup,
+}: {
+  groups: BookGroup[]
+  selectedCount: number
+  onClose: () => void
+  onSelectGroup: (groupName: string | null) => Promise<void>
+}) {
+  const [busy, setBusy] = useState(false)
+
+  const handleSelect = async (groupName: string | null) => {
+    setBusy(true)
+    try {
+      await onSelectGroup(groupName)
+      onClose()
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="modal-backdrop top-layer-modal-backdrop" onClick={onClose}>
+      <div className="batch-move-modal" onClick={e => e.stopPropagation()} role="dialog" aria-modal="true" aria-label="移动书籍至分组">
+        <header className="group-manage-header">
+          <div>
+            <span className="section-kicker">批量操作</span>
+            <h2>移动到分组</h2>
+            <small>已选择 {selectedCount} 本书籍</small>
+          </div>
+          <button className="subtle-button close-btn" onClick={onClose} aria-label="关闭"><Icon name="close" /></button>
+        </header>
+
+        <div className="batch-move-list">
+          <button type="button" className="batch-move-option" disabled={busy} onClick={() => void handleSelect(null)}>
+            <div className="option-name">未分组</div>
+            <small>清除当前分组归属</small>
+          </button>
+          {groups.map(g => (
+            <button key={g.id} type="button" className="batch-move-option" disabled={busy} onClick={() => void handleSelect(g.name)}>
+              <div className="option-name">{g.name}</div>
+              <small>{g.bookCount} 本书</small>
+            </button>
+          ))}
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function ShelfPage({ onOpen }: { onOpen: (item: BookshelfItem) => void }) {
   const [items, setItems] = useState<BookshelfItem[]>([])
+  const [groups, setGroups] = useState<BookGroup[]>([])
+  const [selectedGroup, setSelectedGroup] = useState<string>('all') // 'all' | '__ungrouped__' | custom group name
+  const [statusFilter, setStatusFilter] = useState<'all' | 'reading' | 'completed'>('all')
   const [message, setMessage] = useState('')
   const [switchingItem, setSwitchingItem] = useState<BookshelfItem | null>(null)
   const [managingItem, setManagingItem] = useState<BookshelfItem | null>(null)
-  const [view, setView] = useState<'reading' | 'completed' | 'all'>('reading')
   const [uploading, setUploading] = useState(false)
   const [dragOver, setDragOver] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const [managingGroups, setManagingGroups] = useState(false)
+  const [batchMode, setBatchMode] = useState(false)
+  const [selectedKeys, setSelectedKeys] = useState<Set<string>>(new Set())
+  const [batchMoving, setBatchMoving] = useState(false)
   const previousStateRef = useRef<Map<string, string>>(new Map())
 
   const load = useCallback(async () => {
     try {
-      const list = await api.bookshelf()
+      const [list, groupList] = await Promise.all([
+        api.bookshelf(),
+        api.bookGroups(),
+      ])
       list.forEach(curr => {
         const key = `${curr.sourceId}\u0000${curr.bookUrl}`
         const prevState = previousStateRef.current.get(key)
@@ -1506,6 +1822,7 @@ function ShelfPage({ onOpen }: { onOpen: (item: BookshelfItem) => void }) {
         previousStateRef.current.set(key, curr.cacheState)
       })
       setItems(list)
+      setGroups(groupList)
     } catch (error) {
       setMessage(error instanceof Error ? error.message : '无法载入书架')
     }
@@ -1556,6 +1873,7 @@ function ShelfPage({ onOpen }: { onOpen: (item: BookshelfItem) => void }) {
       await api.removeFromBookshelf(item.sourceId, item.bookUrl)
       setItems(values => values.filter(value => value.sourceId !== item.sourceId || value.bookUrl !== item.bookUrl))
       toast.info(`《${item.name}》已移出书架`)
+      void load()
     } catch (error) {
       toast.error(error instanceof Error ? error.message : '移出失败')
     }
@@ -1600,6 +1918,7 @@ function ShelfPage({ onOpen }: { onOpen: (item: BookshelfItem) => void }) {
         author: cleanAuthor(details.author?.trim() || switchingItem.author) || switchingItem.author,
         tocUrl: details.tocUrl,
         coverUrl: fallbackCover || undefined,
+        groupName: switchingItem.groupName,
       },
       alternateSources: switchingItem.alternateSources,
     })
@@ -1624,8 +1943,109 @@ function ShelfPage({ onOpen }: { onOpen: (item: BookshelfItem) => void }) {
     return null
   }
 
-  const visibleItems = useMemo(() => view === 'all' ? items : items.filter(item => view === 'completed' ? item.completed : !item.completed), [items, view])
-  const counts = { reading: items.filter(item => !item.completed).length, completed: items.filter(item => item.completed).length, all: items.length }
+  const groupFilteredItems = useMemo(() => {
+    if (selectedGroup === 'all') return items
+    if (selectedGroup === '__ungrouped__') return items.filter(i => !i.groupName)
+    return items.filter(i => i.groupName === selectedGroup)
+  }, [items, selectedGroup])
+
+  const visibleItems = useMemo(() => {
+    if (statusFilter === 'all') return groupFilteredItems
+    if (statusFilter === 'completed') return groupFilteredItems.filter(i => i.completed)
+    return groupFilteredItems.filter(i => !i.completed)
+  }, [groupFilteredItems, statusFilter])
+
+  const groupCounts = useMemo(() => {
+    let ungrouped = 0
+    items.forEach(i => {
+      if (!i.groupName) ungrouped++
+    })
+    return { ungrouped, all: items.length }
+  }, [items])
+
+  const statusCounts = useMemo(() => ({
+    all: groupFilteredItems.length,
+    reading: groupFilteredItems.filter(i => !i.completed).length,
+    completed: groupFilteredItems.filter(i => i.completed).length,
+  }), [groupFilteredItems])
+
+  const toggleSelectKey = (key: string) => {
+    setSelectedKeys(prev => {
+      const next = new Set(prev)
+      if (next.has(key)) next.delete(key)
+      else next.add(key)
+      return next
+    })
+  }
+
+  const selectAllVisible = () => {
+    const keys = visibleItems.map(i => `${i.sourceId}\u0000${i.bookUrl}`)
+    setSelectedKeys(new Set(keys))
+  }
+
+  const deselectAll = () => {
+    setSelectedKeys(new Set())
+  }
+
+  const getSelectedBookKeys = () => {
+    return Array.from(selectedKeys).map(k => {
+      const parts = k.split('\u0000')
+      return { sourceId: parts[0], bookUrl: parts[1] }
+    })
+  }
+
+  const handleBatchMoveGroup = async (targetGroup: string | null) => {
+    const keys = getSelectedBookKeys()
+    if (keys.length === 0) return
+    try {
+      await api.batchBookshelf({
+        action: 'move_group',
+        items: keys,
+        targetGroup: targetGroup || undefined,
+      })
+      toast.success(targetGroup ? `已将 ${keys.length} 本书籍移动至「${targetGroup}」` : `已将 ${keys.length} 本书籍移至「未分组」`)
+      setSelectedKeys(new Set())
+      setBatchMode(false)
+      await load()
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : '批量移动失败')
+    }
+  }
+
+  const handleBatchMarkCompleted = async (completed: boolean) => {
+    const keys = getSelectedBookKeys()
+    if (keys.length === 0) return
+    try {
+      await api.batchBookshelf({
+        action: 'mark_completed',
+        items: keys,
+        completed,
+      })
+      toast.success(completed ? `已将 ${keys.length} 本书籍标记为已读完` : `已将 ${keys.length} 本书籍恢复为正在阅读`)
+      setSelectedKeys(new Set())
+      await load()
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : '批量更新阅读状态失败')
+    }
+  }
+
+  const handleBatchDelete = async () => {
+    const keys = getSelectedBookKeys()
+    if (keys.length === 0) return
+    if (!confirm(`确定将选中的 ${keys.length} 本书籍移出书架吗？将清除阅读进度与离线缓存。`)) return
+    try {
+      await api.batchBookshelf({
+        action: 'delete',
+        items: keys,
+      })
+      toast.info(`已移出 ${keys.length} 本书籍`)
+      setSelectedKeys(new Set())
+      setBatchMode(false)
+      await load()
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : '批量移出失败')
+    }
+  }
 
   return (
     <main
@@ -1644,7 +2064,7 @@ function ShelfPage({ onOpen }: { onOpen: (item: BookshelfItem) => void }) {
         }
       }}
     >
-      <header className="page-title">
+      <header className="page-title shelf-page-header">
         <div>
           <span className="section-kicker">我的阅读</span>
           <h1>书架</h1>
@@ -1675,16 +2095,76 @@ function ShelfPage({ onOpen }: { onOpen: (item: BookshelfItem) => void }) {
             <span>{uploading ? '导入中...' : '导入本地'}</span>
           </button>
           <small>{visibleItems.length} 本书</small>
+          <button
+            type="button"
+            className={`shelf-batch-toggle-btn ${batchMode ? 'active' : ''}`}
+            onClick={() => {
+              if (batchMode) {
+                setBatchMode(false)
+                setSelectedKeys(new Set())
+              } else {
+                setBatchMode(true)
+              }
+            }}
+          >
+            <Icon name={batchMode ? 'check' : 'list'} />
+            {batchMode ? '完成' : '批量管理'}
+          </button>
         </div>
       </header>
 
-      <nav className="shelf-tabs" aria-label="书架分组">
-        {([['reading', '正在阅读'], ['completed', '已读完'], ['all', '全部']] as const).map(([key, label]) => (
-          <button key={key} className={view === key ? 'active' : ''} onClick={() => setView(key)}>
-            {label}<small>{counts[key]}</small>
+      {/* Primary Group Tabs */}
+      <nav className="shelf-tabs shelf-group-tabs" aria-label="书架分组">
+        <button
+          type="button"
+          className={selectedGroup === 'all' ? 'active' : ''}
+          onClick={() => setSelectedGroup('all')}
+        >
+          全部<small>{groupCounts.all}</small>
+        </button>
+        <button
+          type="button"
+          className={selectedGroup === '__ungrouped__' ? 'active' : ''}
+          onClick={() => setSelectedGroup('__ungrouped__')}
+        >
+          未分组<small>{groupCounts.ungrouped}</small>
+        </button>
+        {groups.map(g => (
+          <button
+            key={g.id}
+            type="button"
+            className={selectedGroup === g.name ? 'active' : ''}
+            onClick={() => setSelectedGroup(g.name)}
+          >
+            {g.name}<small>{g.bookCount}</small>
           </button>
         ))}
+        <button
+          type="button"
+          className="shelf-manage-group-btn"
+          onClick={() => setManagingGroups(true)}
+          title="管理与创建分组"
+        >
+          <Icon name="settings" />
+          <span>管理分组</span>
+        </button>
       </nav>
+
+      {/* Secondary Status Filter Pills */}
+      <div className="shelf-subfilter-bar">
+        <div className="shelf-status-pills">
+          {([['all', '全部'], ['reading', '正在阅读'], ['completed', '已读完']] as const).map(([key, label]) => (
+            <button
+              key={key}
+              type="button"
+              className={`shelf-pill-btn ${statusFilter === key ? 'active' : ''}`}
+              onClick={() => setStatusFilter(key)}
+            >
+              {label} ({statusCounts[key]})
+            </button>
+          ))}
+        </div>
+      </div>
 
       {message && <p className="form-error">{message}</p>}
 
@@ -1707,7 +2187,7 @@ function ShelfPage({ onOpen }: { onOpen: (item: BookshelfItem) => void }) {
       ) : visibleItems.length === 0 ? (
         <section className="shelf-empty">
           <Icon name="book" />
-          <h2>这个分组还是空的</h2>
+          <h2>当前分组与筛选下没有书籍</h2>
         </section>
       ) : (
         <section className="shelf-grid">
@@ -1716,17 +2196,28 @@ function ShelfPage({ onOpen }: { onOpen: (item: BookshelfItem) => void }) {
             const isCaching = item.cacheState === 'caching'
             const isLocal = item.sourceId === 'loc_book'
             const percent = Math.min(100, Math.round((item.cachedChapters / Math.max(1, item.totalChapters || 1)) * 100))
+            const itemKey = `${item.sourceId}\u0000${item.bookUrl}`
+            const isSelected = selectedKeys.has(itemKey)
 
             return (
-              <article key={`${item.sourceId}-${item.bookUrl}`} className="shelf-card">
+              <article
+                key={itemKey}
+                className={`shelf-card ${batchMode ? 'batch-selectable' : ''} ${isSelected ? 'selected' : ''}`}
+                onClick={batchMode ? () => toggleSelectKey(itemKey) : undefined}
+              >
                 {/* Upper Half: Large Cover directly opens reader */}
                 <div
                   className="shelf-card-cover"
-                  onClick={() => onOpen(item)}
+                  onClick={batchMode ? (e) => { e.stopPropagation(); toggleSelectKey(itemKey) } : () => onOpen(item)}
                   role="button"
                   tabIndex={0}
-                  aria-label={`继续阅读 ${item.name}`}
+                  aria-label={batchMode ? `选择 ${item.name}` : `继续阅读 ${item.name}`}
                 >
+                  {batchMode && (
+                    <div className={`shelf-card-checkbox ${isSelected ? 'checked' : ''}`}>
+                      {isSelected && <Icon name="check" />}
+                    </div>
+                  )}
                   {item.coverKey ? <img src={api.cover(item.coverKey)} alt="" /> : <span className="cover-fallback">{item.name.slice(0, 1)}</span>}
                   {isLocal && <span className="shelf-card-tag-local">本地</span>}
                   {badge && <span className={`shelf-card-badge ${item.cacheState}`}>{badge}</span>}
@@ -1737,41 +2228,120 @@ function ShelfPage({ onOpen }: { onOpen: (item: BookshelfItem) => void }) {
                   )}
                 </div>
 
-                {/* Middle: Title, Author, Reading Progress */}
+                {/* Middle: Title, Author, Reading Progress, Group Tag */}
                 <div className="shelf-card-info">
-                  <h3 className="shelf-card-name" onClick={() => onOpen(item)} title={item.name}>{item.name}</h3>
+                  <h3
+                    className="shelf-card-name"
+                    onClick={batchMode ? (e) => { e.stopPropagation(); toggleSelectKey(itemKey) } : () => onOpen(item)}
+                    title={item.name}
+                  >
+                    {item.name}
+                  </h3>
                   <p className="shelf-card-author">{item.author || '未知作者'}</p>
                   <div className="shelf-card-meta">
                     <span className={`shelf-meta-chapter ${item.completed ? 'completed' : ''}`}>
                       {item.completed ? '已读完' : item.chapterIndex === undefined ? '刚加入书架' : `第 ${item.chapterIndex + 1} 章`}
                     </span>
+                    {item.groupName && (
+                      <span className="shelf-card-group-tag" title={`分组：${item.groupName}`}>
+                        {item.groupName}
+                      </span>
+                    )}
                   </div>
                 </div>
 
                 {/* Bottom Action Section: Clear Read Button & Manage Button */}
-                <div className="shelf-card-footer">
-                  <button className="shelf-btn-read" onClick={() => onOpen(item)}>
-                    {item.completed ? '重新阅读' : '继续阅读'}
-                  </button>
-                  <button
-                    className="shelf-btn-manage"
-                    onClick={() => setManagingItem(item)}
-                    aria-label={`管理 ${item.name}`}
-                    title="书籍管理"
-                  >
-                    <Icon name="more" />
-                  </button>
-                </div>
+                {!batchMode && (
+                  <div className="shelf-card-footer">
+                    <button type="button" className="shelf-btn-read" onClick={() => onOpen(item)}>
+                      {item.completed ? '重新阅读' : '继续阅读'}
+                    </button>
+                    <button
+                      type="button"
+                      className="shelf-btn-manage"
+                      onClick={() => setManagingItem(item)}
+                      aria-label={`管理 ${item.name}`}
+                      title="书籍管理"
+                    >
+                      <Icon name="more" />
+                    </button>
+                  </div>
+                )}
               </article>
             )
           })}
         </section>
       )}
 
+      {/* Floating Batch Action Toolbar */}
+      {batchMode && (
+        <aside className="shelf-batch-bar" role="toolbar" aria-label="批量操作栏">
+          <div className="shelf-batch-info">
+            <strong>已选 {selectedKeys.size} 本</strong>
+            <button
+              type="button"
+              className="subtle-button"
+              onClick={selectedKeys.size === visibleItems.length ? deselectAll : selectAllVisible}
+            >
+              {selectedKeys.size === visibleItems.length && visibleItems.length > 0 ? '取消全选' : '全选当前'}
+            </button>
+          </div>
+          <div className="shelf-batch-buttons">
+            <button
+              type="button"
+              className="shelf-batch-action-btn"
+              disabled={selectedKeys.size === 0}
+              onClick={() => setBatchMoving(true)}
+            >
+              <Icon name="bookmark" />
+              <span>移动分组</span>
+            </button>
+            <button
+              type="button"
+              className="shelf-batch-action-btn"
+              disabled={selectedKeys.size === 0}
+              onClick={() => void handleBatchMarkCompleted(true)}
+            >
+              <Icon name="check" />
+              <span>标为已读</span>
+            </button>
+            <button
+              type="button"
+              className="shelf-batch-action-btn"
+              disabled={selectedKeys.size === 0}
+              onClick={() => void handleBatchMarkCompleted(false)}
+            >
+              <Icon name="refresh" />
+              <span>标为在读</span>
+            </button>
+            <button
+              type="button"
+              className="shelf-batch-action-btn danger"
+              disabled={selectedKeys.size === 0}
+              onClick={() => void handleBatchDelete()}
+            >
+              <Icon name="close" />
+              <span>移出书架</span>
+            </button>
+            <button
+              type="button"
+              className="shelf-batch-action-btn complete-btn"
+              onClick={() => {
+                setBatchMode(false)
+                setSelectedKeys(new Set())
+              }}
+            >
+              完成
+            </button>
+          </div>
+        </aside>
+      )}
+
       {/* Book Management Modal */}
       {managingItem && (
         <BookManageModal
           item={managingItem}
+          groups={groups}
           onClose={() => setManagingItem(null)}
           onSwitchSource={() => {
             const target = managingItem
@@ -1790,6 +2360,7 @@ function ShelfPage({ onOpen }: { onOpen: (item: BookshelfItem) => void }) {
           onUpdateInfo={updated => {
             setItems(values => values.map(v => v.sourceId === updated.sourceId && v.bookUrl === updated.bookUrl ? updated : v))
             setManagingItem(updated)
+            void load()
           }}
           onRemove={() => remove(managingItem)}
         />
@@ -1806,6 +2377,25 @@ function ShelfPage({ onOpen }: { onOpen: (item: BookshelfItem) => void }) {
           knownAlternateSources={switchingItem.alternateSources}
           onSwitch={handleSwitchShelfSource}
           onClose={() => setSwitchingItem(null)}
+        />
+      )}
+
+      {/* Group Management Modal */}
+      {managingGroups && (
+        <GroupManageModal
+          groups={groups}
+          onClose={() => setManagingGroups(false)}
+          onGroupsChanged={load}
+        />
+      )}
+
+      {/* Batch Move Group Modal */}
+      {batchMoving && (
+        <BatchMoveGroupModal
+          groups={groups}
+          selectedCount={selectedKeys.size}
+          onClose={() => setBatchMoving(false)}
+          onSelectGroup={handleBatchMoveGroup}
         />
       )}
     </main>

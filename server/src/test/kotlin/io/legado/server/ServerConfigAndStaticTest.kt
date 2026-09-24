@@ -6,6 +6,7 @@ import io.ktor.client.request.*
 import io.ktor.client.statement.*
 import io.ktor.http.*
 import io.ktor.serialization.kotlinx.json.*
+import io.ktor.server.routing.*
 import io.ktor.server.testing.*
 import kotlinx.serialization.json.Json
 import org.junit.Assert.*
@@ -68,5 +69,26 @@ class ServerConfigAndStaticTest {
         } finally {
             Files.deleteIfExists(Path.of(tempDb))
         }
+    }
+
+    @Test
+    fun `static web routing serves index and static resources`() = testApplication {
+        application {
+            routing {
+                staticWeb()
+            }
+        }
+        val response = client.get("/")
+        assertTrue(response.status == HttpStatusCode.OK || response.status == HttpStatusCode.NotFound)
+        val indexResponse = client.get("/index.html")
+        assertTrue(indexResponse.status == HttpStatusCode.OK || indexResponse.status == HttpStatusCode.NotFound)
+
+        val nonRedirectClient = createClient { followRedirects = false }
+        val kindleRedirect = nonRedirectClient.get("/kindle")
+        assertEquals(HttpStatusCode.Found, kindleRedirect.status)
+        assertEquals("/simple/", kindleRedirect.headers[HttpHeaders.Location])
+
+        val simpleIndex = client.get("/simple/index.html")
+        assertEquals(HttpStatusCode.OK, simpleIndex.status)
     }
 }

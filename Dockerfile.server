@@ -15,10 +15,11 @@ FROM ${DOCKER_REGISTRY}gradle:8.13-jdk21 AS server-build
 WORKDIR /src
 COPY gradle/ gradle/
 COPY gradle/libs.versions.toml gradle/libs.versions.toml
+COPY build.gradle settings.gradle ./
 COPY server/ server/
-COPY --from=web-build /src/web/dist/ server/src/main/resources/static/
-RUN --mount=type=cache,target=/home/gradle/.gradle gradle -p server clean installDist --no-daemon --no-build-cache \
-    && jar uf server/build/install/legado-server/lib/legado-server-0.1.0.jar -C server/src/main/resources static
+COPY web/ web/
+COPY --from=web-build /src/web/dist/ web/dist/
+RUN --mount=type=cache,target=/home/gradle/.gradle gradle :server:installDist --no-daemon --no-build-cache
 
 FROM ${DOCKER_REGISTRY}eclipse-temurin:17-jre-jammy
 RUN apt-get update && apt-get install -y --no-install-recommends gosu && rm -rf /var/lib/apt/lists/* \

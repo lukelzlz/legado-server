@@ -80,7 +80,9 @@ export function PwaManager() {
     // 2. Service Worker registration and update detection
     let checkForUpdate: (() => void) | null = null
     let updateTimer = 0
-    if ('serviceWorker' in navigator && process.env.NODE_ENV !== 'test') {
+    const isTestEnv = typeof (globalThis as { process?: { env?: { NODE_ENV?: string } } }).process?.env?.NODE_ENV !== 'undefined' &&
+      (globalThis as { process?: { env?: { NODE_ENV?: string } } }).process?.env?.NODE_ENV === 'test'
+    if ('serviceWorker' in navigator && !isTestEnv) {
       navigator.serviceWorker.register('/sw.js', { scope: '/' }).then(reg => {
         registrationRef.current = reg
         setRegistration(reg)

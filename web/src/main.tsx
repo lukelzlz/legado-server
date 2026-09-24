@@ -1256,8 +1256,8 @@ function BookInfoEditModal({
             {/* Cover Preview & Options */}
             <div className="edit-cover-section">
               <div className="edit-cover-preview-box">
-                {previewSrc ? (
-                  <img src={previewSrc} alt="封面预览" referrerPolicy="no-referrer" />
+                {previewSrc && sanitizeImageUrl(previewSrc) ? (
+                  <img src={sanitizeImageUrl(previewSrc)!} alt="封面预览" referrerPolicy="no-referrer" />
                 ) : (
                   <div className="edit-cover-fallback">
                     <span>{name.trim().slice(0, 1) || '书'}</span>
@@ -1314,7 +1314,7 @@ function BookInfoEditModal({
                             onClick={() => setCoverUrl(c.coverUrl)}
                             title={`使用来自【${c.sourceId}】的封面`}
                           >
-                            <img src={c.coverUrl} alt={c.sourceId} referrerPolicy="no-referrer" />
+                            <img src={sanitizeImageUrl(c.coverUrl) || c.coverUrl} alt={c.sourceId} referrerPolicy="no-referrer" />
                             <small>{c.sourceId}</small>
                           </button>
                         )

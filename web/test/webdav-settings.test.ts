@@ -54,8 +54,10 @@ test('WebDavSettingsPage - header exposes a WebDAV navigation entry', () => {
 test('WebDavSettingsPage - webdav client guides are derived from the current origin', () => {
   const guides = webDavClientGuides('https://reader.example.com', '/webdav')
   assert.equal(guides.length, 4)
-  const url = 'https://reader.example.com/webdav'
-  assert.ok(guides.every(guide => guide.command.includes(url)), 'every guide should reference the endpoint')
+  assert.equal(guides[0].command, 'https://reader.example.com/webdav')
+  assert.equal(guides[1].command, 'https://reader.example.com/webdav')
+  assert.ok(guides[2].command.startsWith('rclone config create legado webdav url=https://reader.example.com/webdav'))
+  assert.equal(guides[3].command, 'https://reader.example.com/webdav')
   const rclone = guides.find(guide => guide.id === 'rclone')
   assert.ok(rclone, 'rclone guide should exist')
   assert.ok(rclone.command.includes('rclone obscure'), 'rclone guide should mask the password')

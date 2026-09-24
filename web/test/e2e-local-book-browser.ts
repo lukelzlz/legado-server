@@ -144,7 +144,7 @@ async function runBrowserVerification() {
     // Step 7: Create and upload sample EPUB book
     console.log('7️⃣ Creating and uploading sample EPUB book...')
     const epubPath = path.join(os.tmpdir(), '星海领航者.epub')
-    const { execSync } = await import('node:child_process')
+    const { execFileSync } = await import('node:child_process')
     const pythonScript = `
 import zipfile, io
 
@@ -182,7 +182,7 @@ with zipfile.ZipFile('${epubPath}', 'w', zipfile.ZIP_DEFLATED) as z:
     z.writestr('OEBPS/ch1.xhtml', '<html><body><h2>第一章 启航深空</h2><p>群星闪烁，曲率引擎轰鸣启动。</p></body></html>')
     z.writestr('OEBPS/ch2.xhtml', '<html><body><h2>第二章 折跃奇点</h2><p>穿越时空走廊，抵达未知的星系。</p></body></html>')
 `
-    execSync(`python3 -c "${pythonScript.replace(/"/g, '\\"')}"`)
+    execFileSync('python3', ['-c', pythonScript])
 
     const fileInput2 = await page.waitForSelector('input[type="file"]', { timeout: 5000 })
     assert.ok(fileInput2, 'File input found for EPUB')

@@ -129,11 +129,9 @@ AI 与人类协作时必须明确当前达到的完成度阶梯，严禁混淆�
 - **[工具/DSH] 历史会话挖掘（`/doc-init` 专用）**：DSH 会话记录位于 `%APPDATA%\dsh-desktop\harness\sessions\<工作区slug>\<session-id>\session.jsonl.zstd`，格式为**多帧 zstd**（一帧一条 JSONL）：`zstdDecompressSync` 只能解出第一帧（会话头），必须按魔数 `28 B5 2F FD` + 帧头/块头扫描帧边界后逐帧解压（Node 流式 zstd 解压器不支持拼接帧，会报 `Unknown frame descriptor`）；**切勿把会话内容交给 PowerShell 管道格式化（会 OOM）**，应让 Node 脚本写报告文件后再读。记录类型：`user/message`（`data.content[].text`）、`assistant/message`（`data.message.content[]`，内含 `tool-call` 项）、`tool/call`（`data.name` + `data.arguments` JSON 字符串）、`tool/result`、`todo/write`（`data.todos` 直接揭示工作范围）、`session/title`。
 - **[环境/JDK] 本机 `JAVA_HOME` 可能指向失效目录，Gradle 会直接报错而非回退 PATH**：实测（2026-09-21）`JAVA_HOME` 残留为 `C:\Program Files\Eclipse Adoptium\jdk-25.0.4.101-hotspot\`，而该目录内**没有 `bin\java.exe`**（环境被卸载或半安装），Gradle 报 `ERROR: JAVA_HOME is set to an invalid directory` 并终止（连 `compileKotlin` 都到不了），而 `java -version` 走 PATH 仍是正常的 Corretto 21。**解法**：每次构建前显式设 `$env:JAVA_HOME="C:\Program Files\Amazon Corretto\jdk21.0.12_9"`；排查时用 `Test-Path (Join-Path $env:JAVA_HOME 'bin\java.exe')` 验证，**不要因为 `Test-Path $env:JAVA_HOME` 为真就认为它可用**。
 - **[Git] 本机 git 传输到 github.com 会被重置，但 REST API 稳定可用（2026-09-21 复现并更新旧结论）**：`git push` / `git ls-remote` / `curl` 打 `github.com/.../*.git/info/refs` 均失败（`Empty reply from server`、`Recv failure: Connection was reset`、`Failed to connect to github.com:443 ... Could not connect to server`），连试 4 次无一成功、也非代理配置问题（无 `http.proxy`/系统代理）；而 `https://api.github.com` 连续 3 次调用全部成功。**注意此现象是间歇性的**：同一次会话里曾有一次 `git ls-remote` 意外成功，因此**单次成功不足以证明通道已恢复，单次失败也不宜立刻放弃**。另：无 token 时 `/user` 返回 **401**，故 API 侧只能读公开仓库，**推送与建 PR 仍必须有凭据**。结论：远端信息优先走 REST API；推送失败时不要拿本地旧 ref 当「上游没变化」的依据。
-=======
 - **[容器/云原生] 阿里云计算巢与 ECI 部署**：ROS 模板必须包含完整 VPC/安全组声明、ECI 容器组规格与数据持久化挂载；国内推荐使用阿里云个人镜像加速源。
 - **[书架/分组与批量管理] 分组删除软解绑、预检重名与批量事务原子性**：删除 `book_group` 记录前必须在同一事务中先执行 `UPDATE book_shelf SET group_name=null WHERE group_name=? COLLATE NOCASE`，严禁级联删除组内图书与阅读进度；新建与重命名分组须显式执行 `SELECT count(*) ... COLLATE NOCASE` 预校验拦截重名并返回友好提示；批量改组/标记/删除须在单一事务中执行。
 - **[构建/静态资源] Gradle 自动触发 buildWeb 与无条件打包 web/dist**：本地构建 JAR 时 Gradle 必须通过 `buildWeb` 任务自动执行 `npm run build`，且 `processResources` 须无条件引入 `web/dist`，严禁使用配置期 `if (file(...).exists())` 导致无预编译产物时打出无静态资源的空 JAR（引发 404 Not Found）；严禁在 `server/src/main/resources/` 遗留陈旧静态资源；本地未传 `LEGADO_DATA_DIR` 且 `/data` 不可写时安全降级至 `./data`。
->>>>>>> master
 
 ---
 
@@ -150,7 +148,6 @@ AI 与人类协作时必须明确当前达到的完成度阶梯，严禁混淆�
 | PROPOSAL-006 | 现代化 TTS 朗读引擎与沉浸式听书体验 | [`docs/proposals/PROPOSAL-006-tts-engine-and-immersive-reading-experience.md`](file:///Users/zhangran/Documents/antigravity/joyful-galileo/docs/proposals/PROPOSAL-006-tts-engine-and-immersive-reading-experience.md) | Implemented |
 | PROPOSAL-007 | 服务端会话级连续 TTS 音频流与移动端后台稳定播放 | [`docs/proposals/PROPOSAL-007-server-session-tts-stream-and-mobile-background-playback.md`](file:///Users/zhangran/Documents/antigravity/joyful-galileo/docs/proposals/PROPOSAL-007-server-session-tts-stream-and-mobile-background-playback.md) | Implemented |
 | PROPOSAL-008 | TTS 连续播放稳定性、相对时钟锚定与缓冲弹性架构 | [`docs/proposals/PROPOSAL-008-tts-continuous-playback-stability-and-drift-compensation.md`](file:///Users/zhangran/Documents/antigravity/joyful-galileo/docs/proposals/PROPOSAL-008-tts-continuous-playback-stability-and-drift-compensation.md) | Implemented |
-<<<<<<< HEAD
 | PROPOSAL-009 | TTS 播放管线穿透、反向代理防缓冲与首帧静音垫底优化 | [`docs/proposals/PROPOSAL-009-tts-stream-buffering-proxy-and-gesture-unlock.md`](file:///Users/zhangran/Documents/antigravity/joyful-galileo/docs/proposals/PROPOSAL-009-tts-stream-buffering-proxy-and-gesture-unlock.md) | Accepted |
 | PROPOSAL-010 | 替换净化规则引擎与社区规则库导入体系 | [`docs/proposals/PROPOSAL-010-replace-rules-engine-and-community-purification.md`](file:///Users/zhangran/Documents/antigravity/joyful-galileo/docs/proposals/PROPOSAL-010-replace-rules-engine-and-community-purification.md) | Accepted |
 | PROPOSAL-011 | 替换净化规则升级为一级独立页面与阅读器设置抽屉集成 | [`docs/proposals/PROPOSAL-011-first-class-replace-rules-page-and-reader-settings-integration.md`](file:///Users/zhangran/Documents/antigravity/joyful-galileo/docs/proposals/PROPOSAL-011-first-class-replace-rules-page-and-reader-settings-integration.md) | Accepted |
@@ -160,10 +157,8 @@ AI 与人类协作时必须明确当前达到的完成度阶梯，严禁混淆�
 | PROPOSAL-015 | 内置 WebDAV 服务端与数据目录 webdav 存储区（含 Web 端「文件」设置页面） | [`docs/proposals/PROPOSAL-015-webdav-storage-server.md`](file:///root/legado-server/docs/proposals/PROPOSAL-015-webdav-storage-server.md) | Tested & Deployed |
 | PROPOSAL-016 | 本地图书导入与无缝阅读（TXT/EPUB 解析、智能分章与书架集成） | [`docs/proposals/PROPOSAL-016-local-book-import-txt-epub.md`](file:///root/legado-server/docs/proposals/PROPOSAL-016-local-book-import-txt-epub.md) | Tested |
 | PROPOSAL-017 | 移植轻阅读书源规则解析/内容管线，修复聚合书源（大灰狼）正文提取为空 | [`docs/proposals/PROPOSAL-017-port-qingyue-rule-engine-and-fix-aggregate-content.md`](PROPOSAL-017-port-qingyue-rule-engine-and-fix-aggregate-content.md) | Implemented |
-=======
-| PROPOSAL-009 | 书架分组管理与批量操作机制 | [`docs/proposals/PROPOSAL-009-bookshelf-grouping-and-batch-management.md`](file:///Users/zhangran/Documents/antigravity/joyful-galileo/docs/proposals/PROPOSAL-009-bookshelf-grouping-and-batch-management.md) | Accepted |
-| PROPOSAL-010 | 支持 Kindle / 墨水屏版 Web UI (Simple-Web) 直连标准 REST API | [`docs/proposals/PROPOSAL-010-kindle-simple-web-ui.md`](file:///Users/zhangran/Documents/antigravity/joyful-galileo/docs/proposals/PROPOSAL-010-kindle-simple-web-ui.md) | Implemented |
->>>>>>> master
+| PROPOSAL-018 | 书架分组管理与批量操作机制 | [`docs/proposals/PROPOSAL-009-bookshelf-grouping-and-batch-management.md`](file:///Users/zhangran/Documents/antigravity/joyful-galileo/docs/proposals/PROPOSAL-009-bookshelf-grouping-and-batch-management.md) | Accepted |
+| PROPOSAL-019 | 支持 Kindle / 墨水屏版 Web UI (Simple-Web) 直连标准 REST API | [`docs/proposals/PROPOSAL-010-kindle-simple-web-ui.md`](file:///Users/zhangran/Documents/antigravity/joyful-galileo/docs/proposals/PROPOSAL-010-kindle-simple-web-ui.md) | Implemented |
 
 ### 架构决策记录 (ADR)
 | 编号 | 决策标题 | 关联文档 | 状态 |
@@ -176,7 +171,6 @@ AI 与人类协作时必须明确当前达到的完成度阶梯，严禁混淆�
 | ADR-006 | 双模式 TTS 引擎、分片预缓冲与视口高亮联动架构 | [`docs/decisions/ADR-006-dual-tts-engine-and-audio-streaming-architecture.md`](file:///Users/zhangran/Documents/antigravity/joyful-galileo/docs/decisions/ADR-006-dual-tts-engine-and-audio-streaming-architecture.md) | Accepted |
 | ADR-007 | 服务端会话级连续 MP3 音频流与独立进度事件通道 | [`docs/decisions/ADR-007-session-scoped-continuous-tts-audio-stream.md`](file:///Users/zhangran/Documents/antigravity/joyful-galileo/docs/decisions/ADR-007-session-scoped-continuous-tts-audio-stream.md) | Accepted |
 | ADR-008 | TTS 单句相对时钟锚定、前瞻扩容与停滞看门狗架构 | [`docs/decisions/ADR-008-tts-relative-clock-and-buffer-resilience.md`](file:///Users/zhangran/Documents/antigravity/joyful-galileo/docs/decisions/ADR-008-tts-relative-clock-and-buffer-resilience.md) | Accepted |
-<<<<<<< HEAD
 | ADR-009 | TTS 音频流首帧静音垫底与反向代理穿透架构 | [`docs/decisions/ADR-009-tts-stream-resilience-and-zero-latency-preamble.md`](file:///Users/zhangran/Documents/antigravity/joyful-galileo/docs/decisions/ADR-009-tts-stream-resilience-and-zero-latency-preamble.md) | Accepted |
 | ADR-010 | 替换净化执行管道选型、作用域匹配与沙箱安全 | [`docs/decisions/ADR-010-replace-rules-pipeline-and-scope-matching.md`](file:///Users/zhangran/Documents/antigravity/joyful-galileo/docs/decisions/ADR-010-replace-rules-pipeline-and-scope-matching.md) | Accepted |
 | ADR-011 | 替换规则升级为主导航一级页面与阅读器设置抽屉模块化收敛 | [`docs/decisions/ADR-011-first-class-replace-rules-navigation-and-reader-settings.md`](file:///Users/zhangran/Documents/antigravity/joyful-galileo/docs/decisions/ADR-011-first-class-replace-rules-navigation-and-reader-settings.md) | Accepted |
@@ -186,10 +180,8 @@ AI 与人类协作时必须明确当前达到的完成度阶梯，严禁混淆�
 | ADR-015 | 进程内 WebDAV 服务端选型、Basic 鉴权与最小 Class 2 锁实现 | [`docs/decisions/ADR-015-webdav-server-class2-minimal.md`](file:///root/legado-server/docs/decisions/ADR-015-webdav-server-class2-minimal.md) | Accepted |
 | ADR-016 | 本地图书（TXT/EPUB）解析引擎、虚拟书源与解析入库一体化架构 | [`docs/decisions/ADR-016-local-book-parsing-and-storage-architecture.md`](file:///root/legado-server/docs/decisions/ADR-016-local-book-parsing-and-storage-architecture.md) | Accepted |
 | ADR-017 | 保留自主规则引擎，以「语义补齐 + 切分器移植」承接轻阅读书源管线 | [`docs/decisions/ADR-017-retain-self-engine-and-port-semantics.md`](ADR-017-retain-self-engine-and-port-semantics.md) | Accepted |
-=======
-| ADR-009 | 书架分组存储模型、状态联动与原子批量操作设计 | [`docs/decisions/ADR-009-bookshelf-grouping-schema-and-batch-mutation.md`](file:///Users/zhangran/Documents/antigravity/joyful-galileo/docs/decisions/ADR-009-bookshelf-grouping-schema-and-batch-mutation.md) | Accepted |
-| ADR-010 | Simple-Web 极简前端直接适配标准 REST API 与静态资源内置架构 | [`docs/decisions/ADR-010-kindle-simple-web-and-legacy-api-compatibility.md`](file:///Users/zhangran/Documents/antigravity/joyful-galileo/docs/decisions/ADR-010-kindle-simple-web-and-legacy-api-compatibility.md) | Accepted |
->>>>>>> master
+| ADR-018 | 书架分组存储模型、状态联动与原子批量操作设计 | [`docs/decisions/ADR-009-bookshelf-grouping-schema-and-batch-mutation.md`](file:///Users/zhangran/Documents/antigravity/joyful-galileo/docs/decisions/ADR-009-bookshelf-grouping-schema-and-batch-mutation.md) | Accepted |
+| ADR-019 | Simple-Web 极简前端直接适配标准 REST API 与静态资源内置架构 | [`docs/decisions/ADR-010-kindle-simple-web-and-legacy-api-compatibility.md`](file:///Users/zhangran/Documents/antigravity/joyful-galileo/docs/decisions/ADR-010-kindle-simple-web-and-legacy-api-compatibility.md) | Accepted |
 
 ### 工作记忆与历史推演归档 (Sessions Chronicle)
 | 日期 / ID | 类型 | 标题 / 议题 | 关联文档 | 状态 |
@@ -241,6 +233,7 @@ AI 与人类协作时必须明确当前达到的完成度阶梯，严禁混淆�
 | 2026-09-20 | Feat | WebDAV「文件」页支持导入 Legado 备份包（书源/替换规则/书架/阅读进度）、纯内存流式解析与防回退守卫 (PR #6) | [`docs/sessions/SESSION-018-webdav-legado-backup-import.md`](file:///root/legado-server/docs/sessions/SESSION-018-webdav-legado-backup-import.md) | Accepted & Pushed |
 | 2026-09-20 | Fix | 修复聚合书源（大灰狼）正文为空 **两处根因**：① jsLib 与规则脚本分离求值、按规则脚本自身顶层 `return` 决定 IIFE 包裹、补全值语义恢复、`lastError` 成功即清空；② `cleanContent()` 删 `<div>` 会把「整体包一层 div」的正文删光，改为清洗为空时退化为只剥标签。新增 `JsSandboxCompletionValueTest`（19 用例） | [`docs/proposals/PROPOSAL-017-port-qingyue-rule-engine-and-fix-aggregate-content.md`](docs/proposals/PROPOSAL-017-port-qingyue-rule-engine-and-fix-aggregate-content.md) · [`docs/decisions/ADR-017-retain-self-engine-and-port-semantics.md`](docs/decisions/ADR-017-retain-self-engine-and-port-semantics.md) · [`docs/sessions/SESSION-019-dagou-content-root-cause.md`](docs/sessions/SESSION-019-dagou-content-root-cause.md) · [`docs/acceptance/ACCEPT-017-aggregate-content-fix.md`](docs/acceptance/ACCEPT-017-aggregate-content-fix.md) | Accepted & Pushed |
 | 2026-09-22 | Docs | 根据最新 Git Commit 全面同步更新 README.md（增补本地书籍导入、Legado备份还原、WebDAV服务、Edge-TTS音频流、PWA脱机阅读、替换规则等）并独立生成全量英文版 README_EN.md | - | Accepted & Pushed |
+| 2026-09-24 | Quickfix | 修复 GitHub CodeQL 扫描 3 处告警（字符串转义、URL子串检查与封面图XSS过滤） | - | Accepted & Pushed |
 
 ---
 

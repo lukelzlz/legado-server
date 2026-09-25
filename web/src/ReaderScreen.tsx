@@ -1557,11 +1557,10 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
 
     {/* Floating Mobile Bottom Nav */}
     <nav className="mobile-reader-nav">
-      <button onClick={() => setActiveDrawer('toc')}><Icon name="list" /><span>目录</span></button>
-      <button onClick={() => setShowSourceSwitch(true)}><Icon name="sliders" /><span>换源</span></button>
-      <button onClick={toggleTts}><Icon name={ttsActive && ttsPlayState === 'playing' ? 'pause' : 'volume2'} /><span>{ttsActive ? (ttsPlayState === 'playing' ? '暂停' : '继续') : '朗读'}</span></button>
-      <button onClick={() => setActiveDrawer('settings')}><span className="aa">Aa</span><span>设置</span></button>
-      <button onClick={() => onSettingsChange({ ...settings, theme: settings.theme === 'dark' ? 'light' : 'dark' })}><Icon name="moon" /><span>夜间</span></button>
+      <button type="button" onClick={() => setActiveDrawer('toc')}><Icon name="list" /><span>目录</span></button>
+      <button type="button" onClick={() => setShowSourceSwitch(true)}><Icon name="sliders" /><span>换源</span></button>
+      <button type="button" onClick={toggleTts}><Icon name={ttsActive && ttsPlayState === 'playing' ? 'pause' : 'volume2'} /><span>{ttsActive ? (ttsPlayState === 'playing' ? '暂停' : '继续') : '朗读'}</span></button>
+      <button type="button" onClick={() => setActiveDrawer('settings')}><span className="aa">Aa</span><span>设置</span></button>
     </nav>
 
     {/* In-reader Source Switch Modal */}

@@ -185,30 +185,6 @@ export function AppHeader({
               <span>本地离线缓存管理</span>
             </button>
           )}
-          <button
-            type="button"
-            className="menu-item-btn"
-            role="menuitem"
-            onClick={() => {
-              setMenuOpen(false)
-              onNavigate('rules')
-            }}
-          >
-            <Icon name="edit" />
-            <span>替换净化规则</span>
-          </button>
-          <button
-            type="button"
-            className="menu-item-btn"
-            role="menuitem"
-            onClick={() => {
-              setMenuOpen(false)
-              onNavigate('webdav')
-            }}
-          >
-            <Icon name="folder" />
-            <span>WebDAV 文件服务</span>
-          </button>
           <a
             href="/simple/"
             className="menu-link-btn"

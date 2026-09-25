@@ -1,4 +1,15 @@
 :root {
+  --canvas: #f8f9f7;
+  --surface: #ffffff;
+  --surface-muted: #f6f8f5;
+  --ink: #202522;
+  --muted: #7e8780;
+  --line: #e7eae6;
+  --accent: #247a58;
+  --accent-soft: #eaf4ee;
+  --accent-ink: #176145;
+  --danger: #bf4a43;
+  --shadow: 0 12px 30px rgba(24, 36, 28, .08);
   --safe-top: env(safe-area-inset-top, 0px);
   --safe-bottom: env(safe-area-inset-bottom, 0px);
   --safe-left: env(safe-area-inset-left, 0px);
@@ -1045,7 +1056,10 @@ mark.search-highlight { background: var(--accent-soft); color: var(--accent); fo
     overflow-y: auto;
     border-radius: 18px 18px 0 0;
     padding: 20px 18px calc(20px + var(--safe-bottom));
-    box-shadow: 0 -8px 36px rgba(0, 0, 0, 0.22);
+    box-shadow: 0 -8px 36px rgba(0, 0, 0, 0.35);
+    background: var(--surface);
+    color: var(--ink);
+    border-top: 1px solid var(--line);
     border-left: none;
     border-right: none;
     border-bottom: none;
@@ -1067,6 +1081,10 @@ mark.search-highlight { background: var(--accent-soft); color: var(--accent); fo
     min-height: 46px;
     padding: 0 12px;
     font-size: 14px;
+    background: var(--surface-muted);
+    color: var(--ink);
+    border: 1px solid var(--line);
+    border-radius: 8px;
   }
   .menu-logout-btn {
     min-height: 46px;

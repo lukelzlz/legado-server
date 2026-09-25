@@ -131,6 +131,7 @@ AI 与人类协作时必须明确当前达到的完成度阶梯，严禁混淆�
 - **[书架/分组与批量管理] 分组删除软解绑、预检重名与批量事务原子性**：删除 `book_group` 记录前必须在同一事务中先执行 `UPDATE book_shelf SET group_name=null WHERE group_name=? COLLATE NOCASE`，严禁级联删除组内图书与阅读进度；新建与重命名分组须显式执行 `SELECT count(*) ... COLLATE NOCASE` 预校验拦截重名并返回友好提示；批量改组/标记/删除须在单一事务中执行。
 - **[构建/静态资源] Gradle 自动触发 buildWeb 与无条件打包 web/dist**：本地构建 JAR 时 Gradle 必须通过 `buildWeb` 任务自动执行 `npm run build`，且 `processResources` 须无条件引入 `web/dist`，严禁使用配置期 `if (file(...).exists())` 导致无预编译产物时打出无静态资源的空 JAR（引发 404 Not Found）；`buildWeb` 任务必须先检查 `web/node_modules` 是否存在，若缺失但存在预编译 `web/dist`（如 CodeQL autobuild、纯 JVM CI 测试等环境）时优先直接复用 `web/dist`，避免因缺少依赖盲目执行 `npm run build` 导致构建崩溃；严禁在 `server/src/main/resources/` 遗留陈旧静态资源；本地未传 `LEGADO_DATA_DIR` 且 `/data` 不可写时安全降级至 `./data`。
 - **[CSS/包含块] backdrop-filter 会破坏 position: fixed 的视口锚定**：任何放在带 `backdrop-filter` 或 `transform` 容器内的弹窗/抽屉（即便写了 `position: fixed`）都会被局限在该容器内。全局弹层与抽屉必须通过 `createPortal(..., document.body)` 挂载到根节点。
+- **[主题/Portal] createPortal 挂载到 document.body 导致主题 CSS 变量丢失**：使用 `createPortal(..., document.body)` 逃逸包含块时，浮层脱离了带有 `.theme-*` 类名的 `.app-shell` 容器，导致 CSS 变量（`--surface`, `--ink`, `--line` 等）失效回退为透明背景与黑色文本（在夜间模式下表现为透光背景与隐形黑字）。必须通过三层防御：① `:root` 声明全套默认主题回退变量；② `main.tsx` 在 `settings.theme` 变更时同步设置 `document.documentElement` 与 `document.body` 的 `theme-*` class；③ Portal 浮层容器显式绑定 `theme-${settings.theme}`。
 - **[CSS/移动端媒体查询] 严禁在 @media 中简写覆盖根级 safe-area**：移动端媒体查询调整 `height` / `padding` 时，必须保留 `var(--safe-top)` / `var(--safe-bottom)` 计算式，杜绝硬编码 `padding: 0` 冲掉全面屏死区。
 
 ---
@@ -236,6 +237,7 @@ AI 与人类协作时必须明确当前达到的完成度阶梯，严禁混淆�
 | 2026-09-24 | Fix | 修复 iOS PWA 安全区被覆盖、Backdrop-Filter 包含块陷阱与主题色彩隐形 | [`docs/sessions/SESSION-020-ios-pwa-safe-area-and-portal-fix.md`](file:///Users/zhangran/Documents/antigravity/joyful-galileo/docs/sessions/SESSION-020-ios-pwa-safe-area-and-portal-fix.md) | Accepted & Pushed |
 | 2026-09-24 | Quickfix | 修复 GitHub CodeQL 4 处告警（Simple Web 正则特殊字符转义、HTML 注释多字符清洗循环、JS 字符串反斜杠双重转义与备选封面 XSS 守卫） | - | Pushed |
 | 2026-09-25 | Fix | 修复移动端顶栏丢失 safe-top 导致重叠 iOS 状态栏（灵动岛/时间），以及菜单项浅色白字隐形问题 | - | Pushed |
+| 2026-09-25 | Fix | 修复 Portal 浮层脱离 app-shell 导致夜间模式丢失主题变量（透明背景与黑字）、同步全局 HTML/Body 主题类 | - | Pushed |
 
 ---
 

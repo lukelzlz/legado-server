@@ -2429,6 +2429,12 @@ function App() {
 
   useEffect(() => {
     saveReaderSettings(settings)
+    if (typeof document !== 'undefined') {
+      document.documentElement.classList.remove('theme-light', 'theme-paper', 'theme-dark')
+      document.documentElement.classList.add(`theme-${settings.theme}`)
+      document.body.classList.remove('theme-light', 'theme-paper', 'theme-dark')
+      document.body.classList.add(`theme-${settings.theme}`)
+    }
   }, [settings])
 
   useEffect(() => {

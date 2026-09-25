@@ -110,13 +110,13 @@ export function AppHeader({
   const canUseDOM = typeof document !== 'undefined'
 
   const menuDropdownContent = menuOpen ? (
-    <>
+    <div className={`header-menu-portal-wrapper theme-${settings.theme}`}>
       <div
         className="header-menu-backdrop"
         onClick={() => setMenuOpen(false)}
         aria-hidden="true"
       />
-      <div className="header-menu-dropdown" ref={menuContainerRef} role="menu" aria-label="功能菜单">
+      <div className={`header-menu-dropdown theme-${settings.theme}`} ref={menuContainerRef} role="menu" aria-label="功能菜单">
         <div className="menu-header">
           <div className="menu-status-badge">
             <span className="menu-status-dot" />
@@ -234,7 +234,7 @@ export function AppHeader({
           </button>
         </div>
       </div>
-    </>
+    </div>
   ) : null
 
   return (

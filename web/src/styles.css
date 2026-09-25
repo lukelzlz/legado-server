@@ -305,6 +305,9 @@ svg { width: 18px; height: 18px; flex: none; }
   color: var(--muted);
   flex-shrink: 0;
 }
+.menu-item-btn:hover svg {
+  color: var(--ink);
+}
 .menu-item-btn.accent-text {
   color: var(--accent);
 }
@@ -316,7 +319,7 @@ svg { width: 18px; height: 18px; flex: none; }
   min-height: 38px;
   display: inline-flex;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
   padding: 0 10px;
   border-radius: 8px;
   background: transparent;
@@ -348,8 +351,7 @@ svg { width: 18px; height: 18px; flex: none; }
   font-size: 13px;
   font-weight: 550;
   text-decoration: none;
-  transition: background 0.15s ease;
-  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
 }
 .menu-link-btn:hover {
   background: var(--surface-muted);
@@ -358,6 +360,7 @@ svg { width: 18px; height: 18px; flex: none; }
   width: 16px;
   height: 16px;
   color: var(--muted);
+  flex-shrink: 0;
 }
 .primary-button, .subtle-button, .danger-button { min-height: 34px; display: inline-flex; align-items: center; justify-content: center; gap: 7px; padding: 0 14px; border-radius: 5px; font-size: 13px; font-weight: 600; }
 .primary-button { background: var(--accent); color: #fff; }
@@ -1041,7 +1044,7 @@ mark.search-highlight { background: var(--accent-soft); color: var(--accent); fo
     max-height: calc(85vh - var(--safe-top));
     overflow-y: auto;
     border-radius: 18px 18px 0 0;
-    padding: 20px 18px calc(20px + env(safe-area-inset-bottom, 0px));
+    padding: 20px 18px calc(20px + var(--safe-bottom));
     box-shadow: 0 -8px 36px rgba(0, 0, 0, 0.22);
     border-left: none;
     border-right: none;
@@ -1059,7 +1062,8 @@ mark.search-highlight { background: var(--accent-soft); color: var(--accent); fo
     padding: 10px 4px;
     font-size: 13px;
   }
-  .menu-item-btn {
+  .menu-item-btn,
+  .menu-link-btn {
     min-height: 46px;
     padding: 0 12px;
     font-size: 14px;

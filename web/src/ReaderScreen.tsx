@@ -71,8 +71,8 @@ function ReaderSettingsControls({
             padding: '10px 14px',
             border: '1px solid var(--line)',
             borderRadius: '8px',
-            background: 'var(--panel)',
-            color: 'var(--text-color, #e6e8eb)',
+            background: 'var(--surface-muted)',
+            color: 'var(--ink)',
             cursor: 'pointer',
             fontSize: '14px',
           }}
@@ -1674,7 +1674,7 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
             </button>
           </header>
           <div className="source-login-body">
-            <p style={{ margin: '8px 0', fontSize: '14px', lineHeight: '1.6', color: 'var(--text-color, #e6e8eb)' }}>
+            <p style={{ margin: '8px 0', fontSize: '14px', lineHeight: '1.6', color: 'var(--ink)' }}>
               当前未连接到互联网，云端 Edge-TTS 朗读不可用。是否切换使用设备本地自带的<strong>系统语音 (Web Speech)</strong> 进行脱机朗读？
             </p>
           </div>

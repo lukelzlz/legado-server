@@ -64,9 +64,9 @@ export function ReplaceRulesPage() {
       }
       if (query.trim()) {
         const q = query.toLowerCase()
-        const nameMatch = rule.name.toLowerCase().includes(q)
-        const patternMatch = rule.pattern.toLowerCase().includes(q)
-        const replacementMatch = rule.replacement.toLowerCase().includes(q)
+        const nameMatch = (rule.name || '').toLowerCase().includes(q)
+        const patternMatch = (rule.pattern || '').toLowerCase().includes(q)
+        const replacementMatch = (rule.replacement || '').toLowerCase().includes(q)
         const scopeMatch = rule.scope?.toLowerCase().includes(q) || false
         if (!nameMatch && !patternMatch && !replacementMatch && !scopeMatch) return false
       }
@@ -75,7 +75,7 @@ export function ReplaceRulesPage() {
   }, [rules, selectedGroup, query])
 
   const handleToggle = async (rule: ReplaceRule) => {
-    const newStatus = !rule.isEnabled
+    const newStatus = !(rule.isEnabled ?? true)
     try {
       await api.toggleReplaceRules([rule.id], newStatus)
       setRules(prev => prev.map(r => (r.id === rule.id ? { ...r, isEnabled: newStatus } : r)))
@@ -324,24 +324,24 @@ export function ReplaceRulesPage() {
                   }}
                 >
                   <div className="rule-card-header">
-                    <span className="rule-name-text" style={{ opacity: rule.isEnabled ? 1 : 0.5 }}>
-                      {rule.name || rule.pattern}
+                    <span className="rule-name-text" style={{ opacity: (rule.isEnabled ?? true) ? 1 : 0.5 }}>
+                      {rule.name || rule.pattern || '未命名规则'}
                     </span>
                     <span
-                      className={`rule-status-badge ${rule.isEnabled ? 'enabled' : 'disabled'}`}
+                      className={`rule-status-badge ${(rule.isEnabled ?? true) ? 'enabled' : 'disabled'}`}
                       onClick={e => {
                         e.stopPropagation()
                         void handleToggle(rule)
                       }}
                       title="点击切换启用状态"
                     >
-                      {rule.isEnabled ? '已启用' : '已停用'}
+                      {(rule.isEnabled ?? true) ? '已启用' : '已停用'}
                     </span>
                   </div>
                   <div className="rule-meta-tags">
                     <span className="rule-tag">{rule.group || '未分组'}</span>
-                    {rule.isRegex && <span className="rule-tag tag-regex">Regex</span>}
-                    {rule.replacement.startsWith('@js:') && <span className="rule-tag tag-js">JS</span>}
+                    {(rule.isRegex ?? true) && <span className="rule-tag tag-regex">Regex</span>}
+                    {(rule.replacement ?? '').startsWith('@js:') && <span className="rule-tag tag-js">JS</span>}
                     {rule.scope && (
                       <span className="rule-tag tag-scope" title={`生效范围: ${rule.scope}`}>
                         🎯 {rule.scope}
@@ -380,7 +380,7 @@ export function ReplaceRulesPage() {
                           className="ghost-button"
                           onClick={() => handleToggle(rule)}
                         >
-                          {rule.isEnabled ? '停用' : '启用'}
+                          {(rule.isEnabled ?? true) ? '停用' : '启用'}
                         </button>
                         <button
                           type="button"
@@ -469,14 +469,14 @@ export function ReplaceRulesPage() {
           <div className="rules-detail-card">
             <div className="rules-detail-header">
               <div className="rules-detail-title-group">
-                <h2>{selectedRule.name || '未命名规则'}</h2>
+                <h2>{selectedRule.name || selectedRule.pattern || '未命名规则'}</h2>
                 <div className="rule-meta-tags">
                   <span className="rule-tag">分组: {selectedRule.group || '未分组'}</span>
-                  <span className={`rule-status-badge ${selectedRule.isEnabled ? 'enabled' : 'disabled'}`}>
-                    {selectedRule.isEnabled ? '✓ 规则已启用' : '⚪ 规则已禁用'}
+                  <span className={`rule-status-badge ${(selectedRule.isEnabled ?? true) ? 'enabled' : 'disabled'}`}>
+                    {(selectedRule.isEnabled ?? true) ? '✓ 规则已启用' : '⚪ 规则已禁用'}
                   </span>
-                  {selectedRule.isRegex && <span className="rule-tag tag-regex">正则表达式</span>}
-                  {selectedRule.replacement.startsWith('@js:') && <span className="rule-tag tag-js">JS 沙箱</span>}
+                  {(selectedRule.isRegex ?? true) && <span className="rule-tag tag-regex">正则表达式</span>}
+                  {(selectedRule.replacement ?? '').startsWith('@js:') && <span className="rule-tag tag-js">JS 沙箱</span>}
                 </div>
               </div>
               <div className="rules-detail-actions">
@@ -485,7 +485,7 @@ export function ReplaceRulesPage() {
                   className="ghost-button"
                   onClick={() => handleToggle(selectedRule)}
                 >
-                  {selectedRule.isEnabled ? '停用' : '启用'}
+                  {(selectedRule.isEnabled ?? true) ? '停用' : '启用'}
                 </button>
                 <button
                   type="button"

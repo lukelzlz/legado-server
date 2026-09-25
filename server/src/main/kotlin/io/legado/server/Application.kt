@@ -39,7 +39,7 @@ fun Application.legadoApplication(config: ServerConfig = ServerConfig.fromEnviro
     environment.monitor.subscribe(ApplicationStopped) { subscriptions.stop(); bookCache.stop(); ttsSessions.close(); database.close() }
 
     install(ContentNegotiation) {
-        json(Json { ignoreUnknownKeys = true; explicitNulls = false })
+        json(Json { ignoreUnknownKeys = true; explicitNulls = false; encodeDefaults = true })
     }
     install(Sessions) {
         cookie<UserSession>(AuthService.COOKIE_NAME) {

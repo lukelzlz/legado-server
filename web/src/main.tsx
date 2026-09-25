@@ -18,6 +18,7 @@ import { OfflineCacheModal } from './OfflineCacheModal'
 import { SourceHealthModal } from './SourceHealthModal'
 import { SourceGroupModal } from './SourceGroupModal'
 import { PwaManager } from './PwaManager'
+import { ErrorBoundary } from './ErrorBoundary'
 import { flushOfflineProgress } from './offlineStorage'
 import { toast, ToastContainer } from './Toast'
 import './styles.css'
@@ -2585,19 +2586,21 @@ function App() {
         onOpenOfflineCache={() => setShowOfflineCache(true)}
         onLogout={() => void logout()}
       />
-      {page === 'sources' ? (
-        <SourcesPage selected={selected} onSelect={setSelected} onSourcesChange={setSources} />
-      ) : page === 'subscriptions' ? (
-        <SubscriptionPage onSourcesChange={refreshSources} />
-      ) : page === 'rules' ? (
-        <ReplaceRulesPage />
-      ) : page === 'webdav' ? (
-        <WebDavSettingsPage />
-      ) : page === 'shelf' ? (
-        <ShelfPage onOpen={item => void openShelfItem(item)} />
-      ) : (
-        <LibraryPage sources={sources} onOpen={(book, index) => openReader(book, index, 'library')} />
-      )}
+      <ErrorBoundary>
+        {page === 'sources' ? (
+          <SourcesPage selected={selected} onSelect={setSelected} onSourcesChange={setSources} />
+        ) : page === 'subscriptions' ? (
+          <SubscriptionPage onSourcesChange={refreshSources} />
+        ) : page === 'rules' ? (
+          <ReplaceRulesPage />
+        ) : page === 'webdav' ? (
+          <WebDavSettingsPage />
+        ) : page === 'shelf' ? (
+          <ShelfPage onOpen={item => void openShelfItem(item)} />
+        ) : (
+          <LibraryPage sources={sources} onOpen={(book, index) => openReader(book, index, 'library')} />
+        )}
+      </ErrorBoundary>
       <ReplaceRulesModal
         isOpen={showReplaceRules}
         onClose={() => setShowReplaceRules(false)}
@@ -2609,4 +2612,8 @@ function App() {
   )
 }
 
-createRoot(document.getElementById('root')!).render(<App />)
+createRoot(document.getElementById('root')!).render(
+  <ErrorBoundary>
+    <App />
+  </ErrorBoundary>
+)

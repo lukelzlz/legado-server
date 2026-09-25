@@ -79,9 +79,9 @@ export const ReplaceRulesModal: React.FC<Props> = ({
       }
       if (searchQuery.trim()) {
         const q = searchQuery.toLowerCase()
-        const nameMatch = rule.name.toLowerCase().includes(q)
-        const patternMatch = rule.pattern.toLowerCase().includes(q)
-        const replacementMatch = rule.replacement.toLowerCase().includes(q)
+        const nameMatch = (rule.name || '').toLowerCase().includes(q)
+        const patternMatch = (rule.pattern || '').toLowerCase().includes(q)
+        const replacementMatch = (rule.replacement || '').toLowerCase().includes(q)
         const scopeMatch = rule.scope?.toLowerCase().includes(q) || false
         if (!nameMatch && !patternMatch && !replacementMatch && !scopeMatch) return false
       }
@@ -90,7 +90,7 @@ export const ReplaceRulesModal: React.FC<Props> = ({
   }, [rules, selectedGroup, scopeFilter, searchQuery, currentBookName, currentSourceUrl])
 
   const handleToggle = async (rule: ReplaceRule) => {
-    const newStatus = !rule.isEnabled
+    const newStatus = !(rule.isEnabled ?? true)
     try {
       await api.toggleReplaceRules([rule.id], newStatus)
       setRules(prev => prev.map(r => (r.id === rule.id ? { ...r, isEnabled: newStatus } : r)))
@@ -342,28 +342,28 @@ export const ReplaceRulesModal: React.FC<Props> = ({
             filteredRules.map(rule => (
               <div
                 key={rule.id}
-                className={`rule-list-card ${rule.isEnabled ? '' : 'disabled'}`}
-                style={{ opacity: rule.isEnabled ? 1 : 0.6 }}
+                className={`rule-list-card ${(rule.isEnabled ?? true) ? '' : 'disabled'}`}
+                style={{ opacity: (rule.isEnabled ?? true) ? 1 : 0.6 }}
               >
                 <div className="rule-card-header">
                   <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flex: 1, minWidth: 0 }}>
                     <span className="rule-name-text">
-                      {rule.name || rule.pattern}
+                      {rule.name || rule.pattern || '未命名规则'}
                     </span>
                     <div className="rule-meta-tags">
                       {rule.group && <span className="rule-tag">{rule.group}</span>}
-                      {rule.isRegex && <span className="rule-tag tag-regex">正则</span>}
-                      {rule.replacement.startsWith('@js:') && <span className="rule-tag tag-js">JS</span>}
+                      {(rule.isRegex ?? true) && <span className="rule-tag tag-regex">正则</span>}
+                      {(rule.replacement ?? '').startsWith('@js:') && <span className="rule-tag tag-js">JS</span>}
                       {rule.scope && <span className="rule-tag tag-scope" title={`范围: ${rule.scope}`}>🎯 {rule.scope}</span>}
                     </div>
                   </div>
 
                   <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0 }}>
                     <span
-                      className={`rule-status-badge ${rule.isEnabled ? 'enabled' : 'disabled'}`}
+                      className={`rule-status-badge ${(rule.isEnabled ?? true) ? 'enabled' : 'disabled'}`}
                       onClick={() => handleToggle(rule)}
                     >
-                      {rule.isEnabled ? '已启用' : '已停用'}
+                      {(rule.isEnabled ?? true) ? '已启用' : '已停用'}
                     </span>
                     <button
                       type="button"

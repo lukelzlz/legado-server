@@ -133,6 +133,7 @@ AI 与人类协作时必须明确当前达到的完成度阶梯，严禁混淆�
 - **[CSS/包含块] backdrop-filter 会破坏 position: fixed 的视口锚定**：任何放在带 `backdrop-filter` 或 `transform` 容器内的弹窗/抽屉（即便写了 `position: fixed`）都会被局限在该容器内。全局弹层与抽屉必须通过 `createPortal(..., document.body)` 挂载到根节点。
 - **[主题/Portal] createPortal 挂载到 document.body 导致主题 CSS 变量丢失**：使用 `createPortal(..., document.body)` 逃逸包含块时，浮层脱离了带有 `.theme-*` 类名的 `.app-shell` 容器，导致 CSS 变量（`--surface`, `--ink`, `--line` 等）失效回退为透明背景与黑色文本（在夜间模式下表现为透光背景与隐形黑字）。必须通过三层防御：① `:root` 声明全套默认主题回退变量；② `main.tsx` 在 `settings.theme` 变更时同步设置 `document.documentElement` 与 `document.body` 的 `theme-*` class；③ Portal 浮层容器显式绑定 `theme-${settings.theme}`。
 - **[CSS/移动端媒体查询] 严禁在 @media 中简写覆盖根级 safe-area**：移动端媒体查询调整 `height` / `padding` 时，必须保留 `var(--safe-top)` / `var(--safe-bottom)` 计算式，杜绝硬编码 `padding: 0` 冲掉全面屏死区。
+- **[规则页面/空安全] 替换规则字段缺失与 ErrorBoundary 全局兜底**：Ktor 服务端 kotlinx.serialization 默认不输出等于默认值的字段，导致前端收到的 `ReplaceRule` 中 `isEnabled`、`isRegex`、`replacement` 可能为 `undefined`/`null`。前端访问 `rule.replacement.startsWith(...)` 会抛 `TypeError` 崩溃。解决方案：① 服务端 `Application.kt` ContentNegotiation 显式配置 `encodeDefaults = true`；② 前端对所有规则字段使用 `(rule.replacement ?? '')` 与 `(rule.isEnabled ?? true)` 安全读取；③ 新增全局 `ErrorBoundary` 包裹路由与根渲染，杜绝局部组件异常导致全屏白屏。
 
 ---
 
@@ -238,6 +239,7 @@ AI 与人类协作时必须明确当前达到的完成度阶梯，严禁混淆�
 | 2026-09-24 | Quickfix | 修复 GitHub CodeQL 4 处告警（Simple Web 正则特殊字符转义、HTML 注释多字符清洗循环、JS 字符串反斜杠双重转义与备选封面 XSS 守卫） | - | Pushed |
 | 2026-09-25 | Fix | 修复移动端顶栏丢失 safe-top 导致重叠 iOS 状态栏（灵动岛/时间），以及菜单项浅色白字隐形问题 | - | Pushed |
 | 2026-09-25 | Fix | 修复 Portal 浮层脱离 app-shell 导致夜间模式丢失主题变量（透明背景与黑字）、同步全局 HTML/Body 主题类 | - | Pushed |
+| 2026-09-25 | Fix | 修复远端 SQLite 损坏导致 500、Ktor 序列化缺失默认值、规则页面空安全与新增全局 ErrorBoundary 兜底 | - | Accepted & Pushed |
 
 ---
 

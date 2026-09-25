@@ -214,7 +214,29 @@ data class SourceLoginStateRecord(
 )
 @Serializable data class Chapter(val index: Int, val title: String, val url: String)
 @Serializable data class ContentRequest(val sourceId: String, val chapterUrl: String = "", val bookUrl: String? = null)
-@Serializable data class ChapterContent(val title: String? = null, val content: String)
+@Serializable data class ChapterContent(
+    val title: String? = null,
+    val content: String,
+    val rawTitle: String? = null,
+    val rawContent: String? = null,
+)
+@Serializable data class BookRecleanRequest(
+    val sourceId: String,
+    val bookUrl: String,
+)
+@Serializable data class BookRecleanResponse(
+    val sourceId: String,
+    val bookUrl: String,
+    val recleanedChapters: Int,
+    val totalChapters: Int,
+)
+@Serializable data class BatchBookRecleanRequest(
+    val books: List<BookRecleanRequest>,
+)
+@Serializable data class BatchBookRecleanResponse(
+    val totalRecleaned: Int,
+    val results: List<BookRecleanResponse>,
+)
 @Serializable data class ReadingProgress(
     val sourceId: String,
     val bookUrl: String,

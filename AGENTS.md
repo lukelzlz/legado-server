@@ -134,6 +134,7 @@ AI 与人类协作时必须明确当前达到的完成度阶梯，严禁混淆�
 - **[主题/Portal] createPortal 挂载到 document.body 导致主题 CSS 变量丢失**：使用 `createPortal(..., document.body)` 逃逸包含块时，浮层脱离了带有 `.theme-*` 类名的 `.app-shell` 容器，导致 CSS 变量（`--surface`, `--ink`, `--line` 等）失效回退为透明背景与黑色文本（在夜间模式下表现为透光背景与隐形黑字）。必须通过三层防御：① `:root` 声明全套默认主题回退变量；② `main.tsx` 在 `settings.theme` 变更时同步设置 `document.documentElement` 与 `document.body` 的 `theme-*` class；③ Portal 浮层容器显式绑定 `theme-${settings.theme}`。
 - **[CSS/移动端媒体查询] 严禁在 @media 中简写覆盖根级 safe-area**：移动端媒体查询调整 `height` / `padding` 时，必须保留 `var(--safe-top)` / `var(--safe-bottom)` 计算式，杜绝硬编码 `padding: 0` 冲掉全面屏死区。
 - **[规则页面/空安全] 替换规则字段缺失与 ErrorBoundary 全局兜底**：Ktor 服务端 kotlinx.serialization 默认不输出等于默认值的字段，导致前端收到的 `ReplaceRule` 中 `isEnabled`、`isRegex`、`replacement` 可能为 `undefined`/`null`。前端访问 `rule.replacement.startsWith(...)` 会抛 `TypeError` 崩溃。解决方案：① 服务端 `Application.kt` ContentNegotiation 显式配置 `encodeDefaults = true`；② 前端对所有规则字段使用 `(rule.replacement ?? '')` 与 `(rule.isEnabled ?? true)` 安全读取；③ 新增全局 `ErrorBoundary` 包裹路由与根渲染，杜绝局部组件异常导致全屏白屏。
+- **[正文缓存/规则] 双副本静态直出与幂等重洗**：正文缓存表 `book_content_cache` 必须同时维护 `raw_content`（书源基础原文）与 `content`（当前生效清洗副本）。前端与 TTS 必须直接读取 `content` 保障零运算秒开；当用户调整规则时，重洗逻辑必须以 `COALESCE(raw_content, content)` 为基准重新运行规则链并覆盖回写 `content`，确保规则误删后可瞬间无损还原。
 
 ---
 
@@ -160,6 +161,7 @@ AI 与人类协作时必须明确当前达到的完成度阶梯，严禁混淆�
 | PROPOSAL-016 | 本地图书导入与无缝阅读（TXT/EPUB 解析、智能分章与书架集成） | [`docs/proposals/PROPOSAL-016-local-book-import-txt-epub.md`](file:///root/legado-server/docs/proposals/PROPOSAL-016-local-book-import-txt-epub.md) | Tested |
 | PROPOSAL-017 | 移植轻阅读书源规则解析/内容管线，修复聚合书源（大灰狼）正文提取为空 | [`docs/proposals/PROPOSAL-017-port-qingyue-rule-engine-and-fix-aggregate-content.md`](PROPOSAL-017-port-qingyue-rule-engine-and-fix-aggregate-content.md) | Implemented |
 | PROPOSAL-018 | iOS PWA 更新机制修复、安全区适配与菜单项可见性优化 | [`docs/proposals/PROPOSAL-018-ios-pwa-update-and-safe-area-fixes.md`](file:///Users/zhangran/Documents/antigravity/joyful-galileo/docs/proposals/PROPOSAL-018-ios-pwa-update-and-safe-area-fixes.md) | Accepted |
+| PROPOSAL-019 | 双副本正文缓存与规则重洗流水线 | [`docs/proposals/PROPOSAL-019-dual-content-cache-and-reclean-pipeline.md`](file:///Users/zhangran/Documents/antigravity/joyful-galileo/docs/proposals/PROPOSAL-019-dual-content-cache-and-reclean-pipeline.md) | Accepted |
 
 ### 架构决策记录 (ADR)
 | 编号 | 决策标题 | 关联文档 | 状态 |
@@ -182,6 +184,7 @@ AI 与人类协作时必须明确当前达到的完成度阶梯，严禁混淆�
 | ADR-016 | 本地图书（TXT/EPUB）解析引擎、虚拟书源与解析入库一体化架构 | [`docs/decisions/ADR-016-local-book-parsing-and-storage-architecture.md`](file:///root/legado-server/docs/decisions/ADR-016-local-book-parsing-and-storage-architecture.md) | Accepted |
 | ADR-017 | 保留自主规则引擎，以「语义补齐 + 切分器移植」承接轻阅读书源管线 | [`docs/decisions/ADR-017-retain-self-engine-and-port-semantics.md`](ADR-017-retain-self-engine-and-port-semantics.md) | Accepted |
 | ADR-018 | iOS PWA 安全区级联覆盖重构与 Service Worker 双轨更新生命周期 | [`docs/decisions/ADR-018-ios-safe-area-and-pwa-lifecycle.md`](file:///Users/zhangran/Documents/antigravity/joyful-galileo/docs/decisions/ADR-018-ios-safe-area-and-pwa-lifecycle.md) | Accepted |
+| ADR-019 | 采用 SQLite 单表双列存储原文副本与批量重洗流水线架构 | [`docs/decisions/ADR-019-dual-content-cache-and-reclean-pipeline.md`](file:///Users/zhangran/Documents/antigravity/joyful-galileo/docs/decisions/ADR-019-dual-content-cache-and-reclean-pipeline.md) | Accepted |
 
 ### 工作记忆与历史推演归档 (Sessions Chronicle)
 | 日期 / ID | 类型 | 标题 / 议题 | 关联文档 | 状态 |
@@ -241,6 +244,7 @@ AI 与人类协作时必须明确当前达到的完成度阶梯，严禁混淆�
 | 2026-09-25 | Fix | 修复 Portal 浮层脱离 app-shell 导致夜间模式丢失主题变量（透明背景与黑字）、同步全局 HTML/Body 主题类 | - | Pushed |
 | 2026-09-25 | Fix | 修复远端 SQLite 损坏导致 500、Ktor 序列化缺失默认值、规则页面空安全与新增全局 ErrorBoundary 兜底 | - | Accepted & Pushed |
 | 2026-09-25 | Quickfix | 移除个人抽屉菜单中冗余的「替换净化规则」「WebDAV 文件服务」入口及移动端阅读器底栏溢出的「夜间」按钮 | - | Pushed |
+| 2026-09-25 | Feat | 支持正文缓存双副本存储（原文副本+清洗副本）与基于原文的规则一键重洗流水线（书架卡片三点菜单与批量重洗） | [`docs/acceptance/ACCEPT-019-dual-content-cache-and-reclean-pipeline.md`](file:///Users/zhangran/Documents/antigravity/joyful-galileo/docs/acceptance/ACCEPT-019-dual-content-cache-and-reclean-pipeline.md) · [`docs/proposals/PROPOSAL-019-dual-content-cache-and-reclean-pipeline.md`](file:///Users/zhangran/Documents/antigravity/joyful-galileo/docs/proposals/PROPOSAL-019-dual-content-cache-and-reclean-pipeline.md) · [`docs/decisions/ADR-019-dual-content-cache-and-reclean-pipeline.md`](file:///Users/zhangran/Documents/antigravity/joyful-galileo/docs/decisions/ADR-019-dual-content-cache-and-reclean-pipeline.md) · [`docs/sessions/SESSION-021-dual-content-cache-and-reclean-pipeline.md`](file:///Users/zhangran/Documents/antigravity/joyful-galileo/docs/sessions/SESSION-021-dual-content-cache-and-reclean-pipeline.md) | Accepted & Pushed |
 
 ---
 

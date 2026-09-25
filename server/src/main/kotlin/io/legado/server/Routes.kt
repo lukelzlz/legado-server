@@ -822,6 +822,27 @@ fun Route.apiRoutes(
             }
             call.respond(HttpStatusCode.NoContent)
         }
+        post("/bookshelf/reclean") {
+            if (auth.requireSession(call, true) == null) return@post
+            val req = call.receive<BookRecleanRequest>()
+            if (req.sourceId.isBlank() || req.bookUrl.isBlank()) {
+                call.respond(HttpStatusCode.BadRequest, ApiError("invalid_request", "缺少书籍标识"))
+                return@post
+            }
+            val res = database.recleanBookCache(req.sourceId, req.bookUrl, runner.jsSandbox)
+            call.respond(res)
+        }
+        post("/bookshelf/batch-reclean") {
+            if (auth.requireSession(call, true) == null) return@post
+            val req = call.receive<BatchBookRecleanRequest>()
+            var totalRecleaned = 0
+            val results = req.books.map { book ->
+                val res = database.recleanBookCache(book.sourceId, book.bookUrl, runner.jsSandbox)
+                totalRecleaned += res.recleanedChapters
+                res
+            }
+            call.respond(BatchBookRecleanResponse(totalRecleaned, results))
+        }
         put("/bookshelf/status") {
             if (auth.requireSession(call, true) == null) return@put
             val request = call.receive<BookshelfStatusRequest>()

@@ -114,6 +114,18 @@ export type ReplaceRulePreviewResponse = {
   appliedRules: string[]
 }
 
+export type BookRecleanResponse = {
+  sourceId: string
+  bookUrl: string
+  recleanedChapters: number
+  totalChapters: number
+}
+
+export type BatchBookRecleanResponse = {
+  totalRecleaned: number
+  results: BookRecleanResponse[]
+}
+
 export type FlexChildStyle = {
   layout_flexGrow?: number
   layout_flexShrink?: number
@@ -359,6 +371,10 @@ export const api = {
     request<void>(`/api/bookshelf/cache?sourceId=${encodeURIComponent(sourceId)}&bookUrl=${encodeURIComponent(bookUrl)}&clearData=true`, { method: 'DELETE' }),
   cancelBookCache: (sourceId: string, bookUrl: string) => request<void>(`/api/bookshelf/cache?sourceId=${encodeURIComponent(sourceId)}&bookUrl=${encodeURIComponent(bookUrl)}`, { method: 'DELETE' }),
   setBookshelfCompleted: (sourceId: string, bookUrl: string, completed: boolean) => request<BookshelfItem>('/api/bookshelf/status', { method: 'PUT', body: JSON.stringify({ sourceId, bookUrl, completed }) }),
+  recleanBookCache: (sourceId: string, bookUrl: string) =>
+    request<BookRecleanResponse>('/api/bookshelf/reclean', { method: 'POST', body: JSON.stringify({ sourceId, bookUrl }) }),
+  batchRecleanBookCache: (books: { sourceId: string; bookUrl: string }[]) =>
+    request<BatchBookRecleanResponse>('/api/bookshelf/batch-reclean', { method: 'POST', body: JSON.stringify({ books }) }),
   updateBookshelfInfo: (data: { sourceId: string; bookUrl: string; name: string; author?: string; coverUrl?: string; groupName?: string }) => request<BookshelfItem>('/api/bookshelf/info', { method: 'PUT', body: JSON.stringify(data) }),
   switchBookshelfSource: (value: BookshelfSourceSwitch) => request<BookshelfItem>('/api/bookshelf/switch-source', { method: 'POST', body: JSON.stringify(value) }),
   importLocalBooks: async (files: File[]): Promise<LocalBookImportResponse> => {

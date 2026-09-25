@@ -145,6 +145,7 @@ class Database(private val path: String) : Closeable, AutoCloseable {
                 create table if not exists book_content_cache (
                   source_id text not null, book_url text not null, chapter_url text not null,
                   title text, content text not null, cached_at integer not null,
+                  raw_title text, raw_content text,
                   primary key (source_id, book_url, chapter_url)
                 );
                 create index if not exists book_content_cache_book_idx on book_content_cache(source_id, book_url);
@@ -198,6 +199,7 @@ class Database(private val path: String) : Closeable, AutoCloseable {
         migrateReadingProgress(db)
         migrateBookshelf(db)
         migrateSourceTable(db)
+        migrateBookContentCache(db)
         val userExists = db.prepareStatement("select 1 from app_user where id = 1").use { it.executeQuery().next() }
         if (!userExists) {
             require(!initialPassword.isNullOrBlank()) { "首次启动必须提供 ADMIN_PASSWORD" }
@@ -880,8 +882,8 @@ class Database(private val path: String) : Closeable, AutoCloseable {
                 it.executeUpdate()
             }
             db.prepareStatement("""
-                insert into book_content_cache(source_id, book_url, chapter_url, title, content, cached_at)
-                values(?, ?, ?, ?, ?, ?)
+                insert into book_content_cache(source_id, book_url, chapter_url, title, content, cached_at, raw_title, raw_content)
+                values(?, ?, ?, ?, ?, ?, ?, ?)
             """.trimIndent()).use { stmt ->
                 chapters.forEachIndexed { idx, ch ->
                     val contentText = parsed.chapters.getOrNull(idx)?.content ?: ""
@@ -891,6 +893,8 @@ class Database(private val path: String) : Closeable, AutoCloseable {
                     stmt.setString(4, ch.title)
                     stmt.setString(5, contentText)
                     stmt.setLong(6, now)
+                    stmt.setString(7, ch.title)
+                    stmt.setString(8, contentText)
                     stmt.addBatch()
                 }
                 stmt.executeBatch()
@@ -944,9 +948,20 @@ class Database(private val path: String) : Closeable, AutoCloseable {
         }
     }
 
-    fun cachedContent(sourceId: String, bookUrl: String, chapterUrl: String): ChapterContent? = connect { db -> db.prepareStatement("select title,content from book_content_cache where source_id=? and book_url=? and chapter_url=?").use {
-        it.setString(1, sourceId); it.setString(2, bookUrl); it.setString(3, chapterUrl); it.executeQuery().use { rs -> if (rs.next()) ChapterContent(rs.getString(1), rs.getString(2)) else null }
-    } }
+    fun cachedContent(sourceId: String, bookUrl: String, chapterUrl: String): ChapterContent? = connect { db ->
+        db.prepareStatement("select title, content, raw_title, raw_content from book_content_cache where source_id=? and book_url=? and chapter_url=?").use {
+            it.setString(1, sourceId); it.setString(2, bookUrl); it.setString(3, chapterUrl)
+            it.executeQuery().use { rs ->
+                if (rs.next()) {
+                    val title = rs.getString(1)
+                    val content = rs.getString(2)
+                    val rawTitle = rs.getString(3) ?: title
+                    val rawContent = rs.getString(4) ?: content
+                    ChapterContent(title, content, rawTitle, rawContent)
+                } else null
+            }
+        }
+    }
     fun cachedChapterUrls(sourceId: String, bookUrl: String): Set<String> = connect { db ->
         db.prepareStatement("select chapter_url from book_content_cache where source_id = ? and book_url = ?").use { statement ->
             statement.setString(1, sourceId)
@@ -983,10 +998,14 @@ class Database(private val path: String) : Closeable, AutoCloseable {
     }
     fun cacheBookContent(sourceId: String, bookUrl: String, chapterUrl: String, content: ChapterContent): Unit = write { db ->
         db.prepareStatement("""
-            insert into book_content_cache(source_id, book_url, chapter_url, title, content, cached_at)
-            values(?, ?, ?, ?, ?, ?)
+            insert into book_content_cache(source_id, book_url, chapter_url, title, content, cached_at, raw_title, raw_content)
+            values(?, ?, ?, ?, ?, ?, ?, ?)
             on conflict(source_id, book_url, chapter_url) do update set
-                title = excluded.title, content = excluded.content, cached_at = excluded.cached_at
+                title = excluded.title,
+                content = excluded.content,
+                cached_at = excluded.cached_at,
+                raw_title = coalesce(excluded.raw_title, book_content_cache.raw_title),
+                raw_content = coalesce(excluded.raw_content, book_content_cache.raw_content)
         """.trimIndent()).use { statement ->
             statement.setString(1, sourceId)
             statement.setString(2, bookUrl)
@@ -994,8 +1013,73 @@ class Database(private val path: String) : Closeable, AutoCloseable {
             statement.setString(4, content.title)
             statement.setString(5, content.content)
             statement.setLong(6, System.currentTimeMillis())
+            statement.setString(7, content.rawTitle ?: content.title)
+            statement.setString(8, content.rawContent ?: content.content)
             statement.executeUpdate()
         }
+    }
+    fun recleanBookCache(sourceId: String, bookUrl: String, jsSandbox: JsSandbox? = null): BookRecleanResponse {
+        val shelfItem = listBookshelf().firstOrNull { it.sourceId == sourceId && it.bookUrl == bookUrl }
+        val bookName = shelfItem?.name
+        val sourceRecord = if (sourceId != LocalBookParser.LOC_BOOK_SOURCE_ID) getSource(sourceId) else null
+        val parsedSource = sourceRecord?.let { runCatching { SourceCodec.parse(it.json) }.getOrNull() }
+        val sourceUrl = if (sourceId == LocalBookParser.LOC_BOOK_SOURCE_ID) "local://" else parsedSource?.url ?: sourceId
+        val sourceName = parsedSource?.name
+
+        val rules = getEnabledReplaceRulesForScope(bookName, sourceUrl, sourceName)
+
+        data class ChapterRaw(val chapterUrl: String, val rawTitle: String?, val rawContent: String)
+        val cachedList = connect { db ->
+            db.prepareStatement("select chapter_url, coalesce(raw_title, title), coalesce(raw_content, content) from book_content_cache where source_id = ? and book_url = ?").use { stmt ->
+                stmt.setString(1, sourceId)
+                stmt.setString(2, bookUrl)
+                stmt.executeQuery().use { rs ->
+                    val list = mutableListOf<ChapterRaw>()
+                    while (rs.next()) {
+                        list.add(ChapterRaw(rs.getString(1), rs.getString(2), rs.getString(3) ?: ""))
+                    }
+                    list
+                }
+            }
+        }
+
+        if (cachedList.isEmpty()) {
+            return BookRecleanResponse(sourceId, bookUrl, 0, 0)
+        }
+
+        val total = cachedList.size
+        var recleaned = 0
+        write { db ->
+            db.prepareStatement("""
+                update book_content_cache
+                set title = ?, content = ?, raw_title = ?, raw_content = ?
+                where source_id = ? and book_url = ? and chapter_url = ?
+            """.trimIndent()).use { stmt ->
+                for (item in cachedList) {
+                    val rawTitle = item.rawTitle
+                    val rawContent = item.rawContent
+                    val cleanedContent = if (rules.isNotEmpty()) {
+                        ContentProcessor.processContent(rawContent, rules, jsSandbox, bookName, rawTitle)
+                    } else rawContent
+                    val cleanedTitle = if (rules.isNotEmpty() && rawTitle != null) {
+                        ContentProcessor.processTitle(rawTitle, rules, jsSandbox, bookName)
+                    } else rawTitle
+
+                    stmt.setString(1, cleanedTitle)
+                    stmt.setString(2, cleanedContent)
+                    stmt.setString(3, rawTitle)
+                    stmt.setString(4, rawContent)
+                    stmt.setString(5, sourceId)
+                    stmt.setString(6, bookUrl)
+                    stmt.setString(7, item.chapterUrl)
+                    stmt.addBatch()
+                    recleaned++
+                }
+                stmt.executeBatch()
+            }
+        }
+
+        return BookRecleanResponse(sourceId, bookUrl, recleaned, total)
     }
     fun beginBookCache(sourceId: String, bookUrl: String, total: Int) = write { db -> db.prepareStatement("insert into book_cache_status(source_id,book_url,total_chapters,cached_chapters,state,last_error,updated_at) values(?,?,?,?,?,?,?) on conflict(source_id,book_url) do update set total_chapters=excluded.total_chapters,cached_chapters=excluded.cached_chapters,state=excluded.state,last_error=null,updated_at=excluded.updated_at").use {
         val count = db.prepareStatement("select count(*) from book_content_cache where source_id=? and book_url=?").use { query -> query.setString(1, sourceId); query.setString(2, bookUrl); query.executeQuery().use { rs -> rs.next(); rs.getInt(1) } }
@@ -1717,6 +1801,19 @@ class Database(private val path: String) : Closeable, AutoCloseable {
         }
         db.createStatement().use {
             it.executeUpdate("update source set has_login = 1 where (payload like '%\"loginUi\"%' or payload like '%\"loginUrl\"%' or payload like '%\"loginCheckJs\"%') and (has_login is null or has_login = 0)")
+        }
+    }
+    private fun migrateBookContentCache(db: Connection) {
+        val columns = db.createStatement().use { statement ->
+            statement.executeQuery("pragma table_info(book_content_cache)").use { rs ->
+                buildSet { while (rs.next()) add(rs.getString("name")) }
+            }
+        }
+        if ("raw_title" !in columns) {
+            db.createStatement().use { it.executeUpdate("alter table book_content_cache add column raw_title text") }
+        }
+        if ("raw_content" !in columns) {
+            db.createStatement().use { it.executeUpdate("alter table book_content_cache add column raw_content text") }
         }
     }
     private fun secret(): String = ByteArray(32).also(random::nextBytes).let { Base64.getUrlEncoder().withoutPadding().encodeToString(it) }

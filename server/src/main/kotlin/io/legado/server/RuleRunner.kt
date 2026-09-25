@@ -41,7 +41,7 @@ class RuleRunner(private val responseFetcher: ((String) -> String)? = null, inte
     constructor(responseFetcher: (String) -> String) : this(responseFetcher, null)
     private val client = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(10)).followRedirects(HttpClient.Redirect.NEVER).build()
     private val json = Json { ignoreUnknownKeys = true }
-    private val jsSandbox = JsSandbox(this)
+    internal val jsSandbox = JsSandbox(this)
 
     fun search(sourceJson: String, keyword: String): List<SearchResult> {
         val source = sourceJson.objectValue()
@@ -226,10 +226,12 @@ class RuleRunner(private val responseFetcher: ((String) -> String)? = null, inte
 
         if (source.string("mainJs")?.isNotBlank() == true) {
             val result = JsSourceRunner(this, source).content(chapterUrl)
-            if (replaceRules.isEmpty()) return result
-            val cleanedTitle = result.title?.let { ContentProcessor.processTitle(it, replaceRules, jsSandbox, bookName) }
-            val cleanedText = ContentProcessor.processContent(result.content, replaceRules, jsSandbox, bookName, result.title)
-            return ChapterContent(cleanedTitle, cleanedText)
+            val rawTitle = result.title
+            val rawContent = result.content
+            if (replaceRules.isEmpty()) return ChapterContent(rawTitle, rawContent, rawTitle, rawContent)
+            val cleanedTitle = rawTitle?.let { ContentProcessor.processTitle(it, replaceRules, jsSandbox, bookName) }
+            val cleanedText = ContentProcessor.processContent(rawContent, replaceRules, jsSandbox, bookName, rawTitle)
+            return ChapterContent(cleanedTitle, cleanedText, rawTitle, rawContent)
         }
 
         return jsSandbox.withSourceContext(
@@ -272,14 +274,17 @@ class RuleRunner(private val responseFetcher: ((String) -> String)? = null, inte
                 throw RuleExecutionException("正文规则未提取到内容$detail")
             }
 
-            var title = root.value(rule.string("title"), jsSandbox, body, chapterUrl)
+            val rawTitle = root.value(rule.string("title"), jsSandbox, body, chapterUrl)
+            val rawText = text
+            var cleanedTitle = rawTitle
+            var cleanedText = rawText
             if (replaceRules.isNotEmpty()) {
-                text = ContentProcessor.processContent(text, replaceRules, jsSandbox, bookName, title)
-                if (title != null) {
-                    title = ContentProcessor.processTitle(title, replaceRules, jsSandbox, bookName)
+                cleanedText = ContentProcessor.processContent(rawText, replaceRules, jsSandbox, bookName, rawTitle)
+                if (rawTitle != null) {
+                    cleanedTitle = ContentProcessor.processTitle(rawTitle, replaceRules, jsSandbox, bookName)
                 }
             }
-            ChapterContent(title, text)
+            ChapterContent(cleanedTitle, cleanedText, rawTitle, rawText)
         }
     }
 

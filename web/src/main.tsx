@@ -1409,6 +1409,7 @@ function BookManageModal({
   onRemove: () => void
 }) {
   const [editingInfo, setEditingInfo] = useState(false)
+  const [recleaning, setRecleaning] = useState(false)
   const isCaching = item.cacheState === 'caching'
   const isReady = item.cacheState === 'ready'
   const isFailed = item.cacheState === 'failed'
@@ -1503,6 +1504,33 @@ function BookManageModal({
               <Icon name="arrowRight" />
             </button>
           )}
+
+          <button
+            className="manage-action-row"
+            disabled={recleaning}
+            onClick={async () => {
+              setRecleaning(true)
+              try {
+                const res = await api.recleanBookCache(item.sourceId, item.bookUrl)
+                if (res.recleanedChapters > 0) {
+                  toast.success(`《${item.name}》重新清洗完成，共处理 ${res.recleanedChapters} 章`)
+                } else {
+                  toast.info(`《${item.name}》暂无已缓存章节`)
+                }
+              } catch (err) {
+                toast.error(err instanceof Error ? err.message : '重新清洗失败')
+              } finally {
+                setRecleaning(false)
+              }
+            }}
+          >
+            <div className="action-icon"><Icon name="sliders" /></div>
+            <div className="action-text">
+              <strong>{recleaning ? '正在重新清洗正文...' : '重新应用净化规则'}</strong>
+              <small>基于原文副本重新运行当前启用的替换规则</small>
+            </div>
+            <Icon name="arrowRight" />
+          </button>
 
           <button className="manage-action-row" onClick={() => { onClose(); onToggleCompleted() }}>
             <div className="action-icon"><Icon name="check" /></div>
@@ -2054,6 +2082,19 @@ function ShelfPage({ onOpen }: { onOpen: (item: BookshelfItem) => void }) {
     }
   }
 
+  const handleBatchReclean = async () => {
+    const keys = getSelectedBookKeys()
+    if (keys.length === 0) return
+    try {
+      const res = await api.batchRecleanBookCache(keys)
+      toast.success(`批量重洗完成，共处理 ${res.totalRecleaned} 章`)
+      setSelectedKeys(new Set())
+      setBatchMode(false)
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : '批量重洗失败')
+    }
+  }
+
   return (
     <main
       className={`shelf-page ${dragOver ? 'drag-active' : ''}`}
@@ -2320,6 +2361,15 @@ function ShelfPage({ onOpen }: { onOpen: (item: BookshelfItem) => void }) {
             >
               <Icon name="refresh" />
               <span>标为在读</span>
+            </button>
+            <button
+              type="button"
+              className="shelf-batch-action-btn"
+              disabled={selectedKeys.size === 0}
+              onClick={() => void handleBatchReclean()}
+            >
+              <Icon name="sliders" />
+              <span>重洗规则</span>
             </button>
             <button
               type="button"

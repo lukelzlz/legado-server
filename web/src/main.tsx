@@ -1,6 +1,6 @@
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
-import { api, BookDetails, BookGroup, BookshelfItem, Chapter, SearchResult, SearchStreamEvent, setCsrfToken, SourceRecord, SourceSubscription, SourceSummary } from './api'
+import { api, BookDetails, BookGroup, BookshelfItem, Chapter, SearchResult, SearchStreamEvent, setCsrfToken, SourceRecord, SourceSubscription, SourceSummary, streamSearch } from './api'
 import { Icon } from './icons'
 import { Logo } from './Logo'
 import { Login } from './Login'
@@ -1183,19 +1183,116 @@ function BookInfoEditModal({
   const [author, setAuthor] = useState(item.author || '')
   const [groupName, setGroupName] = useState<string | undefined>(item.groupName)
   const [coverUrl, setCoverUrl] = useState<string | null>(null) // null = keep existing, '' = clear, string = new URL
+  const [alternateSources, setAlternateSources] = useState<SearchResult[]>(item.alternateSources || [])
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
 
+  // In-modal online search completion states
+  const [searchOpen, setSearchOpen] = useState(false)
+  const [searchKeyword, setSearchKeyword] = useState(item.name)
+  const [searching, setSearching] = useState(false)
+  const [searchResults, setSearchResults] = useState<SearchResult[]>([])
+  const [searchProgress, setSearchProgress] = useState<SearchStreamEvent | null>(null)
+  const [searchError, setSearchError] = useState('')
+  const searchSocketRef = useRef<WebSocket | null>(null)
+
+  const stopSearch = useCallback(() => {
+    if (searchSocketRef.current) {
+      searchSocketRef.current.close()
+      searchSocketRef.current = null
+    }
+    setSearching(false)
+  }, [])
+
+  useEffect(() => {
+    return () => {
+      if (searchSocketRef.current) {
+        searchSocketRef.current.close()
+        searchSocketRef.current = null
+      }
+    }
+  }, [])
+
+  const handleStartSearch = useCallback((overrideKeyword?: string) => {
+    const kw = (overrideKeyword ?? searchKeyword).trim()
+    if (!kw) {
+      setSearchError('请输入搜索关键词')
+      return
+    }
+
+    stopSearch()
+    setSearching(true)
+    setSearchError('')
+    setSearchResults([])
+    setSearchProgress(null)
+
+    const socket = streamSearch(
+      kw,
+      undefined,
+      event => {
+        if (event.type === 'start' || event.type === 'progress' || event.type === 'done') {
+          setSearchProgress(event)
+        }
+        if (event.type === 'results' && event.results.length > 0) {
+          setSearchResults(prev => {
+            const existingKeys = new Set(prev.map(r => `${r.sourceId}\u0000${r.bookUrl}`))
+            const fresh = event.results.filter(r => !existingKeys.has(`${r.sourceId}\u0000${r.bookUrl}`))
+            return fresh.length > 0 ? [...prev, ...fresh] : prev
+          })
+        }
+        if (event.type === 'done') {
+          setSearching(false)
+        }
+      },
+      err => {
+        setSearchError(err)
+        setSearching(false)
+      },
+      () => {
+        setSearching(false)
+      }
+    )
+    searchSocketRef.current = socket
+  }, [searchKeyword, stopSearch])
+
+  const handleApplyCandidate = useCallback((candidate: SearchResult) => {
+    if (candidate.author) {
+      setAuthor(candidate.author)
+    }
+    if (candidate.coverUrl) {
+      setCoverUrl(candidate.coverUrl)
+    }
+    // Merge candidate and all search results into alternateSources
+    setAlternateSources(prev => {
+      const existing = new Set(prev.map(s => `${s.sourceId}\u0000${s.bookUrl}`))
+      const toAdd: SearchResult[] = []
+      const candKey = `${candidate.sourceId}\u0000${candidate.bookUrl}`
+      if (!existing.has(candKey)) {
+        toAdd.push(candidate)
+        existing.add(candKey)
+      }
+      for (const r of searchResults) {
+        const k = `${r.sourceId}\u0000${r.bookUrl}`
+        if (!existing.has(k)) {
+          toAdd.push(r)
+          existing.add(k)
+        }
+      }
+      return [...toAdd, ...prev]
+    })
+    toast.success(`已应用来自【${candidate.sourceId}】的书籍信息`)
+  }, [searchResults])
+
   const candidateCovers = useMemo(() => {
     const map = new Map<string, { sourceId: string; coverUrl: string }>()
-    for (const alt of item.alternateSources || []) {
+    for (const alt of alternateSources) {
       const url = sanitizeImageUrl(alt.coverUrl)
       if (url && !map.has(url)) {
         map.set(url, { sourceId: alt.sourceId, coverUrl: url })
       }
     }
     return Array.from(map.values())
-  }, [item.alternateSources])
+  }, [alternateSources])
 
   const previewSrc = useMemo(() => {
     if (coverUrl === '') return null
@@ -1222,6 +1319,7 @@ function BookInfoEditModal({
         author: author.trim() || undefined,
         coverUrl: coverUrl === null ? undefined : coverUrl,
         groupName: groupName || undefined,
+        alternateSources,
       })
       toast.success(`《${updated.name}》信息已更新`)
       onSaved(updated)
@@ -1254,6 +1352,154 @@ function BookInfoEditModal({
 
         <form onSubmit={handleSave} className="book-info-edit-form">
           <div className="book-info-edit-body">
+            {/* Online Search Completion Trigger & Panel */}
+            <div className="meta-search-container">
+              <div className="meta-search-header-row">
+                <button
+                  type="button"
+                  className={`meta-search-toggle-btn ${searchOpen ? 'active' : ''}`}
+                  onClick={() => {
+                    const next = !searchOpen
+                    setSearchOpen(next)
+                    if (next && searchResults.length === 0 && !searching) {
+                      handleStartSearch(searchKeyword || name)
+                    }
+                  }}
+                >
+                  <Icon name="search" />
+                  <span>{searchOpen ? '收起联网搜索补全' : '联网搜索补全信息'}</span>
+                  {item.sourceId === 'loc_book' && (!item.author || candidateCovers.length === 0) && (
+                    <span className="meta-search-badge">推荐</span>
+                  )}
+                </button>
+                {searchOpen && searching && (
+                  <span className="meta-search-status-inline">
+                    <Icon name="refresh" className="spin" />
+                    <span>检索书源中...</span>
+                  </span>
+                )}
+              </div>
+
+              {searchOpen && (
+                <div className="meta-search-panel">
+                  <div className="meta-search-bar">
+                    <div className="input-with-icon meta-search-input-wrap">
+                      <Icon name="search" />
+                      <input
+                        type="text"
+                        placeholder="输入小说名称搜索网络书源..."
+                        value={searchKeyword}
+                        onChange={e => setSearchKeyword(e.target.value)}
+                        onKeyDown={e => {
+                          if (e.key === 'Enter') {
+                            e.preventDefault()
+                            handleStartSearch()
+                          }
+                        }}
+                      />
+                    </div>
+                    {searching ? (
+                      <button
+                        type="button"
+                        className="subtle-button meta-search-btn stop-btn"
+                        onClick={stopSearch}
+                      >
+                        <Icon name="stop" />
+                        <span>停止</span>
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        className="primary-button meta-search-btn"
+                        onClick={() => handleStartSearch()}
+                      >
+                        <Icon name="search" />
+                        <span>搜索</span>
+                      </button>
+                    )}
+                  </div>
+
+                  {/* Progress / Status */}
+                  {searchProgress && (
+                    <div className="meta-search-progress-bar">
+                      <div className="meta-search-progress-text">
+                        <span>
+                          已检索 {searchProgress.completedSources}/{searchProgress.totalSources} 个书源
+                          {searchProgress.matchedSources > 0 && ` · 命中 ${searchProgress.matchedSources} 个`}
+                        </span>
+                        <span className="meta-search-count-pill">
+                          共 {searchResults.length} 条结果
+                        </span>
+                      </div>
+                      <div className="meta-progress-track">
+                        <div
+                          className="meta-progress-fill"
+                          style={{
+                            width: `${searchProgress.totalSources > 0 ? (searchProgress.completedSources / searchProgress.totalSources) * 100 : 0}%`,
+                          }}
+                        />
+                      </div>
+                    </div>
+                  )}
+
+                  {searchError && (
+                    <div className="meta-search-error-msg">{searchError}</div>
+                  )}
+
+                  {/* Results List */}
+                  {searchResults.length > 0 ? (
+                    <div className="meta-search-results-list">
+                      {searchResults.map((cand, idx) => {
+                        const candCover = sanitizeImageUrl(cand.coverUrl)
+                        const isChosen = (coverUrl === cand.coverUrl) && (author === cand.author)
+                        return (
+                          <div key={`${cand.sourceId}_${cand.bookUrl}_${idx}`} className={`meta-search-card ${isChosen ? 'chosen' : ''}`}>
+                            <div className="meta-search-card-cover">
+                              {candCover ? (
+                                <img src={candCover} alt="封面" referrerPolicy="no-referrer" />
+                              ) : (
+                                <div className="meta-cover-fallback">
+                                  <span>{cand.name.slice(0, 1) || '书'}</span>
+                                </div>
+                              )}
+                            </div>
+                            <div className="meta-search-card-info">
+                              <div className="meta-search-card-title-row">
+                                <strong className="meta-search-card-name" title={cand.name}>{cand.name}</strong>
+                                <span className="meta-search-card-source">{cand.sourceId}</span>
+                              </div>
+                              <div className="meta-search-card-author">
+                                作者：<span>{cand.author || '未知作者'}</span>
+                              </div>
+                              {cand.intro && (
+                                <p className="meta-search-card-intro" title={cand.intro}>
+                                  {cand.intro}
+                                </p>
+                              )}
+                            </div>
+                            <div className="meta-search-card-action">
+                              <button
+                                type="button"
+                                className={`subtle-button meta-apply-btn ${isChosen ? 'applied' : ''}`}
+                                onClick={() => handleApplyCandidate(cand)}
+                                title="采用此候选的封面和作者"
+                              >
+                                <Icon name={isChosen ? 'check' : 'plus'} />
+                                <span>{isChosen ? '已选用' : '选用'}</span>
+                              </button>
+                            </div>
+                          </div>
+                        )
+                      })}
+                    </div>
+                  ) : !searching && searchProgress?.completedSources ? (
+                    <div className="meta-search-empty-tip">
+                      未检索到匹配结果，可尝试修改搜索关键词后再次检索
+                    </div>
+                  ) : null}
+                </div>
+              )}
+            </div>
             {/* Cover Preview & Options */}
             <div className="edit-cover-section">
               <div className="edit-cover-preview-box">
@@ -1415,6 +1661,20 @@ function BookManageModal({
   const isFailed = item.cacheState === 'failed'
   const percent = Math.min(100, Math.round((item.cachedChapters / Math.max(1, item.totalChapters || 1)) * 100))
 
+  if (editingInfo) {
+    return (
+      <BookInfoEditModal
+        item={item}
+        groups={groups}
+        onSaved={updated => {
+          onUpdateInfo(updated)
+          setEditingInfo(false)
+        }}
+        onClose={() => setEditingInfo(false)}
+      />
+    )
+  }
+
   return (
     <div className="modal-backdrop" onClick={onClose}>
       <div className="book-manage-sheet" onClick={e => e.stopPropagation()} role="dialog" aria-modal="true" aria-label={`书籍管理: ${item.name}`}>
@@ -1551,17 +1811,6 @@ function BookManageModal({
           </button>
         </div>
       </div>
-
-      {editingInfo && (
-        <BookInfoEditModal
-          item={item}
-          groups={groups}
-          onSaved={updated => {
-            onUpdateInfo(updated)
-          }}
-          onClose={() => setEditingInfo(false)}
-        />
-      )}
     </div>
   )
 }

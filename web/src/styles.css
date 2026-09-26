@@ -794,6 +794,54 @@ mark.search-highlight { background: var(--accent-soft); color: var(--accent); fo
 .book-info-edit-footer { display: flex; justify-content: flex-end; align-items: center; gap: 10px; padding: 14px 22px; border-top: 1px solid var(--line); background: var(--surface-muted); flex-shrink: 0; }
 .book-info-edit-footer button { height: 38px; padding: 0 18px; font-size: 13px; }
 
+/* Meta Search Completion (In Book Info Edit Modal) */
+.meta-search-container { display: grid; gap: 10px; border-bottom: 1px solid var(--line); padding-bottom: 16px; }
+.meta-search-header-row { display: flex; justify-content: space-between; align-items: center; }
+.meta-search-toggle-btn { display: inline-flex; align-items: center; gap: 8px; padding: 7px 14px; font-size: 13px; font-weight: 600; border-radius: 8px; border: 1px solid var(--line); background: var(--surface-muted); color: var(--ink); cursor: pointer; transition: all .15s ease; }
+.meta-search-toggle-btn:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+.meta-search-toggle-btn.active { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); }
+.meta-search-toggle-btn svg { width: 15px; height: 15px; }
+.meta-search-badge { font-size: 11px; font-weight: 700; padding: 1px 6px; border-radius: 10px; background: var(--accent); color: #fff; }
+.meta-search-status-inline { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
+.meta-search-status-inline svg { width: 14px; height: 14px; }
+
+.meta-search-panel { display: grid; gap: 12px; padding: 14px; background: var(--surface-muted); border: 1px solid var(--line); border-radius: 10px; }
+.meta-search-bar { display: flex; gap: 8px; align-items: center; }
+.meta-search-input-wrap { flex: 1; }
+.meta-search-input-wrap input { height: 36px; padding: 0 10px 0 32px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); color: var(--ink); font-size: 13px; outline: 0; }
+.meta-search-input-wrap input:focus { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft); }
+.meta-search-btn { height: 36px; padding: 0 14px; font-size: 13px; display: inline-flex; align-items: center; gap: 6px; flex-shrink: 0; }
+.meta-search-btn.stop-btn { color: var(--danger); border: 1px solid var(--danger); background: transparent; }
+.meta-search-btn.stop-btn:hover { background: color-mix(in srgb, var(--danger) 10%, transparent); }
+
+.meta-search-progress-bar { display: grid; gap: 6px; }
+.meta-search-progress-text { display: flex; justify-content: space-between; align-items: center; font-size: 11px; color: var(--muted); }
+.meta-search-count-pill { font-weight: 600; color: var(--accent); background: var(--surface); padding: 2px 8px; border-radius: 10px; border: 1px solid var(--line); }
+.meta-progress-track { width: 100%; height: 4px; background: var(--line); border-radius: 2px; overflow: hidden; }
+.meta-progress-fill { height: 100%; background: var(--accent); transition: width .2s ease; }
+
+.meta-search-error-msg { font-size: 12px; color: var(--danger); background: color-mix(in srgb, var(--danger) 8%, transparent); padding: 6px 10px; border-radius: 6px; }
+.meta-search-empty-tip { font-size: 12px; color: var(--muted); text-align: center; padding: 12px 0; }
+
+.meta-search-results-list { display: grid; gap: 8px; max-height: 220px; overflow-y: auto; padding-right: 4px; }
+.meta-search-card { display: flex; gap: 12px; align-items: center; padding: 10px 12px; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; transition: all .15s ease; }
+.meta-search-card:hover { border-color: color-mix(in srgb, var(--accent) 50%, var(--line)); }
+.meta-search-card.chosen { border-color: var(--accent); background: var(--accent-soft); }
+.meta-search-card-cover img, .meta-cover-fallback { width: 44px; height: 60px; object-fit: cover; border-radius: 4px; border: 1px solid var(--line); flex-shrink: 0; }
+.meta-cover-fallback { display: grid; place-items: center; background: var(--surface-muted); color: var(--accent); font-weight: bold; font-size: 18px; }
+.meta-search-card-info { flex: 1 1 auto; min-width: 0; display: grid; gap: 2px; }
+.meta-search-card-title-row { display: flex; align-items: center; gap: 8px; }
+.meta-search-card-name { font-size: 13px; font-weight: 650; color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.meta-search-card-source { font-size: 10px; color: var(--muted); background: var(--surface-muted); border: 1px solid var(--line); padding: 1px 6px; border-radius: 4px; flex-shrink: 0; max-width: 100px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.meta-search-card-author { font-size: 11px; color: var(--muted); }
+.meta-search-card-author span { color: var(--ink); font-weight: 500; }
+.meta-search-card-intro { font-size: 11px; color: var(--muted); line-height: 1.4; margin: 2px 0 0; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.meta-search-card-action { flex-shrink: 0; margin-left: 6px; }
+.meta-apply-btn { height: 32px; padding: 0 12px; font-size: 12px; border-radius: 6px; border: 1px solid var(--line); background: var(--surface-muted); color: var(--ink); display: inline-flex; align-items: center; gap: 4px; cursor: pointer; transition: all .15s ease; }
+.meta-apply-btn:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+.meta-apply-btn.applied { border-color: var(--accent); background: var(--accent); color: #fff; }
+.meta-apply-btn svg { width: 14px; height: 14px; }
+
 /* Reader Workspace & Overlay Drawers */
 .reader-workspace { min-height: 100vh; min-height: 100dvh; position: relative; width: 100%; overflow-x: hidden; background: var(--surface); color: var(--ink); }
 .reader-header {

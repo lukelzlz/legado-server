@@ -439,13 +439,15 @@ class Database(private val path: String) : Closeable, AutoCloseable {
             var found = false
             var oldCover: String? = null
             var oldGroup: String? = null
-            db.prepareStatement("select cover_key, group_name from book_shelf where source_id=? and book_url=?").use {
+            var oldAlts: String? = null
+            db.prepareStatement("select cover_key, group_name, alternate_sources from book_shelf where source_id=? and book_url=?").use {
                 it.setString(1, request.sourceId); it.setString(2, request.bookUrl)
                 it.executeQuery().use { rs ->
                     if (rs.next()) {
                         found = true
                         oldCover = rs.getString(1)
                         oldGroup = rs.getString(2)
+                        oldAlts = rs.getString(3)
                     }
                 }
             }
@@ -459,15 +461,17 @@ class Database(private val path: String) : Closeable, AutoCloseable {
 
             val newCoverKey = cover?.key ?: (if (request.coverUrl != null && request.coverUrl.isBlank()) null else oldCover)
             val newGroup = if (request.groupName != null) request.groupName.trim().takeIf { it.isNotEmpty() } else oldGroup
+            val newAlts = if (request.alternateSources != null) Json.encodeToString(request.alternateSources) else oldAlts
 
-            db.prepareStatement("update book_shelf set name=?, author=?, cover_url=?, cover_key=?, group_name=? where source_id=? and book_url=?").use {
+            db.prepareStatement("update book_shelf set name=?, author=?, cover_url=?, cover_key=?, group_name=?, alternate_sources=? where source_id=? and book_url=?").use {
                 it.setString(1, request.name)
                 it.setString(2, request.author)
                 it.setString(3, request.coverUrl)
                 it.setString(4, newCoverKey)
                 it.setString(5, newGroup)
-                it.setString(6, request.sourceId)
-                it.setString(7, request.bookUrl)
+                it.setString(6, newAlts)
+                it.setString(7, request.sourceId)
+                it.setString(8, request.bookUrl)
                 it.executeUpdate()
             }
 

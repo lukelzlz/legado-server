@@ -269,6 +269,7 @@ data class SourceLoginStateRecord(
     val author: String? = null,
     val coverUrl: String? = null,
     val groupName: String? = null,
+    val alternateSources: List<SearchResult>? = null,
 )
 data class CachedBookRequest(
     val sourceId: String,

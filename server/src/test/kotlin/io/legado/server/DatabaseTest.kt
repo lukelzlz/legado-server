@@ -467,6 +467,50 @@ class DatabaseTest {
     }
 
     @Test
+    fun `updateBookshelfInfo updates alternateSources`() {
+        val path = temporaryDatabase()
+        try {
+            val database = Database(path)
+            database.initialize("password-for-test")
+            database.saveBookshelf(
+                BookshelfWriteRequest("loc_book", "local://book-1", "本地小说", null, "local://book-1/toc"),
+                null
+            )
+
+            val altSources = listOf(
+                SearchResult("source-a", "本地小说", "知名作者", "https://a.com/b1", "https://a.com/cover.jpg", "小说简介")
+            )
+            val updated = database.updateBookshelfInfo(
+                BookshelfInfoUpdateRequest(
+                    sourceId = "loc_book",
+                    bookUrl = "local://book-1",
+                    name = "本地小说",
+                    author = "知名作者",
+                    coverUrl = "https://a.com/cover.jpg",
+                    alternateSources = altSources
+                ),
+                CachedCover("cover-cached", "image/jpeg")
+            )
+
+            assertNotNull(updated)
+            assertEquals("知名作者", updated!!.author)
+            assertEquals("cover-cached", updated.coverKey)
+            assertEquals(1, updated.alternateSources.size)
+            assertEquals("source-a", updated.alternateSources.first().sourceId)
+
+            val fromDb = database.listBookshelf().single()
+            assertEquals("知名作者", fromDb.author)
+            assertEquals("cover-cached", fromDb.coverKey)
+            assertEquals(1, fromDb.alternateSources.size)
+            assertEquals("https://a.com/b1", fromDb.alternateSources.first().bookUrl)
+
+            database.close()
+        } finally {
+            Files.deleteIfExists(java.nio.file.Path.of(path))
+        }
+    }
+
+    @Test
     fun `updateBookshelfCover updates cover key and cover cache record`() {
         val path = temporaryDatabase()
         try {

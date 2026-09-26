@@ -2,6 +2,8 @@ package io.legado.server
 
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonObject
 import org.mozilla.javascript.BaseFunction
 import org.mozilla.javascript.ClassShutter
 import org.mozilla.javascript.Context
@@ -513,7 +515,11 @@ class JsSandbox(private val runner: RuleRunner? = null) {
                     val encoded = url.removePrefix("data:text/html;base64,")
                     return runCatching { String(Base64.getDecoder().decode(encoded), Charsets.UTF_8) }.getOrDefault("")
                 }
-                return runner?.fetch(url, execContext?.sourceId, execContext?.database) ?: ""
+                return try {
+                    runner?.fetch(url, execContext?.sourceId, execContext?.database) ?: ""
+                } catch (error: Throwable) {
+                    throw normalizeScriptThrowable(error)
+                }
             }
         })
 
@@ -523,20 +529,38 @@ class JsSandbox(private val runner: RuleRunner? = null) {
                 val url = args.getOrNull(0)?.toString() ?: return ""
                 val body = args.getOrNull(1)?.toString() ?: ""
                 val headers = args.getOrNull(2)?.let { parseJsMapOrJson(it) } ?: emptyMap()
-                val opt = mapOf("method" to "POST", "body" to body, "headers" to headers)
-                val fullUrl = "$url,${Json.encodeToString(opt)}"
-                return runner?.fetch(fullUrl, execContext?.sourceId, execContext?.database) ?: ""
+                // 严禁用 mapOf(...)+encodeToString：其静态类型是 Map<String, Any>，
+                // kotlinx 会抛 "Serializer for class 'Any' is not found"，
+                // 且该异常位于归一化 try/catch 之外 ⇒ 桥接静默返回 null。
+                val fullUrl = "$url,${buildUrlOptionsJson("POST", body, headers)}"
+                return try {
+                    runner?.fetch(fullUrl, execContext?.sourceId, execContext?.database) ?: ""
+                } catch (error: Throwable) {
+                    throw normalizeScriptThrowable(error)
+                }
             }
         })
 
-        // java.get(url, headers)
+        // java.get(url[, headers]) —— HTTP GET
+        // 注意：此方法**不能**再被同名属性覆盖（历史上 748 行的 session store 曾把
+        // 它整个顶掉，导致 java.get 静默失效、永远返回 session 值或 undefined）。
+        // 两种语义改为在同一函数内按参数形态分派：http(s) 开头视为 URL 请求，
+        // 否则视为读取 session store（保持 java.put 的既有配对语义）。
         ScriptableObject.putProperty(api, "get", object : BaseFunction() {
             override fun call(cx: Context, scope: Scriptable, thisObj: Scriptable, args: Array<out Any?>): Any {
-                val url = args.getOrNull(0)?.toString() ?: return ""
+                val first = args.getOrNull(0)?.toString() ?: return Context.getUndefinedValue()
+                val isHttp = first.startsWith("http://", ignoreCase = true) ||
+                    first.startsWith("https://", ignoreCase = true)
+                if (!isHttp) {
+                    return sessionStore[first] ?: Context.getUndefinedValue()
+                }
                 val headers = args.getOrNull(1)?.let { parseJsMapOrJson(it) } ?: emptyMap()
-                val opt = mapOf("method" to "GET", "headers" to headers)
-                val fullUrl = "$url,${Json.encodeToString(opt)}"
-                return runner?.fetch(fullUrl, execContext?.sourceId, execContext?.database) ?: ""
+                val fullUrl = "$first,${buildUrlOptionsJson("GET", null, headers)}"
+                return try {
+                    runner?.fetch(fullUrl, execContext?.sourceId, execContext?.database) ?: ""
+                } catch (error: Throwable) {
+                    throw normalizeScriptThrowable(error)
+                }
             }
         })
 
@@ -731,6 +755,8 @@ class JsSandbox(private val runner: RuleRunner? = null) {
         })
 
         // java.put(key, val) / java.get(key)
+        // 注意：`java.get` 已在上面统一定义（按参数形态分派 HTTP GET / session 读取），
+        // 这里**严禁**再次 putProperty("get", ...) —— 那会静默覆盖 HTTP GET 能力。
         ScriptableObject.putProperty(api, "put", object : BaseFunction() {
             override fun call(cx: Context, scope: Scriptable, thisObj: Scriptable, args: Array<out Any?>): Any {
                 val key = args.getOrNull(0)?.toString() ?: return Context.getUndefinedValue()
@@ -739,13 +765,30 @@ class JsSandbox(private val runner: RuleRunner? = null) {
                 return value
             }
         })
-        ScriptableObject.putProperty(api, "get", object : BaseFunction() {
-            override fun call(cx: Context, scope: Scriptable, thisObj: Scriptable, args: Array<out Any?>): Any {
-                val key = args.firstOrNull()?.toString() ?: return Context.getUndefinedValue()
-                return sessionStore[key] ?: Context.getUndefinedValue()
-            }
-        })
     }
+
+    /**
+     * 构造 Legado 的 URL 选项 JSON（拼接在 URL 之后的 `,{...}` 部分）。
+     *
+     * 必须显式构造 `JsonObject`，**严禁**写成
+     * `Json.encodeToString(mapOf("method" to ..., "body" to ..., "headers" to ...))`：
+     * 该 map 的静态类型是 `Map<String, Any>`，kotlinx 无法为多态 value 解析序列化器，
+     * 会抛 `SerializationException: Serializer for class 'Any' is not found`。
+     * 由于该语句位于归一化 try/catch 之外，异常会让桥接**静默返回 null**，
+     * 表现为 `java.post` / `java.get` 毫无反应且无任何错误提示。
+     */
+    private fun buildUrlOptionsJson(
+        method: String,
+        body: String?,
+        headers: Map<String, String>,
+    ): String = buildJsonObject {
+        put("method", JsonPrimitive(method))
+        if (body != null) put("body", JsonPrimitive(body))
+        put(
+            "headers",
+            buildJsonObject { headers.forEach { (k, v) -> put(k, JsonPrimitive(v)) } },
+        )
+    }.toString()
 
     private fun parseJsMapOrJson(value: Any?): Map<String, String> {
         if (value == null) return emptyMap()

@@ -61,7 +61,7 @@ fun Application.legadoApplication(config: ServerConfig = ServerConfig.fromEnviro
         val coverCache = CoverCache(config.coverCacheDirectory)
         authRoutes(auth)
         apiRoutes(database, auth, runner, coverCache, subscriptions, bookCache, edgeTts, ttsSessions, config.localBooksDirectory)
-        webDavRoutes(auth, WebDavStorage(config.webDavDirectory), database)
+        webDavRoutes(auth, WebDavStorage(config.webDavDirectory), database, coverCache)
         staticWeb()
     }
 }

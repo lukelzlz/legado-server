@@ -17,6 +17,7 @@ import org.mozilla.javascript.Context
 import org.mozilla.javascript.Function
 import org.mozilla.javascript.NativeJSON
 import org.mozilla.javascript.NativeObject
+import org.mozilla.javascript.ScriptRuntime
 import org.mozilla.javascript.Scriptable
 import org.mozilla.javascript.ScriptableObject
 import java.io.ByteArrayOutputStream
@@ -752,7 +753,16 @@ private class JsSourceRunner(private val runner: RuleRunner, private val source:
     private fun ajaxFunction(scope: Scriptable): NativeObject = NativeObject().also { api ->
         api.parentScope = scope
         ScriptableObject.putProperty(api, "ajax", object : BaseFunction() {
-            override fun call(cx: Context, scope: Scriptable, thisObj: Scriptable, args: Array<out Any?>): Any = runner.fetch(args.firstOrNull()?.toString() ?: throw RuleExecutionException("ajax 缺少 URL"))
+            override fun call(cx: Context, scope: Scriptable, thisObj: Scriptable, args: Array<out Any?>): Any {
+                val url = args.firstOrNull()?.toString() ?: throw RuleExecutionException("ajax 缺少 URL")
+                // 同 JsSandbox.jsBridge：受检异常直接冒泡会触发 Rhino 的 (Error) 强转 CCE，
+                // 掩盖真实原因并击穿书源自身的 try/catch 容错。
+                return try {
+                    runner.fetch(url)
+                } catch (error: Throwable) {
+                    throw normalizeScriptThrowable(error)
+                }
+            }
         })
     }
     private fun toJsValue(value: Any?, scope: Scriptable): Any? = when (value) {
@@ -973,3 +983,43 @@ internal class NodeValue private constructor(private val html: Element?, private
 }
 
 class RuleExecutionException(message: String) : RuntimeException(message)
+
+/**
+ * 把 Java 侧抛出的异常规范化为**脚本可见、可被 `catch(e)` 捕获**的 JS 错误。
+ *
+ * ## 背景
+ * Rhino 在处理「逃逸出脚本的 Java 异常」时假定它是 `java.lang.Error` 系，
+ * 会对**受检异常**执行 `(Error)` 强制转换。Kotlin 没有受检异常，桥接函数
+ * 会把 `SSLHandshakeException` 这类受检异常原样放行，于是 Rhino 抛出：
+ *
+ * ```
+ * class javax.net.ssl.SSLHandshakeException cannot be cast to class java.lang.Error
+ * ```
+ *
+ * ## 危害（三层，均非「报错难看」）
+ * 1. 真实原因（证书/握手/超时）被 `ClassCastException` 完全掩盖；
+ * 2. 该 CCE 在 JS 引擎内部抛出，**书源自己的 `try{...}catch(e){}` 抓不到**，
+ *    聚合源赖以容错的多节点轮询与主备线路回退被整体击穿；
+ * 3. 前端只能显示这行天书，用户无从判断真实原因。
+ *
+ * ## 实测结论（Rhino 1.8.0，生产沙箱设置 `initSafeStandardObjects` + `ClassShutter{false}`）
+ * | 抛出形式 | 可被 JS catch | `e.name` | 错误消息 |
+ * | :--- | :--- | :--- | :--- |
+ * | 受检异常直接冒泡 | ❌ 抛 CCE | — | — |
+ * | `RuntimeException` / `Error` 包装 | ❌ 仍漏过 | — | — |
+ * | `Context.throwAsScriptRuntimeEx` | ✅ | `InternalError` | **丢失真实类型名** |
+ * | **`ScriptRuntime.constructError`** | ✅ | `Error` | ✅ 保留真实类型名 |
+ *
+ * 因此采用 `constructError`：既恢复书源容错，又让消息自解释。
+ *
+ * ## 为什么不包裹 `RuleExecutionException`
+ * 该类是**业务语义异常**（如「未配置 searchUrl」「上游返回 HTTP 404」），
+ * 必须中断整条规则执行并冒泡到路由层转成明确的用户提示；若被归一化成
+ * JS 错误，书源的 `catch` 会把它当成「线路故障」而静默吞掉，反而掩盖真实问题。
+ * 实测确认：不包裹时它会如实逃逸出 JS catch，正是期望行为。
+ */
+internal fun normalizeScriptThrowable(error: Throwable): Nothing {
+    if (error is RuleExecutionException) throw error
+    val detail = "${error.javaClass.name}: ${error.message ?: "无详细信息"}"
+    throw ScriptRuntime.constructError("Error", detail) as Throwable
+}

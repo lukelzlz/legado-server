@@ -9,6 +9,8 @@ import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.longOrNull
 import java.nio.file.Path
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 import java.util.zip.ZipEntry
 import java.util.zip.ZipFile
 
@@ -24,7 +26,10 @@ import java.util.zip.ZipFile
  * 2. 声明解压体积超限直接拒绝，避免 zip 炸弹撑爆内存；
  * 3. 书架的 `origin` 经 [SourceCodec.normalizeSourceId] 归一化，才能与书源表主键（也是 sourceId）对齐。
  */
-class BackupImporter(private val database: Database) {
+class BackupImporter(
+    private val database: Database,
+    private val coverCache: CoverCache? = null,
+) {
     private val json = Json { ignoreUnknownKeys = true; isLenient = true }
 
     fun import(file: Path): BackupImportSummary = ZipFile(file.toFile()).use { zip ->
@@ -42,6 +47,10 @@ class BackupImporter(private val database: Database) {
         val sourceResult = database.importSources(sources)
         val ruleResult = database.importReplaceRules(rules)
         val library = database.importLibrary(shelf)
+        // 备份包只带封面 URL、不带图片本体，落库后 cover_key 为空。
+        // 这里后台把封面抓成本地副本，否则书架封面会完全依赖外部图床
+        // （图床挂了 / 离线阅读时就只剩文字占位符）。
+        backfillCovers(shelf)
         BackupImportSummary(
             sources = sourceResult.imported,
             sourcesUpdated = sourceResult.updated,
@@ -51,6 +60,40 @@ class BackupImporter(private val database: Database) {
             booksUpdated = library.updated,
             progress = library.progress,
         )
+    }
+
+    /**
+     * 把书架条目的封面 URL 抓成本地缓存副本并回写 `cover_key`。
+     *
+     * 设计取舍：
+     * - **并发 + 上限**：整架书可能上千本，串行抓取会让导入请求长时间挂住，
+     *   因此用固定线程池并发，且总量封顶，超出的留给后续按需加载时再补。
+     * - **失败静默**：单张封面失败（图床 404/超时/防盗链）绝不能影响整次导入，
+     *   前端此时会回退到 `coverUrl` 直连（见 resolveShelfCover）。
+     */
+    private fun backfillCovers(entries: List<BackupShelfEntry>) {
+        val cache = coverCache ?: return
+        val targets = entries
+            .filter { !it.coverUrl.isNullOrBlank() }
+            .distinctBy { "${it.sourceId}\u0000${it.bookUrl}" }
+            .take(MAX_COVER_BACKFILL)
+        if (targets.isEmpty()) return
+        val pool = Executors.newFixedThreadPool(COVER_FETCH_CONCURRENCY)
+        try {
+            targets.map { entry ->
+                pool.submit {
+                    val url = entry.coverUrl ?: return@submit
+                    // 已缓存过就跳过，避免重复下载同一张图。
+                    val cached = runCatching { cache.getIfCached(url) ?: cache.cache(url) }.getOrNull()
+                        ?: return@submit
+                    runCatching {
+                        database.updateBookshelfCover(entry.sourceId, entry.bookUrl, cached.key, cached.contentType)
+                    }
+                }
+            }.forEach { runCatching { it.get(COVER_FETCH_TIMEOUT_SECONDS, TimeUnit.SECONDS) } }
+        } finally {
+            pool.shutdownNow()
+        }
     }
 
     private fun readSection(zip: ZipFile, entries: List<ZipEntry>, fileName: String): String? {
@@ -113,5 +156,9 @@ class BackupImporter(private val database: Database) {
     private companion object {
         const val MAX_ENTRY_BYTES = 64L * 1024 * 1024
         const val MAX_TOTAL_BYTES = 256L * 1024 * 1024
+        /** 单次导入最多补抓的封面数，避免大书架把导入请求拖到超时。 */
+        const val MAX_COVER_BACKFILL = 300
+        const val COVER_FETCH_CONCURRENCY = 6
+        const val COVER_FETCH_TIMEOUT_SECONDS = 15L
     }
 }

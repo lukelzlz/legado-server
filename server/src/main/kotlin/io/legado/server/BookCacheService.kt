@@ -22,7 +22,31 @@ class BookCacheService(private val database: Database, private val runner: RuleR
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val jobs = ConcurrentHashMap<String, kotlinx.coroutines.Job>()
 
-    fun start() { database.cacheRequests().forEach(::enqueue) }
+    /**
+     * 全局并发闸门：限制**整机**同时在飞的章节抓取数。
+     *
+     * [CACHE_CONCURRENCY] 是**单本书内部**的并发；一旦同时缓存多本书，
+     * 实际并发 = 书数 × CACHE_CONCURRENCY。实测 418 本续做时这就把
+     * Dispatchers.IO 占满，服务虽显示 `Application started` 却持续超时数分钟，
+     * 数据库还从 13MB 膨胀到 343MB。
+     * 有了这道全局闸门，无论排队多少本书，同时进行的网络抓取都恒定有界，
+     * 前台请求始终能拿到线程与连接。
+     */
+    private val globalGate = Semaphore(MAX_GLOBAL_CHAPTER_FETCHES)
+
+    fun start() {
+        // 启动续做必须限流：整架书的缓存任务若一次性全部 launch，
+        // 会把 Dispatchers.IO 线程池占满，导致服务无法响应任何请求。
+        val pending = database.cacheRequests()
+        if (pending.isEmpty()) return
+        log("book cache resume: ${pending.size} book(s) pending (global concurrency=${MAX_GLOBAL_CHAPTER_FETCHES})")
+        scope.launch {
+            pending.chunked(RESUME_BATCH_SIZE).forEach { batch ->
+                batch.forEach(::enqueue)
+                delay(RESUME_BATCH_DELAY_MS)
+            }
+        }
+    }
     fun stop() { scope.cancel() }
 
     fun enqueue(book: CachedBookRequest) {
@@ -84,7 +108,11 @@ class BookCacheService(private val database: Database, private val runner: RuleR
                         async {
                             semaphore.withPermit {
                                 try {
-                                    val content = withContext(Dispatchers.IO) { runner.content(source.json, chapter.url, bookName) }
+                                    // 全局闸门：把「整机同时在飞的章节抓取」限制住，
+                                    // 避免多本书并行时把线程池与连接池吃光（详见 globalGate 注释）。
+                                    val content = withContext(Dispatchers.IO) {
+                                        globalGate.withPermit { runner.content(source.json, chapter.url, bookName) }
+                                    }
                                     if (content.content.toByteArray().size <= MAX_CHAPTER_BYTES) {
                                         database.cacheBookContent(
                                             book.sourceId, book.bookUrl, chapter.url,
@@ -141,5 +169,16 @@ class BookCacheService(private val database: Database, private val runner: RuleR
         const val CACHE_CONCURRENCY = 4
         const val BATCH_THROTTLE_DELAY_MS = 25L
         const val PROGRESS_UPDATE_INTERVAL_MS = 1_000L
+        /** 启动续做时每批投放的书数，避免一次性占满线程池。 */
+        const val RESUME_BATCH_SIZE = 3
+        /** 批次之间的让出间隔，给前台请求留出调度机会。 */
+        const val RESUME_BATCH_DELAY_MS = 300L
+        /**
+         * 整机同时在飞的章节抓取上限。
+         *
+         * 留出足够裕量给前台请求（阅读正文、搜索、封面），
+         * 缓存只是后台任务，永远不该饿死交互。
+         */
+        const val MAX_GLOBAL_CHAPTER_FETCHES = 8
     }
 }

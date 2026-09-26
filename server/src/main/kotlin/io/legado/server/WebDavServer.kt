@@ -174,9 +174,9 @@ private class WebDavLocks {
  * WebDAV 服务端入口：`/webdav` 与 `/webdav/<路径>` 同时映射到数据目录下的 `webdav` 文件夹；
  * `/api/webdav/info` 为 Web 设置页面提供存储状态与目录列表。
  */
-fun Route.webDavRoutes(auth: AuthService, storage: WebDavStorage, database: Database) {
+fun Route.webDavRoutes(auth: AuthService, storage: WebDavStorage, database: Database, coverCache: CoverCache? = null) {
     val locks = WebDavLocks()
-    val backupImporter = BackupImporter(database)
+    val backupImporter = BackupImporter(database, coverCache)
     route("/api/webdav") {
         get("/info") { call.serveWebDavInfo(auth, storage) }
         post("/import") { call.serveBackupImport(auth, storage, backupImporter) }

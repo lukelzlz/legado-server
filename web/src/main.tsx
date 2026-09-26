@@ -29,6 +29,20 @@ import { parseSourceJsonText, extractSourcesFromRaw, sanitizeImageUrl } from './
 export { extractSourcesFromRaw, parseSourceJsonText, sanitizeImageUrl }
 export type { SourceChoice, SourceChoiceStatus }
 
+/**
+ * 解析书架条目应显示的封面地址。
+ *
+ * 优先用本地缓存副本（`coverKey`，走 `/api/covers/<key>`，无外部依赖且离线可用）；
+ * 若没有副本则回退到原始 `coverUrl` 直连。
+ *
+ * 这个回退必不可少：从 Legado 备份包导入的书架条目**只有 coverUrl、没有本地副本**
+ * （导入器不下载封面），若前端只认 coverKey，整架书的封面会全部退化成文字占位符。
+ */
+function resolveShelfCover(item: { coverKey?: string; coverUrl?: string }): string | null {
+  if (item.coverKey) return api.cover(item.coverKey)
+  return sanitizeImageUrl(item.coverUrl)
+}
+
 type Page = 'sources' | 'subscriptions' | 'library' | 'shelf' | 'reader' | 'rules' | 'webdav'
 const readerStorageKey = 'legado-open-book-v1'
 const pageFromHash = (): Page => location.hash === '#sources' ? 'sources' : location.hash === '#subscriptions' ? 'subscriptions' : location.hash === '#rules' ? 'rules' : location.hash === '#webdav' ? 'webdav' : location.hash === '#shelf' ? 'shelf' : location.hash === '#reader' ? 'reader' : 'library'
@@ -1680,7 +1694,7 @@ function BookManageModal({
       <div className="book-manage-sheet" onClick={e => e.stopPropagation()} role="dialog" aria-modal="true" aria-label={`书籍管理: ${item.name}`}>
         <header className="manage-sheet-header">
           <div className="manage-sheet-cover">
-            {item.coverKey ? <img src={api.cover(item.coverKey)} alt="" /> : <span>{item.name.slice(0, 1)}</span>}
+            {resolveShelfCover(item) ? <img src={resolveShelfCover(item)!} alt="" referrerPolicy="no-referrer" /> : <span>{item.name.slice(0, 1)}</span>}
           </div>
           <div className="manage-sheet-info">
             <h3>{item.name}</h3>
@@ -2515,7 +2529,11 @@ function ShelfPage({ onOpen }: { onOpen: (item: BookshelfItem) => void }) {
                       {isSelected && <Icon name="check" />}
                     </div>
                   )}
-                  {item.coverKey ? <img src={api.cover(item.coverKey)} alt="" /> : <span className="cover-fallback">{item.name.slice(0, 1)}</span>}
+                  {resolveShelfCover(item) ? (
+                    <img src={resolveShelfCover(item)!} alt="" referrerPolicy="no-referrer" />
+                  ) : (
+                    <span className="cover-fallback">{item.name.slice(0, 1)}</span>
+                  )}
                   {isLocal && <span className="shelf-card-tag-local">本地</span>}
                   {badge && <span className={`shelf-card-badge ${item.cacheState}`}>{badge}</span>}
                   {isCaching && (

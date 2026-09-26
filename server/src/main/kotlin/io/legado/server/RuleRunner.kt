@@ -160,7 +160,7 @@ class RuleRunner(private val responseFetcher: ((String) -> String)? = null, inte
             else -> baseDoc.at(initRule)
         }
         fun value(key: String): String? = runCatching { root.value(rule.string(key), jsSandbox, body, bookUrl) }.getOrNull()
-        val name = (value("name") ?: "").trim()
+        val name = sanitizeBookName(value("name"))
         return BookDetails(
             sourceId = source.string("bookSourceUrl")!!,
             name = name.ifBlank { "未命名书籍" },
@@ -827,7 +827,7 @@ private class JsSourceRunner(private val runner: RuleRunner, private val source:
     }
     fun details(bookUrl: String): BookDetails {
         val value = callOptional("getBookInfo", arrayOf(bookObject(bookUrl)))?.jsonObjectOrEmpty() ?: JsonObject(emptyMap())
-        val name = value.string("name")?.trim().orEmpty()
+        val name = sanitizeBookName(value.string("name"))
         return BookDetails(source.string("bookSourceUrl")!!, name.ifBlank { "未命名书籍" }, value.string("author"), value.string("intro"), value.string("coverUrl"), value.string("tocUrl") ?: bookUrl)
     }
     fun chapters(tocUrl: String): List<Chapter> = call("getChapters", arrayOf(bookObject(tocUrl))).jsonArray().mapIndexedNotNull { index, value ->
@@ -1165,6 +1165,32 @@ internal fun translateSelector(selector: String): String {
     Regex("^id\\.([A-Za-z0-9_\\-]+)$").find(s)?.let { return "#${it.groupValues[1]}" }
     Regex("^tag\\.([A-Za-z0-9_\\-]+)$").find(s)?.let { return it.groupValues[1] }
     return s
+}
+
+/**
+ * 清洗书名。
+ *
+ * 实测（SESSION-027）：某书源的书架条目名是
+ * `"十日终焉我成魔\n第八十章 星尘归寂，余念长存"` ——
+ * 目录页的规则把「最新章节标题」一并取进了书名（`id.info@h1@text` 命中了包含
+ * 章节信息的标题块），导致书架显示成两行、且「书名」里混入章节名。
+ *
+ * 清洗策略（保守，避免误伤合法书名）：
+ * 1. 仅取第一行（换行后的内容一律丢弃）；
+ * 2. 折叠内部连续空白；
+ * 3. 去掉首尾书名号/引号等包裹符。
+ *
+ * **刻意不做**「按"第X章"截断」——那会误伤本身就叫《第X章》之类的书名。
+ */
+internal fun sanitizeBookName(raw: String?): String {
+    val text = raw ?: return ""
+    // 取第一行
+    val firstLine = text.lineSequence().firstOrNull { it.isNotBlank() } ?: return ""
+    return firstLine
+        .replace(Regex("\\s+"), " ")
+        .trim()
+        .trim('《', '》', '"', '"', '\'', '「', '」')
+        .trim()
 }
 
 /**

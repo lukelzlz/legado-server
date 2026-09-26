@@ -85,7 +85,10 @@ export default defineConfig({
             handler: 'NetworkOnly',
           },
           {
-            urlPattern: /^\/api\/book\/cover/,
+            // 封面接口的真实路径是 /api/covers/<sha256>（见 Routes.kt 的 route("/api") + get("/covers/{key}")）。
+            // 此处原先写的是 /api/book/cover —— **该路由不存在**，属于永不命中的死配置，
+            // 导致封面既没被缓存、也没被显式排除，语义完全落空（SESSION-027 一并修正）。
+            urlPattern: /^\/api\/covers\//,
             handler: 'StaleWhileRevalidate',
             options: {
               cacheName: 'legado-covers',

@@ -1,5 +1,7 @@
 package io.legado.server
 
+import java.net.URI
+
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
@@ -398,9 +400,12 @@ class Database(private val path: String) : Closeable, AutoCloseable {
             cover?.let { value -> db.prepareStatement("insert into cover_cache(cache_key,content_type) values(?,?) on conflict(cache_key) do update set content_type=excluded.content_type").use { it.setString(1, value.key); it.setString(2, value.contentType); it.executeUpdate() } }
             val altJson = request.alternateSources?.let { Json.encodeToString(it) }
             val cleanGroup = request.groupName?.trim()?.takeIf { it.isNotEmpty() }
+            // 书名入库前统一清洗：去掉换行（目录页规则常把「最新章节标题」带进书名，
+            // 实测会出现 `"书名\n第八十章 …"` 这种脏数据，见 SESSION-027）。
+            val cleanName = sanitizeBookName(request.name).ifBlank { request.name.trim() }
             db.prepareStatement("""insert into book_shelf(source_id,book_url,name,author,toc_url,cover_url,cover_key,last_read_at,alternate_sources,group_name) values(?,?,?,?,?,?,?,?,?,?)
                 on conflict(source_id,book_url) do update set name=excluded.name,author=excluded.author,toc_url=excluded.toc_url,cover_url=excluded.cover_url,cover_key=coalesce(excluded.cover_key,book_shelf.cover_key),last_read_at=excluded.last_read_at,alternate_sources=coalesce(excluded.alternate_sources,book_shelf.alternate_sources),group_name=coalesce(excluded.group_name,book_shelf.group_name)""").use {
-                it.setString(1, request.sourceId); it.setString(2, request.bookUrl); it.setString(3, request.name); it.setString(4, request.author); it.setString(5, request.tocUrl); it.setString(6, request.coverUrl); it.setString(7, cover?.key); it.setLong(8, now); it.setString(9, altJson); it.setString(10, cleanGroup); it.executeUpdate()
+                it.setString(1, request.sourceId); it.setString(2, request.bookUrl); it.setString(3, cleanName); it.setString(4, request.author); it.setString(5, request.tocUrl); it.setString(6, request.coverUrl?.takeIf { u -> !isSelfCoverReference(u, cover?.key) }); it.setString(7, cover?.key); it.setLong(8, now); it.setString(9, altJson); it.setString(10, cleanGroup); it.executeUpdate()
             }
             db.commit(); getBookshelf(db, request.sourceId, request.bookUrl)!!
         } catch (error: Throwable) { db.rollback(); throw error } finally { db.autoCommit = true }
@@ -462,11 +467,18 @@ class Database(private val path: String) : Closeable, AutoCloseable {
             val newCoverKey = cover?.key ?: (if (request.coverUrl != null && request.coverUrl.isBlank()) null else oldCover)
             val newGroup = if (request.groupName != null) request.groupName.trim().takeIf { it.isNotEmpty() } else oldGroup
             val newAlts = if (request.alternateSources != null) Json.encodeToString(request.alternateSources) else oldAlts
+            // 拒绝把本服务自己的封面接口地址回写成 coverUrl。
+            //
+            // 实测（SESSION-027）：编辑弹窗在没有外部 URL 时会回退调用 api.cover(coverKey)，
+            // 于是把 `/api/covers/<自己的 key>` 当成"外部封面地址"存了回来，形成自引用。
+            // 危害：一旦 coverKey 被清空，前端回退到 coverUrl 就指向自身，形成无意义的循环。
+            // 这里以 coverKey 为准，剥离该自引用（保留真实外部 URL）。
+            val sanitizedCoverUrl = request.coverUrl?.takeIf { !isSelfCoverReference(it, newCoverKey) }
 
             db.prepareStatement("update book_shelf set name=?, author=?, cover_url=?, cover_key=?, group_name=?, alternate_sources=? where source_id=? and book_url=?").use {
-                it.setString(1, request.name)
+                it.setString(1, sanitizeBookName(request.name).ifBlank { request.name.trim() })
                 it.setString(2, request.author)
-                it.setString(3, request.coverUrl)
+                it.setString(3, sanitizedCoverUrl)
                 it.setString(4, newCoverKey)
                 it.setString(5, newGroup)
                 it.setString(6, newAlts)
@@ -1806,6 +1818,23 @@ class Database(private val path: String) : Closeable, AutoCloseable {
     }
 
     private fun getBookshelf(db: Connection, sourceId: String, bookUrl: String): BookshelfItem? = db.prepareStatement("""select s.source_id,s.book_url,s.name,s.author,s.toc_url,s.cover_key,p.chapter_index,p.scroll_position,s.last_read_at,coalesce(c.cached_chapters,0),coalesce(c.total_chapters,0),coalesce(c.state,'idle'),c.last_error,s.completed,s.alternate_sources,s.group_name,s.cover_url from book_shelf s left join reading_progress p on p.source_id=s.source_id and p.book_url=s.book_url left join book_cache_status c on c.source_id=s.source_id and c.book_url=s.book_url where s.source_id=? and s.book_url=?""").use { it.setString(1, sourceId); it.setString(2, bookUrl); it.executeQuery().use { rs -> if (rs.next()) rs.toShelf() else null } }
+
+    /**
+     * 判断 `coverUrl` 是否为本服务自己的封面接口地址（自引用）。
+     *
+     * 形如 `/api/covers/<key>` 或带origin的完整地址都算。允许与当前 `coverKey` 不同：
+     * 只要是本服务的封面接口，就不该被当作"外部封面地址"存进 `cover_url`
+     * （它本来就由 `cover_key` 表达，重复存放只会产生循环回退）。
+     */
+    private fun isSelfCoverReference(url: String, coverKey: String?): Boolean {
+        val trimmed = url.trim()
+        if (!trimmed.contains("/api/covers/")) return false
+        val path = runCatching { URI(trimmed).path }.getOrNull() ?: trimmed
+        if (!path.startsWith("/api/covers/")) return false
+        val key = path.removePrefix("/api/covers/").trim('/')
+        // 本服务封面 key 是 64 位 hex；与自身 key 相同、或本身就指向本服务封面接口，均视为自引用
+        return coverKey == null || key == coverKey || key.matches(Regex("[0-9a-f]{64}"))
+    }
     private fun migrateReadingProgress(db: Connection) {
         val columns = db.createStatement().use { statement ->
             statement.executeQuery("pragma table_info(reading_progress)").use { result ->

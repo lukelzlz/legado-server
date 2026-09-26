@@ -1326,12 +1326,16 @@ function BookInfoEditModal({
     setSaving(true)
     setError('')
     try {
+      // 不要把本服务自己的封面接口地址当"外部封面地址"回写。
+      // 之前 coverUrl 为空时会回退到 api.cover(coverKey)，于是存回 `/api/covers/<自己的 key>`，
+      // 形成自引用（SESSION-027）。封面本来就由 coverKey 表达，这里只提交真实外部 URL。
+      const externalCover = coverUrl && !coverUrl.startsWith('/api/covers/') ? coverUrl : undefined
       const updated = await api.updateBookshelfInfo({
         sourceId: item.sourceId,
         bookUrl: item.bookUrl,
         name: trimmedName,
         author: author.trim() || undefined,
-        coverUrl: coverUrl === null ? undefined : coverUrl,
+        coverUrl: coverUrl === null ? undefined : externalCover,
         groupName: groupName || undefined,
         alternateSources,
       })

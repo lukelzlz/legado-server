@@ -18,6 +18,9 @@ import java.util.Date
 import java.util.Locale
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
+import javax.crypto.Cipher
+import javax.crypto.spec.IvParameterSpec
+import javax.crypto.spec.SecretKeySpec
 
 data class JsExecutionContext(
     val sourceId: String? = null,
@@ -723,6 +726,120 @@ class JsSandbox(private val runner: RuleRunner? = null) {
             }
         })
 
+        // ------------------------------------------------------------------
+        // 对称加解密族：Legado 书源用它们解密目录/正文地址
+        //
+        // 实测（SESSION-026）：书源 `api.jmlldsc.com` 的 chapterUrl 规则是
+        //   $.path@js:java.aesBase64DecodeToString(result,"f041c49714d39908","AES/CBC/PKCS5Padding","0123456789abcdef")
+        // 沙箱**没有**这个 API ⇒ JS 抛 ReferenceError ⇒ 每一章都被
+        // `mapIndexedNotNull` 丢掉 ⇒ 目录 0 章、正文自然取不到。
+        // 补上后同一密文可正确解出 `http://api.lemiyigou.com/697/697604/75510.json`。
+        // ------------------------------------------------------------------
+
+        /** Legado 语义：key/iv 按**原始字节**使用（不是 hex/base64 解码后的字节）。 */
+        fun cryptoKeyBytes(raw: String?, algorithm: String): ByteArray {
+            val text = raw ?: ""
+            return when {
+                text.isEmpty() -> ByteArray(0)
+                // 32/48/64 位 hex 且长度匹配常见密钥长度时按 hex 解释
+                text.matches(Regex("^[0-9a-fA-F]+$")) && algorithm.startsWith("AES") &&
+                    text.length in setOf(32, 48, 64) -> text.chunked(2).map { it.toInt(16).toByte() }.toByteArray()
+                else -> text.toByteArray(Charsets.UTF_8)
+            }
+        }
+
+        fun runCrypto(mode: Int, data: ByteArray, key: String?, transformation: String?, iv: String?): ByteArray {
+            val t = transformation?.takeIf { it.isNotBlank() } ?: "AES/CBC/PKCS5Padding"
+            val algorithm = t.substringBefore('/')
+            val spec = Cipher.getInstance(t)
+            val keySpec = SecretKeySpec(cryptoKeyBytes(key, algorithm), algorithm)
+            val ivBytes = iv?.takeIf { it.isNotBlank() }?.let { cryptoKeyBytes(it, algorithm) }
+            if (ivBytes != null && ivBytes.isNotEmpty()) {
+                spec.init(mode, keySpec, IvParameterSpec(ivBytes))
+            } else {
+                spec.init(mode, keySpec)
+            }
+            return spec.doFinal(data)
+        }
+
+        // java.aesBase64DecodeToString(base64Data, key, transformation, iv)
+        ScriptableObject.putProperty(api, "aesBase64DecodeToString", object : BaseFunction() {
+            override fun call(cx: Context, scope: Scriptable, thisObj: Scriptable, args: Array<out Any?>): Any {
+                val data = args.getOrNull(0)?.toString() ?: return ""
+                val key = args.getOrNull(1)?.toString()
+                val transformation = args.getOrNull(2)?.toString()
+                val iv = args.getOrNull(3)?.toString()
+                return runCatching {
+                    val decoded = runCatching { Base64.getDecoder().decode(data) }
+                        .getOrElse { Base64.getMimeDecoder().decode(data) }
+                    String(runCrypto(Cipher.DECRYPT_MODE, decoded, key, transformation, iv), Charsets.UTF_8)
+                }.getOrElse { error ->
+                    throw RuntimeException("aesBase64DecodeToString 失败: ${error.message}")
+                }
+            }
+        })
+
+        // java.aesBase64EncodeToString(plainText, key, transformation, iv)
+        ScriptableObject.putProperty(api, "aesBase64EncodeToString", object : BaseFunction() {
+            override fun call(cx: Context, scope: Scriptable, thisObj: Scriptable, args: Array<out Any?>): Any {
+                val text = args.getOrNull(0)?.toString() ?: return ""
+                val key = args.getOrNull(1)?.toString()
+                val transformation = args.getOrNull(2)?.toString()
+                val iv = args.getOrNull(3)?.toString()
+                return runCatching {
+                    val encrypted = runCrypto(Cipher.ENCRYPT_MODE, text.toByteArray(Charsets.UTF_8), key, transformation, iv)
+                    Base64.getEncoder().encodeToString(encrypted)
+                }.getOrElse { error ->
+                    throw RuntimeException("aesBase64EncodeToString 失败: ${error.message}")
+                }
+            }
+        })
+
+        // java.aesDecodeToString(base64Data, key, transformation, iv) —— 与上面同语义，Legado 两种命名都有
+        val aesDecodeAlias = object : BaseFunction() {
+            override fun call(cx: Context, scope: Scriptable, thisObj: Scriptable, args: Array<out Any?>): Any {
+                val data = args.getOrNull(0)?.toString() ?: return ""
+                val key = args.getOrNull(1)?.toString()
+                val transformation = args.getOrNull(2)?.toString()
+                val iv = args.getOrNull(3)?.toString()
+                return runCatching {
+                    val decoded = runCatching { Base64.getDecoder().decode(data) }
+                        .getOrElse { Base64.getMimeDecoder().decode(data) }
+                    String(runCrypto(Cipher.DECRYPT_MODE, decoded, key, transformation, iv), Charsets.UTF_8)
+                }.getOrElse { error -> throw RuntimeException("aesDecodeToString 失败: ${error.message}") }
+            }
+        }
+        ScriptableObject.putProperty(api, "aesDecodeToString", aesDecodeAlias)
+        ScriptableObject.putProperty(api, "aesBase64Decode", aesDecodeAlias)
+
+        // java.createSymmetricCrypto(transformation, key, iv) -> { encrypt, decrypt }
+        ScriptableObject.putProperty(api, "createSymmetricCrypto", object : BaseFunction() {
+            override fun call(cx: Context, scope: Scriptable, thisObj: Scriptable, args: Array<out Any?>): Any {
+                val transformation = args.getOrNull(0)?.toString()
+                val key = args.getOrNull(1)?.toString()
+                val iv = args.getOrNull(2)?.toString()
+                val obj = NativeObject()
+                obj.parentScope = scope
+                ScriptableObject.putProperty(obj, "encrypt", object : BaseFunction() {
+                    override fun call(cx2: Context, s2: Scriptable, t2: Scriptable, a2: Array<out Any?>): Any {
+                        val text = a2.firstOrNull()?.toString() ?: return ""
+                        return Base64.getEncoder().encodeToString(
+                            runCrypto(Cipher.ENCRYPT_MODE, text.toByteArray(Charsets.UTF_8), key, transformation, iv)
+                        )
+                    }
+                })
+                ScriptableObject.putProperty(obj, "decrypt", object : BaseFunction() {
+                    override fun call(cx2: Context, s2: Scriptable, t2: Scriptable, a2: Array<out Any?>): Any {
+                        val data = a2.firstOrNull()?.toString() ?: return ""
+                        val decoded = runCatching { Base64.getDecoder().decode(data) }
+                            .getOrElse { Base64.getMimeDecoder().decode(data) }
+                        return String(runCrypto(Cipher.DECRYPT_MODE, decoded, key, transformation, iv), Charsets.UTF_8)
+                    }
+                })
+                return obj
+            }
+        })
+
         // java.deviceID() / java.androidId()
         val deviceIdFn = object : BaseFunction() {
             override fun call(cx: Context, scope: Scriptable, thisObj: Scriptable, args: Array<out Any?>): Any {
@@ -765,7 +882,117 @@ class JsSandbox(private val runner: RuleRunner? = null) {
                 return value
             }
         })
+
+        // java.toNumChapter(s) —— 把「第123章 / 123 / 一百二十三」之类标题归一成数字。
+        // 4 个书源用到（SESSION-026 扫描），缺失会让依赖它排序/对齐的规则抛 ReferenceError。
+        ScriptableObject.putProperty(api, "toNumChapter", object : BaseFunction() {
+            override fun call(cx: Context, scope: Scriptable, thisObj: Scriptable, args: Array<out Any?>): Any {
+                val text = args.firstOrNull()?.toString()?.trim() ?: return 0
+                Regex("\\d+").find(text)?.value?.toIntOrNull()?.let { return it }
+                // 中文数字（仅支持常见的一~九百九十九，够覆盖章节标题）
+                return chineseNumberToInt(text)
+            }
+        })
+
+        // java.t2s(text) —— 繁体转简体（10 处使用）。服务端无完整词表，
+        // 用一个可用的映射表覆盖常见字；未命中则原样返回，绝不抛错。
+        ScriptableObject.putProperty(api, "t2s", object : BaseFunction() {
+            override fun call(cx: Context, scope: Scriptable, thisObj: Scriptable, args: Array<out Any?>): Any {
+                val text = args.firstOrNull()?.toString() ?: return ""
+                return traditionalToSimplified(text)
+            }
+        })
+
+        // java.encodeURI(text)
+        ScriptableObject.putProperty(api, "encodeURI", object : BaseFunction() {
+            override fun call(cx: Context, scope: Scriptable, thisObj: Scriptable, args: Array<out Any?>): Any {
+                val text = args.firstOrNull()?.toString() ?: return ""
+                return java.net.URLEncoder.encode(text, Charsets.UTF_8).replace("+", "%20")
+            }
+        })
+
+        // java.connect(url) —— 仅建连探测，返回空串即视为可达；失败抛错（与 Legado 语义一致）。
+        ScriptableObject.putProperty(api, "connect", object : BaseFunction() {
+            override fun call(cx: Context, scope: Scriptable, thisObj: Scriptable, args: Array<out Any?>): Any {
+                val url = args.firstOrNull()?.toString() ?: return ""
+                return try {
+                    runner?.fetch(url, execContext?.sourceId, execContext?.database) ?: ""
+                } catch (error: Throwable) {
+                    throw normalizeScriptThrowable(error)
+                }
+            }
+        })
+
+        // java.getElements(rule) / java.getElement(rule) —— 在当前正文上按规则取元素
+        val getElementsFn = object : BaseFunction() {
+            override fun call(cx: Context, scope: Scriptable, thisObj: Scriptable, args: Array<out Any?>): Any {
+                val rule = args.firstOrNull()?.toString() ?: return Context.getUndefinedValue()
+                val src = ScriptableObject.getProperty(scope, "src")?.toString()
+                    ?: ScriptableObject.getProperty(scope, "result")?.toString() ?: ""
+                val value = NodeValue.document(src).value(rule) ?: ""
+                val arr = cx.newArray(scope, value.split("\n").filter { it.isNotBlank() }.toTypedArray())
+                return arr
+            }
+        }
+        ScriptableObject.putProperty(api, "getElements", getElementsFn)
+        ScriptableObject.putProperty(api, "getElement", getElementsFn)
     }
+
+    /** 中文数字转整数，覆盖「一」到「九百九十九」以及「十/十一/二十」等常见章节写法。 */
+    private fun chineseNumberToInt(text: String): Int {
+        val digits = mapOf(
+            '零' to 0, '一' to 1, '二' to 2, '两' to 2, '三' to 3, '四' to 4,
+            '五' to 5, '六' to 6, '七' to 7, '八' to 8, '九' to 9,
+        )
+        var result = 0
+        var section = 0
+        var seen = false
+        for (ch in text) {
+            when {
+                ch in digits -> { section = digits.getValue(ch); seen = true }
+                ch == '十' -> {
+                    result += (if (section == 0) 1 else section) * 10
+                    section = 0
+                    seen = true
+                }
+                ch == '百' -> {
+                    result += (if (section == 0) 1 else section) * 100
+                    section = 0
+                    seen = true
+                }
+                else -> if (seen) break
+            }
+        }
+        return result + section
+    }
+
+    /**
+     * 繁体 → 简体。
+     *
+     * 只做**字符级**映射（不含词组消歧，如「後」→「后」、「發」→「发」），
+     * 这对目录/正文的显示足够；未收录的字原样保留，绝不因转换失败而中断规则。
+     */
+    private fun traditionalToSimplified(text: String): String {
+        if (text.isEmpty()) return text
+        val sb = StringBuilder(text.length)
+        for (ch in text) {
+            sb.append(TRADITIONAL_TO_SIMPLIFIED[ch] ?: ch)
+        }
+        return sb.toString()
+    }
+
+        /**
+         * 常用繁体字 → 简体字映射。
+         *
+         * 刻意保持精简：只收录书源实际会遇到的常见字，避免引入一个庞大的第三方词表
+         * （复杂度惩罚）。未命中的字原样输出。
+         */
+        val TRADITIONAL_TO_SIMPLIFIED: Map<Char, Char> = buildMap {
+            val pairs = "後后|發发|頭头|們们|個个|這这|說说|會会|時时|對对|開开|關关|來来|過过|為为|與与|長长|門门|問问|間间|實实|現现|點点|電电|話话|聽听|讀读|書书|筆笔|學学|習习|體体|見见|覺觉|場场|車车|馬马|鳥鸟|魚鱼|龍龙|風风|雲云|雨雨|飛飞|機机|氣气|萬万|億亿|兩两|買买|賣卖|錢钱|銀银|鐵铁|銅铜|東东|絲丝|紅红|綠绿|藍蓝|黃黄|兒儿|幾几|當当|經经|結结|給给|統统|維维|線线|練练|織织|總总|級级|紀纪|約约|純纯|紙纸|終终|組组|細细|紹绍|絶绝|統统|斷断|對对|將将|專专|尋寻|導导|層层|屬属|歲岁|歷历|殘残|殺杀|毎每|畢毕|異异|畫画|當当|疊叠|盡尽|監监|蓋盖|盤盘|眾众|著着|藍蓝|藝艺|藥药|處处|號号|蟲虫|術术|衝冲|裝装|複复|覺觉|觀观|計计|討讨|訓训|記记|講讲|許许|論论|設设|訪访|証证|評评|詞词|試试|詩诗|誠诚|誤误|調调|談谈|請请|論论|諾诺|謀谋|謝谢|議议|護护|讀读|變变|讓让|豐丰|豬猪|貝贝|貞贞|負负|財财|貢贡|貧贫|貨货|販贩|貪贪|購购|貫贯|責责|貴贵|賀贺|資资|賓宾|賞赏|賢贤|賤贱|賬账|賭赌|贊赞|贏赢|贛赣|趙赵|蹺跷|車车|軌轨|軍军|軒轩|軟软|軸轴|較较|載载|輔辅|輕轻|輛辆|輝辉|輩辈|輪轮|輯辑|輸输|轄辖|轉转|辦办|辭辞|辯辩|農农|遠远|適适|選选|遞递|遷迁|遺遗|鄉乡|鄭郑|醬酱|釋释|鐘钟|鋼钢|錄录|錢钱|鍋锅|鎮镇|鏈链|鎖锁|鏡镜|鐘钟|鐵铁|鑰钥|長长|閉闭|開开|閏闰|閑闲|閱阅|闆板|關关|陽阳|陰阴|陳陈|陸陆|隊队|階阶|隨随|險险|隱隐|雖虽|雙双|雜杂|雞鸡|離离|難难|雲云|電电|霧雾|靈灵|靜静|響响|頁页|頂顶|項项|順顺|須须|預预|頑顽|頓顿|頗颇|領领|頭头|頻频|顆颗|題题|顏颜|願愿|類类|顧顾|顯显|風风|飛飞|飯饭|飲饮|飾饰|飽饱|養养|餐餐|館馆|首首|香香|馬马|駕驾|騎骑|騰腾|驅驱|驗验|驚惊|骨骨|體体|高高|髮发|鬥斗|魚鱼|鮮鲜|鳥鸟|鳳凤|鴨鸭|鴻鸿|鵝鹅|鷹鹰|鹽盐|麗丽|麥麦|黃黄|點点|黨党|鼓鼓|鼠鼠|齒齿|龍龙|龜龟";
+            for (entry in pairs.split('|')) {
+                if (entry.length == 2) put(entry[0], entry[1])
+            }
+        }
 
     /**
      * 构造 Legado 的 URL 选项 JSON（拼接在 URL 之后的 `,{...}` 部分）。

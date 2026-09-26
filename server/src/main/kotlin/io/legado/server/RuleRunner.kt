@@ -438,28 +438,14 @@ class RuleRunner(private val responseFetcher: ((String) -> String)? = null, inte
         val headers = mutableMapOf<String, String>()
         val headerStr = source.string("header")?.trim()
         if (!headerStr.isNullOrBlank()) {
-            runCatching {
-                val elem = Json.parseToJsonElement(headerStr)
-                if (elem is JsonObject) {
-                    elem.entries.filter { it.value is JsonPrimitive }.forEach {
-                        headers[it.key] = (it.value as JsonPrimitive).contentOrNull ?: ""
-                    }
-                }
-            }
+            headers.putAll(parseHeaderMap(headerStr))
         }
         val sUrl = sourceUrl ?: source.string("bookSourceUrl")
         val db = database
         if (db != null && !sUrl.isNullOrBlank()) {
             val state = db.getSourceLoginState(sUrl)
             state?.loginHeader?.takeIf { it.isNotBlank() }?.let { h ->
-                runCatching {
-                    val elem = Json.parseToJsonElement(h)
-                    if (elem is JsonObject) {
-                        elem.entries.filter { it.value is JsonPrimitive }.forEach {
-                            headers[it.key] = (it.value as JsonPrimitive).contentOrNull ?: ""
-                        }
-                    }
-                }
+                headers.putAll(parseHeaderMap(h))
             }
             val cookie = db.getSourceCookie(sUrl, sUrl)
             if (!cookie.isNullOrBlank()) {
@@ -467,6 +453,108 @@ class RuleRunner(private val responseFetcher: ((String) -> String)? = null, inte
             }
         }
         return headers
+    }
+
+    /**
+     * 宽容解析书源 `header` / 登录头。
+     *
+     * 先按标准 JSON 解析；失败则回退到**宽容模式**。
+     *
+     * 为什么必须宽容（实测，见 SESSION-026）：Legado 生态里大量书源的 `header`
+     * 用的是**单引号**的伪 JSON，例如：
+     * ```
+     * { 'User-Agent': 'okhttp/4.9.2', 'client-device': '0cde...', 'Authorization': 'bearer...' }
+     * ```
+     * 这**不是合法 JSON**，`Json.parseToJsonElement` 会抛异常。旧实现把异常
+     * `runCatching` 吞掉 ⇒ **所有请求头被静默丢弃** ⇒ 需要鉴权的上游一律返回
+     * 403 / `code:4004 device 不能为空`，表现为「搜索能出结果，但打开书正文全空」。
+     *
+     * 这类静默丢失极难排查，因此宽容模式是必需的，而不是「顺手兼容一下」。
+     */
+    internal fun parseHeaderMap(raw: String): Map<String, String> {
+        val text = raw.trim()
+        if (text.isEmpty()) return emptyMap()
+        // 1) 标准 JSON
+        runCatching {
+            val elem = Json.parseToJsonElement(text)
+            if (elem is JsonObject) {
+                return elem.entries.filter { it.value is JsonPrimitive }
+                    .associate { it.key to ((it.value as JsonPrimitive).contentOrNull ?: "") }
+            }
+        }
+        // 2) 宽容模式：单引号 / 无引号键 / Python dict 风格
+        return parseLooseHeaderMap(text)
+    }
+
+    /**
+     * 宽容模式的键值扫描器。
+     *
+     * 不用正则硬拆（值里可能含逗号、冒号、引号），而是**逐字符扫描**：
+     * 先读键（可带单/双引号或裸标识符），再读冒号后的值（带引号则读到配对引号，
+     * 否则读到下一个逗号或结尾），从而正确处理 `Authorization: 'bearer eyJ...'` 这类长值。
+     */
+    private fun parseLooseHeaderMap(text: String): Map<String, String> {
+        val result = linkedMapOf<String, String>()
+        var i = text.indexOfFirst { it == '{' }
+        i = if (i < 0) 0 else i + 1
+        val end = text.lastIndexOf('}').let { if (it < 0) text.length else it }
+        while (i < end) {
+            // 跳过分隔与空行
+            while (i < end && (text[i].isWhitespace() || text[i] == ',' || text[i] == ';')) i++
+            if (i >= end) break
+
+            // --- 读键 ---
+            val key: String
+            val afterKey: Int
+            when (text[i]) {
+                '\'', '"' -> {
+                    val quote = text[i]
+                    val close = text.indexOf(quote, i + 1)
+                    if (close < 0 || close > end) break
+                    key = text.substring(i + 1, close)
+                    afterKey = close + 1
+                }
+                else -> {
+                    var j = i
+                    while (j < end && text[j] != ':' && text[j] != ',' && text[j] != '\n') j++
+                    key = text.substring(i, j).trim()
+                    afterKey = j
+                }
+            }
+            i = afterKey
+            while (i < end && text[i].isWhitespace()) i++
+            if (i >= end || text[i] != ':') {
+                // 不是 k:v（例如残留的 `}`），跳到下一个逗号
+                while (i < end && text[i] != ',') i++
+                continue
+            }
+            i++ // 跳过 ':'
+            while (i < end && text[i].isWhitespace()) i++
+
+            // --- 读值 ---
+            val value: String
+            if (i < end && (text[i] == '\'' || text[i] == '"')) {
+                val quote = text[i]
+                val sb = StringBuilder()
+                var j = i + 1
+                while (j < end) {
+                    val ch = text[j]
+                    if (ch == '\\' && j + 1 < end) { sb.append(text[j + 1]); j += 2; continue }
+                    if (ch == quote) break
+                    sb.append(ch); j++
+                }
+                value = sb.toString()
+                i = if (j < end) j + 1 else end
+            } else {
+                var j = i
+                while (j < end && text[j] != ',' && text[j] != '\n') j++
+                value = text.substring(i, j).trim()
+                i = j
+            }
+            val cleanKey = key.trim().trim('\'', '"')
+            if (cleanKey.isNotEmpty()) result[cleanKey] = value
+        }
+        return result
     }
 
     private fun mergeOptions(sourceHeaders: Map<String, String>, options: UrlOptions?): UrlOptions {
@@ -638,6 +726,17 @@ class RuleRunner(private val responseFetcher: ((String) -> String)? = null, inte
         else -> Jsoup.parse(body).select(rule.css()).map(NodeValue::html)
     }
 
+    /**
+     * 把 Legado 的 `@` 链式选择器翻译成 CSS 选择器。
+     *
+     * 必须翻译的三类语法（缺一类就会**静默匹配 0 个元素**，表现为「目录 0 章」）：
+     * 1. `id.xxx`   → `#xxx`      （旧实现直接透传，而 `id.list` 不是合法 CSS ⇒ 0 匹配）
+     * 2. `tag.xxx`  → `xxx`       （旧实现只处理了后接 `.数字` 的形式，`tag.p` 会残留前缀）
+     * 3. `xxx!0:1:2` → 排除多个下标（旧实现只认单个数字，多下标直接丢失排除语义）
+     *
+     * 实测（SESSION-026）：`id.list@dd!0:1:2:3:4:5:6:7:8` 旧实现产出 `id.list dd`，
+     * Jsoup 匹配 **0** 个；正确应为 `#list dd`，匹配 **89** 个。
+     */
     private fun String.css(): String {
         val clean = removePrefix("@css:").trim()
         val parts = clean.split("@")
@@ -648,13 +747,14 @@ class RuleRunner(private val responseFetcher: ((String) -> String)? = null, inte
             if (trimmed in setOf("text", "href", "src", "content", "html", "textNodes", "textNode")) break
             if (trimmed.startsWith("attr(") || trimmed.startsWith("text(") || trimmed.startsWith("all")) break
             if ("!" in trimmed) {
-                val (tag, notIndex) = trimmed.split("!", limit = 2)
-                val idx = notIndex.toIntOrNull()
-                if (idx != null) {
-                    cssParts.add("$tag:not(:nth-child(${idx + 1}))")
-                } else {
-                    cssParts.add(tag)
-                }
+                val (rawTag, notIndex) = trimmed.split("!", limit = 2)
+                val tag = translateLegadoSelector(rawTag.trim())
+                // `!0:1:2` —— 排除多个下标（Legado 用冒号分隔）；单个 `!0` 也要支持
+                val excluded = notIndex.split(":").mapNotNull { it.trim().toIntOrNull() }.distinct()
+                cssParts.add(
+                    if (excluded.isEmpty()) tag
+                    else excluded.joinToString("") { "$tag:not(:nth-child(${it + 1}))" }
+                )
             } else if (trimmed.startsWith("class.")) {
                 val cls = trimmed.removePrefix("class.")
                 if ("." in cls) {
@@ -669,11 +769,13 @@ class RuleRunner(private val responseFetcher: ((String) -> String)? = null, inte
                 val idx = idxStr.toIntOrNull()
                 if (idx != null) cssParts.add("$tag:nth-of-type(${idx + 1})") else cssParts.add(trimmed)
             } else {
-                cssParts.add(trimmed)
+                cssParts.add(translateLegadoSelector(trimmed))
             }
         }
         return if (cssParts.isEmpty()) clean else cssParts.joinToString(" ")
     }
+
+    private fun translateLegadoSelector(selector: String): String = translateSelector(selector)
     /**
      * 正文清洗：优先走「结构性删除」（去掉 script/style/div 容器），
      * 但聚合源的正文**整体包在一个 `<div>` 里**（如大灰狼的 `<div rs-native>…</div>`），
@@ -823,7 +925,68 @@ internal class NodeValue private constructor(private val html: Element?, private
             return NodeValue.document(evaluated).value(postRule, jsSandbox, evaluated, baseUrl)
         }
 
+        // ------------------------------------------------------------------
+        // `取值路径@js:代码` —— Legado 的**后置 JS 处理**写法。
+        //
+        // 实测（SESSION-026）：书源 api.jmlldsc.com 的 chapterUrl 规则是
+        //   $.path@js:java.aesBase64DecodeToString(result,"f041c49714d39908",...)
+        // 旧实现没有这个分支：整串（含 `@js:`）被丢给 JsonPath，解析必然失败 ⇒
+        // 返回 null ⇒ chapters() 里 `mapIndexedNotNull` 把**每一章**都丢掉
+        // ⇒ 目录 0 章、正文取不到，且**没有任何报错**。
+        //
+        // 语义：先按左边的路径/CSS 取出值，把它作为 `result` 交给右边的 JS，
+        // 用 JS 的返回值作为最终结果。
+        // ------------------------------------------------------------------
+        val jsSplitIndex = findJsPostProcessor(trimmedRule)
+        if (jsSplitIndex > 0) {
+            val preRule = trimmedRule.substring(0, jsSplitIndex).trim()
+            val jsCode = trimmedRule.substring(jsSplitIndex)
+                .removePrefix("@js:").removePrefix("js:").trim()
+            if (jsCode.isNotBlank()) {
+                val intermediate = valuePlain(preRule)
+                val evaluated = jsSandbox?.eval(
+                    jsCode,
+                    mapOf(
+                        "result" to (intermediate ?: ""),
+                        "src" to (rawBody ?: intermediate ?: ""),
+                        "baseUrl" to (baseUrl ?: ""),
+                    ),
+                )
+                return evaluated ?: intermediate
+            }
+        }
+
         return valuePlain(trimmedRule)
+    }
+
+    /**
+     * 找到 `@js:` / `js:` 后置处理器在规则中的位置（仅当它**不是**出现在开头时）。
+     *
+     * 返回 -1 表示没有后置 JS。必须做引号感知扫描：`@js:` 可能出现在 JS 字符串字面量里
+     * （例如 `...@js:java.toast("@js:not-a-marker")`），朴素 indexOf 会切错位置。
+     */
+    private fun findJsPostProcessor(rule: String): Int {
+        var i = 0
+        var quote: Char? = null
+        var escaped = false
+        while (i < rule.length) {
+            val ch = rule[i]
+            if (quote != null) {
+                when {
+                    escaped -> escaped = false
+                    ch == '\\' -> escaped = true
+                    ch == quote -> quote = null
+                }
+                i++
+                continue
+            }
+            if (ch == '\'' || ch == '"') { quote = ch; i++; continue }
+            if (ch == '@' && rule.startsWith("@js:", i)) return i
+            // 裸 `js:` 只在它前面是路径分隔上下文时才认，避免误伤 URL 里的 "js:"
+            if (ch == 'j' && rule.startsWith("js:", i) && i > 0 && rule[i - 1] == '@') return i - 1
+            i++
+        }
+        return -1
     }
 
     private fun valuePlain(rule: String): String? {
@@ -894,7 +1057,9 @@ internal class NodeValue private constructor(private val html: Element?, private
             val matches = element.select(".$className")
             return@runCatching matches.getOrNull(ordinal)?.let { listOf(it) } ?: emptyList()
         }
-        element.select(trimmed)
+        // 兜底：先翻译 Legado 专有写法（`id.x`→`#x`、`tag.x`→`x`）再交给 Jsoup，
+        // 否则 `id.list` 这类非法 CSS 会静默返回空集。
+        element.select(translateSelector(trimmed))
     }.getOrDefault(emptyList())
 
     fun at(rule: String?): NodeValue {
@@ -983,6 +1148,24 @@ internal class NodeValue private constructor(private val html: Element?, private
 }
 
 class RuleExecutionException(message: String) : RuntimeException(message)
+
+/**
+ * 把单个 Legado 选择器片段翻译成合法 CSS。
+ *
+ * Legado 专有写法（**不是** CSS，直接交给 Jsoup 会静默匹配 0 个元素）：
+ * - `id.xxx`  → `#xxx`
+ * - `tag.xxx` → `xxx`
+ *
+ * 抽成文件级函数是因为 `RuleRunner`（列表规则的 `css()`）与 `NodeValue`
+ * （取值规则的 `selectAllLegado()`）两条路径都需要它，避免两处各写一份而漂移。
+ */
+internal fun translateSelector(selector: String): String {
+    val s = selector.trim()
+    if (s.isEmpty()) return s
+    Regex("^id\\.([A-Za-z0-9_\\-]+)$").find(s)?.let { return "#${it.groupValues[1]}" }
+    Regex("^tag\\.([A-Za-z0-9_\\-]+)$").find(s)?.let { return it.groupValues[1] }
+    return s
+}
 
 /**
  * 把 Java 侧抛出的异常规范化为**脚本可见、可被 `catch(e)` 捕获**的 JS 错误。

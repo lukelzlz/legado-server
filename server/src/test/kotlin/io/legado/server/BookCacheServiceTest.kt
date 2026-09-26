@@ -122,8 +122,16 @@ class BookCacheServiceTest {
         } finally { Files.deleteIfExists(java.nio.file.Path.of(path)) }
     }
 
+    /**
+     * `start()` 只**续做**上次未跑完的书，而不是把整架书重下一遍。
+     *
+     * 旧实现 `cacheRequests()` 是无条件 `select ... from book_shelf`，
+     * 导致每次启动都重下整架书——实测 435 本的库启动即打满 Dispatchers.IO，
+     * `/healthz` 持续超时数分钟、数据库从 13MB 膨胀到 343MB。
+     * 现在只认 `state in ('pending','caching')`。
+     */
     @Test
-    fun `start method automatically enqueues all shelf cache requests`() = runBlocking {
+    fun `start method resumes only unfinished cache requests`() = runBlocking {
         val path = temporaryDatabase()
         try {
             val database = Database(path); database.initialize("test-pass")
@@ -131,6 +139,9 @@ class BookCacheServiceTest {
             val book2 = BookshelfWriteRequest("https://s1.test", "https://book/2", "书2", tocUrl = "https://book/2/toc")
             database.saveBookshelf(book1, null)
             database.saveBookshelf(book2, null)
+
+            // 书1 处于未完成状态 -> 应被续做；书2 无 cache 状态行 -> 不应被重下。
+            database.beginBookCache("https://s1.test", "https://book/1", 1)
 
             val sourceJson = """{"bookSourceUrl":"https://s1.test","ruleToc":{"chapterList":"$.data","chapterName":"$.title","chapterUrl":"$.url"},"ruleContent":{"content":"$.content"}}"""
             database.saveSource(SourceCodec.parse(sourceJson), null)
@@ -145,14 +156,53 @@ class BookCacheServiceTest {
             val service = BookCacheService(database, runner) {}
             service.start()
             waitForCondition(5000) {
-                val list = database.listBookshelf()
-                list.size == 2 && list.all { it.cacheState == "ready" }
+                database.listBookshelf().first { it.bookUrl == "https://book/1" }.cacheState == "ready"
             }
-
-            val shelves = database.listBookshelf()
-            assertEquals(2, shelves.size)
-            assertTrue(shelves.all { it.cacheState == "ready" && it.cachedChapters == 1 })
+            // 留出足够时间：若旧行为仍在，book/2 也会被缓存并变成 ready。
+            delay(600)
             service.stop()
+
+            val shelves = database.listBookshelf().associateBy { it.bookUrl }
+            val b1 = shelves.getValue("https://book/1")
+            val b2 = shelves.getValue("https://book/2")
+            assertTrue("未完成的书应被续做并置为 ready", b1.cacheState == "ready" && b1.cachedChapters == 1)
+            assertEquals(
+                "已完成或无缓存状态的书不应在启动时被重新下载",
+                "idle",
+                b2.cacheState,
+            )
+            assertEquals("未请求缓存的书不应产生正文缓存", 0, b2.cachedChapters)
+        } finally { Files.deleteIfExists(java.nio.file.Path.of(path)) }
+    }
+
+    /**
+     * 非网络来源（Android `content://`、本项目 `local://`）在服务端**必然抓取失败**，
+     * 每次启动重复入队只会刷屏并白占连接，必须跳过。
+     */
+    @Test
+    fun `start method skips non-network book sources`() = runBlocking {
+        val path = temporaryDatabase()
+        try {
+            val database = Database(path); database.initialize("test-pass")
+            val androidUrl = "content://com.android.externalstorage.documents/tree/primary%3ADownload/document/x.epub"
+            database.saveBookshelf(
+                BookshelfWriteRequest("https://s1.test", androidUrl, "安卓本地书", tocUrl = androidUrl),
+                null,
+            )
+            database.saveBookshelf(
+                BookshelfWriteRequest("loc_book", "local://abc123", "本地导入书", tocUrl = "local://abc123"),
+                null,
+            )
+            database.beginBookCache("https://s1.test", androidUrl, 1)
+            database.beginBookCache("loc_book", "local://abc123", 1)
+
+            // 直接校验筛选结果，避免依赖线程调度时序。
+            val candidates = database.cacheRequests()
+            assertEquals(
+                "content:// 与 local:// 都不应进入启动续做队列，实际：$candidates",
+                0,
+                candidates.size,
+            )
         } finally { Files.deleteIfExists(java.nio.file.Path.of(path)) }
     }
 

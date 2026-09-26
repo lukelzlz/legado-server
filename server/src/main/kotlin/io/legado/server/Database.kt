@@ -425,8 +425,8 @@ class Database(private val path: String) : Closeable, AutoCloseable {
             it.executeUpdate() > 0
         }
     }
-    fun listBookshelf(): List<BookshelfItem> = connect { db -> db.prepareStatement("""select s.source_id,s.book_url,s.name,s.author,s.toc_url,s.cover_key,p.chapter_index,p.scroll_position,s.last_read_at,coalesce(c.cached_chapters,0),coalesce(c.total_chapters,0),coalesce(c.state,'idle'),c.last_error,s.completed,s.alternate_sources,s.group_name from book_shelf s left join reading_progress p on p.source_id=s.source_id and p.book_url=s.book_url left join book_cache_status c on c.source_id=s.source_id and c.book_url=s.book_url order by s.last_read_at desc""").use { query -> query.executeQuery().use { rs -> buildList { while (rs.next()) add(rs.toShelf()) } } } }
-    fun getShelfBookByUrl(bookUrl: String): BookshelfItem? = connect { db -> db.prepareStatement("""select s.source_id,s.book_url,s.name,s.author,s.toc_url,s.cover_key,p.chapter_index,p.scroll_position,s.last_read_at,coalesce(c.cached_chapters,0),coalesce(c.total_chapters,0),coalesce(c.state,'idle'),c.last_error,s.completed,s.alternate_sources,s.group_name from book_shelf s left join reading_progress p on p.source_id=s.source_id and p.book_url=s.book_url left join book_cache_status c on c.source_id=s.source_id and c.book_url=s.book_url where s.book_url=?""").use { it.setString(1, bookUrl); it.executeQuery().use { rs -> if (rs.next()) rs.toShelf() else null } } }
+    fun listBookshelf(): List<BookshelfItem> = connect { db -> db.prepareStatement("""select s.source_id,s.book_url,s.name,s.author,s.toc_url,s.cover_key,p.chapter_index,p.scroll_position,s.last_read_at,coalesce(c.cached_chapters,0),coalesce(c.total_chapters,0),coalesce(c.state,'idle'),c.last_error,s.completed,s.alternate_sources,s.group_name,s.cover_url from book_shelf s left join reading_progress p on p.source_id=s.source_id and p.book_url=s.book_url left join book_cache_status c on c.source_id=s.source_id and c.book_url=s.book_url order by s.last_read_at desc""").use { query -> query.executeQuery().use { rs -> buildList { while (rs.next()) add(rs.toShelf()) } } } }
+    fun getShelfBookByUrl(bookUrl: String): BookshelfItem? = connect { db -> db.prepareStatement("""select s.source_id,s.book_url,s.name,s.author,s.toc_url,s.cover_key,p.chapter_index,p.scroll_position,s.last_read_at,coalesce(c.cached_chapters,0),coalesce(c.total_chapters,0),coalesce(c.state,'idle'),c.last_error,s.completed,s.alternate_sources,s.group_name,s.cover_url from book_shelf s left join reading_progress p on p.source_id=s.source_id and p.book_url=s.book_url left join book_cache_status c on c.source_id=s.source_id and c.book_url=s.book_url where s.book_url=?""").use { it.setString(1, bookUrl); it.executeQuery().use { rs -> if (rs.next()) rs.toShelf() else null } } }
     fun setBookshelfCompleted(sourceId: String, bookUrl: String, completed: Boolean): BookshelfItem? = write { db ->
         db.prepareStatement("update book_shelf set completed=? where source_id=? and book_url=?").use {
             it.setInt(1, if (completed) 1 else 0); it.setString(2, sourceId); it.setString(3, bookUrl); it.executeUpdate()
@@ -1099,7 +1099,36 @@ class Database(private val path: String) : Closeable, AutoCloseable {
         }
     }
 
-    fun cacheRequests(): List<CachedBookRequest> = connect { db -> db.prepareStatement("select source_id,book_url,toc_url from book_shelf").use { query -> query.executeQuery().use { rs -> buildList { while (rs.next()) add(CachedBookRequest(rs.getString(1), rs.getString(2), rs.getString(3))) } } } }
+    /**
+     * 启动时需要**续做**的缓存任务。
+     *
+     * 只返回上次未跑完的书（`state` 为 `pending`/`caching`），而不是整张书架。
+     *
+     * 旧实现是 `select ... from book_shelf`（**无任何过滤**），导致每次重启都把
+     * 整架书重新下载一遍：实测 435 本的库启动即打满线程池，`Application started`
+     * 之后数分钟出不来的都是这台机器；数据库还会从 13MB 膨胀到 256MB。
+     * 其中还包括 Android 的 `content://` 本地书——这类路径在服务端**必然失败**，
+     * 纯粹是每次启动重复刷屏 + 白白占用连接。
+     *
+     * 另外跳过非网络来源的 `book_url`：`content://`（Android 本地文件）、
+     * `local://`（本项目本地导入）都不是服务端可抓取的地址。
+     */
+    fun cacheRequests(): List<CachedBookRequest> = connect { db ->
+        db.prepareStatement(
+            """
+            select s.source_id, s.book_url, s.toc_url
+            from book_shelf s
+            join book_cache_status c on c.source_id = s.source_id and c.book_url = s.book_url
+            where c.state in ('pending', 'caching')
+              and s.book_url not like 'content://%'
+              and s.book_url not like 'local://%'
+            """.trimIndent()
+        ).use { query ->
+            query.executeQuery().use { rs ->
+                buildList { while (rs.next()) add(CachedBookRequest(rs.getString(1), rs.getString(2), rs.getString(3))) }
+            }
+        }
+    }
 
     fun importSources(rawSources: List<String>): ImportResponse {
         val errors = mutableListOf<String>()
@@ -1556,6 +1585,7 @@ class Database(private val path: String) : Closeable, AutoCloseable {
             completed = getInt(14) != 0,
             alternateSources = altSources,
             groupName = runCatching { getString(16) }.getOrNull()?.trim()?.takeIf { it.isNotEmpty() },
+            coverUrl = runCatching { getString(17) }.getOrNull()?.trim()?.takeIf { it.isNotEmpty() },
         )
     }
     private fun java.sql.ResultSet.toReplaceRule(): ReplaceRule = ReplaceRule(
@@ -1775,7 +1805,7 @@ class Database(private val path: String) : Closeable, AutoCloseable {
         }
     }
 
-    private fun getBookshelf(db: Connection, sourceId: String, bookUrl: String): BookshelfItem? = db.prepareStatement("""select s.source_id,s.book_url,s.name,s.author,s.toc_url,s.cover_key,p.chapter_index,p.scroll_position,s.last_read_at,coalesce(c.cached_chapters,0),coalesce(c.total_chapters,0),coalesce(c.state,'idle'),c.last_error,s.completed,s.alternate_sources,s.group_name from book_shelf s left join reading_progress p on p.source_id=s.source_id and p.book_url=s.book_url left join book_cache_status c on c.source_id=s.source_id and c.book_url=s.book_url where s.source_id=? and s.book_url=?""").use { it.setString(1, sourceId); it.setString(2, bookUrl); it.executeQuery().use { rs -> if (rs.next()) rs.toShelf() else null } }
+    private fun getBookshelf(db: Connection, sourceId: String, bookUrl: String): BookshelfItem? = db.prepareStatement("""select s.source_id,s.book_url,s.name,s.author,s.toc_url,s.cover_key,p.chapter_index,p.scroll_position,s.last_read_at,coalesce(c.cached_chapters,0),coalesce(c.total_chapters,0),coalesce(c.state,'idle'),c.last_error,s.completed,s.alternate_sources,s.group_name,s.cover_url from book_shelf s left join reading_progress p on p.source_id=s.source_id and p.book_url=s.book_url left join book_cache_status c on c.source_id=s.source_id and c.book_url=s.book_url where s.source_id=? and s.book_url=?""").use { it.setString(1, sourceId); it.setString(2, bookUrl); it.executeQuery().use { rs -> if (rs.next()) rs.toShelf() else null } }
     private fun migrateReadingProgress(db: Connection) {
         val columns = db.createStatement().use { statement ->
             statement.executeQuery("pragma table_info(reading_progress)").use { result ->

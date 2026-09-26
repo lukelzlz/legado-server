@@ -230,6 +230,24 @@ data class SourceLoginStateRecord(
     val recleanedChapters: Int,
     val totalChapters: Int,
 )
+
+/**
+ * 封面补抓请求。留空 [sourceId]/[bookUrl] 表示「整架补抓」。
+ *
+ * 用于修复历史数据：在封面补抓逻辑上线**之前**导入的书架，
+ * `cover_key` 全为空，需要一次性把封面抓成本地副本。
+ */
+@Serializable data class CoverRefreshRequest(
+    val sourceId: String? = null,
+    val bookUrl: String? = null,
+)
+
+@Serializable data class CoverRefreshResponse(
+    val total: Int,
+    val refreshed: Int,
+    val failed: Int,
+    val skipped: Int,
+)
 @Serializable data class BatchBookRecleanRequest(
     val books: List<BookRecleanRequest>,
 )
@@ -300,6 +318,12 @@ data class CachedBookRequest(
     val author: String? = null,
     val tocUrl: String,
     val coverKey: String? = null,
+    /**
+     * 原始封面地址。备份导入的书架条目只有 URL 而无本地缓存副本，
+     * 因此前端必须能在 [coverKey] 为空时回退到本字段直连加载，
+     * 否则整架书的封面都会退化成文字占位符。
+     */
+    val coverUrl: String? = null,
     val chapterIndex: Int? = null,
     val scrollPosition: Double? = null,
     val lastReadAt: Long,

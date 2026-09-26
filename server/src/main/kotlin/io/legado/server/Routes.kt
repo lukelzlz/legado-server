@@ -843,6 +843,53 @@ fun Route.apiRoutes(
             }
             call.respond(BatchBookRecleanResponse(totalRecleaned, results))
         }
+        /**
+         * 补抓封面到本地缓存，并回写 `cover_key`。
+         *
+         * 用于修复「封面补抓逻辑上线之前导入的书架」——那些书的 `cover_key` 全为空，
+         * 前端只能靠 `coverUrl` 直连；补抓完成后即切换为本地副本，不再依赖外部图床。
+         * 传入 sourceId/bookUrl 则只补一本，否则补整架。
+         */
+        post("/bookshelf/refresh-covers") {
+            if (auth.requireSession(call, true) == null) return@post
+            val req = runCatching { call.receive<CoverRefreshRequest>() }.getOrDefault(CoverRefreshRequest())
+            val shelf = database.listBookshelf()
+            val targets = shelf.filter { item ->
+                item.coverKey.isNullOrBlank() &&
+                    !item.coverUrl.isNullOrBlank() &&
+                    (req.sourceId == null || item.sourceId == req.sourceId) &&
+                    (req.bookUrl == null || item.bookUrl == req.bookUrl)
+            }
+            val skipped = shelf.size - targets.size
+            // 封面可能有数 MB，串行补抓整架会很久；这里用信号量限并发，
+            // 既压住耗时又不至于把图床/线程池打满。
+            var refreshed = 0
+            var failed = 0
+            coroutineScope {
+                val gate = Semaphore(6)
+                targets.map { item ->
+                    async(Dispatchers.IO) {
+                        gate.withPermit {
+                            val url = item.coverUrl!!
+                            val cached = runCatching { coverCache.getIfCached(url) ?: coverCache.cache(url) }.getOrNull()
+                            if (cached != null && database.updateBookshelfCover(item.sourceId, item.bookUrl, cached.key, cached.contentType)) {
+                                refreshed++
+                            } else {
+                                failed++
+                            }
+                        }
+                    }
+                }.awaitAll()
+            }
+            call.respond(
+                CoverRefreshResponse(
+                    total = targets.size,
+                    refreshed = refreshed,
+                    failed = failed,
+                    skipped = skipped,
+                )
+            )
+        }
         put("/bookshelf/status") {
             if (auth.requireSession(call, true) == null) return@put
             val request = call.receive<BookshelfStatusRequest>()

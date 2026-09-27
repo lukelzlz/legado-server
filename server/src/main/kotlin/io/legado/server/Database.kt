@@ -129,6 +129,9 @@ class Database(private val path: String) : Closeable, AutoCloseable {
                 create table if not exists cover_cache (
                   cache_key text primary key, content_type text not null
                 );
+                create table if not exists app_setting (
+                  key text primary key, value text not null, updated_at integer not null
+                );
                 create table if not exists book_group (
                   id integer primary key autoincrement,
                   name text not null unique collate nocase,
@@ -393,6 +396,20 @@ class Database(private val path: String) : Closeable, AutoCloseable {
     fun getProgress(sourceId: String, bookUrl: String): ReadingProgress? = connect { db -> db.prepareStatement("select source_id,book_url,chapter_url,chapter_index,scroll_position,updated_at from reading_progress where source_id=? and book_url=?").use {
         it.setString(1, sourceId); it.setString(2, bookUrl); it.executeQuery().use { rs -> if (rs.next()) ReadingProgress(rs.getString(1), rs.getString(2), rs.getString(3), rs.getInt(4), rs.getDouble(5), rs.getLong(6)) else null }
     } }
+
+    /** 读取服务端设置（前端设置存 localStorage，但**服务端自己用的**配置必须可持久化）。 */
+    fun getSetting(key: String): String? = connect { db ->
+        db.prepareStatement("select value from app_setting where key=?").use {
+            it.setString(1, key); it.executeQuery().use { rs -> if (rs.next()) rs.getString(1) else null }
+        }
+    }
+
+    fun setSetting(key: String, value: String) = write { db ->
+        db.prepareStatement("""insert into app_setting(key,value,updated_at) values(?,?,?)
+            on conflict(key) do update set value=excluded.value,updated_at=excluded.updated_at""").use {
+            it.setString(1, key); it.setString(2, value); it.setLong(3, System.currentTimeMillis()); it.executeUpdate()
+        }
+    }
     fun saveBookshelf(request: BookshelfWriteRequest, cover: CachedCover?): BookshelfItem = write { db ->
         val now = System.currentTimeMillis()
         db.autoCommit = false
@@ -796,6 +813,31 @@ class Database(private val path: String) : Closeable, AutoCloseable {
                 if (rs.next()) {
                     runCatching { Json.decodeFromString<List<Chapter>>(rs.getString(1)) }.getOrNull()
                 } else null
+            }
+        }
+    }
+
+    /**
+     * 从目录缓存里找出某章标题。
+     *
+     * 进度文件（`bookProgress` 下的 JSON）需要写 `durChapterTitle`，而前端只传章节 URL/index，
+     * 因此服务端需要回查标题。查不到返回 null（调用方应放弃写文件，而不是写个空标题）。
+     *
+     * 注意 toc_url 可能有多个变体（如带/不带查询串），所以用 like 兜底匹配。
+     */
+    fun getChapterTitle(sourceId: String, bookUrl: String, chapterUrl: String): String? {
+        val sql = "select chapters_json from book_toc_cache where source_id = ? and (toc_url = ? or toc_url like ?) order by updated_at desc limit 5"
+        return connect { db ->
+            db.prepareStatement(sql).use { stmt ->
+                stmt.setString(1, sourceId); stmt.setString(2, bookUrl); stmt.setString(3, "%$bookUrl%")
+                stmt.executeQuery().use { rs ->
+                    var found: String? = null
+                    while (found == null && rs.next()) {
+                        val chapters = runCatching { Json.decodeFromString<List<Chapter>>(rs.getString(1)) }.getOrNull() ?: continue
+                        found = chapters.firstOrNull { it.url == chapterUrl }?.title
+                    }
+                    found
+                }
             }
         }
     }

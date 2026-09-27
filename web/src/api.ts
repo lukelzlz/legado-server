@@ -13,6 +13,9 @@ export type SearchResult = { sourceId: string; name: string; author?: string; bo
 export type BookDetails = { sourceId: string; name: string; author?: string; intro?: string; coverUrl?: string; tocUrl: string; alternateSources?: SearchResult[] }
 export type Chapter = { index: number; title: string; url: string }
 export type ReadingProgress = { sourceId: string; bookUrl: string; chapterUrl: string; chapterIndex: number; scrollPosition: number; updatedAt: number }
+/** 手机端进度文件（bookProgress/*.json）同步配置 */
+export type ProgressSyncSettings = { directoryName: string; directoryPath?: string; available: boolean; fileCount: number }
+export type ProgressMergeResponse = { source: 'file' | 'database'; progress?: ReadingProgress; fileFound: boolean; alignedIndex?: number }
 export type BookshelfItem = { sourceId: string; bookUrl: string; name: string; author?: string; tocUrl: string; coverKey?: string; coverUrl?: string; chapterIndex?: number; scrollPosition?: number; lastReadAt: number; cachedChapters: number; totalChapters: number; cacheState: 'idle' | 'caching' | 'ready' | 'failed'; cacheError?: string; completed: boolean; alternateSources?: SearchResult[]; groupName?: string }
 export type BookshelfWrite = { sourceId: string; bookUrl: string; name: string; author?: string; tocUrl: string; coverUrl?: string; alternateSources?: SearchResult[]; groupName?: string }
 export type BookshelfSourceSwitch = { oldSourceId: string; oldBookUrl: string; book: BookshelfWrite; alternateSources?: SearchResult[] }
@@ -332,11 +335,12 @@ export const api = {
     }
   },
   progress: (sourceId: string, bookUrl: string, signal?: AbortSignal) => request<ReadingProgress | undefined>(`/api/reading-progress?sourceId=${encodeURIComponent(sourceId)}&bookUrl=${encodeURIComponent(bookUrl)}`, { signal }),
-  saveProgress: async (sourceId: string, bookUrl: string, chapterUrl: string, chapterIndex: number, scrollPosition: number) => {
+  saveProgress: async (sourceId: string, bookUrl: string, chapterUrl: string, chapterIndex: number, scrollPosition: number, chapterTitle?: string) => {
     const progressItem = { sourceId, bookUrl, chapterUrl, chapterIndex, scrollPosition, updatedAt: Date.now() }
     enqueueOfflineProgress(progressItem)
     try {
-      const res = await request<ReadingProgress>('/api/reading-progress', { method: 'PUT', body: JSON.stringify({ sourceId, bookUrl, chapterUrl, chapterIndex, scrollPosition }) })
+      // chapterTitle 一并提交，服务端写 bookProgress 进度文件时直接用，免去回查目录缓存
+      const res = await request<ReadingProgress>('/api/reading-progress', { method: 'PUT', body: JSON.stringify({ sourceId, bookUrl, chapterUrl, chapterIndex, scrollPosition, chapterTitle }) })
       void flushOfflineProgress(async (item) => {
         await request<ReadingProgress>('/api/reading-progress', { method: 'PUT', body: JSON.stringify(item) })
       })
@@ -404,6 +408,11 @@ export const api = {
   updateBookGroup: (sourceId: string, bookUrl: string, groupName?: string | null) => request<BookshelfItem>('/api/bookshelf/group', { method: 'PUT', body: JSON.stringify({ sourceId, bookUrl, groupName }) }),
   batchBookshelf: (data: BookshelfBatchRequest) => request<{ affected: number }>('/api/bookshelf/batch', { method: 'POST', body: JSON.stringify(data) }),
   cover: (key: string) => `/api/covers/${encodeURIComponent(key)}`,
+  progressSyncSettings: () => request<ProgressSyncSettings>('/api/progress-sync/settings'),
+  saveProgressSyncSettings: (directoryName: string) =>
+    request<ProgressSyncSettings>('/api/progress-sync/settings', { method: 'PUT', body: JSON.stringify({ directoryName }) }),
+  mergeProgress: (data: { sourceId: string; bookUrl: string; chapters: Chapter[] }) =>
+    request<ProgressMergeResponse>('/api/progress-sync/merge', { method: 'POST', body: JSON.stringify(data) }),
   webDavInfo: (path = '') => request<WebDavInfo>(`/api/webdav/info${path ? `?path=${encodeURIComponent(path)}` : ''}`),
   webDavUpload: (path: string, file: File) => webDavWrite(path, { method: 'PUT', body: file }),
   webDavCreateFolder: (path: string) => webDavWrite(path, { method: 'MKCOL' }),

@@ -60,7 +60,12 @@ fun Application.legadoApplication(config: ServerConfig = ServerConfig.fromEnviro
         get("/healthz") { call.respond(mapOf("status" to "ok")) }
         val coverCache = CoverCache(config.coverCacheDirectory)
         authRoutes(auth)
-        apiRoutes(database, auth, runner, coverCache, subscriptions, bookCache, edgeTts, ttsSessions, config.localBooksDirectory)
+        apiRoutes(
+            database, auth, runner, coverCache, subscriptions, bookCache, edgeTts, ttsSessions,
+            config.localBooksDirectory,
+            // 进度文件落在 WebDAV 根目录下的 bookProgress（与手机端备份结构一致）
+            BookProgressSync(config.webDavDirectory, database),
+        )
         webDavRoutes(auth, WebDavStorage(config.webDavDirectory), database, coverCache)
         staticWeb()
     }

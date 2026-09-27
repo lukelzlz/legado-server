@@ -2825,12 +2825,27 @@ function App() {
         api.chapters(safeDetails.sourceId, safeDetails.tocUrl),
         api.progress(safeDetails.sourceId, item.bookUrl).catch(() => undefined),
       ])
-      const resumeIdx = progress?.chapterIndex ?? item.chapterIndex ?? 0
+
+      // 与手机端 bookProgress 文件夹合并：取「数据库」与「进度文件」中较新的一份。
+      // 失败（文件夹不存在/网络异常）时静默退回数据库进度，绝不影响开书。
+      let mergedProgress = progress
+      try {
+        const merged = await api.mergeProgress({
+          sourceId: safeDetails.sourceId,
+          bookUrl: item.bookUrl,
+          chapters,
+        })
+        if (merged?.progress) mergedProgress = merged.progress
+      } catch {
+        // 忽略：进度文件同步是增强能力，不是开书的前置条件
+      }
+
+      const resumeIdx = mergedProgress?.chapterIndex ?? item.chapterIndex ?? 0
       openReader({
         details: safeDetails,
         bookUrl: item.bookUrl,
         chapters,
-        progress: progress || (item.chapterIndex !== undefined ? {
+        progress: mergedProgress || (item.chapterIndex !== undefined ? {
           sourceId: item.sourceId,
           bookUrl: item.bookUrl,
           chapterUrl: chapters[resumeIdx]?.url || '',

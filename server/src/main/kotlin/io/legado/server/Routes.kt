@@ -45,8 +45,31 @@ fun Route.apiRoutes(
     edgeTts: EdgeTtsService = EdgeTtsService(),
     ttsSessions: TtsSessionService = TtsSessionService(edgeTts),
     localBooksDirectory: Path = Path.of(".data/local_books"),
+    progressSync: BookProgressSync = BookProgressSync(Path.of(".data/webdav"), database),
 ) {
     val webView = WebViewProxy(database)
+
+    /**
+     * 把已保存的进度镜像到手机端进度文件。
+     *
+     * 章节标题从目录缓存里取（前端只传 URL/index，不带标题）。
+     * **任何失败都静默**：进度文件只是镜像，权威数据永远是本地 SQLite。
+     */
+    fun syncProgressToFile(saved: ReadingProgress, fallbackTitle: String?) {
+        runCatching {
+            val shelf = database.getShelfBookByUrl(saved.bookUrl) ?: return@runCatching
+            val title = fallbackTitle?.takeIf { it.isNotBlank() }
+                ?: database.getChapterTitle(saved.sourceId, saved.bookUrl, saved.chapterUrl)
+                ?: return@runCatching
+            progressSync.write(
+                bookName = shelf.name,
+                author = shelf.author,
+                chapterIndex = saved.chapterIndex,
+                chapterTitle = title,
+            )
+        }
+    }
+
     route("/api") {
         get("/sources") {
             if (auth.requireSession(call) == null) return@get
@@ -1022,7 +1045,86 @@ fun Route.apiRoutes(
             if (auth.requireSession(call, true) == null) return@put
             val progress = call.receive<ReadingProgress>()
             if (progress.sourceId.isBlank() || progress.bookUrl.isBlank() || progress.chapterUrl.isBlank() || progress.chapterIndex < 0 || !progress.scrollPosition.isFinite() || progress.scrollPosition !in 0.0..1.0) { call.respond(HttpStatusCode.BadRequest, ApiError("invalid_progress", "阅读进度无效")); return@put }
-            call.respond(database.saveProgress(progress))
+            val saved = database.saveProgress(progress)
+            // 顺带把进度镜像到手机端的 bookProgress 文件（失败静默，绝不影响阅读保存）
+            syncProgressToFile(saved, progress.chapterTitle)
+            call.respond(saved)
+        }
+
+        // ------------------------------------------------------------------
+        // 书籍进度同步（Legado 手机端 bookProgress 文件夹）
+        // ------------------------------------------------------------------
+        get("/progress-sync/settings") {
+            if (auth.requireSession(call) == null) return@get
+            val dir = progressSync.directory()
+            call.respond(
+                ProgressSyncSettings(
+                    directoryName = progressSync.directoryName(),
+                    directoryPath = dir?.toString(),
+                    available = dir != null,
+                    fileCount = dir?.let { d -> runCatching { Files.list(d).use { s -> s.filter { it.fileName.toString().endsWith(".json") }.count().toInt() } }.getOrDefault(0) } ?: 0,
+                )
+            )
+        }
+        put("/progress-sync/settings") {
+            if (auth.requireSession(call, true) == null) return@put
+            val request = call.receive<ProgressSyncSettingsUpdate>()
+            val saved = progressSync.setDirectoryName(request.directoryName)
+            val dir = progressSync.directory()
+            call.respond(
+                ProgressSyncSettings(
+                    directoryName = saved,
+                    directoryPath = dir?.toString(),
+                    available = dir != null,
+                    fileCount = dir?.let { d -> runCatching { Files.list(d).use { s -> s.filter { it.fileName.toString().endsWith(".json") }.count().toInt() } }.getOrDefault(0) } ?: 0,
+                )
+            )
+        }
+        /**
+         * 打开书时合并进度：比较数据库与进度文件的时间戳，取更新的那个。
+         *
+         * 章节对齐用 `BookProgressSync.alignChapter`（index 为主 + 标题规范化匹配），
+         * 因为换源后章节数可能不同，单纯按下标会错位。
+         */
+        post("/progress-sync/merge") {
+            if (auth.requireSession(call, true) == null) return@post
+            val request = call.receive<ProgressMergeRequest>()
+            val shelf = database.getShelfBookByUrl(request.bookUrl)
+            val dbProgress = database.getProgress(request.sourceId, request.bookUrl)
+
+            // 没有章节列表就无法做标题对齐；此时直接返回数据库进度
+            val chapters = request.chapters
+            val fileProgress = if (shelf != null) progressSync.read(shelf.name, shelf.author) else null
+
+            if (fileProgress == null || chapters.isEmpty()) {
+                call.respond(ProgressMergeResponse(source = "database", progress = dbProgress, fileFound = fileProgress != null))
+                return@post
+            }
+
+            val fileIndex = progressSync.alignChapter(chapters, fileProgress.chapterIndex, fileProgress.chapterTitle)
+            val fileNewer = fileProgress.updatedAt > (dbProgress?.updatedAt ?: 0L)
+
+            if (fileIndex == null) {
+                call.respond(ProgressMergeResponse(source = "database", progress = dbProgress, fileFound = true))
+                return@post
+            }
+
+            if (fileNewer) {
+                // 手机端更新 → 采用文件进度并写回数据库
+                val aligned = chapters[fileIndex]
+                val merged = database.saveProgress(
+                    ReadingProgress(
+                        sourceId = request.sourceId,
+                        bookUrl = request.bookUrl,
+                        chapterUrl = aligned.url,
+                        chapterIndex = fileIndex,
+                        scrollPosition = dbProgress?.scrollPosition ?: 0.0,
+                    )
+                )
+                call.respond(ProgressMergeResponse(source = "file", progress = merged, fileFound = true, alignedIndex = fileIndex))
+            } else {
+                call.respond(ProgressMergeResponse(source = "database", progress = dbProgress, fileFound = true, alignedIndex = fileIndex))
+            }
         }
         route("/tts") {
             get("/voices") {

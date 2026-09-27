@@ -262,6 +262,32 @@ data class SourceLoginStateRecord(
     val chapterIndex: Int,
     val scrollPosition: Double = 0.0,
     val updatedAt: Long = 0,
+    /** 可选：前端已知章节标题时一并传入，免去服务端回查目录缓存。 */
+    val chapterTitle: String? = null,
+)
+
+// ---------------------------------------------------------------------------
+// 书籍进度同步（Legado 手机端 bookProgress 文件夹）
+// ---------------------------------------------------------------------------
+@Serializable data class ProgressSyncSettings(
+    val directoryName: String,
+    val directoryPath: String? = null,
+    val available: Boolean = false,
+    val fileCount: Int = 0,
+)
+@Serializable data class ProgressSyncSettingsUpdate(val directoryName: String)
+@Serializable data class ProgressMergeRequest(
+    val sourceId: String,
+    val bookUrl: String,
+    /** 当前书源的章节列表，用于把进度文件里的标题对齐到本地章节。 */
+    val chapters: List<Chapter> = emptyList(),
+)
+@Serializable data class ProgressMergeResponse(
+    /** `file` = 采用了进度文件；`database` = 采用数据库（文件不存在/更旧）。 */
+    val source: String,
+    val progress: ReadingProgress? = null,
+    val fileFound: Boolean = false,
+    val alignedIndex: Int? = null,
 )
 @Serializable data class BookshelfWriteRequest(
     val sourceId: String,

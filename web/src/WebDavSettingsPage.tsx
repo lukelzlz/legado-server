@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { api, joinWebDavPath, webDavFileUrl, WebDavInfo } from './api'
+import { api, joinWebDavPath, webDavFileUrl, WebDavInfo, ProgressSyncSettings } from './api'
 import { toast } from './Toast'
 import { Icon } from './icons'
 
@@ -96,6 +96,45 @@ export function WebDavSettingsPage() {
   const [busy, setBusy] = useState(false)
   const uploadInputRef = useRef<HTMLInputElement>(null)
 
+  // 进度同步（手机端 bookProgress 文件夹）
+  const [syncSettings, setSyncSettings] = useState<ProgressSyncSettings | null>(null)
+  const [syncDirInput, setSyncDirInput] = useState('')
+  const [syncSaving, setSyncSaving] = useState(false)
+
+  const loadSyncSettings = useCallback(async () => {
+    try {
+      const s = await api.progressSyncSettings()
+      setSyncSettings(s)
+      setSyncDirInput(s.directoryName)
+    } catch {
+      // 进度同步配置读取失败不影响文件页其它功能，静默即可
+      setSyncSettings(null)
+    }
+  }, [])
+
+  const handleSaveSyncSettings = async () => {
+    const name = syncDirInput.trim()
+    if (!name) {
+      toast.warning('文件夹名不能为空')
+      return
+    }
+    setSyncSaving(true)
+    try {
+      const saved = await api.saveProgressSyncSettings(name)
+      setSyncSettings(saved)
+      setSyncDirInput(saved.directoryName)
+      if (saved.available) {
+        toast.success(`进度文件夹已设为 ${saved.directoryName}（发现 ${saved.fileCount} 个进度文件）`)
+      } else {
+        toast.warning(`已保存为 ${saved.directoryName}，但该文件夹还不存在，下次同步时会自动创建`)
+      }
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : '保存失败')
+    } finally {
+      setSyncSaving(false)
+    }
+  }
+
   const load = useCallback(async (target: string) => {
     setLoading(true)
     try {
@@ -111,6 +150,10 @@ export function WebDavSettingsPage() {
   useEffect(() => {
     void load(path)
   }, [path, load])
+
+  useEffect(() => {
+    void loadSyncSettings()
+  }, [loadSyncSettings])
 
   const refresh = () => void load(path)
 
@@ -240,6 +283,59 @@ export function WebDavSettingsPage() {
           </strong>
           <span className="webdav-card-hint">{info ? `${info.directoryCount} 个文件夹 · ${info.directory}` : '正在读取…'}</span>
         </article>
+      </section>
+
+      <section className="webdav-section">
+        <h2 className="webdav-section-title">阅读进度同步</h2>
+        <p className="webdav-section-desc">
+          读取并写回 Legado 手机端的进度文件夹。打开书籍时会取「数据库」与「进度文件」中较新的一份；
+          之后每翻一章都会自动写回进度文件，手机与网页进度保持一致。
+        </p>
+        <div className="progress-sync-card">
+          <label className="progress-sync-field">
+            <span className="progress-sync-label">进度文件夹名</span>
+            <input
+              type="text"
+              value={syncDirInput}
+              placeholder="bookProgress"
+              onChange={e => setSyncDirInput(e.target.value)}
+              spellCheck={false}
+              disabled={syncSaving}
+            />
+            <small className="progress-sync-hint">
+              相对 WebDAV 根目录。手机端备份通常是 <code>legado/bookProgress</code>，
+              就按这个填（支持多级子目录）。
+            </small>
+          </label>
+          <div className="progress-sync-actions">
+            <button type="button" className="primary-button" onClick={() => void handleSaveSyncSettings()} disabled={syncSaving}>
+              {syncSaving ? '保存中…' : '保存'}
+            </button>
+            <button type="button" className="ghost-button" onClick={() => void loadSyncSettings()} disabled={syncSaving}>
+              <Icon name="refresh" />
+              <span>重新读取</span>
+            </button>
+          </div>
+          <div className="progress-sync-status">
+            {syncSettings === null ? (
+              <span className="progress-sync-badge is-warn">未读取到配置</span>
+            ) : syncSettings.available ? (
+              <>
+                <span className="progress-sync-badge is-ok">已启用</span>
+                <span className="progress-sync-path">
+                  {syncSettings.directoryPath} · 已发现 {syncSettings.fileCount} 个进度文件
+                </span>
+              </>
+            ) : (
+              <>
+                <span className="progress-sync-badge is-warn">文件夹不存在</span>
+                <span className="progress-sync-path">
+                  路径 {info?.directory ?? 'webdav'}/{syncSettings.directoryName} 尚未创建，首次同步时会自动建好
+                </span>
+              </>
+            )}
+          </div>
+        </div>
       </section>
 
       <section className="webdav-section">

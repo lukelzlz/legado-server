@@ -3,6 +3,7 @@ package io.legado.server
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -195,7 +196,7 @@ class BookProgressSync(
         }
         // 原子写：先写临时文件再移动，避免手机端/WEB 端读到半截 JSON
         val tmp = target.resolveSibling("${target.fileName}.tmp")
-        Files.writeString(tmp, Json.encodeToString(JsonObject.serializer(), payload))
+        Files.writeString(tmp, formatProgressJson(payload))
         Files.move(tmp, target, java.nio.file.StandardCopyOption.REPLACE_EXISTING)
         true
     }.getOrDefault(false)
@@ -205,6 +206,72 @@ class BookProgressSync(
         if (!dir.exists()) Files.createDirectories(dir)
         if (dir.isDirectory()) dir else null
     }.getOrNull()
+
+    /**
+     * 按**手机端原有格式**序列化进度 JSON。
+     *
+     * 实测（SESSION-029）手机端文件的确切形态（以 `长征十日_安南十八子.json` 为模板）：
+     * ```
+     * {
+     *   "author": "安南十八子",
+     *   "durChapterIndex": 8,
+     *   "durChapterPos": 0,
+     *   "durChapterTime": 1790469228909,
+     *   "durChapterTitle": "第八章：弄羊村兵分三路 花背鱼水情长（下）",
+     *   "name": "长征十日"
+     * }
+     * ```
+     * 要点：**2 空格缩进**、**冒号后一个空格**、**LF 行尾**、**末尾不加换行**、
+     * 字段顺序固定。kotlinx 的默认输出是**单行紧凑**格式，与手机端不一致，故手工拼装。
+     *
+     * 另有部分文件（如 `十日终焉我成魔_梁灼安.json`）是单行紧凑格式，
+     * 但用户明确要求**统一成多行缩进**，因此这里不再区分来源格式。
+     */
+    internal fun formatProgressJson(obj: JsonObject): String {
+        val sb = StringBuilder()
+        sb.append('{').append('\n')
+        // 固定字段顺序：与手机端完全一致
+        val order = listOf("author", "durChapterIndex", "durChapterPos", "durChapterTime", "durChapterTitle", "name")
+        val keys = order.filter { obj.containsKey(it) } + obj.keys.filter { it !in order }
+        keys.forEachIndexed { i, key ->
+            val value = obj[key] ?: return@forEachIndexed
+            sb.append("  ").append('"').append(escapeJsonString(key)).append("\": ")
+            sb.append(renderJsonValue(value))
+            if (i != keys.lastIndex) sb.append(',')
+            sb.append('\n')
+        }
+        sb.append('}')
+        return sb.toString()
+    }
+
+    /** 渲染 JSON 值：字符串走转义，数字/布尔/null 原样（与手机端写法一致）。 */
+    private fun renderJsonValue(value: JsonElement): String = when (value) {
+        is JsonPrimitive -> if (value.isString) "\"${escapeJsonString(value.content)}\"" else value.content
+        else -> Json.encodeToString(JsonElement.serializer(), value)
+    }
+
+    /**
+     * JSON 字符串转义。
+     *
+     * 必须显式处理 `\n`：书名里可能含换行（实测真实数据
+     * `"name": "十日终焉我成魔\n第八十章 ..."`），若原样写入就会把 JSON 结构破坏成两行。
+     */
+    private fun escapeJsonString(raw: String): String {
+        val sb = StringBuilder(raw.length + 8)
+        for (ch in raw) {
+            when (ch) {
+                '"' -> sb.append("\\\"")
+                '\\' -> sb.append("\\\\")
+                '\n' -> sb.append("\\n")
+                '\r' -> sb.append("\\r")
+                '\t' -> sb.append("\\t")
+                '\b' -> sb.append("\\b")
+                '\u000C' -> sb.append("\\f")
+                else -> if (ch < ' ') sb.append("\\u%04x".format(ch.code)) else sb.append(ch)
+            }
+        }
+        return sb.toString()
+    }
 
     // ------------------------------------------------------------------
     // 章节对齐

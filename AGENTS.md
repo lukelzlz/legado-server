@@ -183,7 +183,10 @@ AI 与人类协作时必须明确当前达到的完成度阶梯，严禁混淆�
 - **[进度同步/致命] `Path.resolve()` 对非法字符**抛异常**，不是返回不存在的路径**：书名含换行时（用户真实数据里就有）`dir.resolve("书\n名_作者.json")` 抛 `InvalidPathException: Illegal char <\n>`。在「逐个候选文件名试」的循环里，**第一个未清洗的候选就会中断整个查找**，后面真正匹配的候选永远试不到 ⇒ 表现为「文件明明在那儿却读不到」。**凡是用用户数据拼路径并循环探测，都必须 `runCatching { resolve(...) }.getOrNull() ?: continue`。**
 - **[Kotlin/正则] 普通字符串里的 `"\\r"` 是**字面量** `\r`（两个字符），不是回车**：`Regex("[\\r\\n...]")` 根本匹配不到真实换行，写「去掉换行」的清洗函数会**静默失效**。涉及 `\r`/`\n`/`\t` 的正则一律用**原始字符串**：`Regex("""[\r\n/\\:*?"<>|]""")`。
 - **[进度同步/路径] 手机端备份自带 `legado` 层级，默认路径少一层会「静默读不到 + 另建空目录」**：实测真实结构是 `webdav/legado/bookProgress/`。若默认写成 `bookProgress`，结果是**读不到真实文件**（`fileFound=false`）**且写入时另建一个空目录**，表现极具误导性。默认值必须是 `legado/bookProgress`；配置项要**支持多级子目录**（但仍逐段拒绝 `..`/绝对路径/盘符/控制字符，并断言**规范化后的解析结果**仍在根内）。
-- **[进度同步/设计] 镜像数据失败绝不能阻塞主流程，且要保留对端字段**：进度文件只是镜像，权威数据永远是本地 SQLite ⇒ 读写全部 `runCatching` 包住，失败静默。回写时**沿用手机端写入的 `name`/`author`/`durChapterPos`**，只更新我们负责的字段（`durChapterIndex`/`durChapterTitle`/`durChapterTime`），避免两端命名风格互相污染。详见 [`SESSION-028`](file:///root/legado-server/docs/sessions/SESSION-028-book-progress-sync.md)。
+- **[进度同步/设计] 镜像数据失败绝不能阻塞主流程，且要保留对端字段**：进度文件只是镜像，权威数据永远是本地 SQLite ⇒ 读写全部 `runCatching` 包住，失败静默。回写时**沿用手机端写入的 `name`/`author`/`durChapterPos`**，只更新我们负责的字段（`durChapterIndex`/`durChapterTitle`/`durChapterTime`），避免两端命名风格互相污染。
+- **[序列化/文件] 写回「对端已有格式」的文件时，绝不能依赖序列化库的默认输出**：kotlinx 的 `Json.encodeToString` 默认是**单行紧凑**，而 Legado 手机端进度文件是**多行 2 空格缩进 + LF + 末尾无换行 + 固定字段顺序**。凡是「Read-Modify-Write 别人家的文件」，都要先取一份**真实样本**确认缩进、行尾、末尾换行、字段顺序，再手写格式化（含显式转义 `\n`——书名可能含真实换行，不转义会直接把 JSON 结构拆坏）。
+- **[排障/方法论] 看到「不符合预期的数据」时，先查它的产生时间与产生者，不要急着为它设计兼容分支**：实测我遇到一个「单行紧凑」的进度文件，误判为「手机端的另一种格式」并准备做双格式兼容；用户指出**那是网页写入的**——核对文件时间戳（正好是我启动服务验证的时段）确认是我**自己旧版本代码**的 bug 产物。**多一份格式假设 = 多一份永远不该存在的兼容代码。**
+- **[Kotlin/浮点] `Double.toString()` 可能产生 `1.0E-4` 这类科学计数法，非法 JSON**：若手写 JSON 序列化，浮点值要显式避免科学计数法（如取整判断后输出整数字面量），否则产出的文件解析失败。详见 [`SESSION-028`](file:///root/legado-server/docs/sessions/SESSION-028-book-progress-sync.md)。
 
 ---
 

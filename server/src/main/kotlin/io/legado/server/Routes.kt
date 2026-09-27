@@ -61,6 +61,11 @@ fun Route.apiRoutes(
             val title = fallbackTitle?.takeIf { it.isNotBlank() }
                 ?: database.getChapterTitle(saved.sourceId, saved.bookUrl, saved.chapterUrl)
                 ?: return@runCatching
+            // 与手机端行为**完全对齐（含倒退）**：照当前进度写，不做"防倒退"。
+            //
+            // 用户明确要求：**手机倒退 → 同步也倒退**。
+            // 手机自己回翻时也会把 idx 写小（实测 云游异世界 326 → 329 → 328 → 323），
+            // 因此这里保持同样语义，不做任何"只增不减"的额外保护。
             progressSync.write(
                 bookName = shelf.name,
                 author = shelf.author,
@@ -1102,15 +1107,39 @@ fun Route.apiRoutes(
             }
 
             val fileIndex = progressSync.alignChapter(chapters, fileProgress.chapterIndex, fileProgress.chapterTitle)
-            val fileNewer = fileProgress.updatedAt > (dbProgress?.updatedAt ?: 0L)
 
             if (fileIndex == null) {
                 call.respond(ProgressMergeResponse(source = "database", progress = dbProgress, fileFound = true))
                 return@post
             }
 
-            if (fileNewer) {
-                // 手机端更新 → 采用文件进度并写回数据库
+            // ------------------------------------------------------------------
+            // 冲突消解：**与手机端 `syncBookProgress`（ReadBookLoadDelegate.kt:297）完全一致**
+            //
+            // 手机端原逻辑：
+            //   if (远端 idx < 本地 idx || (idx 相同 && 远端 pos < 本地 pos)) → 不采纳
+            //   else                                                       → setProgress(远端)
+            // 即「**取更大的 idx**；idx 相同则取更大的 pos；两者都相等则视为无变化」。
+            //
+            // 为什么不比 `durChapterTime`（实测 SESSION-029）：
+            // 手机的 `durChapterTime` 是「阅读时刻」而非「写入时刻」，
+            // 且**全仓 90+ 处引用无一处用它做冲突比较**（只用于书架排序与写库防抖）。
+            // 观测到云游异世界 `326 → 329 → 328`：用户回翻时**时间戳更新但 idx 倒退**，
+            // 若按"时间戳更新就采纳"，网页进度会跟着往回跳。
+            // ------------------------------------------------------------------
+            val dbIndex = dbProgress?.chapterIndex
+            // 手机侧「本地 pos」对应我们的 scrollPosition（两者语义不同，`> 0` 视为"有进度"）
+            val localHasPosition = (dbProgress?.scrollPosition ?: 0.0) > 0.0
+            val remoteHasPosition = fileProgress.chapterPos > 0
+            val fileWins = when {
+                dbIndex == null -> true                                  // 本地没有进度 → 用文件的
+                fileIndex > dbIndex -> true                              // 远端更靠后 → 采纳
+                fileIndex < dbIndex -> false                             // 远端更靠前 → 保留本地
+                else -> remoteHasPosition && !localHasPosition           // idx 相同 → 比 pos
+            }
+
+            if (fileWins) {
+                // 采纳文件进度并写回数据库
                 val aligned = chapters[fileIndex]
                 val merged = database.saveProgress(
                     ReadingProgress(

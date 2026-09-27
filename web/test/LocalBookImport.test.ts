@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { BookshelfItem, LocalBookImportResponse } from '../src/api'
-import { LOCAL_BOOK_ACCEPT_ATTR, isSupportedLocalBook } from '../src/WebDavSettingsPage'
+import { LOCAL_BOOK_ACCEPT_ATTR, isSupportedLocalBook, isLocalBookFile, isBackupArchive } from '../src/WebDavSettingsPage'
 
 test('LocalBookImport - api types and local book shelf item identification', () => {
   const localItem: BookshelfItem = {
@@ -93,4 +93,40 @@ test('LocalBookImport - batch split keeps valid files and reports the rest', () 
   assert.deepEqual(rejected, ['丙.pdf', '丁.mobi'])
   // 全部非法时必须直接提示、不发请求（避免无意义的往返）
   assert.equal(['a.pdf', 'b.mobi'].filter(isSupportedLocalBook).length, 0)
+})
+
+test('LocalBookImport - file manager offers two independent import entries', () => {
+  // 文件管理里两种入口靠后缀区分：`.zip` → 备份导入；`.txt/.epub` → 导入书籍
+  const files = ['legado-backup.zip', '凡人修仙传.txt', '三体.epub', '说明.pdf', '数据.json']
+
+  const backupEntries = files.filter(isBackupArchive)
+  const bookEntries = files.filter(isLocalBookFile)
+
+  assert.deepEqual(backupEntries, ['legado-backup.zip'], '只有 .zip 给「导入」按钮')
+  assert.deepEqual(bookEntries, ['凡人修仙传.txt', '三体.epub'], '只有 TXT/EPUB 给「导入书籍」按钮')
+
+  // 两条入口**互斥**：一个文件不该同时出现两个导入按钮
+  for (const name of files) {
+    assert.equal(
+      isBackupArchive(name) && isLocalBookFile(name),
+      false,
+      `${name} 不应同时命中两种导入入口`,
+    )
+  }
+})
+
+test('LocalBookImport - isLocalBookFile stays in sync with the supported set', () => {
+  // 关键约束：文件管理的按钮判定必须与「支持格式」完全一致，
+  // 否则会出现「按钮显示了但导入报不支持」的矛盾（或反过来有文件却没有入口）。
+  const samples = [
+    'a.txt', 'a.TXT', 'a.text', 'a.epub', 'a.EPUB',
+    'a.pdf', 'a.mobi', 'a.docx', 'a.zip', '无扩展名',
+  ]
+  for (const name of samples) {
+    assert.equal(
+      isLocalBookFile(name),
+      isSupportedLocalBook(name),
+      `${name} 的两个判定必须一致`,
+    )
+  }
 })

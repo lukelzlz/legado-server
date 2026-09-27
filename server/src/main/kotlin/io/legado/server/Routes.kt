@@ -30,10 +30,19 @@ import io.ktor.http.content.PartData
 import io.ktor.http.content.forEachPart
 import io.ktor.http.content.streamProvider
 import java.nio.file.Files
+import java.nio.file.LinkOption
 import java.nio.file.Path
 import java.util.UUID
 import java.net.URLEncoder
 import java.util.concurrent.atomic.AtomicInteger
+
+/**
+ * 本地书籍的**单文件体积上限**（上传入口与 WebDAV 入口共用）。
+ *
+ * 与备份条目的 64MiB 上限不同：这里是「一本书」的内容，20MiB 足够覆盖
+ * 正常 TXT（几 MB）与图文 EPUB；同时挡住「误把几百 MB 的压缩包按 TXT 硬解析」。
+ */
+private const val MAX_LOCAL_BOOK_BYTES = 20L * 1024 * 1024
 
 fun Route.apiRoutes(
     database: Database,
@@ -46,8 +55,65 @@ fun Route.apiRoutes(
     ttsSessions: TtsSessionService = TtsSessionService(edgeTts),
     localBooksDirectory: Path = Path.of(".data/local_books"),
     progressSync: BookProgressSync = BookProgressSync(Path.of(".data/webdav"), database),
+    /**
+     * WebDAV 存储区，用于「从 WebDAV 导入书籍」。
+     *
+     * 默认从 [progressSync] 所在的 webdav 根推导，保持与 WebDAV 服务端同一目录。
+     */
+    webDavStorage: WebDavStorage = WebDavStorage(Path.of(".data/webdav")),
 ) {
     val webView = WebViewProxy(database)
+
+    /**
+     * 把一本书的字节导入为本地书籍（**两个入口共用**）。
+     *
+     * 上传入口（`POST /bookshelf/import-local`）与 WebDAV 入口
+     * （`POST /bookshelf/import-webdav`）都走这里，保证行为完全一致 ——
+     * 否则「同一个 TXT 用不同入口导入，结果不一样」会非常难查。
+     *
+     * 流程：格式校验 → 解析 → 原文件落盘 → 封面提取 → 入库。
+     * **任何失败都转成 `success=false` 的结果项**，绝不抛给调用方，
+     * 这样批量导入时一个坏文件不会中断其余文件。
+     */
+    fun importOneLocalBook(
+        filename: String,
+        bytes: ByteArray,
+        booksDirectory: Path,
+        covers: CoverCache,
+        db: Database,
+    ): LocalBookImportItem {
+        return try {
+            // 只接受 TXT / EPUB。
+            // 不拦的话 `LocalBookParser.parse` 会把未知格式**静默按 TXT 解析**，
+            // 用户会得到一本正文是乱码的"书"且没有任何报错。
+            require(LocalBookParser.isSupported(filename)) {
+                "不支持的格式（仅支持 ${LocalBookParser.SUPPORTED_FORMATS}）：$filename"
+            }
+            val parsed = LocalBookParser.parse(filename, bytes)
+            val bookId = UUID.randomUUID().toString().replace("-", "")
+            val ext = if (filename.contains('.')) "." + filename.substringAfterLast('.') else ".txt"
+            runCatching {
+                Files.createDirectories(booksDirectory)
+                Files.write(booksDirectory.resolve("$bookId$ext"), bytes)
+            }
+
+            val coverKey = if (parsed.coverBytes != null && parsed.coverBytes.isNotEmpty()) {
+                covers.saveCoverBytes(parsed.coverBytes, parsed.coverContentType ?: "image/jpeg")
+            } else null
+
+            val item = db.importLocalBook(bookId, parsed, coverKey)
+            LocalBookImportItem(
+                filename = filename,
+                success = true,
+                bookUrl = item.bookUrl,
+                name = item.name,
+                author = item.author,
+                totalChapters = item.totalChapters,
+            )
+        } catch (error: Throwable) {
+            LocalBookImportItem(filename = filename, success = false, error = error.message ?: "解析失败")
+        }
+    }
 
     /**
      * 把已保存的进度镜像到手机端进度文件。
@@ -746,43 +812,9 @@ fun Route.apiRoutes(
                     val originalFilename = part.originalFileName ?: "book.txt"
                     val bytes = part.streamProvider().readBytes()
                     if (bytes.isNotEmpty()) {
-                        try {
-                            // 只接受 TXT / EPUB（用户明确要求）。
-                            // 不拦的话 `LocalBookParser.parse` 会把未知格式**静默按 TXT 解析**，
-                            // 用户会得到一本正文是乱码的"书"且没有任何报错。
-                            require(LocalBookParser.isSupported(originalFilename)) {
-                                "不支持的格式（仅支持 ${LocalBookParser.SUPPORTED_FORMATS}）：$originalFilename"
-                            }
-                            val parsed = LocalBookParser.parse(originalFilename, bytes)
-                            val bookId = UUID.randomUUID().toString().replace("-", "")
-                            val ext = if (originalFilename.contains('.')) "." + originalFilename.substringAfterLast('.') else ".txt"
-                            runCatching {
-                                Files.createDirectories(localBooksDirectory)
-                                Files.write(localBooksDirectory.resolve("$bookId$ext"), bytes)
-                            }
-
-                            val coverKey = if (parsed.coverBytes != null && parsed.coverBytes.isNotEmpty()) {
-                                coverCache.saveCoverBytes(parsed.coverBytes, parsed.coverContentType ?: "image/jpeg")
-                            } else null
-
-                            val item = database.importLocalBook(bookId, parsed, coverKey)
-                            importedCount++
-                            items.add(LocalBookImportItem(
-                                filename = originalFilename,
-                                success = true,
-                                bookUrl = item.bookUrl,
-                                name = item.name,
-                                author = item.author,
-                                totalChapters = item.totalChapters,
-                            ))
-                        } catch (error: Throwable) {
-                            failedCount++
-                            items.add(LocalBookImportItem(
-                                filename = originalFilename,
-                                success = false,
-                                error = error.message ?: "解析失败"
-                            ))
-                        }
+                        val item = importOneLocalBook(originalFilename, bytes, localBooksDirectory, coverCache, database)
+                        if (item.success) importedCount++ else failedCount++
+                        items.add(item)
                     }
                 }
                 part.dispose()
@@ -793,6 +825,67 @@ fun Route.apiRoutes(
                 failed = failedCount,
                 results = items,
             ))
+        }
+        /**
+         * 从 **WebDAV 存储区**导入本地书籍（仅 TXT / EPUB）。
+         *
+         * 与 [post("/bookshelf/import-local")] 的区别只在**字节来源**：
+         * 那个走 HTTP 上传，这个直接从数据目录的 `webdav` 文件夹里读。
+         * 解析、落盘、封面提取、入库全部复用 [importOneLocalBook]，
+         * 保证两条入口的行为完全一致（否则「同一个文件用不同入口导入结果不同」会很难查）。
+         *
+         * 归属页面写操作，因此按会话鉴权 + CSRF 双轨校验（与备份导入一致）。
+         */
+        post("/bookshelf/import-webdav") {
+            if (auth.requireSession(call, true) == null) return@post
+            val request = runCatching { call.receive<WebDavBookImportRequest>() }.getOrNull()
+                ?: run {
+                    call.respond(HttpStatusCode.BadRequest, ApiError("invalid_book", "缺少文件路径"))
+                    return@post
+                }
+            val target = webDavStorage.resolve(request.path.trim('/'))
+                ?: run {
+                    call.respond(HttpStatusCode.Forbidden, ApiError("invalid_path", "文件路径不合法"))
+                    return@post
+                }
+            if (!Files.isRegularFile(target, LinkOption.NOFOLLOW_LINKS)) {
+                call.respond(HttpStatusCode.NotFound, ApiError("not_found", "文件不存在"))
+                return@post
+            }
+            val filename = target.fileName.toString()
+            // 与上传入口同一套格式约束（TXT / EPUB）
+            if (!LocalBookParser.isSupported(filename)) {
+                call.respond(
+                    HttpStatusCode.BadRequest,
+                    ApiError("unsupported_format", "不支持的格式（仅支持 ${LocalBookParser.SUPPORTED_FORMATS}）：$filename"),
+                )
+                return@post
+            }
+            // 体积上限：走的是本地文件，但仍要防「误把几百 MB 的东西按 TXT 硬解析」
+            val size = runCatching { Files.size(target) }.getOrDefault(0L)
+            if (size > MAX_LOCAL_BOOK_BYTES) {
+                call.respond(
+                    HttpStatusCode.BadRequest,
+                    ApiError("too_large", "文件超过 ${MAX_LOCAL_BOOK_BYTES / 1024 / 1024} MiB 上限"),
+                )
+                return@post
+            }
+            val bytes = runCatching { Files.readAllBytes(target) }.getOrElse { error ->
+                call.respond(HttpStatusCode.InternalServerError, ApiError("read_failed", error.message ?: "读取文件失败"))
+                return@post
+            }
+            // **传 basename，不要传完整相对路径**：
+            // `LocalBookParser` 用 `filename.substringBeforeLast('.')` 当书名兜底，
+            // 若传 `books/凡人修仙传.txt`，书名会被写成 `books/凡人修仙传`。
+            val item = importOneLocalBook(filename, bytes, localBooksDirectory, coverCache, database)
+            call.respond(
+                LocalBookImportResponse(
+                    total = 1,
+                    imported = if (item.success) 1 else 0,
+                    failed = if (item.success) 0 else 1,
+                    results = listOf(item),
+                )
+            )
         }
         delete("/bookshelf") {
             if (auth.requireSession(call, true) == null) return@delete

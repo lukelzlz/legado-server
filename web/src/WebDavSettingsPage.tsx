@@ -97,6 +97,15 @@ export const currentOrigin = () => (typeof location === 'undefined' ? '' : locat
 /** 备份包识别：只给 `.zip` 提供「导入」入口，是否 Legado 备份由服务端二次校验。 */
 export const isBackupArchive = (name: string) => name.toLowerCase().endsWith('.zip')
 
+/**
+ * 本地书籍识别：只给 TXT / EPUB 提供「导入书籍」入口。
+ *
+ * **直接复用 [isSupportedLocalBook]**，不另写一份后缀判断 ——
+ * 否则两处规则一旦漂移，就会出现「按钮显示了但导入报不支持」的矛盾。
+ * 与 [isBackupArchive] 并列，构成文件管理里两种导入入口的判定。
+ */
+export const isLocalBookFile = (name: string) => isSupportedLocalBook(name)
+
 async function copyText(text: string, successMessage: string) {
   try {
     await navigator.clipboard.writeText(text)
@@ -298,6 +307,30 @@ export function WebDavSettingsPage() {
       void load(path)
     } catch (error) {
       toast.error(error instanceof Error ? error.message : '备份导入失败')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  /**
+   * 把 WebDAV 存储区里的**一本书**导入书架（TXT / EPUB）。
+   *
+   * 与「导入本地书籍」（浏览器上传）等价，只是字节已经在服务器上，
+   * 所以直接传路径、不必再上传一遍 —— 对放在 WebDAV 里的大文件尤其省事。
+   */
+  const handleImportWebDavBook = async (entry: { name: string; path: string }) => {
+    setBusy(true)
+    try {
+      const result = await api.importWebDavBook(entry.path)
+      const item = result.results[0]
+      if (item?.success) {
+        toast.success(`已导入《${item.name ?? entry.name}》${item.totalChapters ? `（${item.totalChapters} 章）` : ''}`)
+      } else {
+        toast.error(item?.error ?? '导入失败')
+      }
+      void load(path)
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : '导入书籍失败')
     } finally {
       setBusy(false)
     }
@@ -528,6 +561,18 @@ export function WebDavSettingsPage() {
                     >
                       <Icon name="importFile" />
                       <span>导入</span>
+                    </button>
+                  )}
+                  {!entry.directory && isLocalBookFile(entry.name) && (
+                    <button
+                      type="button"
+                      className="subtle-button"
+                      onClick={() => void handleImportWebDavBook(entry)}
+                      disabled={busy}
+                      title="把这本书导入书架（仅 TXT / EPUB），导入后可直接阅读"
+                    >
+                      <Icon name="book" />
+                      <span>导入书籍</span>
                     </button>
                   )}
                   {!entry.directory && (

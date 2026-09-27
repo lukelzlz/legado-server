@@ -426,6 +426,13 @@ export const api = {
   webDavCreateFolder: (path: string) => webDavWrite(path, { method: 'MKCOL' }),
   webDavDelete: (path: string) => webDavWrite(path, { method: 'DELETE' }),
   webDavImport: (path: string) => request<BackupImportSummary>('/api/webdav/import', { method: 'POST', body: JSON.stringify({ path }) }),
+  /**
+   * 从 WebDAV 存储区导入一本本地书籍（TXT / EPUB）。
+   *
+   * 与 [importLocalBooks]（HTTP 上传）走**同一套服务端逻辑**，
+   * 区别只是字节来自数据目录的 `webdav` 文件夹而不是浏览器上传。
+   */
+  importWebDavBook: (path: string) => request<LocalBookImportResponse>('/api/bookshelf/import-webdav', { method: 'POST', body: JSON.stringify({ path }) }),
   getReplaceRules: (params?: { q?: string; group?: string; scope?: string }) => {
     const sp = new URLSearchParams()
     if (params?.q) sp.set('q', params.q)

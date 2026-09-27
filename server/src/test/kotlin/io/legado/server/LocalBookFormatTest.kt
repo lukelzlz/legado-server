@@ -267,6 +267,91 @@ class LocalBookFormatTest {
         }
     }
 
+    // ------------------------------------------------------------------
+    // 从 WebDAV 存储区导入书籍（与上传入口等价的另一条入口）
+    // ------------------------------------------------------------------
+
+    /**
+     * 把文件**直接放进 WebDAV 目录**再走导入接口。
+     *
+     * 覆盖三件事：
+     * - 合法 TXT 能导入（且与上传入口产出同一套结果字段）
+     * - `.pdf` 被拒且提示明确
+     * - 路径穿越（`../`）被拒
+     */
+    @Test
+    fun `importing a book from webdav storage works and is format guarded`() = testApplication {
+        val dataDir = Files.createTempDirectory("webdav-book-import")
+        val webdavDir = dataDir.resolve("webdav")
+        Files.createDirectories(webdavDir.resolve("books"))
+        val config = ServerConfig(
+            host = "0.0.0.0",
+            port = 8080,
+            databasePath = dataDir.resolve("legado.sqlite").toString(),
+            coverCacheDirectory = dataDir.resolve("covers"),
+            webDavDirectory = webdavDir,
+            initialAdminPassword = PASSWORD,
+            secureCookies = false,
+        )
+        try {
+            application { legadoApplication(config) }
+            val client = createClient {
+                install(ContentNegotiation) { json(Json { ignoreUnknownKeys = true; encodeDefaults = true }) }
+                install(HttpCookies)
+            }
+            val csrf = client.loginSession()
+
+            // 直接落盘到 WebDAV 存储区（模拟用户通过 WebDAV 上传过文件）
+            val goodText = buildString {
+                repeat(3) { appendLine("第${it + 1}章 测试章节${it + 1}"); appendLine("正文内容${it + 1}。"); appendLine() }
+            }
+            Files.write(webdavDir.resolve("books/凡人修仙传.txt"), goodText.toByteArray(Charsets.UTF_8))
+            Files.write(webdavDir.resolve("books/坏文件.pdf"), "%PDF-1.7 fake".toByteArray())
+
+            // ---- 合法 TXT ----
+            val ok = client.importWebDavBook(csrf, "books/凡人修仙传.txt")
+            assertEquals("TXT 应导入成功", 1, ok.imported)
+            assertEquals(0, ok.failed)
+            val item = ok.results.first()
+            // filename 必须是 **basename**，不是传入的相对路径 ——
+            // `LocalBookParser` 用 `filename.substringBeforeLast('.')` 当书名兜底，
+            // 若这里回显 `books/凡人修仙传.txt`，书名会被写成 `books/凡人修仙传`。
+            assertEquals("凡人修仙传.txt", item.filename)
+            assertEquals("书名不应带上目录前缀", "凡人修仙传", item.name)
+            assertTrue("应解析出章节", item.totalChapters > 0)
+
+            // ---- 不支持的格式：入口直接 400 拒绝 ----
+            // 注意契约与**上传入口不同**：上传是多文件批量，坏文件只能逐项报 failed；
+            // 这里一次只导一本，格式不对就直接 400 + 明确原因，更利于前端提示。
+            val badResponse = client.importWebDavBookRaw(csrf, "books/坏文件.pdf")
+            assertEquals("不支持的格式应返回 400", HttpStatusCode.BadRequest, badResponse.status)
+            val badBody = badResponse.bodyAsText()
+            assertTrue(
+                "错误提示应说明仅支持 TXT/EPUB，实际：$badBody",
+                badBody.contains("TXT") && badBody.contains("EPUB"),
+            )
+
+            // ---- 路径穿越必须被拒 ----
+            val escape = client.post("/api/bookshelf/import-webdav") {
+                contentType(ContentType.Application.Json)
+                header("X-CSRF-Token", csrf)
+                setBody("""{"path":"../../etc/passwd"}""")
+            }
+            assertTrue(
+                "路径穿越应被拒绝，实际 ${escape.status}",
+                escape.status == HttpStatusCode.Forbidden || escape.status == HttpStatusCode.NotFound,
+            )
+
+            // ---- 不存在的文件 ----
+            val missing = client.importWebDavBookRaw(csrf, "books/不存在.txt")
+            assertEquals("不存在的文件应返回 404", HttpStatusCode.NotFound, missing.status)
+        } finally {
+            runCatching {
+                Files.walk(dataDir).sorted(Comparator.reverseOrder()).forEach { Files.deleteIfExists(it) }
+            }
+        }
+    }
+
     private suspend fun HttpClient.loginSession(): String {
         val response = post("/api/auth/login") {
             contentType(ContentType.Application.Json)
@@ -275,6 +360,19 @@ class LocalBookFormatTest {
         assertEquals(HttpStatusCode.OK, response.status)
         return response.body<LoginResponse>().csrfToken
     }
+
+    private suspend fun HttpClient.importWebDavBook(csrf: String, path: String): LocalBookImportResponse {
+        val response = importWebDavBookRaw(csrf, path)
+        assertEquals("导入书籍接口应返回 200，实际 ${response.status}", HttpStatusCode.OK, response.status)
+        return response.body()
+    }
+
+    private suspend fun HttpClient.importWebDavBookRaw(csrf: String, path: String) =
+        post("/api/bookshelf/import-webdav") {
+            contentType(ContentType.Application.Json)
+            header("X-CSRF-Token", csrf)
+            setBody("""{"path":"$path"}""")
+        }
 
     private suspend fun HttpClient.importLocal(
         csrf: String,

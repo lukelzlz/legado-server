@@ -592,6 +592,15 @@ data class WebDavEntry(
 @Serializable
 data class BackupImportRequest(val path: String)
 
+/**
+ * WebDAV 设置页「导入书籍」：以存储区内的相对路径指定一本本地书籍（TXT / EPUB）。
+ *
+ * 与 [BackupImportRequest] 分开是为了让两个入口的契约各自独立演进 ——
+ * 备份包导入的是「书源/规则/书架/分组/书签」，而这里只导入「一本可读的书」。
+ */
+@Serializable
+data class WebDavBookImportRequest(val path: String)
+
 /** 备份导入结果统计（供页面提示使用）。 */
 @Serializable
 data class BackupImportSummary(

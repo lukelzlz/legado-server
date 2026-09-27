@@ -588,6 +588,10 @@ data class BackupImportSummary(
     val books: Int,
     val booksUpdated: Int,
     val progress: Int,
+    /** 因是**本地图书**（手机本机文件，服务端读不到）而跳过的条数。 */
+    val skippedLocal: Int = 0,
+    /** 因是**音频/听书**（服务端只做文本阅读）而跳过的条数。 */
+    val skippedAudio: Int = 0,
 )
 
 /** 备份包 `bookshelf.json` 中的一条书架记录（含阅读进度），仅用于导入。 */
@@ -601,6 +605,8 @@ data class BackupShelfEntry(
     val completed: Boolean,
     val chapterIndex: Int,
     val readAt: Long,
+    /** 类别判定结果，用于导入时过滤本地图书与音频（见 [ShelfKind]）。 */
+    val kind: ShelfKind = ShelfKind.ONLINE,
 )
 
 /** 书架与阅读进度导入统计。 */

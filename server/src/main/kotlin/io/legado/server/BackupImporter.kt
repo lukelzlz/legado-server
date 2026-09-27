@@ -39,10 +39,24 @@ class BackupImporter(
         }
         val sources = readSection(zip, entries, "booksource.json")?.let(::parseSources).orEmpty()
         val rules = readSection(zip, entries, "replacerule.json")?.let(::parseRules).orEmpty()
-        val shelf = readSection(zip, entries, "bookshelf.json")?.let(::parseShelf).orEmpty()
-        require(sources.isNotEmpty() || rules.isNotEmpty() || shelf.isNotEmpty()) {
+        val parsedShelf = readSection(zip, entries, "bookshelf.json")?.let(::parseShelf).orEmpty()
+        require(sources.isNotEmpty() || rules.isNotEmpty() || parsedShelf.isNotEmpty()) {
             "不是 Legado 备份包：未找到 bookSource.json / replaceRule.json / bookshelf.json"
         }
+
+        // ------------------------------------------------------------------
+        // 过滤：本地图书 与 音频（听书）在服务端**没有可用能力**，不予导入。
+        //
+        // - 本地图书：`bookUrl` 是 Android SAF 的 `content://` URI（或 `file://` / `webDav::`），
+        //   指向**手机本机**的文件，服务端根本无法读取（表现为章节 0、正文空）。
+        // - 音频（听书）：内容源是 TTS 音频流，服务端只做文本阅读，导入后同样点不开。
+        //
+        // 判定严格遵循 `te/分类判别方法.md` 的规范（见 ShelfKind）：
+        // 先判本地图书、再判 tab，且**不用扩展名/type 单独判定**。
+        // ------------------------------------------------------------------
+        val shelf = parsedShelf.filter { it.kind == ShelfKind.ONLINE }
+        val skippedLocal = parsedShelf.count { it.kind == ShelfKind.LOCAL }
+        val skippedAudio = parsedShelf.count { it.kind == ShelfKind.AUDIO }
 
         val sourceResult = database.importSources(sources)
         val ruleResult = database.importReplaceRules(rules)
@@ -59,6 +73,8 @@ class BackupImporter(
             books = library.imported,
             booksUpdated = library.updated,
             progress = library.progress,
+            skippedLocal = skippedLocal,
+            skippedAudio = skippedAudio,
         )
     }
 
@@ -141,6 +157,7 @@ class BackupImporter(
             completed = book.text("kind")?.contains("完结") == true,
             chapterIndex = book.number("durChapterIndex")?.toInt() ?: 0,
             readAt = book.number("durChapterTime") ?: 0L,
+            kind = ShelfKind.of(book.text("bookUrl"), book.text("origin"), book.text("type"), book.text("kind")),
         )
     }
 

@@ -215,18 +215,25 @@ export function WebDavSettingsPage() {
   }
 
   const handleImport = async (entry: { name: string; path: string }) => {
-    if (!window.confirm(`导入备份「${entry.name}」？\n会写入其中的书源、替换净化规则、书架与阅读进度（同名书源/规则按其 ID 覆盖，书架按书合并，进度只在更新时间较新时覆盖）。`)) return
+    if (!window.confirm(`导入备份「${entry.name}」？\n会写入其中的书源、替换净化规则、书架与阅读进度（同名书源/规则按其 ID 覆盖，书架按书合并，进度只在更新时间较新时覆盖）。\n\n本地图书与音频（听书）会被跳过——服务端读不到手机本机文件，也只支持文本阅读。`)) return
     setBusy(true)
     try {
       const summary = await api.webDavImport(entry.path)
       const total = (a: number, b: number) => a + b
+      // 本地图书（手机本机文件）与音频/听书在服务端没有可用能力，导入时会被跳过，
+      // 这里如实告知用户，避免「明明导入了却少了几十本」的困惑。
+      const skipped = (summary.skippedLocal ?? 0) + (summary.skippedAudio ?? 0)
+      const skipNote = skipped > 0
+        ? `；已跳过 ${skipped} 条服务端用不了的书（本地图书 ${summary.skippedLocal ?? 0}、音频听书 ${summary.skippedAudio ?? 0}）`
+        : ''
       if (total(summary.sources, summary.sourcesUpdated) + total(summary.rules, summary.rulesUpdated) + total(summary.books, summary.booksUpdated) === 0) {
-        toast.warning('备份包里没有可导入的内容（已忽略 RSS / TTS / 主题等条目）')
+        toast.warning(`备份包里没有可导入的内容（已忽略 RSS / TTS / 主题等条目）${skipNote}`)
       } else {
         toast.success(
           `导入完成：书源 ${total(summary.sources, summary.sourcesUpdated)}，` +
           `替换规则 ${total(summary.rules, summary.rulesUpdated)}，` +
-          `书籍 ${total(summary.books, summary.booksUpdated)}，阅读进度 ${summary.progress}`,
+          `书籍 ${total(summary.books, summary.booksUpdated)}，阅读进度 ${summary.progress}` +
+          skipNote,
         )
       }
       void load(path)

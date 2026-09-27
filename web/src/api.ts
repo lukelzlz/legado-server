@@ -76,6 +76,10 @@ export type BackupImportSummary = {
   books: number
   booksUpdated: number
   progress: number
+  /** 因是本地图书（手机本机文件，服务端读不到）而跳过的条数 */
+  skippedLocal?: number
+  /** 因是音频/听书（服务端只做文本阅读）而跳过的条数 */
+  skippedAudio?: number
 }
 
 export type ReplaceRule = {

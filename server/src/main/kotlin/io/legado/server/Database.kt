@@ -139,6 +139,19 @@ class Database(private val path: String) : Closeable, AutoCloseable {
                   created_at integer not null
                 );
                 create index if not exists idx_book_group_sort on book_group(sort_order asc, id asc);
+                create table if not exists bookmark (
+                  id integer primary key autoincrement,
+                  book_name text not null,
+                  book_author text,
+                  chapter_index integer not null default 0,
+                  chapter_name text,
+                  chapter_pos integer not null default 0,
+                  book_text text,
+                  content text,
+                  created_at integer not null,
+                  unique(book_name, book_author, chapter_index, chapter_pos)
+                );
+                create index if not exists idx_bookmark_book on bookmark(book_name, book_author);
                 create table if not exists book_shelf (
                   source_id text not null, book_url text not null, name text not null,
                   author text, toc_url text not null, cover_url text, cover_key text,
@@ -1277,8 +1290,170 @@ class Database(private val path: String) : Closeable, AutoCloseable {
         return LibraryImportResult(imported, updated, progressApplied)
     }
 
-    fun listSubscriptions(enabledOnly: Boolean = false): List<SourceSubscription> = connect { db ->
-        val sql = "select * from source_subscription" + (if (enabledOnly) " where enabled=1" else "") + " order by id"
+    /**
+     * 导入备份包里的**分组**，并把书架上已有的 `group_name` 对齐到这些分组。
+     *
+     * ## 为什么需要「对齐」这一步
+     *
+     * 备份里书籍的分组是**数字 id**（`bookshelf.json` 的 `group`），而本服务的
+     * `book_group` 与 `book_shelf.group_name` 是**按名字**关联的
+     * （见 [listBookGroups] 的 `s.group_name = g.name collate nocase`）。
+     * 因此这里要做两件事：① 建出分组；② 把已导入书籍的 `group_name` 填上对应的名字。
+     *
+     * ## 设计取舍
+     *
+     * - **只导入「有书的分组」**：Legado 内置的智能分组（`groupId` 为负：在读/未读/已读/
+     *   小说/漫画/全部/本地/音频…）是按条件动态筛选的虚拟分组，实测在真实备份里都是空的，
+     *   导入后只会变成一堆点不动的空分组。调用方据此过滤。
+     * - **不覆盖已有分组**：`insert ... on conflict(name) do update` 只更新排序，不动已有的书。
+     * - **`group_name` 用 coalesce 语义**：只在本服务该书的 `group_name` 为空时才写入，
+     *   避免一次备份导入把用户在服务端手工改过的分组冲掉。
+     *
+     * @param groups    要导入的分组（调用方已过滤掉空的内置分组）
+     * @param shelf     已导入的书架条目（其 [BackupShelfEntry.groupName] 已由 groupId 解析好）
+     * @return 新建的分组数与被赋予分组的书籍数
+     */
+    fun importBookGroups(
+        groups: List<BackupGroupEntry>,
+        shelf: List<BackupShelfEntry>,
+    ): GroupImportResult = write { db ->
+        db.autoCommit = false
+        var created = 0
+        var assigned = 0
+        try {
+            // ① 建分组（按名字去重；已存在则只更新排序）
+            if (groups.isNotEmpty()) {
+                db.prepareStatement(
+                    "insert into book_group(name, sort_order, created_at) values(?,?,?) " +
+                        "on conflict(name) do update set sort_order=excluded.sort_order"
+                ).use { stmt ->
+                    val now = System.currentTimeMillis()
+                    groups.distinctBy { it.groupName.lowercase() }.forEach { group ->
+                        stmt.setString(1, group.groupName)
+                        stmt.setInt(2, group.order)
+                        stmt.setLong(3, now)
+                        stmt.addBatch()
+                    }
+                    created = stmt.executeBatch().count { it > 0 }
+                }
+            }
+
+            // ② 把书籍的 group_name 补上（只填空值，不动已存在的分组）
+            val withGroup = shelf.filter { !it.groupName.isNullOrBlank() }
+            if (withGroup.isNotEmpty()) {
+                db.prepareStatement(
+                    "update book_shelf set group_name=? where source_id=? and book_url=? " +
+                        "and (group_name is null or group_name='')"
+                ).use { stmt ->
+                    withGroup.forEach { entry ->
+                        stmt.setString(1, entry.groupName)
+                        stmt.setString(2, entry.sourceId)
+                        stmt.setString(3, entry.bookUrl)
+                        stmt.addBatch()
+                    }
+                    assigned = stmt.executeBatch().sum()
+                }
+            }
+            db.commit()
+        } catch (error: Throwable) { db.rollback(); throw error } finally { db.autoCommit = true }
+        GroupImportResult(created = created, assigned = assigned)
+    }
+
+    /**
+     * 导入备份包里的**书签/阅读记录**（`bookmark.json`）。
+     *
+     * ## 只导入「书还在书架上」的书签
+     *
+     * 实测真实备份 47 条书签里，**29 条挂在被过滤掉的书上**（本地图书/音频）——
+     * 那些书不在书架上，书签也就没有展示位置。调用方据此过滤后传入。
+     *
+     * ## 幂等
+     *
+     * `bookmark` 表上对 `(book_name, book_author, chapter_index, chapter_pos)` 建了唯一键，
+     * 重复导入同一备份不会产生重复书签。
+     *
+     * @return 本次新增的书签数
+     */
+    fun importBookmarks(bookmarks: List<BackupBookmarkEntry>): Int {
+        if (bookmarks.isEmpty()) return 0
+        return write { db ->
+            db.autoCommit = false
+            var inserted = 0
+            try {
+                db.prepareStatement(
+                    """
+                    insert into bookmark(book_name,book_author,chapter_index,chapter_name,chapter_pos,book_text,content,created_at)
+                    values(?,?,?,?,?,?,?,?)
+                    on conflict(book_name,book_author,chapter_index,chapter_pos) do update set
+                      chapter_name=excluded.chapter_name, book_text=excluded.book_text,
+                      content=excluded.content, created_at=excluded.created_at
+                    """.trimIndent()
+                ).use { stmt ->
+                    bookmarks.forEach { mark ->
+                        stmt.setString(1, mark.bookName)
+                        stmt.setString(2, mark.bookAuthor)
+                        stmt.setInt(3, mark.chapterIndex)
+                        stmt.setString(4, mark.chapterName)
+                        stmt.setInt(5, mark.chapterPos)
+                        stmt.setString(6, mark.bookText)
+                        stmt.setString(7, mark.content)
+                        stmt.setLong(8, if (mark.time > 0) mark.time else System.currentTimeMillis())
+                        stmt.addBatch()
+                    }
+                    inserted = stmt.executeBatch().count { it > 0 }
+                }
+                db.commit()
+            } catch (error: Throwable) { db.rollback(); throw error } finally { db.autoCommit = true }
+            inserted
+        }
+    }
+
+    /**
+     * 某本书的书签数量。
+     *
+     * 用于验证导入幂等——**不能拿 upsert 的 `changes()` 判断"是否新增"**：
+     * SQLite 在 `do update` 时同样报告 1 行受影响，只有查实际行数才准。
+     */
+    fun countBookmarks(bookName: String, bookAuthor: String?): Int = connect { db ->
+        db.prepareStatement(
+            "select count(*) from bookmark where book_name=? and coalesce(book_author,'')=coalesce(?,'')"
+        ).use { stmt ->
+            stmt.setString(1, bookName)
+            stmt.setString(2, bookAuthor)
+            stmt.executeQuery().use { rs -> if (rs.next()) rs.getInt(1) else 0 }
+        }
+    }
+
+    /** 某本书的全部书签，按章节与位置排序。 */
+    fun listBookmarks(bookName: String, bookAuthor: String?): List<Bookmark> = connect { db ->
+        db.prepareStatement(
+            "select id,book_name,book_author,chapter_index,chapter_name,chapter_pos,book_text,content,created_at " +
+                "from bookmark where book_name=? and coalesce(book_author,'')=coalesce(?,'') " +
+                "order by chapter_index asc, chapter_pos asc"
+        ).use { stmt ->
+            stmt.setString(1, bookName)
+            stmt.setString(2, bookAuthor)
+            stmt.executeQuery().use { rs ->
+                buildList {
+                    while (rs.next()) add(
+                        Bookmark(
+                            id = rs.getLong(1),
+                            bookName = rs.getString(2),
+                            bookAuthor = rs.getString(3),
+                            chapterIndex = rs.getInt(4),
+                            chapterName = rs.getString(5),
+                            chapterPos = rs.getInt(6),
+                            bookText = rs.getString(7),
+                            content = rs.getString(8),
+                            createdAt = rs.getLong(9),
+                        )
+                    )
+                }
+            }
+        }
+    }
+
+    fun listSubscriptions(enabledOnly: Boolean = false): List<SourceSubscription> = connect { db ->        val sql = "select * from source_subscription" + (if (enabledOnly) " where enabled=1" else "") + " order by id"
         db.prepareStatement(sql).use { statement -> statement.executeQuery().use { rs -> buildList { while (rs.next()) add(rs.toSubscription()) } } }
     }
 

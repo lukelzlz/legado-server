@@ -215,7 +215,7 @@ export function WebDavSettingsPage() {
   }
 
   const handleImport = async (entry: { name: string; path: string }) => {
-    if (!window.confirm(`导入备份「${entry.name}」？\n会写入其中的书源、替换净化规则、书架与阅读进度（同名书源/规则按其 ID 覆盖，书架按书合并，进度只在更新时间较新时覆盖）。\n\n本地图书与音频（听书）会被跳过——服务端读不到手机本机文件，也只支持文本阅读。`)) return
+    if (!window.confirm(`导入备份「${entry.name}」？\n会写入其中的书源、替换净化规则、书架、分组、书签与阅读进度（同名书源/规则按其 ID 覆盖，书架按书合并，进度只在更新时间较新时覆盖）。\n\n本地图书与音频（听书）会被跳过——服务端读不到手机本机文件，也只支持文本阅读；挂在被跳过书籍上的书签同样跳过。`)) return
     setBusy(true)
     try {
       const summary = await api.webDavImport(entry.path)
@@ -226,6 +226,10 @@ export function WebDavSettingsPage() {
       const skipNote = skipped > 0
         ? `；已跳过 ${skipped} 条服务端用不了的书（本地图书 ${summary.skippedLocal ?? 0}、音频听书 ${summary.skippedAudio ?? 0}）`
         : ''
+      // 书签同理：挂在被跳过书籍上的书签没有展示位置，也一并跳过并如实报告。
+      const markNote = (summary.bookmarksSkipped ?? 0) > 0
+        ? `；书签 ${summary.bookmarks ?? 0} 条（跳过 ${summary.bookmarksSkipped} 条，其所属书籍未导入）`
+        : `；书签 ${summary.bookmarks ?? 0} 条`
       if (total(summary.sources, summary.sourcesUpdated) + total(summary.rules, summary.rulesUpdated) + total(summary.books, summary.booksUpdated) === 0) {
         toast.warning(`备份包里没有可导入的内容（已忽略 RSS / TTS / 主题等条目）${skipNote}`)
       } else {
@@ -233,6 +237,7 @@ export function WebDavSettingsPage() {
           `导入完成：书源 ${total(summary.sources, summary.sourcesUpdated)}，` +
           `替换规则 ${total(summary.rules, summary.rulesUpdated)}，` +
           `书籍 ${total(summary.books, summary.booksUpdated)}，阅读进度 ${summary.progress}` +
+          markNote +
           skipNote,
         )
       }

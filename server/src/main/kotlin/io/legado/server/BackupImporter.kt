@@ -39,7 +39,9 @@ class BackupImporter(
         }
         val sources = readSection(zip, entries, "booksource.json")?.let(::parseSources).orEmpty()
         val rules = readSection(zip, entries, "replacerule.json")?.let(::parseRules).orEmpty()
-        val parsedShelf = readSection(zip, entries, "bookshelf.json")?.let(::parseShelf).orEmpty()
+        val parsedGroups = readSection(zip, entries, "bookgroup.json")?.let(::parseGroups).orEmpty()
+        val parsedShelf = readSection(zip, entries, "bookshelf.json")?.let { parseShelf(it, parsedGroups) }.orEmpty()
+        val parsedBookmarks = readSection(zip, entries, "bookmark.json")?.let(::parseBookmarks).orEmpty()
         require(sources.isNotEmpty() || rules.isNotEmpty() || parsedShelf.isNotEmpty()) {
             "不是 Legado 备份包：未找到 bookSource.json / replaceRule.json / bookshelf.json"
         }
@@ -58,9 +60,25 @@ class BackupImporter(
         val skippedLocal = parsedShelf.count { it.kind == ShelfKind.LOCAL }
         val skippedAudio = parsedShelf.count { it.kind == ShelfKind.AUDIO }
 
+        // 分组：只导入「有书的分组」。
+        // Legado 内置的智能分组（groupId 为负：在读/未读/已读/小说/漫画/全部/本地/音频…）
+        // 是按条件动态筛选的虚拟分组，实测在真实备份里都是空的，导入只会得到一堆空分组。
+        val usedGroupNames = shelf.mapNotNull { it.groupName?.takeIf { n -> n.isNotBlank() } }.toSet()
+        val groups = parsedGroups.filter { it.groupName in usedGroupNames }
+
+        // 书签：只导入「书还在书架上」的。
+        // 实测真实备份 47 条里 29 条挂在被过滤的书上（本地图书/音频），那些书不在书架上，
+        // 书签也就没有展示位置。
+        val shelfKeys = shelf.map { "${it.name}\u0000${it.author.orEmpty()}" }.toSet()
+        val bookmarks = parsedBookmarks.filter { "${it.bookName}\u0000${it.bookAuthor.orEmpty()}" in shelfKeys }
+        val bookmarksSkipped = parsedBookmarks.size - bookmarks.size
+
         val sourceResult = database.importSources(sources)
         val ruleResult = database.importReplaceRules(rules)
         val library = database.importLibrary(shelf)
+        // 分组必须在书架导入**之后**执行：它要把 book_shelf.group_name 补上对应分组名。
+        database.importBookGroups(groups, shelf)
+        val bookmarksImported = database.importBookmarks(bookmarks)
         // 备份包只带封面 URL、不带图片本体，落库后 cover_key 为空。
         // 这里后台把封面抓成本地副本，否则书架封面会完全依赖外部图床
         // （图床挂了 / 离线阅读时就只剩文字占位符）。
@@ -75,6 +93,8 @@ class BackupImporter(
             progress = library.progress,
             skippedLocal = skippedLocal,
             skippedAudio = skippedAudio,
+            bookmarks = bookmarksImported,
+            bookmarksSkipped = bookmarksSkipped,
         )
     }
 
@@ -141,24 +161,80 @@ class BackupImporter(
         )
     }
 
-    private fun parseShelf(text: String): List<BackupShelfEntry> = array(text, "bookshelf.json").mapNotNull { element ->
-        val book = element as? JsonObject ?: return@mapNotNull null
-        val origin = book.text("origin")?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
-        val bookUrl = book.text("bookUrl")?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
-        val sourceId = SourceCodec.normalizeSourceId(origin)
-        if (sourceId.isBlank()) return@mapNotNull null
-        BackupShelfEntry(
-            sourceId = sourceId,
-            bookUrl = bookUrl,
-            name = book.text("name")?.takeIf { it.isNotBlank() } ?: bookUrl,
-            author = book.text("author")?.takeIf { it.isNotBlank() },
-            tocUrl = book.text("tocUrl")?.takeIf { it.isNotBlank() } ?: bookUrl,
-            coverUrl = (book.text("coverUrl") ?: book.text("customCoverUrl"))?.takeIf { it.isNotBlank() },
-            completed = book.text("kind")?.contains("完结") == true,
-            chapterIndex = book.number("durChapterIndex")?.toInt() ?: 0,
-            readAt = book.number("durChapterTime") ?: 0L,
-            kind = ShelfKind.of(book.text("bookUrl"), book.text("origin"), book.text("type"), book.text("kind")),
-        )
+    /**
+     * 解析 `bookGroup.json`。
+     *
+     * 真实字段：`bookSort, enableRefresh, groupId, groupName, order, show`。
+     * `groupId` 为负表示 Legado 内置的智能分组（[BackupGroupEntry.builtIn]）。
+     */
+    private fun parseGroups(text: String): List<BackupGroupEntry> =
+        array(text, "bookGroup.json").mapNotNull { element ->
+            val group = element as? JsonObject ?: return@mapNotNull null
+            val id = group.number("groupId") ?: return@mapNotNull null
+            val name = group.text("groupName")?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
+            BackupGroupEntry(
+                groupId = id,
+                groupName = name,
+                order = group.number("order")?.toInt() ?: 0,
+                builtIn = id < 0,
+            )
+        }
+
+    /**
+     * 解析 `bookmark.json`（书签 / 阅读记录）。
+     *
+     * 真实字段：`bookAuthor, bookName, bookText, chapterIndex, chapterName, chapterPos, content, time`。
+     */
+    private fun parseBookmarks(text: String): List<BackupBookmarkEntry> =
+        array(text, "bookmark.json").mapNotNull { element ->
+            val mark = element as? JsonObject ?: return@mapNotNull null
+            val bookName = mark.text("bookName")?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
+            BackupBookmarkEntry(
+                bookName = bookName,
+                bookAuthor = mark.text("bookAuthor")?.takeIf { it.isNotBlank() },
+                chapterIndex = mark.number("chapterIndex")?.toInt() ?: 0,
+                chapterName = mark.text("chapterName")?.takeIf { it.isNotBlank() },
+                chapterPos = mark.number("chapterPos")?.toInt() ?: 0,
+                bookText = mark.text("bookText"),
+                content = mark.text("content"),
+                time = mark.number("time") ?: 0L,
+            )
+        }
+
+    /**
+     * 解析 `bookshelf.json`。
+     *
+     * @param groups 已解析的 `bookGroup.json`，用于把书籍的**数字 `group` id** 解析成分组名
+     *   （本服务的 `book_group` / `book_shelf.group_name` 是**按名字**关联的）。
+     *   传空列表时所有书籍的 `groupName` 都是 null（等价于未分组）。
+     */
+    private fun parseShelf(
+        text: String,
+        groups: List<BackupGroupEntry> = emptyList(),
+    ): List<BackupShelfEntry> {
+        val nameById = groups.associate { it.groupId to it.groupName }
+        return array(text, "bookshelf.json").mapNotNull { element ->
+            val book = element as? JsonObject ?: return@mapNotNull null
+            val origin = book.text("origin")?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
+            val bookUrl = book.text("bookUrl")?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
+            val sourceId = SourceCodec.normalizeSourceId(origin)
+            if (sourceId.isBlank()) return@mapNotNull null
+            // group = 0 表示未分组；负数/正数都要查表换成名字
+            val groupId = book.number("group")?.takeIf { it != 0L }
+            BackupShelfEntry(
+                sourceId = sourceId,
+                bookUrl = bookUrl,
+                name = book.text("name")?.takeIf { it.isNotBlank() } ?: bookUrl,
+                author = book.text("author")?.takeIf { it.isNotBlank() },
+                tocUrl = book.text("tocUrl")?.takeIf { it.isNotBlank() } ?: bookUrl,
+                coverUrl = (book.text("coverUrl") ?: book.text("customCoverUrl"))?.takeIf { it.isNotBlank() },
+                completed = book.text("kind")?.contains("完结") == true,
+                chapterIndex = book.number("durChapterIndex")?.toInt() ?: 0,
+                readAt = book.number("durChapterTime") ?: 0L,
+                kind = ShelfKind.of(book.text("bookUrl"), book.text("origin"), book.text("type"), book.text("kind")),
+                groupName = groupId?.let { nameById[it] },
+            )
+        }
     }
 
     private fun array(text: String, fileName: String): List<JsonElement> =

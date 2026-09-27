@@ -80,6 +80,10 @@ export type BackupImportSummary = {
   skippedLocal?: number
   /** 因是音频/听书（服务端只做文本阅读）而跳过的条数 */
   skippedAudio?: number
+  /** 本次导入的书签数 */
+  bookmarks?: number
+  /** 因所属书籍未导入（本地图书/音频）而跳过的书签数 */
+  bookmarksSkipped?: number
 }
 
 export type ReplaceRule = {

@@ -370,6 +370,20 @@ data class BookGroup(
     val bookCount: Int = 0,
 )
 
+/** 一条书签 / 阅读记录（来自备份包 `bookmark.json`）。 */
+@Serializable
+data class Bookmark(
+    val id: Long,
+    val bookName: String,
+    val bookAuthor: String? = null,
+    val chapterIndex: Int,
+    val chapterName: String? = null,
+    val chapterPos: Int = 0,
+    val bookText: String? = null,
+    val content: String? = null,
+    val createdAt: Long = 0L,
+)
+
 @Serializable
 data class BookGroupCreateRequest(val name: String)
 
@@ -592,6 +606,10 @@ data class BackupImportSummary(
     val skippedLocal: Int = 0,
     /** 因是**音频/听书**（服务端只做文本阅读）而跳过的条数。 */
     val skippedAudio: Int = 0,
+    /** 新增的书签数。 */
+    val bookmarks: Int = 0,
+    /** 因所属书籍未导入（本地图书/音频）而跳过的书签数。 */
+    val bookmarksSkipped: Int = 0,
 )
 
 /** 备份包 `bookshelf.json` 中的一条书架记录（含阅读进度），仅用于导入。 */
@@ -607,10 +625,55 @@ data class BackupShelfEntry(
     val readAt: Long,
     /** 类别判定结果，用于导入时过滤本地图书与音频（见 [ShelfKind]）。 */
     val kind: ShelfKind = ShelfKind.ONLINE,
+    /**
+     * 分组名（已由 `bookGroup.json` 的 `groupId` 解析而来）。
+     *
+     * `bookshelf.json` 里存的是**数字 `group` id**，而本服务的 `book_group` 是**按名字**关联的
+     * （见 `listBookGroups` 的 `s.group_name = g.name`），因此导入时必须先把 id 映射成名字。
+     * 未分组 / 找不到对应分组时为 null。
+     */
+    val groupName: String? = null,
+)
+
+/**
+ * 备份包 `bookGroup.json` 中的一条分组记录，仅用于导入。
+ *
+ * 字段来自真实备份：`bookSort, enableRefresh, groupId, groupName, order, show`。
+ */
+data class BackupGroupEntry(
+    val groupId: Long,
+    val groupName: String,
+    val order: Int,
+    /**
+     * 是否为 Legado **内置的智能分组**（`groupId` 为负数）。
+     *
+     * 如 `在读(-20)`/`未读(-21)`/`已读(-22)`/`小说(-8)`/`漫画(-7)`/`全部(-1)`/`本地(-2)`/`音频(-3)`
+     * 等，它们是**按条件动态筛选**的虚拟分组、不是真实归类，实测这些分组在真实备份里都是空的。
+     */
+    val builtIn: Boolean,
+)
+
+/**
+ * 备份包 `bookmark.json` 中的一条书签/阅读记录，仅用于导入。
+ *
+ * 字段来自真实备份：`bookAuthor, bookName, bookText, chapterIndex, chapterName, chapterPos, content, time`。
+ */
+data class BackupBookmarkEntry(
+    val bookName: String,
+    val bookAuthor: String?,
+    val chapterIndex: Int,
+    val chapterName: String?,
+    val chapterPos: Int,
+    val bookText: String?,
+    val content: String?,
+    val time: Long,
 )
 
 /** 书架与阅读进度导入统计。 */
 data class LibraryImportResult(val imported: Int, val updated: Int, val progress: Int)
+
+/** 分组导入统计。 */
+data class GroupImportResult(val created: Int, val assigned: Int)
 
 /** WebDAV 设置页面的服务状态与当前目录内容。 */
 @Serializable

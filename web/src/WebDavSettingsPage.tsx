@@ -3,6 +3,23 @@ import { api, joinWebDavPath, webDavFileUrl, WebDavInfo, ProgressSyncSettings } 
 import { toast } from './Toast'
 import { Icon } from './icons'
 
+/**
+ * 本地书籍支持的扩展名（**产品约束：只有 TXT 与 EPUB**）。
+ *
+ * 前端用它做两件事：① `<input accept>` 让文件选择器默认只列这些；
+ * ② 提交前再过滤一次 —— 用户可以手动切到「所有文件」，光靠 accept 拦不住。
+ *
+ * 服务端 `LocalBookParser.isSupported` 有**同一份规则**，两层都要有：
+ * 前端拦是为了即时反馈，服务端拦才是真正的防线。
+ * `.text` 是 `.txt` 的历史命名习惯，一并放行。
+ */
+export const LOCAL_BOOK_ACCEPT_ATTR = '.txt,.text,.epub'
+
+/** 是否为受支持的本地书格式（大小写不敏感）。 */
+export function isSupportedLocalBook(filename: string): boolean {
+  return /\.(txt|text|epub)$/i.test(filename)
+}
+
 /** 客户端接入指引：按当前访问来源拼出可复制的连接信息。 */
 export function webDavClientGuides(origin: string, urlPath: string) {
   const url = `${origin}${urlPath}`
@@ -100,6 +117,43 @@ export function WebDavSettingsPage() {
   const [syncSettings, setSyncSettings] = useState<ProgressSyncSettings | null>(null)
   const [syncDirInput, setSyncDirInput] = useState('')
   const [syncSaving, setSyncSaving] = useState(false)
+
+  // 本地书籍导入（仅 TXT / EPUB）
+  const localBookInputRef = useRef<HTMLInputElement>(null)
+  const [localBookBusy, setLocalBookBusy] = useState(false)
+
+  /** 产品约束：本地书籍只支持 TXT 与 EPUB，前端先过滤一次，避免上传后才发现不支持。 */
+  const LOCAL_BOOK_ACCEPT = LOCAL_BOOK_ACCEPT_ATTR
+
+  const handleImportLocalBooks = async (files: FileList | null) => {
+    if (!files || files.length === 0) return
+    const all = Array.from(files)
+    const supported = all.filter(file => isSupportedLocalBook(file.name))
+    const rejected = all.filter(file => !isSupportedLocalBook(file.name))
+    if (supported.length === 0) {
+      toast.warning(`仅支持 TXT / EPUB 格式，已忽略 ${rejected.length} 个文件`)
+      return
+    }
+    setLocalBookBusy(true)
+    try {
+      const result = await api.importLocalBooks(supported)
+      const names = result.results.filter(item => item.success).map(item => item.name ?? item.filename)
+      if (result.failed === 0 && rejected.length === 0) {
+        toast.success(`成功导入 ${result.imported} 本本地书籍${names.length ? '：' + names.slice(0, 3).join('、') + (names.length > 3 ? ' 等' : '') : ''}`)
+      } else {
+        // 部分失败要如实说明，否则用户不知道哪几本没进来
+        const failedNames = result.results.filter(item => !item.success).map(item => `${item.filename}（${item.error ?? '解析失败'}）`)
+        const parts = [`成功 ${result.imported} 本`]
+        if (result.failed > 0) parts.push(`失败 ${result.failed} 本：${failedNames.slice(0, 3).join('；')}`)
+        if (rejected.length > 0) parts.push(`忽略 ${rejected.length} 个非 TXT/EPUB 文件`)
+        toast.warning(parts.join('；'))
+      }
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : '本地书籍导入失败')
+    } finally {
+      setLocalBookBusy(false)
+    }
+  }
 
   const loadSyncSettings = useCallback(async () => {
     try {
@@ -367,6 +421,40 @@ export function WebDavSettingsPage() {
             </article>
           ))}
         </div>
+      </section>
+
+      <section className="webdav-section">
+        <div className="webdav-files-head">
+          <h2 className="webdav-section-title">本地书籍</h2>
+          <div className="webdav-files-actions">
+            <input
+              ref={localBookInputRef}
+              type="file"
+              multiple
+              hidden
+              accept={LOCAL_BOOK_ACCEPT}
+              onChange={event => {
+                void handleImportLocalBooks(event.target.files)
+                // 清空 value，否则连续选同一个文件不会再触发 change
+                event.target.value = ''
+              }}
+            />
+            <button
+              type="button"
+              className="primary-button"
+              onClick={() => localBookInputRef.current?.click()}
+              disabled={localBookBusy}
+            >
+              <Icon name="upload" />
+              <span>{localBookBusy ? '导入中…' : '导入本地书籍'}</span>
+            </button>
+          </div>
+        </div>
+        <p className="webdav-section-desc">
+          支持 <strong>TXT</strong> 与 <strong>EPUB</strong> 两种格式，可一次选择多本。
+          TXT 会自动探测编码（UTF-8 / GB18030）并按章节标题智能分章；EPUB 会读取其自带目录与封面。
+          导入后书籍进入书架，可直接在线阅读。
+        </p>
       </section>
 
       <section className="webdav-section">

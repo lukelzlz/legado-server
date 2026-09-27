@@ -35,3 +35,4 @@ console.log('🚀 Running Legado Web Frontend Comprehensive Test Suite (Tier 1, 
 import './webdav-settings.test.ts'
 import './progress-sync-settings.test.ts'
 import './BookInfoMetaSearch.test.ts'
+import './LocalBookImport.test.ts'

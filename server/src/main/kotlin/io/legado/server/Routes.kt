@@ -747,6 +747,12 @@ fun Route.apiRoutes(
                     val bytes = part.streamProvider().readBytes()
                     if (bytes.isNotEmpty()) {
                         try {
+                            // 只接受 TXT / EPUB（用户明确要求）。
+                            // 不拦的话 `LocalBookParser.parse` 会把未知格式**静默按 TXT 解析**，
+                            // 用户会得到一本正文是乱码的"书"且没有任何报错。
+                            require(LocalBookParser.isSupported(originalFilename)) {
+                                "不支持的格式（仅支持 ${LocalBookParser.SUPPORTED_FORMATS}）：$originalFilename"
+                            }
                             val parsed = LocalBookParser.parse(originalFilename, bytes)
                             val bookId = UUID.randomUUID().toString().replace("-", "")
                             val ext = if (originalFilename.contains('.')) "." + originalFilename.substringAfterLast('.') else ".txt"

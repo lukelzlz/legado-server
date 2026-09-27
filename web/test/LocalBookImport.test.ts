@@ -1,6 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { BookshelfItem, LocalBookImportResponse } from '../src/api'
+import { LOCAL_BOOK_ACCEPT_ATTR, isSupportedLocalBook } from '../src/WebDavSettingsPage'
 
 test('LocalBookImport - api types and local book shelf item identification', () => {
   const localItem: BookshelfItem = {
@@ -49,4 +50,47 @@ test('LocalBookImport - api types and local book shelf item identification', () 
   assert.equal(importResponse.failed, 0)
   assert.equal(importResponse.results[0].name, '凡人修仙传')
   assert.equal(importResponse.results[1].author, '刘慈欣')
+})
+
+test('LocalBookImport - only TXT and EPUB are accepted', () => {
+  // 支持：TXT / EPUB（含 .text 历史命名、大小写随意）
+  for (const name of [
+    'book.txt', 'book.TXT', 'BOOK.Txt', 'book.text',
+    'book.epub', 'book.EPUB', 'A.EpUb',
+    '带 空格 的中文书名.txt',
+    'a.b.c.txt',            // 多点文件名取最后一段
+  ]) {
+    assert.equal(isSupportedLocalBook(name), true, `${name} 应被接受`)
+  }
+
+  // 拒绝：其它一切格式（尤其 .pdf/.mobi 这些会被后端当成 TXT 硬解析出乱码的）
+  for (const name of [
+    'book.pdf', 'book.mobi', 'book.azw3', 'book.azw', 'book.fb2', 'book.umd',
+    'book.cbz', 'book.cbr', 'book.docx', 'book.doc', 'book.html', 'book.htm',
+    'book.zip', 'book.rar', 'book.md', 'book.json', 'book.xml',
+    '无扩展名', 'book.', 'book.txt.exe',
+  ]) {
+    assert.equal(isSupportedLocalBook(name), false, `${name} 应被拒绝`)
+  }
+})
+
+test('LocalBookImport - accept attribute matches the supported set', () => {
+  // `accept` 必须与判定规则一致，否则文件选择器会给出误导性的可选项
+  const accepted = LOCAL_BOOK_ACCEPT_ATTR.split(',')
+  assert.deepEqual(accepted, ['.txt', '.text', '.epub'])
+  for (const ext of accepted) {
+    assert.equal(isSupportedLocalBook(`x${ext}`), true, `accept 里的 ${ext} 必须真的被支持`)
+  }
+})
+
+test('LocalBookImport - batch split keeps valid files and reports the rest', () => {
+  // 复刻页面里的分流逻辑：合法项提交、非法项本地拦截并计数
+  const all = ['甲.txt', '乙.epub', '丙.pdf', '丁.mobi', '戊.TXT']
+  const supported = all.filter(isSupportedLocalBook)
+  const rejected = all.filter(name => !isSupportedLocalBook(name))
+
+  assert.deepEqual(supported, ['甲.txt', '乙.epub', '戊.TXT'])
+  assert.deepEqual(rejected, ['丙.pdf', '丁.mobi'])
+  // 全部非法时必须直接提示、不发请求（避免无意义的往返）
+  assert.equal(['a.pdf', 'b.mobi'].filter(isSupportedLocalBook).length, 0)
 })

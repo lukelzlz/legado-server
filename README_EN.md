@@ -628,6 +628,7 @@ Legado Server is built on the shoulders of the following outstanding open-source
 - **[Rhino](https://github.com/mozilla/rhino)**: Pure JVM JavaScript sandbox execution engine.
 - **[Jayway JsonPath](https://github.com/json-path/JsonPath)**: Powerful JSONPath evaluation library.
 - **[Microsoft Edge TTS](https://github.com/rany2/edge-tts)**: High-fidelity neural text-to-speech ecosystem.
+- **[reader (hectorqin/reader)](https://github.com/hectorqin/reader)**: Classic open-source Reader server implementation; our Kindle / E-ink minimalist Web UI (`/simple`) is heavily inspired by and ported from its excellent E-ink frontend design.
 
 ---
 

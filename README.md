@@ -634,6 +634,7 @@ server {
 - **[Rhino](https://github.com/mozilla/rhino)**：纯 JVM 实现的 JavaScript 安全执行沙箱。
 - **[Jayway JsonPath](https://github.com/json-path/JsonPath)**：高效的 JSONPath 规则提取利器。
 - **[Microsoft Edge TTS](https://github.com/rany2/edge-tts)**：高保真神经语音合成生态。
+- **[reader (hectorqin/reader)](https://github.com/hectorqin/reader)**：经典开源阅读服务端实现；本项目的 Kindle / 墨水屏极简版 Web UI (`/simple`) 深度借鉴并移植了其优秀的墨水屏前端设计。
 
 ---
 

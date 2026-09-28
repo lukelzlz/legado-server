@@ -9,7 +9,7 @@ date: 2026-09-19
 
 ## 1. 决策背景 (Context)
 
-Legado 具备活跃的电子墨水屏与 Kindle 用户群。原 Android 版本的 Web 服务内置了一套使用原生 DOM 与轻量 Zepto 构建的 `simple-web`，专为低性能浏览器与墨水屏优化（支持硬分页、按键翻页、黑白高对比排版、墨水残影白屏消除等）。
+Legado 具备活跃的电子墨水屏与 Kindle 用户群。经典的开源 Reader 服务端（[hectorqin/reader](https://github.com/hectorqin/reader)）内置了一套使用原生 DOM 与轻量 Zepto 构建的 `simple-web`，专为低性能浏览器与墨水屏优化（支持硬分页、按键翻页、黑白高对比排版、墨水残影白屏消除等）。
 在无头服务端（`io.legado.server`）中，我们需要：
 1. 内置该套独立、轻量的前端资源，供 Kindle 或墨水屏设备访问；
 2. 确保墨水屏客户端与现有无头服务端顺利通信，同时保持服务端技术栈的整洁与纯粹；

@@ -10,7 +10,7 @@
 ## 1. 核心任务与架构重构
 
 1. **提取并内嵌 Simple-Web 极简版资源**：
-   - 从微信接收的文件 `reader-src.zip` 中解压出 `simple-web` 的完整静态资源（HTML、CSS、JS、Templates 等），安全放入 `server/src/main/resources/simple/`。
+   - 从老版 Reader 服务端（`hectorqin/reader`）解压提取出 `simple-web` 的完整静态资源（HTML、CSS、JS、Templates 等），安全放入 `server/src/main/resources/simple/`。
 2. **架构路线裁定：前端适配器方案（改 UI 适配程序）**：
    - 彻底删除服务端原本拟增加的 `LegacyRoutes.kt`，保持 Ktor 后端 100% 纯粹，完全基于标准 RESTful `/api/*`。
    - 改造 Simple-Web 前端 JS 库直接对接标准 RESTful API：

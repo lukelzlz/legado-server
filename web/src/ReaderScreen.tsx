@@ -390,7 +390,16 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
   const persist = useCallback(() => {
     const current = currentRef.current
     if (!current) return
-    void api.saveProgress(currentBook.details.sourceId, currentBook.bookUrl, current.chapter.url, current.chapter.index, clampScrollPosition(current.position)).catch(() => undefined)
+    // 一并提交章节标题：服务端写 bookProgress 进度文件时直接使用，
+    // 避免再回查目录缓存（拿不到标题时会放弃写文件）。
+    void api.saveProgress(
+      currentBook.details.sourceId,
+      currentBook.bookUrl,
+      current.chapter.url,
+      current.chapter.index,
+      clampScrollPosition(current.position),
+      current.chapter.title,
+    ).catch(() => undefined)
   }, [currentBook.bookUrl, currentBook.details.sourceId])
 
   const ttsData: TtsChapterData = useMemo(() => {

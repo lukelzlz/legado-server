@@ -1,7 +1,24 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { api, joinWebDavPath, webDavFileUrl, WebDavInfo } from './api'
+import { api, joinWebDavPath, webDavFileUrl, WebDavInfo, ProgressSyncSettings } from './api'
 import { toast } from './Toast'
 import { Icon } from './icons'
+
+/**
+ * 本地书籍支持的扩展名（**产品约束：只有 TXT 与 EPUB**）。
+ *
+ * 前端用它做两件事：① `<input accept>` 让文件选择器默认只列这些；
+ * ② 提交前再过滤一次 —— 用户可以手动切到「所有文件」，光靠 accept 拦不住。
+ *
+ * 服务端 `LocalBookParser.isSupported` 有**同一份规则**，两层都要有：
+ * 前端拦是为了即时反馈，服务端拦才是真正的防线。
+ * `.text` 是 `.txt` 的历史命名习惯，一并放行。
+ */
+export const LOCAL_BOOK_ACCEPT_ATTR = '.txt,.text,.epub'
+
+/** 是否为受支持的本地书格式（大小写不敏感）。 */
+export function isSupportedLocalBook(filename: string): boolean {
+  return /\.(txt|text|epub)$/i.test(filename)
+}
 
 /** 客户端接入指引：按当前访问来源拼出可复制的连接信息。 */
 export function webDavClientGuides(origin: string, urlPath: string) {
@@ -80,6 +97,15 @@ export const currentOrigin = () => (typeof location === 'undefined' ? '' : locat
 /** 备份包识别：只给 `.zip` 提供「导入」入口，是否 Legado 备份由服务端二次校验。 */
 export const isBackupArchive = (name: string) => name.toLowerCase().endsWith('.zip')
 
+/**
+ * 本地书籍识别：只给 TXT / EPUB 提供「导入书籍」入口。
+ *
+ * **直接复用 [isSupportedLocalBook]**，不另写一份后缀判断 ——
+ * 否则两处规则一旦漂移，就会出现「按钮显示了但导入报不支持」的矛盾。
+ * 与 [isBackupArchive] 并列，构成文件管理里两种导入入口的判定。
+ */
+export const isLocalBookFile = (name: string) => isSupportedLocalBook(name)
+
 async function copyText(text: string, successMessage: string) {
   try {
     await navigator.clipboard.writeText(text)
@@ -96,6 +122,82 @@ export function WebDavSettingsPage() {
   const [busy, setBusy] = useState(false)
   const uploadInputRef = useRef<HTMLInputElement>(null)
 
+  // 进度同步（手机端 bookProgress 文件夹）
+  const [syncSettings, setSyncSettings] = useState<ProgressSyncSettings | null>(null)
+  const [syncDirInput, setSyncDirInput] = useState('')
+  const [syncSaving, setSyncSaving] = useState(false)
+
+  // 本地书籍导入（仅 TXT / EPUB）
+  const localBookInputRef = useRef<HTMLInputElement>(null)
+  const [localBookBusy, setLocalBookBusy] = useState(false)
+
+  /** 产品约束：本地书籍只支持 TXT 与 EPUB，前端先过滤一次，避免上传后才发现不支持。 */
+  const LOCAL_BOOK_ACCEPT = LOCAL_BOOK_ACCEPT_ATTR
+
+  const handleImportLocalBooks = async (files: FileList | null) => {
+    if (!files || files.length === 0) return
+    const all = Array.from(files)
+    const supported = all.filter(file => isSupportedLocalBook(file.name))
+    const rejected = all.filter(file => !isSupportedLocalBook(file.name))
+    if (supported.length === 0) {
+      toast.warning(`仅支持 TXT / EPUB 格式，已忽略 ${rejected.length} 个文件`)
+      return
+    }
+    setLocalBookBusy(true)
+    try {
+      const result = await api.importLocalBooks(supported)
+      const names = result.results.filter(item => item.success).map(item => item.name ?? item.filename)
+      if (result.failed === 0 && rejected.length === 0) {
+        toast.success(`成功导入 ${result.imported} 本本地书籍${names.length ? '：' + names.slice(0, 3).join('、') + (names.length > 3 ? ' 等' : '') : ''}`)
+      } else {
+        // 部分失败要如实说明，否则用户不知道哪几本没进来
+        const failedNames = result.results.filter(item => !item.success).map(item => `${item.filename}（${item.error ?? '解析失败'}）`)
+        const parts = [`成功 ${result.imported} 本`]
+        if (result.failed > 0) parts.push(`失败 ${result.failed} 本：${failedNames.slice(0, 3).join('；')}`)
+        if (rejected.length > 0) parts.push(`忽略 ${rejected.length} 个非 TXT/EPUB 文件`)
+        toast.warning(parts.join('；'))
+      }
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : '本地书籍导入失败')
+    } finally {
+      setLocalBookBusy(false)
+    }
+  }
+
+  const loadSyncSettings = useCallback(async () => {
+    try {
+      const s = await api.progressSyncSettings()
+      setSyncSettings(s)
+      setSyncDirInput(s.directoryName)
+    } catch {
+      // 进度同步配置读取失败不影响文件页其它功能，静默即可
+      setSyncSettings(null)
+    }
+  }, [])
+
+  const handleSaveSyncSettings = async () => {
+    const name = syncDirInput.trim()
+    if (!name) {
+      toast.warning('文件夹名不能为空')
+      return
+    }
+    setSyncSaving(true)
+    try {
+      const saved = await api.saveProgressSyncSettings(name)
+      setSyncSettings(saved)
+      setSyncDirInput(saved.directoryName)
+      if (saved.available) {
+        toast.success(`进度文件夹已设为 ${saved.directoryName}（发现 ${saved.fileCount} 个进度文件）`)
+      } else {
+        toast.warning(`已保存为 ${saved.directoryName}，但该文件夹还不存在，下次同步时会自动创建`)
+      }
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : '保存失败')
+    } finally {
+      setSyncSaving(false)
+    }
+  }
+
   const load = useCallback(async (target: string) => {
     setLoading(true)
     try {
@@ -111,6 +213,10 @@ export function WebDavSettingsPage() {
   useEffect(() => {
     void load(path)
   }, [path, load])
+
+  useEffect(() => {
+    void loadSyncSettings()
+  }, [loadSyncSettings])
 
   const refresh = () => void load(path)
 
@@ -172,23 +278,59 @@ export function WebDavSettingsPage() {
   }
 
   const handleImport = async (entry: { name: string; path: string }) => {
-    if (!window.confirm(`导入备份「${entry.name}」？\n会写入其中的书源、替换净化规则、书架与阅读进度（同名书源/规则按其 ID 覆盖，书架按书合并，进度只在更新时间较新时覆盖）。`)) return
+    if (!window.confirm(`导入备份「${entry.name}」？\n会写入其中的书源、替换净化规则、书架、分组、书签与阅读进度（同名书源/规则按其 ID 覆盖，书架按书合并，进度只在更新时间较新时覆盖）。\n\n本地图书与音频（听书）会被跳过——服务端读不到手机本机文件，也只支持文本阅读；挂在被跳过书籍上的书签同样跳过。`)) return
     setBusy(true)
     try {
       const summary = await api.webDavImport(entry.path)
       const total = (a: number, b: number) => a + b
+      // 本地图书（手机本机文件）与音频/听书在服务端没有可用能力，导入时会被跳过，
+      // 这里如实告知用户，避免「明明导入了却少了几十本」的困惑。
+      const skipped = (summary.skippedLocal ?? 0) + (summary.skippedAudio ?? 0)
+      const skipNote = skipped > 0
+        ? `；已跳过 ${skipped} 条服务端用不了的书（本地图书 ${summary.skippedLocal ?? 0}、音频听书 ${summary.skippedAudio ?? 0}）`
+        : ''
+      // 书签同理：挂在被跳过书籍上的书签没有展示位置，也一并跳过并如实报告。
+      const markNote = (summary.bookmarksSkipped ?? 0) > 0
+        ? `；书签 ${summary.bookmarks ?? 0} 条（跳过 ${summary.bookmarksSkipped} 条，其所属书籍未导入）`
+        : `；书签 ${summary.bookmarks ?? 0} 条`
       if (total(summary.sources, summary.sourcesUpdated) + total(summary.rules, summary.rulesUpdated) + total(summary.books, summary.booksUpdated) === 0) {
-        toast.warning('备份包里没有可导入的内容（已忽略 RSS / TTS / 主题等条目）')
+        toast.warning(`备份包里没有可导入的内容（已忽略 RSS / TTS / 主题等条目）${skipNote}`)
       } else {
         toast.success(
           `导入完成：书源 ${total(summary.sources, summary.sourcesUpdated)}，` +
           `替换规则 ${total(summary.rules, summary.rulesUpdated)}，` +
-          `书籍 ${total(summary.books, summary.booksUpdated)}，阅读进度 ${summary.progress}`,
+          `书籍 ${total(summary.books, summary.booksUpdated)}，阅读进度 ${summary.progress}` +
+          markNote +
+          skipNote,
         )
       }
       void load(path)
     } catch (error) {
       toast.error(error instanceof Error ? error.message : '备份导入失败')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  /**
+   * 把 WebDAV 存储区里的**一本书**导入书架（TXT / EPUB）。
+   *
+   * 与「导入本地书籍」（浏览器上传）等价，只是字节已经在服务器上，
+   * 所以直接传路径、不必再上传一遍 —— 对放在 WebDAV 里的大文件尤其省事。
+   */
+  const handleImportWebDavBook = async (entry: { name: string; path: string }) => {
+    setBusy(true)
+    try {
+      const result = await api.importWebDavBook(entry.path)
+      const item = result.results[0]
+      if (item?.success) {
+        toast.success(`已导入《${item.name ?? entry.name}》${item.totalChapters ? `（${item.totalChapters} 章）` : ''}`)
+      } else {
+        toast.error(item?.error ?? '导入失败')
+      }
+      void load(path)
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : '导入书籍失败')
     } finally {
       setBusy(false)
     }
@@ -243,6 +385,59 @@ export function WebDavSettingsPage() {
       </section>
 
       <section className="webdav-section">
+        <h2 className="webdav-section-title">阅读进度同步</h2>
+        <p className="webdav-section-desc">
+          读取并写回 Legado 手机端的进度文件夹。打开书籍时会取「数据库」与「进度文件」中较新的一份；
+          之后每翻一章都会自动写回进度文件，手机与网页进度保持一致。
+        </p>
+        <div className="progress-sync-card">
+          <label className="progress-sync-field">
+            <span className="progress-sync-label">进度文件夹名</span>
+            <input
+              type="text"
+              value={syncDirInput}
+              placeholder="bookProgress"
+              onChange={e => setSyncDirInput(e.target.value)}
+              spellCheck={false}
+              disabled={syncSaving}
+            />
+            <small className="progress-sync-hint">
+              相对 WebDAV 根目录。手机端备份通常是 <code>legado/bookProgress</code>，
+              就按这个填（支持多级子目录）。
+            </small>
+          </label>
+          <div className="progress-sync-actions">
+            <button type="button" className="primary-button" onClick={() => void handleSaveSyncSettings()} disabled={syncSaving}>
+              {syncSaving ? '保存中…' : '保存'}
+            </button>
+            <button type="button" className="ghost-button" onClick={() => void loadSyncSettings()} disabled={syncSaving}>
+              <Icon name="refresh" />
+              <span>重新读取</span>
+            </button>
+          </div>
+          <div className="progress-sync-status">
+            {syncSettings === null ? (
+              <span className="progress-sync-badge is-warn">未读取到配置</span>
+            ) : syncSettings.available ? (
+              <>
+                <span className="progress-sync-badge is-ok">已启用</span>
+                <span className="progress-sync-path">
+                  {syncSettings.directoryPath} · 已发现 {syncSettings.fileCount} 个进度文件
+                </span>
+              </>
+            ) : (
+              <>
+                <span className="progress-sync-badge is-warn">文件夹不存在</span>
+                <span className="progress-sync-path">
+                  路径 {info?.directory ?? 'webdav'}/{syncSettings.directoryName} 尚未创建，首次同步时会自动建好
+                </span>
+              </>
+            )}
+          </div>
+        </div>
+      </section>
+
+      <section className="webdav-section">
         <h2 className="webdav-section-title">客户端接入</h2>
         <div className="webdav-guide-grid">
           {guides.map(guide => (
@@ -259,6 +454,40 @@ export function WebDavSettingsPage() {
             </article>
           ))}
         </div>
+      </section>
+
+      <section className="webdav-section">
+        <div className="webdav-files-head">
+          <h2 className="webdav-section-title">本地书籍</h2>
+          <div className="webdav-files-actions">
+            <input
+              ref={localBookInputRef}
+              type="file"
+              multiple
+              hidden
+              accept={LOCAL_BOOK_ACCEPT}
+              onChange={event => {
+                void handleImportLocalBooks(event.target.files)
+                // 清空 value，否则连续选同一个文件不会再触发 change
+                event.target.value = ''
+              }}
+            />
+            <button
+              type="button"
+              className="primary-button"
+              onClick={() => localBookInputRef.current?.click()}
+              disabled={localBookBusy}
+            >
+              <Icon name="upload" />
+              <span>{localBookBusy ? '导入中…' : '导入本地书籍'}</span>
+            </button>
+          </div>
+        </div>
+        <p className="webdav-section-desc">
+          支持 <strong>TXT</strong> 与 <strong>EPUB</strong> 两种格式，可一次选择多本。
+          TXT 会自动探测编码（UTF-8 / GB18030）并按章节标题智能分章；EPUB 会读取其自带目录与封面。
+          导入后书籍进入书架，可直接在线阅读。
+        </p>
       </section>
 
       <section className="webdav-section">
@@ -332,6 +561,18 @@ export function WebDavSettingsPage() {
                     >
                       <Icon name="importFile" />
                       <span>导入</span>
+                    </button>
+                  )}
+                  {!entry.directory && isLocalBookFile(entry.name) && (
+                    <button
+                      type="button"
+                      className="subtle-button"
+                      onClick={() => void handleImportWebDavBook(entry)}
+                      disabled={busy}
+                      title="把这本书导入书架（仅 TXT / EPUB），导入后可直接阅读"
+                    >
+                      <Icon name="book" />
+                      <span>导入书籍</span>
                     </button>
                   )}
                   {!entry.directory && (

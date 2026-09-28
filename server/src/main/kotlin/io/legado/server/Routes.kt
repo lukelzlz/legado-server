@@ -30,10 +30,19 @@ import io.ktor.http.content.PartData
 import io.ktor.http.content.forEachPart
 import io.ktor.http.content.streamProvider
 import java.nio.file.Files
+import java.nio.file.LinkOption
 import java.nio.file.Path
 import java.util.UUID
 import java.net.URLEncoder
 import java.util.concurrent.atomic.AtomicInteger
+
+/**
+ * 本地书籍的**单文件体积上限**（上传入口与 WebDAV 入口共用）。
+ *
+ * 与备份条目的 64MiB 上限不同：这里是「一本书」的内容，20MiB 足够覆盖
+ * 正常 TXT（几 MB）与图文 EPUB；同时挡住「误把几百 MB 的压缩包按 TXT 硬解析」。
+ */
+private const val MAX_LOCAL_BOOK_BYTES = 20L * 1024 * 1024
 
 fun Route.apiRoutes(
     database: Database,
@@ -45,8 +54,93 @@ fun Route.apiRoutes(
     edgeTts: EdgeTtsService = EdgeTtsService(),
     ttsSessions: TtsSessionService = TtsSessionService(edgeTts),
     localBooksDirectory: Path = Path.of(".data/local_books"),
+    progressSync: BookProgressSync = BookProgressSync(Path.of(".data/webdav"), database),
+    /**
+     * WebDAV 存储区，用于「从 WebDAV 导入书籍」。
+     *
+     * 默认从 [progressSync] 所在的 webdav 根推导，保持与 WebDAV 服务端同一目录。
+     */
+    webDavStorage: WebDavStorage = WebDavStorage(Path.of(".data/webdav")),
 ) {
     val webView = WebViewProxy(database)
+
+    /**
+     * 把一本书的字节导入为本地书籍（**两个入口共用**）。
+     *
+     * 上传入口（`POST /bookshelf/import-local`）与 WebDAV 入口
+     * （`POST /bookshelf/import-webdav`）都走这里，保证行为完全一致 ——
+     * 否则「同一个 TXT 用不同入口导入，结果不一样」会非常难查。
+     *
+     * 流程：格式校验 → 解析 → 原文件落盘 → 封面提取 → 入库。
+     * **任何失败都转成 `success=false` 的结果项**，绝不抛给调用方，
+     * 这样批量导入时一个坏文件不会中断其余文件。
+     */
+    fun importOneLocalBook(
+        filename: String,
+        bytes: ByteArray,
+        booksDirectory: Path,
+        covers: CoverCache,
+        db: Database,
+    ): LocalBookImportItem {
+        return try {
+            // 只接受 TXT / EPUB。
+            // 不拦的话 `LocalBookParser.parse` 会把未知格式**静默按 TXT 解析**，
+            // 用户会得到一本正文是乱码的"书"且没有任何报错。
+            require(LocalBookParser.isSupported(filename)) {
+                "不支持的格式（仅支持 ${LocalBookParser.SUPPORTED_FORMATS}）：$filename"
+            }
+            val parsed = LocalBookParser.parse(filename, bytes)
+            val bookId = UUID.randomUUID().toString().replace("-", "")
+            val ext = if (filename.contains('.')) "." + filename.substringAfterLast('.') else ".txt"
+            runCatching {
+                Files.createDirectories(booksDirectory)
+                Files.write(booksDirectory.resolve("$bookId$ext"), bytes)
+            }
+
+            val coverKey = if (parsed.coverBytes != null && parsed.coverBytes.isNotEmpty()) {
+                covers.saveCoverBytes(parsed.coverBytes, parsed.coverContentType ?: "image/jpeg")
+            } else null
+
+            val item = db.importLocalBook(bookId, parsed, coverKey)
+            LocalBookImportItem(
+                filename = filename,
+                success = true,
+                bookUrl = item.bookUrl,
+                name = item.name,
+                author = item.author,
+                totalChapters = item.totalChapters,
+            )
+        } catch (error: Throwable) {
+            LocalBookImportItem(filename = filename, success = false, error = error.message ?: "解析失败")
+        }
+    }
+
+    /**
+     * 把已保存的进度镜像到手机端进度文件。
+     *
+     * 章节标题从目录缓存里取（前端只传 URL/index，不带标题）。
+     * **任何失败都静默**：进度文件只是镜像，权威数据永远是本地 SQLite。
+     */
+    fun syncProgressToFile(saved: ReadingProgress, fallbackTitle: String?) {
+        runCatching {
+            val shelf = database.getShelfBookByUrl(saved.bookUrl) ?: return@runCatching
+            val title = fallbackTitle?.takeIf { it.isNotBlank() }
+                ?: database.getChapterTitle(saved.sourceId, saved.bookUrl, saved.chapterUrl)
+                ?: return@runCatching
+            // 与手机端行为**完全对齐（含倒退）**：照当前进度写，不做"防倒退"。
+            //
+            // 用户明确要求：**手机倒退 → 同步也倒退**。
+            // 手机自己回翻时也会把 idx 写小（实测 云游异世界 326 → 329 → 328 → 323），
+            // 因此这里保持同样语义，不做任何"只增不减"的额外保护。
+            progressSync.write(
+                bookName = shelf.name,
+                author = shelf.author,
+                chapterIndex = saved.chapterIndex,
+                chapterTitle = title,
+            )
+        }
+    }
+
     route("/api") {
         get("/sources") {
             if (auth.requireSession(call) == null) return@get
@@ -718,37 +812,9 @@ fun Route.apiRoutes(
                     val originalFilename = part.originalFileName ?: "book.txt"
                     val bytes = part.streamProvider().readBytes()
                     if (bytes.isNotEmpty()) {
-                        try {
-                            val parsed = LocalBookParser.parse(originalFilename, bytes)
-                            val bookId = UUID.randomUUID().toString().replace("-", "")
-                            val ext = if (originalFilename.contains('.')) "." + originalFilename.substringAfterLast('.') else ".txt"
-                            runCatching {
-                                Files.createDirectories(localBooksDirectory)
-                                Files.write(localBooksDirectory.resolve("$bookId$ext"), bytes)
-                            }
-
-                            val coverKey = if (parsed.coverBytes != null && parsed.coverBytes.isNotEmpty()) {
-                                coverCache.saveCoverBytes(parsed.coverBytes, parsed.coverContentType ?: "image/jpeg")
-                            } else null
-
-                            val item = database.importLocalBook(bookId, parsed, coverKey)
-                            importedCount++
-                            items.add(LocalBookImportItem(
-                                filename = originalFilename,
-                                success = true,
-                                bookUrl = item.bookUrl,
-                                name = item.name,
-                                author = item.author,
-                                totalChapters = item.totalChapters,
-                            ))
-                        } catch (error: Throwable) {
-                            failedCount++
-                            items.add(LocalBookImportItem(
-                                filename = originalFilename,
-                                success = false,
-                                error = error.message ?: "解析失败"
-                            ))
-                        }
+                        val item = importOneLocalBook(originalFilename, bytes, localBooksDirectory, coverCache, database)
+                        if (item.success) importedCount++ else failedCount++
+                        items.add(item)
                     }
                 }
                 part.dispose()
@@ -759,6 +825,67 @@ fun Route.apiRoutes(
                 failed = failedCount,
                 results = items,
             ))
+        }
+        /**
+         * 从 **WebDAV 存储区**导入本地书籍（仅 TXT / EPUB）。
+         *
+         * 与 [post("/bookshelf/import-local")] 的区别只在**字节来源**：
+         * 那个走 HTTP 上传，这个直接从数据目录的 `webdav` 文件夹里读。
+         * 解析、落盘、封面提取、入库全部复用 [importOneLocalBook]，
+         * 保证两条入口的行为完全一致（否则「同一个文件用不同入口导入结果不同」会很难查）。
+         *
+         * 归属页面写操作，因此按会话鉴权 + CSRF 双轨校验（与备份导入一致）。
+         */
+        post("/bookshelf/import-webdav") {
+            if (auth.requireSession(call, true) == null) return@post
+            val request = runCatching { call.receive<WebDavBookImportRequest>() }.getOrNull()
+                ?: run {
+                    call.respond(HttpStatusCode.BadRequest, ApiError("invalid_book", "缺少文件路径"))
+                    return@post
+                }
+            val target = webDavStorage.resolve(request.path.trim('/'))
+                ?: run {
+                    call.respond(HttpStatusCode.Forbidden, ApiError("invalid_path", "文件路径不合法"))
+                    return@post
+                }
+            if (!Files.isRegularFile(target, LinkOption.NOFOLLOW_LINKS)) {
+                call.respond(HttpStatusCode.NotFound, ApiError("not_found", "文件不存在"))
+                return@post
+            }
+            val filename = target.fileName.toString()
+            // 与上传入口同一套格式约束（TXT / EPUB）
+            if (!LocalBookParser.isSupported(filename)) {
+                call.respond(
+                    HttpStatusCode.BadRequest,
+                    ApiError("unsupported_format", "不支持的格式（仅支持 ${LocalBookParser.SUPPORTED_FORMATS}）：$filename"),
+                )
+                return@post
+            }
+            // 体积上限：走的是本地文件，但仍要防「误把几百 MB 的东西按 TXT 硬解析」
+            val size = runCatching { Files.size(target) }.getOrDefault(0L)
+            if (size > MAX_LOCAL_BOOK_BYTES) {
+                call.respond(
+                    HttpStatusCode.BadRequest,
+                    ApiError("too_large", "文件超过 ${MAX_LOCAL_BOOK_BYTES / 1024 / 1024} MiB 上限"),
+                )
+                return@post
+            }
+            val bytes = runCatching { Files.readAllBytes(target) }.getOrElse { error ->
+                call.respond(HttpStatusCode.InternalServerError, ApiError("read_failed", error.message ?: "读取文件失败"))
+                return@post
+            }
+            // **传 basename，不要传完整相对路径**：
+            // `LocalBookParser` 用 `filename.substringBeforeLast('.')` 当书名兜底，
+            // 若传 `books/凡人修仙传.txt`，书名会被写成 `books/凡人修仙传`。
+            val item = importOneLocalBook(filename, bytes, localBooksDirectory, coverCache, database)
+            call.respond(
+                LocalBookImportResponse(
+                    total = 1,
+                    imported = if (item.success) 1 else 0,
+                    failed = if (item.success) 0 else 1,
+                    results = listOf(item),
+                )
+            )
         }
         delete("/bookshelf") {
             if (auth.requireSession(call, true) == null) return@delete
@@ -842,6 +969,53 @@ fun Route.apiRoutes(
                 res
             }
             call.respond(BatchBookRecleanResponse(totalRecleaned, results))
+        }
+        /**
+         * 补抓封面到本地缓存，并回写 `cover_key`。
+         *
+         * 用于修复「封面补抓逻辑上线之前导入的书架」——那些书的 `cover_key` 全为空，
+         * 前端只能靠 `coverUrl` 直连；补抓完成后即切换为本地副本，不再依赖外部图床。
+         * 传入 sourceId/bookUrl 则只补一本，否则补整架。
+         */
+        post("/bookshelf/refresh-covers") {
+            if (auth.requireSession(call, true) == null) return@post
+            val req = runCatching { call.receive<CoverRefreshRequest>() }.getOrDefault(CoverRefreshRequest())
+            val shelf = database.listBookshelf()
+            val targets = shelf.filter { item ->
+                item.coverKey.isNullOrBlank() &&
+                    !item.coverUrl.isNullOrBlank() &&
+                    (req.sourceId == null || item.sourceId == req.sourceId) &&
+                    (req.bookUrl == null || item.bookUrl == req.bookUrl)
+            }
+            val skipped = shelf.size - targets.size
+            // 封面可能有数 MB，串行补抓整架会很久；这里用信号量限并发，
+            // 既压住耗时又不至于把图床/线程池打满。
+            var refreshed = 0
+            var failed = 0
+            coroutineScope {
+                val gate = Semaphore(6)
+                targets.map { item ->
+                    async(Dispatchers.IO) {
+                        gate.withPermit {
+                            val url = item.coverUrl!!
+                            val cached = runCatching { coverCache.getIfCached(url) ?: coverCache.cache(url) }.getOrNull()
+                            if (cached != null && database.updateBookshelfCover(item.sourceId, item.bookUrl, cached.key, cached.contentType)) {
+                                refreshed++
+                            } else {
+                                failed++
+                            }
+                        }
+                    }
+                }.awaitAll()
+            }
+            call.respond(
+                CoverRefreshResponse(
+                    total = targets.size,
+                    refreshed = refreshed,
+                    failed = failed,
+                    skipped = skipped,
+                )
+            )
         }
         put("/bookshelf/status") {
             if (auth.requireSession(call, true) == null) return@put
@@ -975,7 +1149,110 @@ fun Route.apiRoutes(
             if (auth.requireSession(call, true) == null) return@put
             val progress = call.receive<ReadingProgress>()
             if (progress.sourceId.isBlank() || progress.bookUrl.isBlank() || progress.chapterUrl.isBlank() || progress.chapterIndex < 0 || !progress.scrollPosition.isFinite() || progress.scrollPosition !in 0.0..1.0) { call.respond(HttpStatusCode.BadRequest, ApiError("invalid_progress", "阅读进度无效")); return@put }
-            call.respond(database.saveProgress(progress))
+            val saved = database.saveProgress(progress)
+            // 顺带把进度镜像到手机端的 bookProgress 文件（失败静默，绝不影响阅读保存）
+            syncProgressToFile(saved, progress.chapterTitle)
+            call.respond(saved)
+        }
+
+        // ------------------------------------------------------------------
+        // 书籍进度同步（Legado 手机端 bookProgress 文件夹）
+        // ------------------------------------------------------------------
+        get("/progress-sync/settings") {
+            if (auth.requireSession(call) == null) return@get
+            val dir = progressSync.directory()
+            call.respond(
+                ProgressSyncSettings(
+                    directoryName = progressSync.directoryName(),
+                    directoryPath = dir?.toString(),
+                    available = dir != null,
+                    fileCount = dir?.let { d -> runCatching { Files.list(d).use { s -> s.filter { it.fileName.toString().endsWith(".json") }.count().toInt() } }.getOrDefault(0) } ?: 0,
+                )
+            )
+        }
+        put("/progress-sync/settings") {
+            if (auth.requireSession(call, true) == null) return@put
+            val request = call.receive<ProgressSyncSettingsUpdate>()
+            val saved = progressSync.setDirectoryName(request.directoryName)
+            val dir = progressSync.directory()
+            call.respond(
+                ProgressSyncSettings(
+                    directoryName = saved,
+                    directoryPath = dir?.toString(),
+                    available = dir != null,
+                    fileCount = dir?.let { d -> runCatching { Files.list(d).use { s -> s.filter { it.fileName.toString().endsWith(".json") }.count().toInt() } }.getOrDefault(0) } ?: 0,
+                )
+            )
+        }
+        /**
+         * 打开书时合并进度：比较数据库与进度文件的时间戳，取更新的那个。
+         *
+         * 章节对齐用 `BookProgressSync.alignChapter`（index 为主 + 标题规范化匹配），
+         * 因为换源后章节数可能不同，单纯按下标会错位。
+         */
+        post("/progress-sync/merge") {
+            if (auth.requireSession(call, true) == null) return@post
+            val request = call.receive<ProgressMergeRequest>()
+            val shelf = database.getShelfBookByUrl(request.bookUrl)
+            val dbProgress = database.getProgress(request.sourceId, request.bookUrl)
+
+            // 没有章节列表就无法做标题对齐；此时直接返回数据库进度
+            val chapters = request.chapters
+            val fileProgress = if (shelf != null) progressSync.read(shelf.name, shelf.author) else null
+
+            if (fileProgress == null || chapters.isEmpty()) {
+                call.respond(ProgressMergeResponse(source = "database", progress = dbProgress, fileFound = fileProgress != null))
+                return@post
+            }
+
+            val fileIndex = progressSync.alignChapter(chapters, fileProgress.chapterIndex, fileProgress.chapterTitle)
+
+            if (fileIndex == null) {
+                call.respond(ProgressMergeResponse(source = "database", progress = dbProgress, fileFound = true))
+                return@post
+            }
+
+            // ------------------------------------------------------------------
+            // 冲突消解：**与手机端 `syncBookProgress`（ReadBookLoadDelegate.kt:297）完全一致**
+            //
+            // 手机端原逻辑：
+            //   if (远端 idx < 本地 idx || (idx 相同 && 远端 pos < 本地 pos)) → 不采纳
+            //   else                                                       → setProgress(远端)
+            // 即「**取更大的 idx**；idx 相同则取更大的 pos；两者都相等则视为无变化」。
+            //
+            // 为什么不比 `durChapterTime`（实测 SESSION-029）：
+            // 手机的 `durChapterTime` 是「阅读时刻」而非「写入时刻」，
+            // 且**全仓 90+ 处引用无一处用它做冲突比较**（只用于书架排序与写库防抖）。
+            // 观测到云游异世界 `326 → 329 → 328`：用户回翻时**时间戳更新但 idx 倒退**，
+            // 若按"时间戳更新就采纳"，网页进度会跟着往回跳。
+            // ------------------------------------------------------------------
+            val dbIndex = dbProgress?.chapterIndex
+            // 手机侧「本地 pos」对应我们的 scrollPosition（两者语义不同，`> 0` 视为"有进度"）
+            val localHasPosition = (dbProgress?.scrollPosition ?: 0.0) > 0.0
+            val remoteHasPosition = fileProgress.chapterPos > 0
+            val fileWins = when {
+                dbIndex == null -> true                                  // 本地没有进度 → 用文件的
+                fileIndex > dbIndex -> true                              // 远端更靠后 → 采纳
+                fileIndex < dbIndex -> false                             // 远端更靠前 → 保留本地
+                else -> remoteHasPosition && !localHasPosition           // idx 相同 → 比 pos
+            }
+
+            if (fileWins) {
+                // 采纳文件进度并写回数据库
+                val aligned = chapters[fileIndex]
+                val merged = database.saveProgress(
+                    ReadingProgress(
+                        sourceId = request.sourceId,
+                        bookUrl = request.bookUrl,
+                        chapterUrl = aligned.url,
+                        chapterIndex = fileIndex,
+                        scrollPosition = dbProgress?.scrollPosition ?: 0.0,
+                    )
+                )
+                call.respond(ProgressMergeResponse(source = "file", progress = merged, fileFound = true, alignedIndex = fileIndex))
+            } else {
+                call.respond(ProgressMergeResponse(source = "database", progress = dbProgress, fileFound = true, alignedIndex = fileIndex))
+            }
         }
         route("/tts") {
             get("/voices") {

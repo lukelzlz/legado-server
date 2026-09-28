@@ -29,6 +29,20 @@ import { parseSourceJsonText, extractSourcesFromRaw, sanitizeImageUrl } from './
 export { extractSourcesFromRaw, parseSourceJsonText, sanitizeImageUrl }
 export type { SourceChoice, SourceChoiceStatus }
 
+/**
+ * 解析书架条目应显示的封面地址。
+ *
+ * 优先用本地缓存副本（`coverKey`，走 `/api/covers/<key>`，无外部依赖且离线可用）；
+ * 若没有副本则回退到原始 `coverUrl` 直连。
+ *
+ * 这个回退必不可少：从 Legado 备份包导入的书架条目**只有 coverUrl、没有本地副本**
+ * （导入器不下载封面），若前端只认 coverKey，整架书的封面会全部退化成文字占位符。
+ */
+function resolveShelfCover(item: { coverKey?: string; coverUrl?: string }): string | null {
+  if (item.coverKey) return api.cover(item.coverKey)
+  return sanitizeImageUrl(item.coverUrl)
+}
+
 type Page = 'sources' | 'subscriptions' | 'library' | 'shelf' | 'reader' | 'rules' | 'webdav'
 const readerStorageKey = 'legado-open-book-v1'
 const pageFromHash = (): Page => location.hash === '#sources' ? 'sources' : location.hash === '#subscriptions' ? 'subscriptions' : location.hash === '#rules' ? 'rules' : location.hash === '#webdav' ? 'webdav' : location.hash === '#shelf' ? 'shelf' : location.hash === '#reader' ? 'reader' : 'library'
@@ -1312,12 +1326,16 @@ function BookInfoEditModal({
     setSaving(true)
     setError('')
     try {
+      // 不要把本服务自己的封面接口地址当"外部封面地址"回写。
+      // 之前 coverUrl 为空时会回退到 api.cover(coverKey)，于是存回 `/api/covers/<自己的 key>`，
+      // 形成自引用（SESSION-027）。封面本来就由 coverKey 表达，这里只提交真实外部 URL。
+      const externalCover = coverUrl && !coverUrl.startsWith('/api/covers/') ? coverUrl : undefined
       const updated = await api.updateBookshelfInfo({
         sourceId: item.sourceId,
         bookUrl: item.bookUrl,
         name: trimmedName,
         author: author.trim() || undefined,
-        coverUrl: coverUrl === null ? undefined : coverUrl,
+        coverUrl: coverUrl === null ? undefined : externalCover,
         groupName: groupName || undefined,
         alternateSources,
       })
@@ -1680,7 +1698,7 @@ function BookManageModal({
       <div className="book-manage-sheet" onClick={e => e.stopPropagation()} role="dialog" aria-modal="true" aria-label={`书籍管理: ${item.name}`}>
         <header className="manage-sheet-header">
           <div className="manage-sheet-cover">
-            {item.coverKey ? <img src={api.cover(item.coverKey)} alt="" /> : <span>{item.name.slice(0, 1)}</span>}
+            {resolveShelfCover(item) ? <img src={resolveShelfCover(item)!} alt="" referrerPolicy="no-referrer" /> : <span>{item.name.slice(0, 1)}</span>}
           </div>
           <div className="manage-sheet-info">
             <h3>{item.name}</h3>
@@ -2515,7 +2533,11 @@ function ShelfPage({ onOpen }: { onOpen: (item: BookshelfItem) => void }) {
                       {isSelected && <Icon name="check" />}
                     </div>
                   )}
-                  {item.coverKey ? <img src={api.cover(item.coverKey)} alt="" /> : <span className="cover-fallback">{item.name.slice(0, 1)}</span>}
+                  {resolveShelfCover(item) ? (
+                    <img src={resolveShelfCover(item)!} alt="" referrerPolicy="no-referrer" />
+                  ) : (
+                    <span className="cover-fallback">{item.name.slice(0, 1)}</span>
+                  )}
                   {isLocal && <span className="shelf-card-tag-local">本地</span>}
                   {badge && <span className={`shelf-card-badge ${item.cacheState}`}>{badge}</span>}
                   {isCaching && (
@@ -2803,12 +2825,27 @@ function App() {
         api.chapters(safeDetails.sourceId, safeDetails.tocUrl),
         api.progress(safeDetails.sourceId, item.bookUrl).catch(() => undefined),
       ])
-      const resumeIdx = progress?.chapterIndex ?? item.chapterIndex ?? 0
+
+      // 与手机端 bookProgress 文件夹合并：取「数据库」与「进度文件」中较新的一份。
+      // 失败（文件夹不存在/网络异常）时静默退回数据库进度，绝不影响开书。
+      let mergedProgress = progress
+      try {
+        const merged = await api.mergeProgress({
+          sourceId: safeDetails.sourceId,
+          bookUrl: item.bookUrl,
+          chapters,
+        })
+        if (merged?.progress) mergedProgress = merged.progress
+      } catch {
+        // 忽略：进度文件同步是增强能力，不是开书的前置条件
+      }
+
+      const resumeIdx = mergedProgress?.chapterIndex ?? item.chapterIndex ?? 0
       openReader({
         details: safeDetails,
         bookUrl: item.bookUrl,
         chapters,
-        progress: progress || (item.chapterIndex !== undefined ? {
+        progress: mergedProgress || (item.chapterIndex !== undefined ? {
           sourceId: item.sourceId,
           bookUrl: item.bookUrl,
           chapterUrl: chapters[resumeIdx]?.url || '',

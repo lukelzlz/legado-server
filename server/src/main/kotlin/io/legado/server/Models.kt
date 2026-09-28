@@ -230,6 +230,24 @@ data class SourceLoginStateRecord(
     val recleanedChapters: Int,
     val totalChapters: Int,
 )
+
+/**
+ * 封面补抓请求。留空 [sourceId]/[bookUrl] 表示「整架补抓」。
+ *
+ * 用于修复历史数据：在封面补抓逻辑上线**之前**导入的书架，
+ * `cover_key` 全为空，需要一次性把封面抓成本地副本。
+ */
+@Serializable data class CoverRefreshRequest(
+    val sourceId: String? = null,
+    val bookUrl: String? = null,
+)
+
+@Serializable data class CoverRefreshResponse(
+    val total: Int,
+    val refreshed: Int,
+    val failed: Int,
+    val skipped: Int,
+)
 @Serializable data class BatchBookRecleanRequest(
     val books: List<BookRecleanRequest>,
 )
@@ -244,6 +262,32 @@ data class SourceLoginStateRecord(
     val chapterIndex: Int,
     val scrollPosition: Double = 0.0,
     val updatedAt: Long = 0,
+    /** 可选：前端已知章节标题时一并传入，免去服务端回查目录缓存。 */
+    val chapterTitle: String? = null,
+)
+
+// ---------------------------------------------------------------------------
+// 书籍进度同步（Legado 手机端 bookProgress 文件夹）
+// ---------------------------------------------------------------------------
+@Serializable data class ProgressSyncSettings(
+    val directoryName: String,
+    val directoryPath: String? = null,
+    val available: Boolean = false,
+    val fileCount: Int = 0,
+)
+@Serializable data class ProgressSyncSettingsUpdate(val directoryName: String)
+@Serializable data class ProgressMergeRequest(
+    val sourceId: String,
+    val bookUrl: String,
+    /** 当前书源的章节列表，用于把进度文件里的标题对齐到本地章节。 */
+    val chapters: List<Chapter> = emptyList(),
+)
+@Serializable data class ProgressMergeResponse(
+    /** `file` = 采用了进度文件；`database` = 采用数据库（文件不存在/更旧）。 */
+    val source: String,
+    val progress: ReadingProgress? = null,
+    val fileFound: Boolean = false,
+    val alignedIndex: Int? = null,
 )
 @Serializable data class BookshelfWriteRequest(
     val sourceId: String,
@@ -300,6 +344,12 @@ data class CachedBookRequest(
     val author: String? = null,
     val tocUrl: String,
     val coverKey: String? = null,
+    /**
+     * 原始封面地址。备份导入的书架条目只有 URL 而无本地缓存副本，
+     * 因此前端必须能在 [coverKey] 为空时回退到本字段直连加载，
+     * 否则整架书的封面都会退化成文字占位符。
+     */
+    val coverUrl: String? = null,
     val chapterIndex: Int? = null,
     val scrollPosition: Double? = null,
     val lastReadAt: Long,
@@ -318,6 +368,20 @@ data class BookGroup(
     val name: String,
     val sortOrder: Int,
     val bookCount: Int = 0,
+)
+
+/** 一条书签 / 阅读记录（来自备份包 `bookmark.json`）。 */
+@Serializable
+data class Bookmark(
+    val id: Long,
+    val bookName: String,
+    val bookAuthor: String? = null,
+    val chapterIndex: Int,
+    val chapterName: String? = null,
+    val chapterPos: Int = 0,
+    val bookText: String? = null,
+    val content: String? = null,
+    val createdAt: Long = 0L,
 )
 
 @Serializable
@@ -528,6 +592,15 @@ data class WebDavEntry(
 @Serializable
 data class BackupImportRequest(val path: String)
 
+/**
+ * WebDAV 设置页「导入书籍」：以存储区内的相对路径指定一本本地书籍（TXT / EPUB）。
+ *
+ * 与 [BackupImportRequest] 分开是为了让两个入口的契约各自独立演进 ——
+ * 备份包导入的是「书源/规则/书架/分组/书签」，而这里只导入「一本可读的书」。
+ */
+@Serializable
+data class WebDavBookImportRequest(val path: String)
+
 /** 备份导入结果统计（供页面提示使用）。 */
 @Serializable
 data class BackupImportSummary(
@@ -538,6 +611,14 @@ data class BackupImportSummary(
     val books: Int,
     val booksUpdated: Int,
     val progress: Int,
+    /** 因是**本地图书**（手机本机文件，服务端读不到）而跳过的条数。 */
+    val skippedLocal: Int = 0,
+    /** 因是**音频/听书**（服务端只做文本阅读）而跳过的条数。 */
+    val skippedAudio: Int = 0,
+    /** 新增的书签数。 */
+    val bookmarks: Int = 0,
+    /** 因所属书籍未导入（本地图书/音频）而跳过的书签数。 */
+    val bookmarksSkipped: Int = 0,
 )
 
 /** 备份包 `bookshelf.json` 中的一条书架记录（含阅读进度），仅用于导入。 */
@@ -551,10 +632,57 @@ data class BackupShelfEntry(
     val completed: Boolean,
     val chapterIndex: Int,
     val readAt: Long,
+    /** 类别判定结果，用于导入时过滤本地图书与音频（见 [ShelfKind]）。 */
+    val kind: ShelfKind = ShelfKind.ONLINE,
+    /**
+     * 分组名（已由 `bookGroup.json` 的 `groupId` 解析而来）。
+     *
+     * `bookshelf.json` 里存的是**数字 `group` id**，而本服务的 `book_group` 是**按名字**关联的
+     * （见 `listBookGroups` 的 `s.group_name = g.name`），因此导入时必须先把 id 映射成名字。
+     * 未分组 / 找不到对应分组时为 null。
+     */
+    val groupName: String? = null,
+)
+
+/**
+ * 备份包 `bookGroup.json` 中的一条分组记录，仅用于导入。
+ *
+ * 字段来自真实备份：`bookSort, enableRefresh, groupId, groupName, order, show`。
+ */
+data class BackupGroupEntry(
+    val groupId: Long,
+    val groupName: String,
+    val order: Int,
+    /**
+     * 是否为 Legado **内置的智能分组**（`groupId` 为负数）。
+     *
+     * 如 `在读(-20)`/`未读(-21)`/`已读(-22)`/`小说(-8)`/`漫画(-7)`/`全部(-1)`/`本地(-2)`/`音频(-3)`
+     * 等，它们是**按条件动态筛选**的虚拟分组、不是真实归类，实测这些分组在真实备份里都是空的。
+     */
+    val builtIn: Boolean,
+)
+
+/**
+ * 备份包 `bookmark.json` 中的一条书签/阅读记录，仅用于导入。
+ *
+ * 字段来自真实备份：`bookAuthor, bookName, bookText, chapterIndex, chapterName, chapterPos, content, time`。
+ */
+data class BackupBookmarkEntry(
+    val bookName: String,
+    val bookAuthor: String?,
+    val chapterIndex: Int,
+    val chapterName: String?,
+    val chapterPos: Int,
+    val bookText: String?,
+    val content: String?,
+    val time: Long,
 )
 
 /** 书架与阅读进度导入统计。 */
 data class LibraryImportResult(val imported: Int, val updated: Int, val progress: Int)
+
+/** 分组导入统计。 */
+data class GroupImportResult(val created: Int, val assigned: Int)
 
 /** WebDAV 设置页面的服务状态与当前目录内容。 */
 @Serializable

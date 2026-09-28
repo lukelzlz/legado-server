@@ -55,6 +55,26 @@ object LocalBookParser {
     }
 
     /**
+     * 是否为**受支持**的本地书格式。
+     *
+     * 产品约束（用户明确要求）：**只支持 TXT 与 EPUB**。
+     *
+     * 之所以要单独判一次而不是依赖 [parse]：`parse` 对未知扩展名会**静默回退成按 TXT 解析**
+     * （见上面 `else` 分支的内容探测）。这对手工挑选文件的场景是方便的兜底，
+     * 但在「导入本地书籍」入口会把 `.pdf`/`.mobi`/`.docx` 这类文件**当成 TXT 硬解析**，
+     * 用户会得到一本目录错乱、正文是二进制乱码的"书"，且**没有任何报错**。
+     * 因此在导入入口必须先按扩展名拦截，给出明确提示。
+     */
+    fun isSupported(filename: String): Boolean {
+        val lower = filename.lowercase()
+        // `.text` 与 `.txt` 等价（历史命名习惯），一并放行
+        return lower.endsWith(".txt") || lower.endsWith(".text") || lower.endsWith(".epub")
+    }
+
+    /** 支持格式的提示文案，供前端与服务端共用同一份描述。 */
+    const val SUPPORTED_FORMATS = "TXT / EPUB"
+
+    /**
      * TXT 文本自动探测编码与分章
      */
     fun parseTxt(filename: String, bytes: ByteArray): ParsedBook {

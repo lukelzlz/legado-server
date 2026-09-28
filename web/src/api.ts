@@ -13,7 +13,10 @@ export type SearchResult = { sourceId: string; name: string; author?: string; bo
 export type BookDetails = { sourceId: string; name: string; author?: string; intro?: string; coverUrl?: string; tocUrl: string; alternateSources?: SearchResult[] }
 export type Chapter = { index: number; title: string; url: string }
 export type ReadingProgress = { sourceId: string; bookUrl: string; chapterUrl: string; chapterIndex: number; scrollPosition: number; updatedAt: number }
-export type BookshelfItem = { sourceId: string; bookUrl: string; name: string; author?: string; tocUrl: string; coverKey?: string; chapterIndex?: number; scrollPosition?: number; lastReadAt: number; cachedChapters: number; totalChapters: number; cacheState: 'idle' | 'caching' | 'ready' | 'failed'; cacheError?: string; completed: boolean; alternateSources?: SearchResult[]; groupName?: string }
+/** 手机端进度文件（bookProgress/*.json）同步配置 */
+export type ProgressSyncSettings = { directoryName: string; directoryPath?: string; available: boolean; fileCount: number }
+export type ProgressMergeResponse = { source: 'file' | 'database'; progress?: ReadingProgress; fileFound: boolean; alignedIndex?: number }
+export type BookshelfItem = { sourceId: string; bookUrl: string; name: string; author?: string; tocUrl: string; coverKey?: string; coverUrl?: string; chapterIndex?: number; scrollPosition?: number; lastReadAt: number; cachedChapters: number; totalChapters: number; cacheState: 'idle' | 'caching' | 'ready' | 'failed'; cacheError?: string; completed: boolean; alternateSources?: SearchResult[]; groupName?: string }
 export type BookshelfWrite = { sourceId: string; bookUrl: string; name: string; author?: string; tocUrl: string; coverUrl?: string; alternateSources?: SearchResult[]; groupName?: string }
 export type BookshelfSourceSwitch = { oldSourceId: string; oldBookUrl: string; book: BookshelfWrite; alternateSources?: SearchResult[] }
 export type BookGroup = { id: number; name: string; sortOrder: number; bookCount: number }
@@ -73,6 +76,14 @@ export type BackupImportSummary = {
   books: number
   booksUpdated: number
   progress: number
+  /** 因是本地图书（手机本机文件，服务端读不到）而跳过的条数 */
+  skippedLocal?: number
+  /** 因是音频/听书（服务端只做文本阅读）而跳过的条数 */
+  skippedAudio?: number
+  /** 本次导入的书签数 */
+  bookmarks?: number
+  /** 因所属书籍未导入（本地图书/音频）而跳过的书签数 */
+  bookmarksSkipped?: number
 }
 
 export type ReplaceRule = {
@@ -332,11 +343,12 @@ export const api = {
     }
   },
   progress: (sourceId: string, bookUrl: string, signal?: AbortSignal) => request<ReadingProgress | undefined>(`/api/reading-progress?sourceId=${encodeURIComponent(sourceId)}&bookUrl=${encodeURIComponent(bookUrl)}`, { signal }),
-  saveProgress: async (sourceId: string, bookUrl: string, chapterUrl: string, chapterIndex: number, scrollPosition: number) => {
+  saveProgress: async (sourceId: string, bookUrl: string, chapterUrl: string, chapterIndex: number, scrollPosition: number, chapterTitle?: string) => {
     const progressItem = { sourceId, bookUrl, chapterUrl, chapterIndex, scrollPosition, updatedAt: Date.now() }
     enqueueOfflineProgress(progressItem)
     try {
-      const res = await request<ReadingProgress>('/api/reading-progress', { method: 'PUT', body: JSON.stringify({ sourceId, bookUrl, chapterUrl, chapterIndex, scrollPosition }) })
+      // chapterTitle 一并提交，服务端写 bookProgress 进度文件时直接用，免去回查目录缓存
+      const res = await request<ReadingProgress>('/api/reading-progress', { method: 'PUT', body: JSON.stringify({ sourceId, bookUrl, chapterUrl, chapterIndex, scrollPosition, chapterTitle }) })
       void flushOfflineProgress(async (item) => {
         await request<ReadingProgress>('/api/reading-progress', { method: 'PUT', body: JSON.stringify(item) })
       })
@@ -404,11 +416,23 @@ export const api = {
   updateBookGroup: (sourceId: string, bookUrl: string, groupName?: string | null) => request<BookshelfItem>('/api/bookshelf/group', { method: 'PUT', body: JSON.stringify({ sourceId, bookUrl, groupName }) }),
   batchBookshelf: (data: BookshelfBatchRequest) => request<{ affected: number }>('/api/bookshelf/batch', { method: 'POST', body: JSON.stringify(data) }),
   cover: (key: string) => `/api/covers/${encodeURIComponent(key)}`,
+  progressSyncSettings: () => request<ProgressSyncSettings>('/api/progress-sync/settings'),
+  saveProgressSyncSettings: (directoryName: string) =>
+    request<ProgressSyncSettings>('/api/progress-sync/settings', { method: 'PUT', body: JSON.stringify({ directoryName }) }),
+  mergeProgress: (data: { sourceId: string; bookUrl: string; chapters: Chapter[] }) =>
+    request<ProgressMergeResponse>('/api/progress-sync/merge', { method: 'POST', body: JSON.stringify(data) }),
   webDavInfo: (path = '') => request<WebDavInfo>(`/api/webdav/info${path ? `?path=${encodeURIComponent(path)}` : ''}`),
   webDavUpload: (path: string, file: File) => webDavWrite(path, { method: 'PUT', body: file }),
   webDavCreateFolder: (path: string) => webDavWrite(path, { method: 'MKCOL' }),
   webDavDelete: (path: string) => webDavWrite(path, { method: 'DELETE' }),
   webDavImport: (path: string) => request<BackupImportSummary>('/api/webdav/import', { method: 'POST', body: JSON.stringify({ path }) }),
+  /**
+   * 从 WebDAV 存储区导入一本本地书籍（TXT / EPUB）。
+   *
+   * 与 [importLocalBooks]（HTTP 上传）走**同一套服务端逻辑**，
+   * 区别只是字节来自数据目录的 `webdav` 文件夹而不是浏览器上传。
+   */
+  importWebDavBook: (path: string) => request<LocalBookImportResponse>('/api/bookshelf/import-webdav', { method: 'POST', body: JSON.stringify({ path }) }),
   getReplaceRules: (params?: { q?: string; group?: string; scope?: string }) => {
     const sp = new URLSearchParams()
     if (params?.q) sp.set('q', params.q)

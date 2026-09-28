@@ -1,5 +1,7 @@
 package io.legado.server
 
+import java.net.URI
+
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
@@ -127,6 +129,9 @@ class Database(private val path: String) : Closeable, AutoCloseable {
                 create table if not exists cover_cache (
                   cache_key text primary key, content_type text not null
                 );
+                create table if not exists app_setting (
+                  key text primary key, value text not null, updated_at integer not null
+                );
                 create table if not exists book_group (
                   id integer primary key autoincrement,
                   name text not null unique collate nocase,
@@ -134,6 +139,19 @@ class Database(private val path: String) : Closeable, AutoCloseable {
                   created_at integer not null
                 );
                 create index if not exists idx_book_group_sort on book_group(sort_order asc, id asc);
+                create table if not exists bookmark (
+                  id integer primary key autoincrement,
+                  book_name text not null,
+                  book_author text,
+                  chapter_index integer not null default 0,
+                  chapter_name text,
+                  chapter_pos integer not null default 0,
+                  book_text text,
+                  content text,
+                  created_at integer not null,
+                  unique(book_name, book_author, chapter_index, chapter_pos)
+                );
+                create index if not exists idx_bookmark_book on bookmark(book_name, book_author);
                 create table if not exists book_shelf (
                   source_id text not null, book_url text not null, name text not null,
                   author text, toc_url text not null, cover_url text, cover_key text,
@@ -391,6 +409,20 @@ class Database(private val path: String) : Closeable, AutoCloseable {
     fun getProgress(sourceId: String, bookUrl: String): ReadingProgress? = connect { db -> db.prepareStatement("select source_id,book_url,chapter_url,chapter_index,scroll_position,updated_at from reading_progress where source_id=? and book_url=?").use {
         it.setString(1, sourceId); it.setString(2, bookUrl); it.executeQuery().use { rs -> if (rs.next()) ReadingProgress(rs.getString(1), rs.getString(2), rs.getString(3), rs.getInt(4), rs.getDouble(5), rs.getLong(6)) else null }
     } }
+
+    /** 读取服务端设置（前端设置存 localStorage，但**服务端自己用的**配置必须可持久化）。 */
+    fun getSetting(key: String): String? = connect { db ->
+        db.prepareStatement("select value from app_setting where key=?").use {
+            it.setString(1, key); it.executeQuery().use { rs -> if (rs.next()) rs.getString(1) else null }
+        }
+    }
+
+    fun setSetting(key: String, value: String) = write { db ->
+        db.prepareStatement("""insert into app_setting(key,value,updated_at) values(?,?,?)
+            on conflict(key) do update set value=excluded.value,updated_at=excluded.updated_at""").use {
+            it.setString(1, key); it.setString(2, value); it.setLong(3, System.currentTimeMillis()); it.executeUpdate()
+        }
+    }
     fun saveBookshelf(request: BookshelfWriteRequest, cover: CachedCover?): BookshelfItem = write { db ->
         val now = System.currentTimeMillis()
         db.autoCommit = false
@@ -398,9 +430,12 @@ class Database(private val path: String) : Closeable, AutoCloseable {
             cover?.let { value -> db.prepareStatement("insert into cover_cache(cache_key,content_type) values(?,?) on conflict(cache_key) do update set content_type=excluded.content_type").use { it.setString(1, value.key); it.setString(2, value.contentType); it.executeUpdate() } }
             val altJson = request.alternateSources?.let { Json.encodeToString(it) }
             val cleanGroup = request.groupName?.trim()?.takeIf { it.isNotEmpty() }
+            // 书名入库前统一清洗：去掉换行（目录页规则常把「最新章节标题」带进书名，
+            // 实测会出现 `"书名\n第八十章 …"` 这种脏数据，见 SESSION-027）。
+            val cleanName = sanitizeBookName(request.name).ifBlank { request.name.trim() }
             db.prepareStatement("""insert into book_shelf(source_id,book_url,name,author,toc_url,cover_url,cover_key,last_read_at,alternate_sources,group_name) values(?,?,?,?,?,?,?,?,?,?)
                 on conflict(source_id,book_url) do update set name=excluded.name,author=excluded.author,toc_url=excluded.toc_url,cover_url=excluded.cover_url,cover_key=coalesce(excluded.cover_key,book_shelf.cover_key),last_read_at=excluded.last_read_at,alternate_sources=coalesce(excluded.alternate_sources,book_shelf.alternate_sources),group_name=coalesce(excluded.group_name,book_shelf.group_name)""").use {
-                it.setString(1, request.sourceId); it.setString(2, request.bookUrl); it.setString(3, request.name); it.setString(4, request.author); it.setString(5, request.tocUrl); it.setString(6, request.coverUrl); it.setString(7, cover?.key); it.setLong(8, now); it.setString(9, altJson); it.setString(10, cleanGroup); it.executeUpdate()
+                it.setString(1, request.sourceId); it.setString(2, request.bookUrl); it.setString(3, cleanName); it.setString(4, request.author); it.setString(5, request.tocUrl); it.setString(6, request.coverUrl?.takeIf { u -> !isSelfCoverReference(u, cover?.key) }); it.setString(7, cover?.key); it.setLong(8, now); it.setString(9, altJson); it.setString(10, cleanGroup); it.executeUpdate()
             }
             db.commit(); getBookshelf(db, request.sourceId, request.bookUrl)!!
         } catch (error: Throwable) { db.rollback(); throw error } finally { db.autoCommit = true }
@@ -425,8 +460,8 @@ class Database(private val path: String) : Closeable, AutoCloseable {
             it.executeUpdate() > 0
         }
     }
-    fun listBookshelf(): List<BookshelfItem> = connect { db -> db.prepareStatement("""select s.source_id,s.book_url,s.name,s.author,s.toc_url,s.cover_key,p.chapter_index,p.scroll_position,s.last_read_at,coalesce(c.cached_chapters,0),coalesce(c.total_chapters,0),coalesce(c.state,'idle'),c.last_error,s.completed,s.alternate_sources,s.group_name from book_shelf s left join reading_progress p on p.source_id=s.source_id and p.book_url=s.book_url left join book_cache_status c on c.source_id=s.source_id and c.book_url=s.book_url order by s.last_read_at desc""").use { query -> query.executeQuery().use { rs -> buildList { while (rs.next()) add(rs.toShelf()) } } } }
-    fun getShelfBookByUrl(bookUrl: String): BookshelfItem? = connect { db -> db.prepareStatement("""select s.source_id,s.book_url,s.name,s.author,s.toc_url,s.cover_key,p.chapter_index,p.scroll_position,s.last_read_at,coalesce(c.cached_chapters,0),coalesce(c.total_chapters,0),coalesce(c.state,'idle'),c.last_error,s.completed,s.alternate_sources,s.group_name from book_shelf s left join reading_progress p on p.source_id=s.source_id and p.book_url=s.book_url left join book_cache_status c on c.source_id=s.source_id and c.book_url=s.book_url where s.book_url=?""").use { it.setString(1, bookUrl); it.executeQuery().use { rs -> if (rs.next()) rs.toShelf() else null } } }
+    fun listBookshelf(): List<BookshelfItem> = connect { db -> db.prepareStatement("""select s.source_id,s.book_url,s.name,s.author,s.toc_url,s.cover_key,p.chapter_index,p.scroll_position,s.last_read_at,coalesce(c.cached_chapters,0),coalesce(c.total_chapters,0),coalesce(c.state,'idle'),c.last_error,s.completed,s.alternate_sources,s.group_name,s.cover_url from book_shelf s left join reading_progress p on p.source_id=s.source_id and p.book_url=s.book_url left join book_cache_status c on c.source_id=s.source_id and c.book_url=s.book_url order by s.last_read_at desc""").use { query -> query.executeQuery().use { rs -> buildList { while (rs.next()) add(rs.toShelf()) } } } }
+    fun getShelfBookByUrl(bookUrl: String): BookshelfItem? = connect { db -> db.prepareStatement("""select s.source_id,s.book_url,s.name,s.author,s.toc_url,s.cover_key,p.chapter_index,p.scroll_position,s.last_read_at,coalesce(c.cached_chapters,0),coalesce(c.total_chapters,0),coalesce(c.state,'idle'),c.last_error,s.completed,s.alternate_sources,s.group_name,s.cover_url from book_shelf s left join reading_progress p on p.source_id=s.source_id and p.book_url=s.book_url left join book_cache_status c on c.source_id=s.source_id and c.book_url=s.book_url where s.book_url=?""").use { it.setString(1, bookUrl); it.executeQuery().use { rs -> if (rs.next()) rs.toShelf() else null } } }
     fun setBookshelfCompleted(sourceId: String, bookUrl: String, completed: Boolean): BookshelfItem? = write { db ->
         db.prepareStatement("update book_shelf set completed=? where source_id=? and book_url=?").use {
             it.setInt(1, if (completed) 1 else 0); it.setString(2, sourceId); it.setString(3, bookUrl); it.executeUpdate()
@@ -462,11 +497,18 @@ class Database(private val path: String) : Closeable, AutoCloseable {
             val newCoverKey = cover?.key ?: (if (request.coverUrl != null && request.coverUrl.isBlank()) null else oldCover)
             val newGroup = if (request.groupName != null) request.groupName.trim().takeIf { it.isNotEmpty() } else oldGroup
             val newAlts = if (request.alternateSources != null) Json.encodeToString(request.alternateSources) else oldAlts
+            // 拒绝把本服务自己的封面接口地址回写成 coverUrl。
+            //
+            // 实测（SESSION-027）：编辑弹窗在没有外部 URL 时会回退调用 api.cover(coverKey)，
+            // 于是把 `/api/covers/<自己的 key>` 当成"外部封面地址"存了回来，形成自引用。
+            // 危害：一旦 coverKey 被清空，前端回退到 coverUrl 就指向自身，形成无意义的循环。
+            // 这里以 coverKey 为准，剥离该自引用（保留真实外部 URL）。
+            val sanitizedCoverUrl = request.coverUrl?.takeIf { !isSelfCoverReference(it, newCoverKey) }
 
             db.prepareStatement("update book_shelf set name=?, author=?, cover_url=?, cover_key=?, group_name=?, alternate_sources=? where source_id=? and book_url=?").use {
-                it.setString(1, request.name)
+                it.setString(1, sanitizeBookName(request.name).ifBlank { request.name.trim() })
                 it.setString(2, request.author)
-                it.setString(3, request.coverUrl)
+                it.setString(3, sanitizedCoverUrl)
                 it.setString(4, newCoverKey)
                 it.setString(5, newGroup)
                 it.setString(6, newAlts)
@@ -788,6 +830,31 @@ class Database(private val path: String) : Closeable, AutoCloseable {
         }
     }
 
+    /**
+     * 从目录缓存里找出某章标题。
+     *
+     * 进度文件（`bookProgress` 下的 JSON）需要写 `durChapterTitle`，而前端只传章节 URL/index，
+     * 因此服务端需要回查标题。查不到返回 null（调用方应放弃写文件，而不是写个空标题）。
+     *
+     * 注意 toc_url 可能有多个变体（如带/不带查询串），所以用 like 兜底匹配。
+     */
+    fun getChapterTitle(sourceId: String, bookUrl: String, chapterUrl: String): String? {
+        val sql = "select chapters_json from book_toc_cache where source_id = ? and (toc_url = ? or toc_url like ?) order by updated_at desc limit 5"
+        return connect { db ->
+            db.prepareStatement(sql).use { stmt ->
+                stmt.setString(1, sourceId); stmt.setString(2, bookUrl); stmt.setString(3, "%$bookUrl%")
+                stmt.executeQuery().use { rs ->
+                    var found: String? = null
+                    while (found == null && rs.next()) {
+                        val chapters = runCatching { Json.decodeFromString<List<Chapter>>(rs.getString(1)) }.getOrNull() ?: continue
+                        found = chapters.firstOrNull { it.url == chapterUrl }?.title
+                    }
+                    found
+                }
+            }
+        }
+    }
+
     fun saveTocCache(sourceId: String, tocUrl: String, chapters: List<Chapter>) = write { db ->
         db.prepareStatement("""
             insert into book_toc_cache(source_id, toc_url, chapters_json, updated_at)
@@ -1099,7 +1166,36 @@ class Database(private val path: String) : Closeable, AutoCloseable {
         }
     }
 
-    fun cacheRequests(): List<CachedBookRequest> = connect { db -> db.prepareStatement("select source_id,book_url,toc_url from book_shelf").use { query -> query.executeQuery().use { rs -> buildList { while (rs.next()) add(CachedBookRequest(rs.getString(1), rs.getString(2), rs.getString(3))) } } } }
+    /**
+     * 启动时需要**续做**的缓存任务。
+     *
+     * 只返回上次未跑完的书（`state` 为 `pending`/`caching`），而不是整张书架。
+     *
+     * 旧实现是 `select ... from book_shelf`（**无任何过滤**），导致每次重启都把
+     * 整架书重新下载一遍：实测 435 本的库启动即打满线程池，`Application started`
+     * 之后数分钟出不来的都是这台机器；数据库还会从 13MB 膨胀到 256MB。
+     * 其中还包括 Android 的 `content://` 本地书——这类路径在服务端**必然失败**，
+     * 纯粹是每次启动重复刷屏 + 白白占用连接。
+     *
+     * 另外跳过非网络来源的 `book_url`：`content://`（Android 本地文件）、
+     * `local://`（本项目本地导入）都不是服务端可抓取的地址。
+     */
+    fun cacheRequests(): List<CachedBookRequest> = connect { db ->
+        db.prepareStatement(
+            """
+            select s.source_id, s.book_url, s.toc_url
+            from book_shelf s
+            join book_cache_status c on c.source_id = s.source_id and c.book_url = s.book_url
+            where c.state in ('pending', 'caching')
+              and s.book_url not like 'content://%'
+              and s.book_url not like 'local://%'
+            """.trimIndent()
+        ).use { query ->
+            query.executeQuery().use { rs ->
+                buildList { while (rs.next()) add(CachedBookRequest(rs.getString(1), rs.getString(2), rs.getString(3))) }
+            }
+        }
+    }
 
     fun importSources(rawSources: List<String>): ImportResponse {
         val errors = mutableListOf<String>()
@@ -1194,8 +1290,170 @@ class Database(private val path: String) : Closeable, AutoCloseable {
         return LibraryImportResult(imported, updated, progressApplied)
     }
 
-    fun listSubscriptions(enabledOnly: Boolean = false): List<SourceSubscription> = connect { db ->
-        val sql = "select * from source_subscription" + (if (enabledOnly) " where enabled=1" else "") + " order by id"
+    /**
+     * 导入备份包里的**分组**，并把书架上已有的 `group_name` 对齐到这些分组。
+     *
+     * ## 为什么需要「对齐」这一步
+     *
+     * 备份里书籍的分组是**数字 id**（`bookshelf.json` 的 `group`），而本服务的
+     * `book_group` 与 `book_shelf.group_name` 是**按名字**关联的
+     * （见 [listBookGroups] 的 `s.group_name = g.name collate nocase`）。
+     * 因此这里要做两件事：① 建出分组；② 把已导入书籍的 `group_name` 填上对应的名字。
+     *
+     * ## 设计取舍
+     *
+     * - **只导入「有书的分组」**：Legado 内置的智能分组（`groupId` 为负：在读/未读/已读/
+     *   小说/漫画/全部/本地/音频…）是按条件动态筛选的虚拟分组，实测在真实备份里都是空的，
+     *   导入后只会变成一堆点不动的空分组。调用方据此过滤。
+     * - **不覆盖已有分组**：`insert ... on conflict(name) do update` 只更新排序，不动已有的书。
+     * - **`group_name` 用 coalesce 语义**：只在本服务该书的 `group_name` 为空时才写入，
+     *   避免一次备份导入把用户在服务端手工改过的分组冲掉。
+     *
+     * @param groups    要导入的分组（调用方已过滤掉空的内置分组）
+     * @param shelf     已导入的书架条目（其 [BackupShelfEntry.groupName] 已由 groupId 解析好）
+     * @return 新建的分组数与被赋予分组的书籍数
+     */
+    fun importBookGroups(
+        groups: List<BackupGroupEntry>,
+        shelf: List<BackupShelfEntry>,
+    ): GroupImportResult = write { db ->
+        db.autoCommit = false
+        var created = 0
+        var assigned = 0
+        try {
+            // ① 建分组（按名字去重；已存在则只更新排序）
+            if (groups.isNotEmpty()) {
+                db.prepareStatement(
+                    "insert into book_group(name, sort_order, created_at) values(?,?,?) " +
+                        "on conflict(name) do update set sort_order=excluded.sort_order"
+                ).use { stmt ->
+                    val now = System.currentTimeMillis()
+                    groups.distinctBy { it.groupName.lowercase() }.forEach { group ->
+                        stmt.setString(1, group.groupName)
+                        stmt.setInt(2, group.order)
+                        stmt.setLong(3, now)
+                        stmt.addBatch()
+                    }
+                    created = stmt.executeBatch().count { it > 0 }
+                }
+            }
+
+            // ② 把书籍的 group_name 补上（只填空值，不动已存在的分组）
+            val withGroup = shelf.filter { !it.groupName.isNullOrBlank() }
+            if (withGroup.isNotEmpty()) {
+                db.prepareStatement(
+                    "update book_shelf set group_name=? where source_id=? and book_url=? " +
+                        "and (group_name is null or group_name='')"
+                ).use { stmt ->
+                    withGroup.forEach { entry ->
+                        stmt.setString(1, entry.groupName)
+                        stmt.setString(2, entry.sourceId)
+                        stmt.setString(3, entry.bookUrl)
+                        stmt.addBatch()
+                    }
+                    assigned = stmt.executeBatch().sum()
+                }
+            }
+            db.commit()
+        } catch (error: Throwable) { db.rollback(); throw error } finally { db.autoCommit = true }
+        GroupImportResult(created = created, assigned = assigned)
+    }
+
+    /**
+     * 导入备份包里的**书签/阅读记录**（`bookmark.json`）。
+     *
+     * ## 只导入「书还在书架上」的书签
+     *
+     * 实测真实备份 47 条书签里，**29 条挂在被过滤掉的书上**（本地图书/音频）——
+     * 那些书不在书架上，书签也就没有展示位置。调用方据此过滤后传入。
+     *
+     * ## 幂等
+     *
+     * `bookmark` 表上对 `(book_name, book_author, chapter_index, chapter_pos)` 建了唯一键，
+     * 重复导入同一备份不会产生重复书签。
+     *
+     * @return 本次新增的书签数
+     */
+    fun importBookmarks(bookmarks: List<BackupBookmarkEntry>): Int {
+        if (bookmarks.isEmpty()) return 0
+        return write { db ->
+            db.autoCommit = false
+            var inserted = 0
+            try {
+                db.prepareStatement(
+                    """
+                    insert into bookmark(book_name,book_author,chapter_index,chapter_name,chapter_pos,book_text,content,created_at)
+                    values(?,?,?,?,?,?,?,?)
+                    on conflict(book_name,book_author,chapter_index,chapter_pos) do update set
+                      chapter_name=excluded.chapter_name, book_text=excluded.book_text,
+                      content=excluded.content, created_at=excluded.created_at
+                    """.trimIndent()
+                ).use { stmt ->
+                    bookmarks.forEach { mark ->
+                        stmt.setString(1, mark.bookName)
+                        stmt.setString(2, mark.bookAuthor)
+                        stmt.setInt(3, mark.chapterIndex)
+                        stmt.setString(4, mark.chapterName)
+                        stmt.setInt(5, mark.chapterPos)
+                        stmt.setString(6, mark.bookText)
+                        stmt.setString(7, mark.content)
+                        stmt.setLong(8, if (mark.time > 0) mark.time else System.currentTimeMillis())
+                        stmt.addBatch()
+                    }
+                    inserted = stmt.executeBatch().count { it > 0 }
+                }
+                db.commit()
+            } catch (error: Throwable) { db.rollback(); throw error } finally { db.autoCommit = true }
+            inserted
+        }
+    }
+
+    /**
+     * 某本书的书签数量。
+     *
+     * 用于验证导入幂等——**不能拿 upsert 的 `changes()` 判断"是否新增"**：
+     * SQLite 在 `do update` 时同样报告 1 行受影响，只有查实际行数才准。
+     */
+    fun countBookmarks(bookName: String, bookAuthor: String?): Int = connect { db ->
+        db.prepareStatement(
+            "select count(*) from bookmark where book_name=? and coalesce(book_author,'')=coalesce(?,'')"
+        ).use { stmt ->
+            stmt.setString(1, bookName)
+            stmt.setString(2, bookAuthor)
+            stmt.executeQuery().use { rs -> if (rs.next()) rs.getInt(1) else 0 }
+        }
+    }
+
+    /** 某本书的全部书签，按章节与位置排序。 */
+    fun listBookmarks(bookName: String, bookAuthor: String?): List<Bookmark> = connect { db ->
+        db.prepareStatement(
+            "select id,book_name,book_author,chapter_index,chapter_name,chapter_pos,book_text,content,created_at " +
+                "from bookmark where book_name=? and coalesce(book_author,'')=coalesce(?,'') " +
+                "order by chapter_index asc, chapter_pos asc"
+        ).use { stmt ->
+            stmt.setString(1, bookName)
+            stmt.setString(2, bookAuthor)
+            stmt.executeQuery().use { rs ->
+                buildList {
+                    while (rs.next()) add(
+                        Bookmark(
+                            id = rs.getLong(1),
+                            bookName = rs.getString(2),
+                            bookAuthor = rs.getString(3),
+                            chapterIndex = rs.getInt(4),
+                            chapterName = rs.getString(5),
+                            chapterPos = rs.getInt(6),
+                            bookText = rs.getString(7),
+                            content = rs.getString(8),
+                            createdAt = rs.getLong(9),
+                        )
+                    )
+                }
+            }
+        }
+    }
+
+    fun listSubscriptions(enabledOnly: Boolean = false): List<SourceSubscription> = connect { db ->        val sql = "select * from source_subscription" + (if (enabledOnly) " where enabled=1" else "") + " order by id"
         db.prepareStatement(sql).use { statement -> statement.executeQuery().use { rs -> buildList { while (rs.next()) add(rs.toSubscription()) } } }
     }
 
@@ -1556,6 +1814,7 @@ class Database(private val path: String) : Closeable, AutoCloseable {
             completed = getInt(14) != 0,
             alternateSources = altSources,
             groupName = runCatching { getString(16) }.getOrNull()?.trim()?.takeIf { it.isNotEmpty() },
+            coverUrl = runCatching { getString(17) }.getOrNull()?.trim()?.takeIf { it.isNotEmpty() },
         )
     }
     private fun java.sql.ResultSet.toReplaceRule(): ReplaceRule = ReplaceRule(
@@ -1775,7 +2034,24 @@ class Database(private val path: String) : Closeable, AutoCloseable {
         }
     }
 
-    private fun getBookshelf(db: Connection, sourceId: String, bookUrl: String): BookshelfItem? = db.prepareStatement("""select s.source_id,s.book_url,s.name,s.author,s.toc_url,s.cover_key,p.chapter_index,p.scroll_position,s.last_read_at,coalesce(c.cached_chapters,0),coalesce(c.total_chapters,0),coalesce(c.state,'idle'),c.last_error,s.completed,s.alternate_sources,s.group_name from book_shelf s left join reading_progress p on p.source_id=s.source_id and p.book_url=s.book_url left join book_cache_status c on c.source_id=s.source_id and c.book_url=s.book_url where s.source_id=? and s.book_url=?""").use { it.setString(1, sourceId); it.setString(2, bookUrl); it.executeQuery().use { rs -> if (rs.next()) rs.toShelf() else null } }
+    private fun getBookshelf(db: Connection, sourceId: String, bookUrl: String): BookshelfItem? = db.prepareStatement("""select s.source_id,s.book_url,s.name,s.author,s.toc_url,s.cover_key,p.chapter_index,p.scroll_position,s.last_read_at,coalesce(c.cached_chapters,0),coalesce(c.total_chapters,0),coalesce(c.state,'idle'),c.last_error,s.completed,s.alternate_sources,s.group_name,s.cover_url from book_shelf s left join reading_progress p on p.source_id=s.source_id and p.book_url=s.book_url left join book_cache_status c on c.source_id=s.source_id and c.book_url=s.book_url where s.source_id=? and s.book_url=?""").use { it.setString(1, sourceId); it.setString(2, bookUrl); it.executeQuery().use { rs -> if (rs.next()) rs.toShelf() else null } }
+
+    /**
+     * 判断 `coverUrl` 是否为本服务自己的封面接口地址（自引用）。
+     *
+     * 形如 `/api/covers/<key>` 或带origin的完整地址都算。允许与当前 `coverKey` 不同：
+     * 只要是本服务的封面接口，就不该被当作"外部封面地址"存进 `cover_url`
+     * （它本来就由 `cover_key` 表达，重复存放只会产生循环回退）。
+     */
+    private fun isSelfCoverReference(url: String, coverKey: String?): Boolean {
+        val trimmed = url.trim()
+        if (!trimmed.contains("/api/covers/")) return false
+        val path = runCatching { URI(trimmed).path }.getOrNull() ?: trimmed
+        if (!path.startsWith("/api/covers/")) return false
+        val key = path.removePrefix("/api/covers/").trim('/')
+        // 本服务封面 key 是 64 位 hex；与自身 key 相同、或本身就指向本服务封面接口，均视为自引用
+        return coverKey == null || key == coverKey || key.matches(Regex("[0-9a-f]{64}"))
+    }
     private fun migrateReadingProgress(db: Connection) {
         val columns = db.createStatement().use { statement ->
             statement.executeQuery("pragma table_info(reading_progress)").use { result ->

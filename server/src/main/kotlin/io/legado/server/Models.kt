@@ -160,7 +160,20 @@ data class SourceLoginStateRecord(
 
 @Serializable data class SourceWriteRequest(val json: String, val version: Long? = null)
 @Serializable data class ImportRequest(val sources: List<String>, val overwrite: Boolean = true)
-@Serializable data class ImportResponse(val imported: Int, val updated: Int = 0, val skipped: Int, val errors: List<String>)
+@Serializable data class ImportResponse(
+    val imported: Int,
+    val updated: Int = 0,
+    val skipped: Int,
+    val errors: List<String>,
+    /**
+     * 本批书源携带的**不同书源分组名**个数（未分组不计）。
+     *
+     * 分组是书源自带的元数据（Legado 的 `bookSourceGroup`），导入时随书源一起落库；
+     * 这个数字用于让「导入手机备份」的提示能如实说出「顺带带进来几个分组」，
+     * 否则用户无法判断分组到底有没有跟着进来。
+     */
+    val sourceGroups: Int = 0,
+)
 @Serializable data class SubscriptionWriteRequest(val url: String, val enabled: Boolean = true)
 @Serializable data class SourceSubscription(
     val id: Long,
@@ -179,8 +192,18 @@ data class SourceLoginStateRecord(
 @Serializable data class SearchRequest(
     val keyword: String = "",
     val query: String = "",
-    val group: String? = null,
+    /**
+     * 只在这些**书源**里搜索（书源 id，即归一化后的 `bookSourceUrl`）。
+     *
+     * 与 [group] 互斥使用（同时给出时按 AND 取交集），前端「搜索范围」二选一。
+     */
     val sourceIds: List<String>? = null,
+    /**
+     * 只在指定的**书源分组**里搜索；[SourceGroupFilter.UNGROUPED] 表示「未分组」。
+     *
+     * 空 / 空白表示不按分组过滤（搜索全部已启用书源）。
+     */
+    val group: String? = null,
 ) {
     val effectiveKeyword: String get() = keyword.ifBlank { query }
 }
@@ -550,6 +573,46 @@ data class BatchSourceResponse(
     val message: String? = null,
 )
 
+/**
+ * 书源分组概览（一个分组一行，用于「按分组搜书」的选择项与分组管理）。
+ *
+ * 未分组（`source_group` 为 null / 空串）**不在此列表**：它不是一个真实的分组，
+ * 只是「还没有分组」的状态，由前端单独提供「未分组」选项。
+ */
+@Serializable
+data class SourceGroupSummary(
+    val name: String,
+    /** 组内书源总数。 */
+    val sourceCount: Int,
+    /** 其中已启用的数量 —— 搜索实际会用到的条数。 */
+    val enabledCount: Int,
+)
+
+/** 书源分组重命名（把 `from` 组整体改名为 `to`；`to` 已存在时等价于合并）。 */
+@Serializable
+data class SourceGroupRenameRequest(
+    val from: String = "",
+    val to: String = "",
+)
+
+/** 书源分组改名/删除的结果。 */
+@Serializable
+data class SourceGroupMutationResponse(
+    val ok: Boolean,
+    val affected: Int,
+    val message: String,
+)
+
+/**
+ * 书源分组筛选里的特殊取值。
+ *
+ * 放在服务端与前端各自硬编码的「魔法字符串」会漂移，因此约定这个唯一来源：
+ * 前端选择「未分组」时传 [UNGROUPED]，服务端翻译成 `source_group is null or trim(...)=''`。
+ */
+object SourceGroupFilter {
+    const val UNGROUPED = "__ungrouped__"
+}
+
 @Serializable
 data class SourceHealthCheckRequest(
     val ids: List<String>? = null,
@@ -619,6 +682,14 @@ data class BackupImportSummary(
     val bookmarks: Int = 0,
     /** 因所属书籍未导入（本地图书/音频）而跳过的书签数。 */
     val bookmarksSkipped: Int = 0,
+    /**
+     * 随书源一起导入的**不同书源分组**个数。
+     *
+     * 备份包里**没有**独立的分组文件：书源分组是 Legado 书源自带的 `bookSourceGroup` 字段
+     * （`bookGroup.json` 是书架分组，不是书源分组）。它跟着书源一起落库，
+     * 这里只把个数如实报出来，便于用户确认分组确实进来了。
+     */
+    val sourceGroups: Int = 0,
 )
 
 /** 备份包 `bookshelf.json` 中的一条书架记录（含阅读进度），仅用于导入。 */

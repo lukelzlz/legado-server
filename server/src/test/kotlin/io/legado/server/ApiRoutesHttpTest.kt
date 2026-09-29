@@ -540,6 +540,10 @@ class ApiRoutesHttpTest {
             }
             assertEquals(HttpStatusCode.OK, importResp.status)
 
+            // 导入书源文件**不自动分组**：文件里写着「旧分组」也不能自动采用（SESSION-033）
+            val listAfterImport = client.get("/api/sources").body<List<SourceSummary>>()
+            assertNull("导入书源文件不采用书源自带分组", listAfterImport.first { it.id == "https://batch1.com" }.group)
+
             // 2. Batch Disable
             val disableResp = client.post("/api/sources/batch") {
                 header(AuthService.CSRF_HEADER, csrf)
@@ -569,6 +573,14 @@ class ApiRoutesHttpTest {
             assertEquals(1, enableBody.affected)
 
             // 4. Batch Set Group
+            // 先给 batch2 单独分一个组，用来验证「批量改组只影响被选中的源」
+            val seedGroupResp = client.post("/api/sources/batch") {
+                header(AuthService.CSRF_HEADER, csrf)
+                contentType(ContentType.Application.Json)
+                setBody(BatchSourceRequest(action = "set_group", ids = listOf("https://batch2.com"), group = "旧分组"))
+            }
+            assertEquals(HttpStatusCode.OK, seedGroupResp.status)
+
             val groupResp = client.post("/api/sources/batch") {
                 header(AuthService.CSRF_HEADER, csrf)
                 contentType(ContentType.Application.Json)

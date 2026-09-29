@@ -29,6 +29,9 @@ import './tts.test.ts'
 import './tts-stream.test.ts'
 import './offline-pwa.test.ts'
 import './source-batch-health.test.ts'
+import './source-group-search.test.ts'
+import './source-group-manager.test.ts'
+import './search-scope-bar.test.ts'
 import './ShelfGrouping.test.ts'
 
 console.log('🚀 Running Legado Web Frontend Comprehensive Test Suite (Tier 1, 2, 4 + Challenger Stress)...\n')

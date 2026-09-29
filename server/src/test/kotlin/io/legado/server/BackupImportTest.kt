@@ -2,6 +2,7 @@ package io.legado.server
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.nio.file.Files
@@ -212,6 +213,57 @@ class BackupImportTest {
             val error = runCatching { BackupImporter(database).import(archive) }.exceptionOrNull()
 
             assertTrue("unexpected error: $error", error is IllegalArgumentException)
+        } finally {
+            database.close()
+            directory.toFile().deleteRecursively()
+        }
+    }
+
+    /**
+     * 备份包里的**书源分组**（`bookSource.json` 的 `bookSourceGroup`）必须跟着书源一起进来。
+     *
+     * 备份包里没有「书源分组」这个条目——分组是书源自带的字段；`bookGroup.json` 是**书架**分组。
+     * 因此本用例锁定的是「分组字段不被丢掉」，以及「重复导入时分组会更新」。
+     */
+    @Test
+    fun `imports book source groups carried by bookSource json`() {
+        val directory = Files.createTempDirectory("legado-backup-source-group")
+        val database = Database(directory.resolve("legado.sqlite").toString())
+        try {
+            database.initialize("password-for-test")
+            val archive = directory.resolve("backup2026-07-12-rk3399pro_pcie.zip")
+            writeArchive(
+                archive,
+                mapOf(
+                    "bookSource.json" to
+                        """[
+                            {"bookSourceUrl":"大灰狼融合VIP5.0","bookSourceName":"🍅大灰狼聚合5.5.22(vip完全版)","bookSourceGroup":"大灰狼聚合","enabled":true},
+                            {"bookSourceUrl":"https://plain.example/","bookSourceName":"无分组书源","enabled":true}
+                        ]""",
+                ),
+            )
+
+            val summary = BackupImporter(database).import(archive)
+
+            assertEquals(2, summary.sources)
+            assertEquals("书源分组随书源一起导入，提示里要如实报出个数", 1, summary.sourceGroups)
+            val sources = database.listSources(null)
+            assertEquals("大灰狼聚合", sources.first { it.name.startsWith("🍅") }.group)
+            assertNull("没有分组字段的书源不应被凭空塞进某个分组", sources.first { it.name == "无分组书源" }.group)
+            assertEquals(listOf("大灰狼聚合"), database.listSourceGroups().map { it.name })
+            assertEquals("按分组能直接搜到这些书源", 1, database.listSearchSourceRecords(null, "大灰狼聚合").size)
+
+            // 再导一次（分组改名）：upsert 必须更新分组，而不是只有首次插入才生效
+            val renamed = directory.resolve("backup-renamed.zip")
+            writeArchive(
+                renamed,
+                mapOf(
+                    "bookSource.json" to
+                        """[{"bookSourceUrl":"大灰狼融合VIP5.0","bookSourceName":"🍅大灰狼聚合5.5.22(vip完全版)","bookSourceGroup":"聚合源","enabled":true}]""",
+                ),
+            )
+            BackupImporter(database).import(renamed)
+            assertEquals(listOf("聚合源"), database.listSourceGroups().map { it.name })
         } finally {
             database.close()
             directory.toFile().deleteRecursively()

@@ -228,7 +228,9 @@ class DatabaseTest {
             database.initialize("password-for-test")
 
             val largePayload = "{\"bookSourceUrl\":\"https://source.large\",\"bookSourceName\":\"大型书源\",\"bookSourceGroup\":\"精品\",\"customData\":\"" + "X".repeat(20000) + "\"}"
-            database.importSources(listOf(largePayload))
+            // 这里要验证的是 listSources 的**投影**（含 source_group 列），因此显式用「备份导入」语义；
+            // 普通导入书源文件默认不采用书源自带分组（见 SESSION-033 / SourceGroupTest）。
+            database.importSources(listOf(largePayload), applyGroups = true)
 
             val summaries = database.listSources(null)
             assertEquals(1, summaries.size)

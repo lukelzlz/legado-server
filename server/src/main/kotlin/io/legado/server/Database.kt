@@ -300,19 +300,121 @@ class Database(private val path: String) : Closeable, AutoCloseable {
         }
     }
 
-    fun getSource(id: String): SourceRecord? = connect { db -> db.prepareStatement("select id, payload, version, updated_at from source where id = ?").use {
-        it.setString(1, id); it.executeQuery().use { rs -> if (rs.next()) SourceRecord(rs.getString(1), rs.getString(2), rs.getLong(3), rs.getLong(4)) else null }
-    } }
-
-    fun listSearchSourceRecords(sourceIds: List<String>?): List<SourceRecord> = connect { db ->
-        val ids = sourceIds?.distinct()?.takeIf { it.isNotEmpty() }
-        val sql = if (ids == null) {
-            "select id, payload, version, updated_at from source where enabled = 1 order by name collate nocase"
-        } else {
-            "select id, payload, version, updated_at from source where enabled = 1 and id in (${ids.joinToString(",") { "?" }}) order by name collate nocase"
+    fun getSource(id: String): SourceRecord? = connect { db ->
+        db.prepareStatement("select id, payload, version, updated_at, source_group from source where id = ?").use {
+            it.setString(1, id)
+            it.executeQuery().use { rs ->
+                if (rs.next()) {
+                    val rawPayload = rs.getString(2)
+                    val sourceGroup = rs.getString(5)
+                    val syncedPayload = SourceCodec.withGroup(rawPayload, sourceGroup)
+                    SourceRecord(rs.getString(1), syncedPayload, rs.getLong(3), rs.getLong(4))
+                } else null
+            }
         }
+    }
+
+    /**
+     * 书源分组概览：按 `source_group` 聚合，供「按分组搜书」的下拉与分组管理使用。
+     *
+     * - 只返回**真实分组**：`source_group` 为 null / 全空白的书源是「未分组」，
+     *   它不是分组本身，由前端单独提供选项，这里不合成一行假数据。
+     * - 同时给出总数与已启用数：搜索只会用到已启用的书源，两个数字都摆出来，
+     *   用户看到「某分组 12 个源」时不会因为其中 5 个被停用而困惑。
+     * - 分组名按 `trim()` 后聚合，避免导入数据里带尾空格的分组名被拆成两组。
+     * - 聚合用 `collate nocase`：范围过滤（[listSearchSourceRecords]）本身就是大小写不敏感的，
+     *   若这里区分大小写，列表会把 `News`/`news` 显示成两组、而点选任一组都会同时命中两者。
+     */
+    fun listSourceGroups(): List<SourceGroupSummary> = connect { db ->
+        db.prepareStatement(
+            """
+            select trim(source_group) as group_name,
+                   count(*) as source_count,
+                   sum(case when enabled = 1 then 1 else 0 end) as enabled_count
+            from source
+            where source_group is not null and trim(source_group) <> ''
+            group by trim(source_group) collate nocase
+            order by group_name collate nocase
+            """.trimIndent()
+        ).use { statement ->
+            statement.executeQuery().use { rs ->
+                buildList {
+                    while (rs.next()) {
+                        add(SourceGroupSummary(name = rs.getString(1), sourceCount = rs.getInt(2), enabledCount = rs.getInt(3)))
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * 书源分组改名：把整个分组的书源一次性挂到新名字下。
+     *
+     * - 目标分组已存在时**等价于合并**（不做重名拦截）：书源分组不像书架分组那样是用户手建的实体，
+     *   它只是书源上的一个字符串，合并是两个分组「同名」的必然结果，拦下来反而要用户先删空另一组。
+     * - 名字大小写不敏感（`collate nocase`），与 [listSourceGroups] 的展示口径一致。
+     * - 严禁使用系统保留字 [SourceGroupFilter.UNGROUPED] 作为目标分组名。
+     *
+     * @return 受影响的书源数（0 表示原分组不存在）。
+     */
+    fun renameSourceGroup(from: String, to: String): Int {
+        val target = to.trim()
+        require(!target.equals(SourceGroupFilter.UNGROUPED, ignoreCase = true)) {
+            "不能使用系统保留字「$target」作为分组名称"
+        }
+        return write { db ->
+            db.prepareStatement("update source set source_group = ?, updated_at = ? where source_group = ? collate nocase").use { stmt ->
+                stmt.setString(1, target)
+                stmt.setLong(2, System.currentTimeMillis())
+                stmt.setString(3, from.trim())
+                stmt.executeUpdate()
+            }
+        }
+    }
+
+    /**
+     * 删除书源分组：**只解绑、不删书源**（书源退化为未分组）。
+     *
+     * 与书架分组删除语义对齐（见 [deleteBookGroup]）：分组消失绝不能让书源跟着消失，
+     * 否则一次误点会静默丢掉整组书源。
+     *
+     * @return 受影响的书源数（0 表示分组不存在）。
+     */
+    fun clearSourceGroup(name: String): Int = write { db ->
+        db.prepareStatement("update source set source_group = null, updated_at = ? where source_group = ? collate nocase").use { stmt ->
+            stmt.setLong(1, System.currentTimeMillis())
+            stmt.setString(2, name)
+            stmt.executeUpdate()
+        }
+    }
+
+    /**
+     * 取出用于一次搜索的书源。
+     *
+     * @param sourceIds 只搜这些书源（null / 空表示不限）。
+     * @param group     只搜这个书源分组；[SourceGroupFilter.UNGROUPED] 表示「未分组」。
+     *                  空白表示不限。与 [sourceIds] 同时给出时按 AND 取交集。
+     */
+    fun listSearchSourceRecords(sourceIds: List<String>?, group: String? = null): List<SourceRecord> = connect { db ->
+        val ids = sourceIds?.distinct()?.takeIf { it.isNotEmpty() }
+        val conditions = mutableListOf("enabled = 1")
+        val params = mutableListOf<String>()
+        if (ids != null) {
+            conditions += "id in (${ids.joinToString(",") { "?" }})"
+            params += ids
+        }
+        val groupName = group?.trim()?.takeIf { it.isNotBlank() }
+        if (groupName != null) {
+            if (groupName == SourceGroupFilter.UNGROUPED) {
+                conditions += "(source_group is null or trim(source_group) = '')"
+            } else {
+                conditions += "source_group = ? collate nocase"
+                params += groupName
+            }
+        }
+        val sql = "select id, payload, version, updated_at from source where ${conditions.joinToString(" and ")} order by name collate nocase"
         db.prepareStatement(sql).use { statement ->
-            ids?.forEachIndexed { index, id -> statement.setString(index + 1, id) }
+            params.forEachIndexed { index, value -> statement.setString(index + 1, value) }
             statement.executeQuery().use { rs -> buildList { while (rs.next()) add(SourceRecord(rs.getString(1), rs.getString(2), rs.getLong(3), rs.getLong(4))) } }
         }
     }
@@ -362,6 +464,9 @@ class Database(private val path: String) : Closeable, AutoCloseable {
                         }
                         "set_group" -> {
                             val targetGroup = group?.trim()?.takeIf { it.isNotBlank() }
+                            require(targetGroup == null || !targetGroup.equals(SourceGroupFilter.UNGROUPED, ignoreCase = true)) {
+                                "不能使用系统保留字「$targetGroup」作为分组名称"
+                            }
                             val sql = "update source set source_group = ?, updated_at = ? where id in ($placeholders)"
                             db.prepareStatement(sql).use { stmt ->
                                 stmt.setString(1, targetGroup)
@@ -1197,12 +1302,23 @@ class Database(private val path: String) : Closeable, AutoCloseable {
         }
     }
 
-    fun importSources(rawSources: List<String>): ImportResponse {
+    /**
+     * 批量导入书源。
+     *
+     * @param applyGroups **是否采用书源自带的 `bookSourceGroup`**：
+     *   - `true`（仅**备份导入**用）：分组是手机端整理好的成果，随备份一起带进来；
+     *   - `false`（**导入书源 JSON / 订阅更新**用的默认语义）：单独导入一个书源文件时**不自动分组**，
+     *     新书源一律落在「未分组」，分组只由用户在「分组管理」里手动整理。
+     *
+     *   `applyGroups = false` 时还有一条**不可省的守卫**：upsert 的 `do update` **不碰 `source_group`**，
+     *   否则一次普通的书源文件导入会把用户手工分好的组全部清空（新行才写 null）。
+     */
+    fun importSources(rawSources: List<String>, applyGroups: Boolean = false): ImportResponse {
         val errors = mutableListOf<String>()
         val unique = linkedMapOf<String, ParsedSource>()
         rawSources.forEachIndexed { index, raw ->
             try {
-                val parsed = SourceCodec.parse(raw)
+                val parsed = SourceCodec.parse(raw, keepGroup = applyGroups)
                 unique[parsed.id] = parsed
             } catch (error: IllegalArgumentException) {
                 errors += "第 ${index + 1} 项：${error.message}"
@@ -1210,12 +1326,26 @@ class Database(private val path: String) : Closeable, AutoCloseable {
         }
         var imported = 0
         var updated = 0
+        // 分组是书源自带的元数据，落库时与书源同批写入 `source_group`；
+        // 这里顺手统计「本批带来了几个不同的分组」，供导入提示如实回报（未分组不计）。
+        val sourceGroups = if (!applyGroups) 0 else unique.values
+            .mapNotNull { it.group?.trim()?.takeIf { name -> name.isNotBlank() } }
+            .distinctBy { it.lowercase() }
+            .size
+        // `applyGroups = false` 时 **DO UPDATE 里不能出现 source_group**：不覆盖已有分组，
+        // 否则一次普通的书源文件导入会把用户手工分好的组全部清空。
+        val groupOnConflict = if (applyGroups) "source_group=excluded.source_group," else ""
         write { db ->
             db.autoCommit = false
             try {
                 db.prepareStatement("select version from source where id = ?").use { current ->
-                    db.prepareStatement("""insert into source(id,name,source_url,source_group,enabled,is_js,payload,version,updated_at,has_login)
-                        values(?,?,?,?,?,?,?,?,?,?) on conflict(id) do update set name=excluded.name,source_url=excluded.source_url,source_group=excluded.source_group,enabled=excluded.enabled,is_js=excluded.is_js,payload=excluded.payload,version=excluded.version,updated_at=excluded.updated_at,has_login=excluded.has_login""").use { save ->
+                    db.prepareStatement(
+                        "insert into source(id,name,source_url,source_group,enabled,is_js,payload,version,updated_at,has_login) " +
+                            "values(?,?,?,?,?,?,?,?,?,?) on conflict(id) do update set " +
+                            "name=excluded.name,source_url=excluded.source_url,${groupOnConflict}enabled=excluded.enabled," +
+                            "is_js=excluded.is_js,payload=excluded.payload,version=excluded.version," +
+                            "updated_at=excluded.updated_at,has_login=excluded.has_login",
+                    ).use { save ->
                         unique.values.forEach { parsed ->
                             current.setString(1, parsed.id)
                             val version = current.executeQuery().use { result -> if (result.next()) result.getLong(1) else null }
@@ -1230,7 +1360,7 @@ class Database(private val path: String) : Closeable, AutoCloseable {
                 db.commit()
             } catch (error: Throwable) { db.rollback(); throw error } finally { db.autoCommit = true }
         }
-        return ImportResponse(imported, updated, rawSources.size - unique.size, errors)
+        return ImportResponse(imported, updated, rawSources.size - unique.size, errors, sourceGroups)
     }
 
     /**
@@ -1479,8 +1609,21 @@ class Database(private val path: String) : Closeable, AutoCloseable {
         db.prepareStatement("update source_subscription set last_attempt_at=?,last_error=?,updated_at=? where id=?").use { it.setLong(1, now); it.setString(2, message.take(500)); it.setLong(3, now); it.setLong(4, id); it.executeUpdate() }
     }
     fun exportSources(ids: List<String>?): List<String> = connect { db ->
-        val sql = if (ids.isNullOrEmpty()) "select payload from source order by name collate nocase" else "select payload from source where id in (${ids.joinToString(",") { "?" }}) order by name collate nocase"
-        db.prepareStatement(sql).use { statement -> ids?.forEachIndexed { index, id -> statement.setString(index + 1, id) }; statement.executeQuery().use { rs -> buildList { while (rs.next()) add(rs.getString(1)) } } }
+        val sql = if (ids.isNullOrEmpty()) {
+            "select payload, source_group from source order by name collate nocase"
+        } else {
+            "select payload, source_group from source where id in (${ids.joinToString(",") { "?" }}) order by name collate nocase"
+        }
+        db.prepareStatement(sql).use { statement ->
+            ids?.forEachIndexed { index, id -> statement.setString(index + 1, id) }
+            statement.executeQuery().use { rs ->
+                buildList {
+                    while (rs.next()) {
+                        add(SourceCodec.withGroup(rs.getString(1), rs.getString(2)))
+                    }
+                }
+            }
+        }
     }
 
     fun getSourceLoginState(sourceId: String): SourceLoginStateRecord? = connect { db ->

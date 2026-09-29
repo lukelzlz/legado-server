@@ -512,7 +512,8 @@ Click the **"Read Aloud"** icon in the reader header:
 │   │   ├── ReaderScreen.tsx             # Immersive reader, VirtualChapterList & TTS alignment
 │   │   ├── ReplaceRulesPage.tsx         # Replace & purify rules management console
 │   │   ├── ReplaceRulesModal.tsx        # Replace rule editor with live preview tester
-│   │   ├── SourceGroupModal.tsx         # Book source grouping modal
+│   │   ├── SearchScopeBar.tsx           # Search scope tabs (all sources / source groups) under the search box
+│   │   ├── SourceGroupManagerModal.tsx  # Source group manager (list / rename / delete + batch assign)
 │   │   ├── SourceHealthModal.tsx        # Source connectivity health check & latency probe
 │   │   ├── SourceLoginModal.tsx         # Source login & web proxy cookie sync modal
 │   │   ├── SourceSwitchModal.tsx        # Live source switching & chapter matching modal

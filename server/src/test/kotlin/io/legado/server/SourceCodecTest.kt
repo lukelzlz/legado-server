@@ -74,6 +74,30 @@ class SourceCodecTest {
     }
 
     @Test
+    fun `keepGroup false strips the group from both the record and the payload`() {
+        // 导入书源文件时不采用书源自带分组；**列与 payload 必须同时清掉**，
+        // 只清列会让编辑弹窗显示一个库里并不存在的分组，用户一保存又把它写回去。
+        val plain = SourceCodec.parse(
+            """{"bookSourceUrl":"https://example.com","bookSourceName":"示例","bookSourceGroup":"测试","enabled":true}""",
+            keepGroup = false,
+        )
+        assertEquals(null, plain.group)
+        assertFalse(plain.json.contains("bookSourceGroup"))
+        assertTrue("其余字段不能被误删", plain.json.contains("https://example.com"))
+
+        // 历史别名（sourceGroup / group）同样要删净
+        val legacy = SourceCodec.parse(
+            """{"sourceUrl":"https://legacy.example.com","sourceName":"旧版","sourceGroup":"旧版"}""",
+            keepGroup = false,
+        )
+        assertEquals(null, legacy.group)
+        assertFalse(legacy.json.contains("sourceGroup"))
+
+        // 默认行为（编辑器保存 / 备份导入）保持不变
+        assertEquals("测试", SourceCodec.parse("""{"bookSourceUrl":"https://example.com","bookSourceGroup":"测试"}""").group)
+    }
+
+    @Test
     fun `parses real-world complex shareBookSource JSON`() {
         val sampleFile = java.io.File("/Users/zhangran/Downloads/shareBookSource(1).json")
         if (sampleFile.exists()) {
@@ -86,5 +110,26 @@ class SourceCodecTest {
             assertEquals("大灰狼聚合", parsed.group)
             assertTrue(parsed.hasLogin)
         }
+    }
+
+    @Test
+    fun `withGroup updates or removes bookSourceGroup in payload cleanly`() {
+        val originalNoGroup = """{"bookSourceUrl":"https://example.com","bookSourceName":"测试"}"""
+        val withGroup = SourceCodec.withGroup(originalNoGroup, "新分组")
+        assertTrue(withGroup.contains(""""bookSourceGroup":"新分组""""))
+        assertEquals("新分组", SourceCodec.parse(withGroup).group)
+
+        // 替换已有分组并清除别名
+        val originalLegacy = """{"bookSourceUrl":"https://example.com","sourceGroup":"旧别名","group":"另一别名"}"""
+        val updated = SourceCodec.withGroup(originalLegacy, "统一分组")
+        assertTrue(updated.contains(""""bookSourceGroup":"统一分组""""))
+        assertFalse(updated.contains("sourceGroup"))
+        assertFalse(updated.contains(""""group":"""))
+
+        // null 或空白清空分组
+        val cleared = SourceCodec.withGroup(withGroup, null)
+        assertFalse(cleared.contains("bookSourceGroup"))
+        val clearedBlank = SourceCodec.withGroup(withGroup, "   ")
+        assertFalse(clearedBlank.contains("bookSourceGroup"))
     }
 }

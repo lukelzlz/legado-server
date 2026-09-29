@@ -15,6 +15,14 @@ export type SourceChoice = {
 export interface SearchStoreState {
   keyword: string
   selectedSourceId: string
+  /**
+   * 搜索范围里的**书源分组**（空串 = 不按分组过滤）。
+   *
+   * 与 [selectedSourceId] 互斥：两者都设时语义会打架（既是单源又是整组），
+   * 因此 setSelectedSourceId / setSelectedGroup 会互相清空对方。
+   * `UNGROUPED_SOURCE_GROUP`（`__ungrouped__`）表示只搜未分组书源。
+   */
+  selectedGroup: string
   results: SearchResult[]
   choices: SourceChoice[]
   openBook: OpenBook | null
@@ -157,6 +165,7 @@ export const loadSourceBook = async (result: SearchResult, alternateSources?: Se
 const initialSearchState: SearchStoreState = {
   keyword: '',
   selectedSourceId: '',
+  selectedGroup: '',
   results: [],
   choices: [],
   openBook: null,
@@ -199,7 +208,12 @@ export class SearchStore {
   }
 
   setSelectedSourceId = (selectedSourceId: string) => {
-    this.setState({ selectedSourceId })
+    // 单源与整组互斥：选了具体书源就不再按分组过滤，否则会出现「既是单源又是整组」的矛盾范围。
+    this.setState({ selectedSourceId, selectedGroup: selectedSourceId ? '' : this.state.selectedGroup })
+  }
+
+  setSelectedGroup = (selectedGroup: string) => {
+    this.setState({ selectedGroup, selectedSourceId: selectedGroup ? '' : this.state.selectedSourceId })
   }
 
   setFilters = (filters: SearchFilters | ((current: SearchFilters) => SearchFilters)) => {
@@ -221,6 +235,8 @@ export class SearchStore {
     if (!query) return
 
     const source = sourceId !== undefined ? sourceId : this.state.selectedSourceId
+    // 单源优先于分组（setter 已保证二者互斥，这里只是兜底）。
+    const group = source ? '' : this.state.selectedGroup
 
     if (this.socket) {
       try {
@@ -297,7 +313,8 @@ export class SearchStore {
           })
           this.socket = null
         }
-      }
+      },
+      group || undefined
     )
 
     this.socket = socket
@@ -450,6 +467,7 @@ export const searchStore = new SearchStore()
 export function useSearchStore(): SearchStoreState & {
   setKeyword: (keyword: string) => void
   setSelectedSourceId: (sourceId: string) => void
+  setSelectedGroup: (group: string) => void
   setFilters: (filters: SearchFilters | ((current: SearchFilters) => SearchFilters)) => void
   setOpenBook: (book: OpenBook | null) => void
   startSearch: (keyword?: string, sourceId?: string) => void
@@ -463,6 +481,7 @@ export function useSearchStore(): SearchStoreState & {
     ...state,
     setKeyword: searchStore.setKeyword,
     setSelectedSourceId: searchStore.setSelectedSourceId,
+    setSelectedGroup: searchStore.setSelectedGroup,
     setFilters: searchStore.setFilters,
     setOpenBook: searchStore.setOpenBook,
     startSearch: searchStore.startSearch,

@@ -84,3 +84,18 @@ related:
 1. **改前端但界面没变，先分清「构建侧」与「缓存侧」**：源码模式实例的静态资源在 jar 内，改 `web/src` 必须重跑 `:server:installDist` 并重启；只调 PWA 缓存会白忙。
 2. **复用共享骨架类做改版，覆盖必须加作用域**：`.group-*` 是书架弹窗共用的，重绘一律写 `.source-group-manager .xxx`。
 3. **面板里的「概览数字」比一句小字更有用**：状态数字（分组/书源/未分组）抽出来做数字块，同时把数字从描述句里删掉，避免同一信息出现两遍。
+4. **PS 5.1 的 `Get-Content -Raw` 会按 GBK 解码无 BOM 的 UTF-8 文件**：用它读出中文再发 HTTP（如 GitHub REST API）会得到 422/500，必须用 `[IO.File]::ReadAllText($p, [Text.Encoding]::UTF8)`。同一个文件的字符串长度会骗人（实测 2570 vs 2214）——**长度不一致就是命中了**。
+
+## 6. 提交与 PR（交付记录）
+
+| 项 | 值 |
+| :--- | :--- |
+| 分支 | `feat/source-groups-and-group-scoped-search`（基于上游 main `020e633`，无需 rebase） |
+| 提交 | `f18428a`（作者 `wfanan <wfanan@users.noreply.github.com>`），41 files / +3164 / -301 |
+| 推送 | `git push fork feat/...` → `wfanan/legado-server`（本机 git 传输本次一次成功） |
+| PR | [#10](https://github.com/lukelzlz/legado-server/pull/10) → `lukelzlz:main`，mergeable=clean |
+| CI | `CI Test & Build` ✅ success、`Build Legado Server JAR` ✅ success |
+
+> **CI 结果顺带解决了本机的不确定性**：`ci.yml` 会在 Linux 上跑 `./gradlew :server:test` + 前端 `check`/`test/run-all.ts`，
+> 两条 workflow 都 success ⇒ 服务端测试在 Linux 上**全绿**，本机那 8 条 `FileSystemException` teardown 失败**确认为环境噪声**，
+> `ApiRoutesHttpTest` 被顶替的断言也已由 CI 覆盖。本机 PowerShell 是 **5.1**（无 `gh` CLI），PR 全程走 REST API + 凭据管理器取 token。

@@ -2,9 +2,9 @@
 
 - **日期**：2026-09-17
 - **状态**：Verified & Documented
-- **关联提案**：[`PROPOSAL-014`](file:///root/legado-server/docs/proposals/PROPOSAL-014-book-source-batch-management-and-health-check.md)
-- **关联架构决策**：[`ADR-014`](file:///root/legado-server/docs/decisions/ADR-014-source-batch-operations-and-lightweight-probe-pipeline.md)
-- **关联验收手册**：[`ACCEPT-014`](file:///root/legado-server/docs/acceptance/ACCEPT-014-source-batch-and-health-check.md)
+- **关联提案**：[`PROPOSAL-014`](../proposals/PROPOSAL-014-book-source-batch-management-and-health-check.md)
+- **关联架构决策**：[`ADR-014`](../decisions/ADR-014-source-batch-operations-and-lightweight-probe-pipeline.md)
+- **关联验收手册**：[`ACCEPT-014`](../acceptance/ACCEPT-014-source-batch-and-health-check.md)
 
 ---
 

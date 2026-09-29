@@ -24,7 +24,7 @@ curl -s -o /dev/null -w "%{http_code}\n" http://127.0.0.1:8080/index.html
 ### 用例 1：Chrome / Edge 扩展一键同步凭据 (穿透 HttpOnly 与 CSP)
 1. 打开 Chrome 或 Edge 浏览器，访问 `chrome://extensions/`（或 `edge://extensions/`）。
 2. 开启右上角 **「开发者模式」**，点击 **「加载已解压的扩展程序」**。
-3. 选择项目根目录下的 [`extensions/chrome/`](file:///Users/zhangran/Documents/antigravity/joyful-galileo/extensions/chrome/) 文件夹完成安装。
+3. 选择项目根目录下的 [`extensions/chrome/`](../../extensions/chrome/) 文件夹完成安装。
 4. 打开任意需登录的小说站点（如已登录账号的目标站标签页）。
 5. 点击浏览器右上角扩展栏的 Legado 图标，确认：
    - 自动识别当前标签页域名与对应的书源信息。

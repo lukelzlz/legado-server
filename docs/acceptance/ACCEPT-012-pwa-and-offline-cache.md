@@ -1,7 +1,7 @@
 # PWA 渐进式应用与用户自主分段离线缓存实操验收手册 (ACCEPT-012)
 
-> **关联提案**：[`docs/proposals/PROPOSAL-012-pwa-capabilities-and-fullscreen-drawer-adaptation.md`](file:///root/legado-server/docs/proposals/PROPOSAL-012-pwa-capabilities-and-fullscreen-drawer-adaptation.md)  
-> **关联架构决策**：[`docs/decisions/ADR-012-vite-plugin-pwa-workbox-and-safe-area-layout.md`](file:///root/legado-server/docs/decisions/ADR-012-vite-plugin-pwa-workbox-and-safe-area-layout.md)
+> **关联提案**：[`docs/proposals/PROPOSAL-012-pwa-capabilities-and-fullscreen-drawer-adaptation.md`](../proposals/PROPOSAL-012-pwa-capabilities-and-fullscreen-drawer-adaptation.md)  
+> **关联架构决策**：[`docs/decisions/ADR-012-vite-plugin-pwa-workbox-and-safe-area-layout.md`](../decisions/ADR-012-vite-plugin-pwa-workbox-and-safe-area-layout.md)
 
 ---
 

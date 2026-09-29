@@ -1,7 +1,7 @@
 # 验收手册 ACCEPT-010: Kindle / 墨水屏版 Web UI (Simple-Web) 直连标准 REST API
 
-> **对应需求提案**：[`PROPOSAL-010`](file:///Users/zhangran/Documents/antigravity/joyful-galileo/docs/proposals/PROPOSAL-010-kindle-simple-web-ui.md)  
-> **架构决策**：[`ADR-010`](file:///Users/zhangran/Documents/antigravity/joyful-galileo/docs/decisions/ADR-010-kindle-simple-web-and-legacy-api-compatibility.md)  
+> **对应需求提案**：[`PROPOSAL-010`](../proposals/PROPOSAL-010-kindle-simple-web-ui.md)  
+> **架构决策**：[`ADR-010`](../decisions/ADR-010-kindle-simple-web-and-legacy-api-compatibility.md)  
 > **当前状态**：`Ready for Acceptance`
 
 ---

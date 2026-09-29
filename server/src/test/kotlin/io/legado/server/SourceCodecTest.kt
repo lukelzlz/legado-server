@@ -99,7 +99,7 @@ class SourceCodecTest {
 
     @Test
     fun `parses real-world complex shareBookSource JSON`() {
-        val sampleFile = java.io.File("/Users/zhangran/Downloads/shareBookSource(1).json")
+        val sampleFile = System.getenv("SAMPLE_SOURCE_FILE")?.let { java.io.File(it) } ?: java.io.File("shareBookSource(1).json")
         if (sampleFile.exists()) {
             val content = sampleFile.readText()
             val list = kotlinx.serialization.json.Json.parseToJsonElement(content) as kotlinx.serialization.json.JsonArray

@@ -4,7 +4,7 @@
 
 全量重构优化 Legado 服务端 (`server/`) 与 Web 客户端 (`web/`) 的并发搜索延迟、整书离线缓存吞吐、数据库持久化查询效率，以及前端开书级联请求与大目录渲染性能，并在本地启动服务通过真实书源与浏览器交互完成完整的端到端验证。
 
-Working directory: /Users/zhangran/Documents/antigravity/joyful-galileo
+Working directory: .
 Integrity mode: development
 
 ## Requirements
@@ -60,7 +60,7 @@ Integrity mode: development
 
 继续上一次未完成的优化任务。
 
-Working directory: /Users/zhangran/Documents/antigravity/joyful-galileo
+Working directory: .
 Integrity mode: development
 
 ## 当前状态

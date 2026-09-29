@@ -259,6 +259,65 @@ class SourceGroupTest {
         }
     }
 
+    @Test(expected = IllegalArgumentException::class)
+    fun `renameSourceGroup rejects UNGROUPED sentinel`() {
+        val path = temporaryDatabase()
+        val database = Database(path)
+        try {
+            database.initialize("password-for-test")
+            database.renameSourceGroup("组A", SourceGroupFilter.UNGROUPED)
+        } finally {
+            database.close()
+            Files.deleteIfExists(java.nio.file.Path.of(path))
+        }
+    }
+
+    @Test(expected = IllegalArgumentException::class)
+    fun `batchUpdateSources rejects UNGROUPED sentinel`() {
+        val path = temporaryDatabase()
+        val database = Database(path)
+        try {
+            database.initialize("password-for-test")
+            database.batchUpdateSources(listOf("https://a.example"), "set_group", SourceGroupFilter.UNGROUPED)
+        } finally {
+            database.close()
+            Files.deleteIfExists(java.nio.file.Path.of(path))
+        }
+    }
+
+    @Test
+    fun `getSource and exportSources synchronize group from database column into payload`() {
+        val path = temporaryDatabase()
+        val database = Database(path)
+        try {
+            database.initialize("password-for-test")
+            // 普通导入不带分组
+            database.importSources(listOf(sourceJson("https://a.example", "A", null)))
+            assertNull(database.listSources(null).single().group)
+
+            // 用户在「分组管理」里归入「精选」分组（SQL 只改了 source_group 列）
+            database.batchUpdateSources(listOf("https://a.example"), "set_group", "精选")
+            assertEquals("精选", database.listSources(null).single().group)
+
+            // getSource 读出的 json 必须同步带有 bookSourceGroup="精选"
+            val record = database.getSource("https://a.example")!!
+            assertTrue("getSource 必须把 source_group 同步进 payload", record.json.contains(""""bookSourceGroup":"精选""""))
+
+            // 模拟用户在编辑器里保存：解析出的 group 必须是「精选」，保存后分组不会丢
+            val parsed = SourceCodec.parse(record.json)
+            assertEquals("精选", parsed.group)
+            database.saveSource(parsed, record.version)
+            assertEquals("保存后分组依然保留", "精选", database.listSources(null).single().group)
+
+            // exportSources 同样要同步进 payload
+            val exported = database.exportSources(listOf("https://a.example")).single()
+            assertTrue("导出书源时必须带有当前列里的分组", exported.contains(""""bookSourceGroup":"精选""""))
+        } finally {
+            database.close()
+            Files.deleteIfExists(java.nio.file.Path.of(path))
+        }
+    }
+
     private fun temporaryDatabase(): String = Files.createTempFile("legado-source-group-test", ".sqlite").toString()
 
     /** 备份导入路径的语义：采用书源自带的 `bookSourceGroup`。 */

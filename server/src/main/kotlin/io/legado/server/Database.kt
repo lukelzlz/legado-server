@@ -300,9 +300,19 @@ class Database(private val path: String) : Closeable, AutoCloseable {
         }
     }
 
-    fun getSource(id: String): SourceRecord? = connect { db -> db.prepareStatement("select id, payload, version, updated_at from source where id = ?").use {
-        it.setString(1, id); it.executeQuery().use { rs -> if (rs.next()) SourceRecord(rs.getString(1), rs.getString(2), rs.getLong(3), rs.getLong(4)) else null }
-    } }
+    fun getSource(id: String): SourceRecord? = connect { db ->
+        db.prepareStatement("select id, payload, version, updated_at, source_group from source where id = ?").use {
+            it.setString(1, id)
+            it.executeQuery().use { rs ->
+                if (rs.next()) {
+                    val rawPayload = rs.getString(2)
+                    val sourceGroup = rs.getString(5)
+                    val syncedPayload = SourceCodec.withGroup(rawPayload, sourceGroup)
+                    SourceRecord(rs.getString(1), syncedPayload, rs.getLong(3), rs.getLong(4))
+                } else null
+            }
+        }
+    }
 
     /**
      * 书源分组概览：按 `source_group` 聚合，供「按分组搜书」的下拉与分组管理使用。
@@ -343,15 +353,22 @@ class Database(private val path: String) : Closeable, AutoCloseable {
      * - 目标分组已存在时**等价于合并**（不做重名拦截）：书源分组不像书架分组那样是用户手建的实体，
      *   它只是书源上的一个字符串，合并是两个分组「同名」的必然结果，拦下来反而要用户先删空另一组。
      * - 名字大小写不敏感（`collate nocase`），与 [listSourceGroups] 的展示口径一致。
+     * - 严禁使用系统保留字 [SourceGroupFilter.UNGROUPED] 作为目标分组名。
      *
      * @return 受影响的书源数（0 表示原分组不存在）。
      */
-    fun renameSourceGroup(from: String, to: String): Int = write { db ->
-        db.prepareStatement("update source set source_group = ?, updated_at = ? where source_group = ? collate nocase").use { stmt ->
-            stmt.setString(1, to)
-            stmt.setLong(2, System.currentTimeMillis())
-            stmt.setString(3, from)
-            stmt.executeUpdate()
+    fun renameSourceGroup(from: String, to: String): Int {
+        val target = to.trim()
+        require(!target.equals(SourceGroupFilter.UNGROUPED, ignoreCase = true)) {
+            "不能使用系统保留字「$target」作为分组名称"
+        }
+        return write { db ->
+            db.prepareStatement("update source set source_group = ?, updated_at = ? where source_group = ? collate nocase").use { stmt ->
+                stmt.setString(1, target)
+                stmt.setLong(2, System.currentTimeMillis())
+                stmt.setString(3, from.trim())
+                stmt.executeUpdate()
+            }
         }
     }
 
@@ -447,6 +464,9 @@ class Database(private val path: String) : Closeable, AutoCloseable {
                         }
                         "set_group" -> {
                             val targetGroup = group?.trim()?.takeIf { it.isNotBlank() }
+                            require(targetGroup == null || !targetGroup.equals(SourceGroupFilter.UNGROUPED, ignoreCase = true)) {
+                                "不能使用系统保留字「$targetGroup」作为分组名称"
+                            }
                             val sql = "update source set source_group = ?, updated_at = ? where id in ($placeholders)"
                             db.prepareStatement(sql).use { stmt ->
                                 stmt.setString(1, targetGroup)
@@ -1589,8 +1609,21 @@ class Database(private val path: String) : Closeable, AutoCloseable {
         db.prepareStatement("update source_subscription set last_attempt_at=?,last_error=?,updated_at=? where id=?").use { it.setLong(1, now); it.setString(2, message.take(500)); it.setLong(3, now); it.setLong(4, id); it.executeUpdate() }
     }
     fun exportSources(ids: List<String>?): List<String> = connect { db ->
-        val sql = if (ids.isNullOrEmpty()) "select payload from source order by name collate nocase" else "select payload from source where id in (${ids.joinToString(",") { "?" }}) order by name collate nocase"
-        db.prepareStatement(sql).use { statement -> ids?.forEachIndexed { index, id -> statement.setString(index + 1, id) }; statement.executeQuery().use { rs -> buildList { while (rs.next()) add(rs.getString(1)) } } }
+        val sql = if (ids.isNullOrEmpty()) {
+            "select payload, source_group from source order by name collate nocase"
+        } else {
+            "select payload, source_group from source where id in (${ids.joinToString(",") { "?" }}) order by name collate nocase"
+        }
+        db.prepareStatement(sql).use { statement ->
+            ids?.forEachIndexed { index, id -> statement.setString(index + 1, id) }
+            statement.executeQuery().use { rs ->
+                buildList {
+                    while (rs.next()) {
+                        add(SourceCodec.withGroup(rs.getString(1), rs.getString(2)))
+                    }
+                }
+            }
+        }
     }
 
     fun getSourceLoginState(sourceId: String): SourceLoginStateRecord? = connect { db ->

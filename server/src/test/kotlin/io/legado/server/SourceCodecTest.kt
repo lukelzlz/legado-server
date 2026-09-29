@@ -111,4 +111,25 @@ class SourceCodecTest {
             assertTrue(parsed.hasLogin)
         }
     }
+
+    @Test
+    fun `withGroup updates or removes bookSourceGroup in payload cleanly`() {
+        val originalNoGroup = """{"bookSourceUrl":"https://example.com","bookSourceName":"测试"}"""
+        val withGroup = SourceCodec.withGroup(originalNoGroup, "新分组")
+        assertTrue(withGroup.contains(""""bookSourceGroup":"新分组""""))
+        assertEquals("新分组", SourceCodec.parse(withGroup).group)
+
+        // 替换已有分组并清除别名
+        val originalLegacy = """{"bookSourceUrl":"https://example.com","sourceGroup":"旧别名","group":"另一别名"}"""
+        val updated = SourceCodec.withGroup(originalLegacy, "统一分组")
+        assertTrue(updated.contains(""""bookSourceGroup":"统一分组""""))
+        assertFalse(updated.contains("sourceGroup"))
+        assertFalse(updated.contains(""""group":"""))
+
+        // null 或空白清空分组
+        val cleared = SourceCodec.withGroup(withGroup, null)
+        assertFalse(cleared.contains("bookSourceGroup"))
+        val clearedBlank = SourceCodec.withGroup(withGroup, "   ")
+        assertFalse(clearedBlank.contains("bookSourceGroup"))
+    }
 }

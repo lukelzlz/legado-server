@@ -1,6 +1,6 @@
 // 显式 import React：本仓库的组件在 `web/test` 下用 tsx 静态渲染时走的是 classic JSX 变换。
 import React, { useCallback, useEffect, useMemo, useState } from 'react'
-import { api, SourceGroupSummary, SourceSummary } from './api'
+import { api, SourceGroupSummary, SourceSummary, UNGROUPED_SOURCE_GROUP } from './api'
 import { Icon } from './icons'
 import { toast } from './Toast'
 
@@ -13,12 +13,9 @@ import { toast } from './Toast'
 export const NEW_GROUP_OPTION = '__new__'
 
 export function resolveTargetGroup(target: string, newGroupName: string): string | null {
-  if (target === NEW_GROUP_OPTION) {
-    const name = newGroupName.trim()
-    return name ? name : null
-  }
-  const name = target.trim()
-  return name ? name : null
+  const name = (target === NEW_GROUP_OPTION ? newGroupName : target).trim()
+  if (!name || name.toLowerCase() === UNGROUPED_SOURCE_GROUP.toLowerCase()) return null
+  return name
 }
 
 /**
@@ -34,11 +31,11 @@ export function groupDeleteConfirmMessage(group: SourceGroupSummary): string {
 /**
  * 分组卡片左侧的首字标记。
  *
- * 空名兜底成空串：分组名来自用户输入，`name[0]` 对空串会渲染出 `undefined` 字样。
+ * 空名兜底成空串；使用 Array.from 安全提取首个 Unicode 代码点，防止 Emoji 代理对截断导致乱码。
  */
 export function groupInitial(name: string): string {
   const trimmed = name.trim()
-  return trimmed ? trimmed.slice(0, 1).toUpperCase() : ''
+  return trimmed ? (Array.from(trimmed)[0]?.toUpperCase() ?? '') : ''
 }
 
 interface SourceGroupManagerModalProps {
@@ -126,6 +123,7 @@ export function SourceGroupManagerModal({ groups, onChanged, onClose }: SourceGr
       toast.success(resp.message || `已更新 ${resp.affected} 个书源的分组`)
       setSelectedIds(new Set())
       if (target === NEW_GROUP_OPTION && group) setTarget(group)
+      setNewGroupName('')
       await reload()
       await onChanged()
     } catch (error) {
@@ -136,6 +134,11 @@ export function SourceGroupManagerModal({ groups, onChanged, onClose }: SourceGr
   }
 
   const handleAddToGroup = () => {
+    const rawName = (target === NEW_GROUP_OPTION ? newGroupName : target).trim()
+    if (rawName.toLowerCase() === UNGROUPED_SOURCE_GROUP.toLowerCase()) {
+      toast.error(`不能使用系统保留字「${UNGROUPED_SOURCE_GROUP}」作为分组名称`)
+      return
+    }
     const group = resolveTargetGroup(target, newGroupName)
     if (!group) {
       toast.info('请选择目标分组，或填写新分组名称')
@@ -148,6 +151,10 @@ export function SourceGroupManagerModal({ groups, onChanged, onClose }: SourceGr
     const next = editingName.trim()
     if (!next || next === group.name) {
       setEditingGroup(null)
+      return
+    }
+    if (next.toLowerCase() === UNGROUPED_SOURCE_GROUP.toLowerCase()) {
+      toast.error(`不能使用系统保留字「${UNGROUPED_SOURCE_GROUP}」作为分组名称`)
       return
     }
     setBusy(true)

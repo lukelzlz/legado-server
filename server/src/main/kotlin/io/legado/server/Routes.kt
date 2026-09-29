@@ -250,6 +250,10 @@ fun Route.apiRoutes(
                 call.respond(HttpStatusCode.BadRequest, ApiError("invalid_group", "分组名称不能为空"))
                 return@put
             }
+            if (to.equals(SourceGroupFilter.UNGROUPED, ignoreCase = true)) {
+                call.respond(HttpStatusCode.BadRequest, ApiError("invalid_group", "不能使用系统保留字「$to」作为分组名称"))
+                return@put
+            }
             if (from.equals(to, ignoreCase = true)) {
                 call.respond(SourceGroupMutationResponse(ok = true, affected = 0, message = "分组名未变化"))
                 return@put

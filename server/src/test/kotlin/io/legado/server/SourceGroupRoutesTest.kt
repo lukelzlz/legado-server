@@ -111,6 +111,22 @@ class SourceGroupRoutesTest {
             }
             assertEquals(HttpStatusCode.NotFound, missing.status)
 
+            // 改名为保留字 __ungrouped__ → 400
+            val invalidRename = client.put("/api/source-groups/rename") {
+                header(AuthService.CSRF_HEADER, csrf)
+                contentType(ContentType.Application.Json)
+                setBody(SourceGroupRenameRequest(from = "组A", to = SourceGroupFilter.UNGROUPED))
+            }
+            assertEquals(HttpStatusCode.BadRequest, invalidRename.status)
+
+            // 批量加入保留字 __ungrouped__ → 400
+            val invalidBatch = client.post("/api/sources/batch") {
+                header(AuthService.CSRF_HEADER, csrf)
+                contentType(ContentType.Application.Json)
+                setBody(BatchSourceRequest(action = "set_group", ids = listOf("https://a1.example"), group = SourceGroupFilter.UNGROUPED))
+            }
+            assertEquals(HttpStatusCode.BadRequest, invalidBatch.status)
+
             // ---- 删除分组：只解绑，不删书源 ----
             val cleared = client.delete("/api/source-groups?name=${URLEncoder.encode("组A", "UTF-8")}") {
                 header(AuthService.CSRF_HEADER, csrf)

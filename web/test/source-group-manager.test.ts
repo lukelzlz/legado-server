@@ -56,6 +56,11 @@ test('source group manager - target group must be chosen explicitly (no auto gro
   assert.equal(resolveTargetGroup(NEW_GROUP_OPTION, '  聚合源 '), '聚合源')
   assert.equal(resolveTargetGroup(NEW_GROUP_OPTION, '   '), null)
 
+  // 严禁使用系统保留字 __ungrouped__
+  assert.equal(resolveTargetGroup('__ungrouped__', ''), null)
+  assert.equal(resolveTargetGroup('  __UNGROUPED__ ', ''), null)
+  assert.equal(resolveTargetGroup(NEW_GROUP_OPTION, '__ungrouped__'), null)
+
   // 没选任何目标 → null（调用方据此提示「请选择目标分组」，而不是默认塞进某个组）
   assert.equal(resolveTargetGroup('', ''), null)
   assert.equal(resolveTargetGroup('   ', ''), null)
@@ -90,8 +95,9 @@ test('source group manager - header stats, sections and group avatar are present
   assert.ok(html.includes('勾选书源后可批量归类'), '底部要给出当前选中摘要')
 })
 
-test('source group manager - groupInitial never renders undefined', () => {
+test('source group manager - groupInitial never renders undefined and handles emoji properly', () => {
   assert.equal(groupInitial('大灰狼聚合'), '大')
   assert.equal(groupInitial('  ab  '), 'A', '取首个非空白字符并大写')
   assert.equal(groupInitial('   '), '', '空名兜底成空串，而不是渲染出 undefined')
+  assert.equal(groupInitial('📚小说'), '📚', 'Emoji 代理对不被截断')
 })

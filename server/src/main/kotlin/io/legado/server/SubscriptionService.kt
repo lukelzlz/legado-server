@@ -54,7 +54,7 @@ class SubscriptionService(private val database: Database, private val log: (Stri
         return try {
             val body = download(subscription.url)
             val sources = parseSources(body)
-            val result = database.importSources(sources)
+            val result = database.importSources(sources, applyGroups = false)
             database.recordSubscriptionSuccess(subscription.id, result, sha256(body))
             log("source subscription updated: id=${subscription.id}, imported=${result.imported}, updated=${result.updated}")
             result

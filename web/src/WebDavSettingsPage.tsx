@@ -296,8 +296,11 @@ export function WebDavSettingsPage() {
       if (total(summary.sources, summary.sourcesUpdated) + total(summary.rules, summary.rulesUpdated) + total(summary.books, summary.booksUpdated) === 0) {
         toast.warning(`备份包里没有可导入的内容（已忽略 RSS / TTS / 主题等条目）${skipNote}`)
       } else {
+        // 书源分组没有独立文件，它是书源自带的 `bookSourceGroup`，随书源一起落库；
+        // 只有带进来过才提一句，避免在提示里堆一个恒为 0 的字段。
+        const sourceGroupNote = (summary.sourceGroups ?? 0) > 0 ? `（含书源分组 ${summary.sourceGroups} 个）` : ''
         toast.success(
-          `导入完成：书源 ${total(summary.sources, summary.sourcesUpdated)}，` +
+          `导入完成：书源 ${total(summary.sources, summary.sourcesUpdated)}${sourceGroupNote}，` +
           `替换规则 ${total(summary.rules, summary.rulesUpdated)}，` +
           `书籍 ${total(summary.books, summary.booksUpdated)}，阅读进度 ${summary.progress}` +
           markNote +

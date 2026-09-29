@@ -21,6 +21,10 @@ import java.util.zip.ZipFile
  * `bookshelf.json`（书架 + 阅读进度）。RSS / TTS / 字典 / 主题 / 阅读统计 / 书签等条目在服务端
  * 没有对应能力，一律忽略而不报错。
  *
+ * **书源分组**（Legado 的 `bookSourceGroup`）没有独立条目，它是书源自带的字段，
+ * 因此随 `bookSource.json` 一起落库（见 [Database.importSources]）——不需要也不该另建分组文件。
+ * `bookGroup.json` 是**书架**分组，与书源分组是两件事（见 [Database.importBookGroups]）。
+ *
  * 实现要点：
  * 1. 全程用 [ZipFile] 按条目名读取，绝不把条目解包到磁盘，从根本上规避 zip-slip 路径穿越；
  * 2. 声明解压体积超限直接拒绝，避免 zip 炸弹撑爆内存；
@@ -73,7 +77,9 @@ class BackupImporter(
         val bookmarks = parsedBookmarks.filter { "${it.bookName}\u0000${it.bookAuthor.orEmpty()}" in shelfKeys }
         val bookmarksSkipped = parsedBookmarks.size - bookmarks.size
 
-        val sourceResult = database.importSources(sources)
+        // 备份导入是**唯一**会采用书源自带分组（`bookSourceGroup`）的入口：
+        // 那是用户在手机端整理好的成果，必须原样带过来。
+        val sourceResult = database.importSources(sources, applyGroups = true)
         val ruleResult = database.importReplaceRules(rules)
         val library = database.importLibrary(shelf)
         // 分组必须在书架导入**之后**执行：它要把 book_shelf.group_name 补上对应分组名。
@@ -95,6 +101,9 @@ class BackupImporter(
             skippedAudio = skippedAudio,
             bookmarks = bookmarksImported,
             bookmarksSkipped = bookmarksSkipped,
+            // 书源分组没有独立条目：它是书源自带的 `bookSourceGroup`，随书源一起落库，
+            // 这里只回报「带进来几个分组」（见 Database.importSources）。
+            sourceGroups = sourceResult.sourceGroups,
         )
     }
 

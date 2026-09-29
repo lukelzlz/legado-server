@@ -1,6 +1,6 @@
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
-import { api, BookDetails, BookGroup, BookshelfItem, Chapter, SearchResult, SearchStreamEvent, setCsrfToken, SourceRecord, SourceSubscription, SourceSummary, streamSearch } from './api'
+import { api, BookDetails, BookGroup, BookshelfItem, Chapter, SearchResult, SearchStreamEvent, setCsrfToken, SourceGroupSummary, SourceRecord, SourceSubscription, SourceSummary, streamSearch, UNGROUPED_SOURCE_GROUP } from './api'
 import { Icon } from './icons'
 import { Logo } from './Logo'
 import { Login } from './Login'
@@ -16,7 +16,8 @@ import { ReplaceRulesPage } from './ReplaceRulesPage'
 import { WebDavSettingsPage } from './WebDavSettingsPage'
 import { OfflineCacheModal } from './OfflineCacheModal'
 import { SourceHealthModal } from './SourceHealthModal'
-import { SourceGroupModal } from './SourceGroupModal'
+import { SourceGroupManagerModal } from './SourceGroupManagerModal'
+import { SearchScopeBar } from './SearchScopeBar'
 import { PwaManager } from './PwaManager'
 import { ErrorBoundary } from './ErrorBoundary'
 import { flushOfflineProgress } from './offlineStorage'
@@ -511,6 +512,8 @@ function SubscriptionPage({ onSourcesChange }: { onSourcesChange: () => void }) 
 
 function SourcesPage({ selected, onSelect, onSourcesChange }: { selected: SourceSummary | null; onSelect: (source: SourceSummary | null) => void; onSourcesChange: (sources: SourceSummary[]) => void }) {
   const [sources, setSources] = useState<SourceSummary[]>([])
+  /** 服务端聚合的分组概览（名字 + 总数 + 已启用数），供「分组管理」面板使用。 */
+  const [groupSummaries, setGroupSummaries] = useState<SourceGroupSummary[]>([])
   const [query, setQuery] = useState('')
   const [groupFilter, setGroupFilter] = useState('')
   const [notice, setNotice] = useState('')
@@ -518,7 +521,7 @@ function SourcesPage({ selected, onSelect, onSourcesChange }: { selected: Source
   const [isBatchMode, setIsBatchMode] = useState(false)
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [showHealthModal, setShowHealthModal] = useState(false)
-  const [showGroupModal, setShowGroupModal] = useState(false)
+  const [showGroupManager, setShowGroupManager] = useState(false)
   const [busyBatch, setBusyBatch] = useState(false)
   const [loginModalSource, setLoginModalSource] = useState<SourceSummary | null>(null)
 
@@ -527,6 +530,8 @@ function SourcesPage({ selected, onSelect, onSourcesChange }: { selected: Source
       const values = await api.sources(query)
       setSources(values)
       onSourcesChange(values)
+      // 分组概览由服务端聚合（含「已启用」数）；它只服务于「分组管理」面板，失败不该影响书源列表
+      void api.sourceGroups().then(setGroupSummaries).catch(() => undefined)
     } catch (error) {
       setNotice(error instanceof Error ? error.message : '无法载入书源')
     }
@@ -548,8 +553,8 @@ function SourcesPage({ selected, onSelect, onSourcesChange }: { selected: Source
   const filteredSources = useMemo(() => {
     return sources.filter(source => {
       if (groupFilter) {
-        if (groupFilter === '__none__' && source.group) return false
-        if (groupFilter !== '__none__' && (source.group ?? '') !== groupFilter) return false
+        if (groupFilter === UNGROUPED_SOURCE_GROUP && source.group) return false
+        if (groupFilter !== UNGROUPED_SOURCE_GROUP && (source.group ?? '') !== groupFilter) return false
       }
       if (query) {
         const q = query.toLowerCase()
@@ -660,20 +665,6 @@ function SourcesPage({ selected, onSelect, onSourcesChange }: { selected: Source
     }
   }
 
-  const handleBatchGroupConfirm = async (newGroup: string | null) => {
-    if (selectedIds.size === 0) return
-    setBusyBatch(true)
-    try {
-      const resp = await api.batchSources('set_group', Array.from(selectedIds), newGroup ?? undefined)
-      toast.success(resp.message || `已更新 ${resp.affected} 个书源的分组`)
-      await load()
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : '修改分组失败')
-    } finally {
-      setBusyBatch(false)
-    }
-  }
-
   const importSources = async (file: File | undefined) => {
     if (!file) return
     setImporting(true)
@@ -699,7 +690,9 @@ function SourcesPage({ selected, onSelect, onSourcesChange }: { selected: Source
       const skippedCount = result.skipped || 0
       const parts = [`新增 ${importedCount} 个`, `更新 ${updatedCount} 个`]
       if (skippedCount > 0) parts.push(`跳过 ${skippedCount} 个`)
-      let msg = `导入完成：${parts.join('，')}`
+      // 导入书源文件**不自动分组**（用户明确要求）：新源落在「未分组」，分组只能在「分组管理」里手动整理。
+      // 这句话必须露出来，否则用户会以为「导入时把分组弄丢了」。
+      let msg = `导入完成：${parts.join('，')}（导入的书源默认未分组，可在「分组管理」里归类）`
       if (result.errors && result.errors.length > 0) {
         const errorSummary = result.errors.slice(0, 3).join('；') + (result.errors.length > 3 ? ` 等共 ${result.errors.length} 项错误` : '')
         msg += ` (${errorSummary})`
@@ -751,13 +744,22 @@ function SourcesPage({ selected, onSelect, onSourcesChange }: { selected: Source
             </button>
             <button
               type="button"
-              className={`subtle-button ${isBatchMode ? 'active-batch-btn' : ''}`}
+              className={`subtle-button batch-mode-btn ${isBatchMode ? 'active-batch-btn' : ''}`}
               onClick={() => {
                 setIsBatchMode(prev => !prev)
                 setSelectedIds(new Set())
               }}
             >
               {isBatchMode ? '退出批量' : '批量管理'}
+            </button>
+            <button
+              type="button"
+              className="subtle-button group-manager-btn"
+              title="书源分组：查看 / 重命名 / 删除，批量把书源加入分组"
+              onClick={() => setShowGroupManager(true)}
+            >
+              <Icon name="folder" />
+              <span>分组管理</span>
             </button>
           </div>
         </div>
@@ -776,7 +778,7 @@ function SourcesPage({ selected, onSelect, onSourcesChange }: { selected: Source
                   {g} ({sources.filter(s => s.group === g).length})
                 </option>
               ))}
-              <option value="__none__">
+              <option value={UNGROUPED_SOURCE_GROUP}>
                 未分组 ({sources.filter(s => !s.group).length})
               </option>
             </select>
@@ -917,14 +919,6 @@ function SourcesPage({ selected, onSelect, onSourcesChange }: { selected: Source
               type="button"
               className="subtle-button"
               disabled={selectedIds.size === 0 || busyBatch}
-              onClick={() => setShowGroupModal(true)}
-            >
-              修改分组
-            </button>
-            <button
-              type="button"
-              className="subtle-button"
-              disabled={selectedIds.size === 0 || busyBatch}
               onClick={() => void handleBatchExport()}
             >
               导出选中
@@ -964,12 +958,11 @@ function SourcesPage({ selected, onSelect, onSourcesChange }: { selected: Source
         />
       )}
 
-      {showGroupModal && (
-        <SourceGroupModal
-          selectedCount={selectedIds.size}
-          existingGroups={allGroups}
-          onConfirm={handleBatchGroupConfirm}
-          onClose={() => setShowGroupModal(false)}
+      {showGroupManager && (
+        <SourceGroupManagerModal
+          groups={groupSummaries}
+          onChanged={() => void load()}
+          onClose={() => setShowGroupManager(false)}
         />
       )}
 
@@ -1011,10 +1004,24 @@ function HighlightText({ text, keyword }: { text: string; keyword: string }) {
 
 function LibraryPage({ sources, onOpen }: { sources: SourceSummary[]; onOpen: (book: OpenBook, index: number) => void }) {
   const search = useSearchStore()
+  const [sourceGroups, setSourceGroups] = useState<SourceGroupSummary[]>([])
+  /**
+   * 书源分组列表从服务端单独取。
+   *
+   * 不从 `sources` 里现算：`sources` 会被书源页的筛选框改写（书源页 `load()` 用的是带 `q` 的结果），
+   * 直接推导会得到一份「随书源页搜索词变化」的分组列表。这里要的是权威聚合结果。
+   */
+  useEffect(() => {
+    void api.sourceGroups().then(setSourceGroups).catch(() => undefined)
+  }, [sources])
   const handleSearch = (event: FormEvent) => {
     event.preventDefault()
     search.startSearch()
   }
+  /**
+   * 搜索范围 = 「全部书源」+ 每个书源分组 + 未分组，作为搜索栏**下面**的一排选项卡
+   * （结构与「全部书源」默认项由 [SearchScopeBar] 负责，分组的新建/改名/删除在「书源」页面做）。
+   */
   const resumeIndex = search.openBook?.progress ? Math.min(Math.max(search.openBook.progress.chapterIndex, 0), Math.max(0, search.openBook.chapters.length - 1)) : 0
   const groups = useMemo(() => groupSearchResults(search.results), [search.results])
   const visibleGroups = useMemo(() => filterSearchGroups(groups, search.filters, search.keyword), [groups, search.filters, search.keyword])
@@ -1060,18 +1067,25 @@ function LibraryPage({ sources, onOpen }: { sources: SourceSummary[]; onOpen: (b
             </button>
           )}
         </form>
-        <label className="library-source-select">
-          搜索范围
-          <select
-            value={search.selectedSourceId}
-            onChange={event => search.setSelectedSourceId(event.target.value)}
-          >
-            <option value="">全部书源</option>
-            {sources.map(source => (
-              <option key={source.id} value={source.id}>{source.name}</option>
-            ))}
-          </select>
-        </label>
+        {/* 搜索范围：搜索栏**下面**的选项卡（分组的新建/改名/删除在「书源」页面里做） */}
+        <SearchScopeBar
+          groups={sourceGroups}
+          sources={sources}
+          selectedGroup={search.selectedGroup}
+          selectedSourceId={search.selectedSourceId}
+          onSelectAll={() => {
+            search.setSelectedSourceId('')
+            search.setSelectedGroup('')
+          }}
+          onSelectGroup={group => {
+            search.setSelectedSourceId('')
+            search.setSelectedGroup(group)
+          }}
+          onSelectSource={sourceId => {
+            search.setSelectedGroup('')
+            search.setSelectedSourceId(sourceId)
+          }}
+        />
         {(search.loading || search.stopped) && (
           <p className="library-search-status">
             {search.stopped

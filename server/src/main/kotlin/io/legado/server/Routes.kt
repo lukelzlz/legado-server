@@ -235,9 +235,53 @@ fun Route.apiRoutes(
                 contentType = ContentType.Application.Json.withCharset(Charsets.UTF_8),
             )
         }
+        // 书源分组：列表 / 改名 / 删除。分组是书源自带的字符串元数据（Legado 的 `bookSourceGroup`），
+        // 因此这里的写操作只改 `source.source_group`，**永不删除书源本身**。
+        get("/source-groups") {
+            if (auth.requireSession(call) == null) return@get
+            call.respond(database.listSourceGroups())
+        }
+        put("/source-groups/rename") {
+            if (auth.requireSession(call, true) == null) return@put
+            val request = call.receive<SourceGroupRenameRequest>()
+            val from = request.from.trim()
+            val to = request.to.trim()
+            if (from.isEmpty() || to.isEmpty()) {
+                call.respond(HttpStatusCode.BadRequest, ApiError("invalid_group", "分组名称不能为空"))
+                return@put
+            }
+            if (from.equals(to, ignoreCase = true)) {
+                call.respond(SourceGroupMutationResponse(ok = true, affected = 0, message = "分组名未变化"))
+                return@put
+            }
+            val affected = database.renameSourceGroup(from, to)
+            if (affected == 0) {
+                call.respond(HttpStatusCode.NotFound, ApiError("group_not_found", "分组「$from」不存在"))
+                return@put
+            }
+            call.application.log.info("source group renamed: {} -> {} ({} sources)", from, to, affected)
+            call.respond(SourceGroupMutationResponse(ok = true, affected = affected, message = "已将 $affected 个书源从「$from」移到分组「$to」"))
+        }
+        delete("/source-groups") {
+            if (auth.requireSession(call, true) == null) return@delete
+            val name = call.request.queryParameters["name"]?.trim()
+            if (name.isNullOrEmpty()) {
+                call.respond(HttpStatusCode.BadRequest, ApiError("invalid_group", "分组名称不能为空"))
+                return@delete
+            }
+            val affected = database.clearSourceGroup(name)
+            if (affected == 0) {
+                call.respond(HttpStatusCode.NotFound, ApiError("group_not_found", "分组「$name」不存在"))
+                return@delete
+            }
+            call.application.log.info("source group cleared: {} ({} sources)", name, affected)
+            call.respond(SourceGroupMutationResponse(ok = true, affected = affected, message = "已删除分组「$name」，$affected 个书源变为未分组（书源未被删除）"))
+        }
         post("/sources/import") {
             if (auth.requireSession(call, true) == null) return@post
-            val response = database.importSources(call.receive<ImportRequest>().sources)
+            // 导入书源文件**不带分组**：新源一律落在「未分组」，分组由用户在「分组管理」里手动整理。
+            // （手机备份导入走 BackupImporter，那条路径按备份里的分组落库。）
+            val response = database.importSources(call.receive<ImportRequest>().sources, applyGroups = false)
             call.application.log.info("source import completed: imported={}, updated={}, skipped={}", response.imported, response.updated, response.skipped)
             call.respond(response)
         }
@@ -489,8 +533,10 @@ fun Route.apiRoutes(
             val request = call.receive<SearchRequest>()
             val kw = request.effectiveKeyword
             if (kw.isBlank()) { call.respond(HttpStatusCode.BadRequest, ApiError("invalid_keyword", "请输入搜索关键词")); return@post }
-            val sourceRecords = database.listSearchSourceRecords(request.sourceIds)
-            val searchRecords = if (request.sourceIds == null && sourceRecords.size > 20) sourceRecords.take(20) else sourceRecords
+            val sourceRecords = database.listSearchSourceRecords(request.sourceIds, request.group)
+            // 未显式指定范围的「全部书源」搜索才封顶，避免一次搜索打满所有书源。
+            // 用户一旦选了分组，就是明确的收窄意图，应当整组都跑（与按 id 指定书源同样的待遇）。
+            val searchRecords = if (request.sourceIds == null && request.group.isNullOrBlank() && sourceRecords.size > 20) sourceRecords.take(20) else sourceRecords
             val results = boundedConcurrentMap(searchRecords, sourceSearchConcurrency()) { source -> readableSearchResults(runner, source.json, kw) }.flatten()
             call.respond(results)
         }
@@ -507,7 +553,7 @@ fun Route.apiRoutes(
                 close(CloseReason(CloseReason.Codes.CANNOT_ACCEPT, "搜索条件无效"))
                 return@webSocket
             }
-            val sourceRecords = database.listSearchSourceRecords(request.sourceIds)
+            val sourceRecords = database.listSearchSourceRecords(request.sourceIds, request.group)
             send(Frame.Text(Json.encodeToString(SearchStreamEvent("start", totalSources = sourceRecords.size))))
             coroutineScope {
                 val events = Channel<SearchStreamEvent>(Channel.BUFFERED)

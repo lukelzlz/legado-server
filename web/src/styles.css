@@ -500,6 +500,20 @@ svg { width: 18px; height: 18px; flex: none; }
 .library-hero form .primary-button { height: 48px; padding: 0 20px; border-radius: 0 5px 5px 0; }
 .library-source-select { display: inline-flex; align-items: center; gap: 9px; color: var(--muted); font-size: 12px; }
 .library-source-select select { max-width: 190px; padding: 4px 22px 4px 6px; border: 0; background: transparent; color: var(--ink); outline: 0; font-size: 12px; }
+
+/* 搜索范围选项卡（搜索栏下方）：第一项恒为「全部书源」，其余为书源分组。
+   具体药丸样式与「替换规则」页的 .rules-group-pill 共用同一套声明（见该处），此处只放布局。 */
+.library-scope-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 4px; }
+.library-scope-label { color: var(--muted); font-size: 12px; margin-right: 2px; }
+.scope-tab { display: inline-flex; align-items: center; gap: 5px; }
+.scope-tab small { color: inherit; opacity: 0.85; font-size: 10px; font-weight: inherit; }
+.library-scope-single { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; color: var(--muted); font-size: 12px; }
+.library-scope-single select { max-width: 190px; min-height: 28px; padding: 0 20px 0 6px; border: 1px solid var(--line); border-radius: 4px; background: var(--surface); color: var(--ink); font: inherit; font-size: 12px; }
+@media (max-width: 640px) {
+  /* 移动端把「指定单个书源」换行独占一行，避免选项卡被挤成两三个字一行 */
+  .library-scope-single { margin-left: 0; width: 100%; }
+  .library-scope-single select { flex: 1; max-width: none; }
+}
 .library-message { margin-top: -16px; }
 .library-search-status { color: var(--muted); font-size: 12px; }
 .library-result-filters { display: flex; flex-wrap: wrap; align-items: center; gap: 9px; margin: 24px 0 12px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); color: var(--muted); font-size: 12px; }
@@ -2935,7 +2949,9 @@ mark.search-highlight { background: var(--accent-soft); color: var(--accent); fo
   border-bottom: 1px solid var(--line);
 }
 
-.rules-group-pill {
+/* 药丸样式与「搜索范围」选项卡（.scope-tab）共用：改一处两边同时生效，保证跨页面视觉语言一致 */
+.rules-group-pill,
+.scope-tab {
   padding: 3px 10px;
   border-radius: 12px;
   font-size: 11px;
@@ -2947,12 +2963,14 @@ mark.search-highlight { background: var(--accent-soft); color: var(--accent); fo
   transition: all 0.15s ease;
 }
 
-.rules-group-pill:hover {
+.rules-group-pill:hover,
+.scope-tab:hover {
   color: var(--ink);
   border-color: var(--accent);
 }
 
-.rules-group-pill.active {
+.rules-group-pill.active,
+.scope-tab.active {
   background: var(--accent);
   color: #ffffff;
   border-color: var(--accent);
@@ -3849,83 +3867,500 @@ mark.search-highlight { background: var(--accent-soft); color: var(--accent); fo
   margin: 0;
 }
 
-/* Group Modal */
-.source-group-modal {
-  width: min(480px, 92vw);
-  background: var(--surface);
-  border-radius: 14px;
-  border: 1px solid var(--line);
-  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.28);
+/* 书源分组管理面板：复用书架分组管理弹窗（.group-manage-*）的骨架类，
+   但在这个作用域内做一版更精致的重绘（更宽的版心 / 概览数字 / 分组卡片 / 归类工作台）。
+   所有覆盖都必须挂在 .source-group-manager 下：.group-item-row 等骨架类是书架弹窗共用的。 */
+.source-group-manager {
+  width: min(720px, 94vw);
+  border-radius: 18px;
 }
 
-.source-group-form {
-  padding: 16px 20px;
-  display: flex;
-  flex-direction: column;
+/* ---- 头部：标题 + 概览数字 + 关闭 ---- */
+.source-group-manager .group-manage-header {
+  align-items: flex-start;
   gap: 16px;
+  padding: 18px 22px 16px;
 }
 
-.group-mode-toggle {
+.sgm-head-main {
+  min-width: 0;
+}
+
+.source-group-manager .group-manage-header h2 {
+  margin-top: 4px;
+  font-size: 19px;
+  letter-spacing: .01em;
+}
+
+.source-group-manager .group-manage-header small {
+  display: block;
+  margin-top: 5px;
+  line-height: 1.5;
+}
+
+.sgm-head-side {
+  flex: none;
   display: flex;
-  flex-direction: column;
-  gap: 10px;
-  padding-bottom: 12px;
-  border-bottom: 1px solid var(--line);
+  align-items: center;
+  gap: 14px;
 }
 
-.group-radio-label {
+.sgm-stats {
+  display: flex;
+  gap: 6px;
+}
+
+.sgm-stat {
+  min-width: 58px;
+  padding: 6px 10px 7px;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  background: var(--surface-muted);
+  text-align: center;
+  line-height: 1.1;
+}
+
+.sgm-stat strong {
+  display: block;
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+
+.sgm-stat em {
+  font-style: normal;
+  font-size: 10px;
+  letter-spacing: .06em;
+  color: var(--muted);
+}
+
+/* 「未分组」是有待处理的一类，给一点强调色把注意力引过去（没有时保持静默） */
+.sgm-stat.is-attention {
+  border-color: color-mix(in srgb, var(--accent) 42%, var(--line));
+  background: var(--accent-soft);
+}
+
+.sgm-stat.is-attention strong {
+  color: var(--accent-ink);
+}
+
+.source-group-manager .close-btn {
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  border-radius: 10px;
+  color: var(--muted);
+}
+
+.source-group-manager .close-btn:hover {
+  color: var(--ink);
+  border-color: var(--line);
+  background: var(--surface-muted);
+}
+
+/* ---- 分区骨架 ---- */
+.source-group-manager .group-manage-body {
+  padding: 18px 22px 22px;
+  gap: 20px;
+}
+
+.sgm-section {
+  display: grid;
+  gap: 10px;
+}
+
+.sgm-section-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 10px;
+}
+
+.sgm-section-head h3 {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 13px;
+  font-weight: 650;
+  color: var(--ink);
+}
+
+.sgm-section-head h3 svg {
+  width: 15px;
+  height: 15px;
+  color: var(--accent);
+}
+
+.sgm-section-hint {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.sgm-empty {
+  display: grid;
+  justify-items: center;
+  gap: 6px;
+  padding: 26px 0;
+}
+
+.sgm-empty svg {
+  width: 26px;
+  height: 26px;
+  color: var(--muted);
+  opacity: .55;
+}
+
+.sgm-empty p {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.sgm-empty small {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+/* ---- 分组卡片 ---- */
+.source-group-manager .group-list {
+  gap: 6px;
+}
+
+.source-group-manager .group-item-row {
+  padding: 9px 10px 9px 12px;
+  border-radius: 11px;
+  transition: border-color .15s ease, background-color .15s ease;
+}
+
+.source-group-manager .group-item-row:hover {
+  border-color: color-mix(in srgb, var(--accent) 42%, var(--line));
+  background: color-mix(in srgb, var(--accent-soft) 55%, var(--surface));
+}
+
+.sgm-group-avatar {
+  flex: none;
+  width: 26px;
+  height: 26px;
+  display: grid;
+  place-items: center;
+  border-radius: 9px;
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+/* 行内图标操作：默认「隐形按钮」，hover 才浮出底色，避免每行挂两个描边方框显得笨重 */
+.source-group-manager .group-item-actions {
+  gap: 2px;
+}
+
+.source-group-manager .group-item-actions .subtle-button {
+  width: 30px;
+  height: 30px;
+  border-color: transparent;
+  background: transparent;
+  color: var(--muted);
+  border-radius: 9px;
+}
+
+.source-group-manager .group-item-actions .subtle-button:hover:not(:disabled) {
+  border-color: var(--line);
+  background: var(--surface-muted);
+  color: var(--ink);
+}
+
+.source-group-manager .group-item-actions .danger-icon-btn:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--danger) 38%, transparent);
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+  color: var(--danger);
+}
+
+.source-group-manager .group-item-editing {
+  gap: 8px;
+}
+
+.source-group-manager .group-item-editing input {
+  height: 34px;
+  padding: 0 10px;
+  border-radius: 9px;
+  background: var(--surface);
+  color: var(--ink);
+}
+
+.source-group-manager .group-item-editing .subtle-button {
+  width: 30px;
+  height: 30px;
+  border-radius: 9px;
+  color: var(--muted);
+}
+
+/* ---- 归类工作台（勾选书源 → 加入分组） ---- */
+.sgm-section.group-picker {
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--surface-muted);
+  gap: 10px;
+}
+
+.group-picker-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.group-picker-field {
+  flex: 1 1 220px;
+  min-width: 0;
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  font-size: 13px;
+}
+
+.group-picker-field > span {
+  flex: none;
+  font-size: 12px;
+  font-weight: 600;
   color: var(--ink);
+}
+
+.group-picker-head select,
+.group-picker-new,
+.group-picker-search {
+  height: 34px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+  font-size: 12px;
+}
+
+.group-picker-head select {
+  flex: 1 1 auto;
+  min-width: 0;
+  background: var(--surface-muted);
   cursor: pointer;
 }
 
-.group-radio-label input[type="radio"] {
-  accent-color: var(--accent);
+.group-picker-new {
+  flex: 0 1 168px;
+  border-color: var(--accent);
 }
 
-.existing-groups-section {
+.group-picker-buttons {
+  display: inline-flex;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.source-group-manager .group-picker-submit,
+.source-group-manager .group-picker-remove {
+  min-height: 34px;
+  padding: 0 14px;
+  border-radius: 9px;
+  font-size: 12.5px;
+}
+
+.source-group-manager .group-picker-remove {
+  background: var(--surface);
+}
+
+/* ---- 筛选 / 计数 / 批量选择 ---- */
+.group-picker-toolbar {
   display: flex;
-  flex-direction: column;
+  flex-wrap: wrap;
+  align-items: center;
   gap: 8px;
 }
 
-.existing-groups-label {
+.sgm-search {
+  position: relative;
+  flex: 1 1 200px;
+  display: flex;
+  align-items: center;
+}
+
+.sgm-search svg {
+  position: absolute;
+  left: 11px;
+  width: 15px;
+  height: 15px;
+  color: var(--muted);
+  pointer-events: none;
+}
+
+.source-group-manager .group-picker-search {
+  width: 100%;
+  padding-left: 33px;
+}
+
+.group-picker-count {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+  padding: 5px 11px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 11.5px;
+  white-space: nowrap;
+}
+
+.group-picker-count strong {
+  color: var(--accent-ink);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 全选/全不选/反选做成一个分段控件，比三个独立描边按钮安静得多 */
+.group-picker-actions {
+  display: inline-flex;
+  gap: 2px;
+  margin-left: auto;
+  padding: 3px;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  background: var(--surface);
+}
+
+.source-group-manager .group-picker-actions .subtle-button.compact {
+  min-height: 26px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 11.5px;
+  font-weight: 600;
+}
+
+.source-group-manager .group-picker-actions .subtle-button.compact:hover {
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+}
+
+/* ---- 书源勾选列表 ---- */
+.source-group-manager .group-picker-list {
+  max-height: 300px;
+  overflow-y: auto;
+  gap: 5px;
+  padding: 2px;
+}
+
+/* 勾选行沿用分组行的骨架：左侧复选框 + 名称（+ 已停用徽标）+ 右侧「当前分组」徽标 */
+.group-item-row.pick-item {
+  justify-content: flex-start;
+  gap: 10px;
+  padding: 9px 12px;
+  border-radius: 10px;
+  cursor: pointer;
+  transition: border-color .15s ease, background-color .15s ease;
+}
+
+.group-item-row.pick-item:hover {
+  border-color: color-mix(in srgb, var(--accent) 42%, var(--line));
+}
+
+.group-item-row.pick-item.checked {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  /* 左侧一道强调色竖条，一眼看清选中范围 */
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.group-item-row.pick-item input[type="checkbox"] {
+  flex: none;
+  width: 17px;
+  height: 17px;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.source-group-manager .pick-item .group-item-count {
+  margin-left: auto;
+  flex: none;
+  padding: 2px 8px;
+  line-height: 1.35;
+  /* 透明边框：与「未分组」的虚线徽标等高等宽。
+     否则只写 border-style: dashed 会带出默认 medium(3px) 宽度，两种徽标差 6px（实测）。 */
+  border: 1px solid transparent;
+}
+
+/* 已归类的徽标给一点主色：扫一眼就能看出哪些源已经分好组了 */
+.source-group-manager .pick-item .group-item-count:not(.ungrouped) {
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+}
+
+.group-item-count.ungrouped {
+  border-color: var(--line);
+  border-style: dashed;
+  background: transparent;
+  color: var(--muted);
+}
+
+/* ---- 底部：左侧选中摘要，右侧完成 ---- */
+.source-group-manager .group-manage-footer {
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 22px;
+  background: var(--surface-muted);
+}
+
+.sgm-footer-hint {
   font-size: 12px;
   color: var(--muted);
 }
 
-.existing-groups-chips {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  max-height: 120px;
-  overflow-y: auto;
-}
+@media (max-width: 640px) {
+  .source-group-manager {
+    width: 96vw;
+  }
 
-.group-chip {
-  padding: 4px 10px;
-  font-size: 12px;
-  border-radius: 6px;
-  border: 1px solid var(--line);
-  background: var(--surface-muted);
-  color: var(--ink);
-  cursor: pointer;
-  transition: all 0.15s ease;
-}
+  .source-group-manager .group-manage-header {
+    padding: 16px 16px 14px;
+  }
 
-.group-chip:hover {
-  border-color: var(--accent);
-  background: var(--surface);
-}
+  .source-group-manager .group-manage-body {
+    padding: 16px 16px 18px;
+  }
 
-.group-chip.active {
-  border-color: var(--accent);
-  background: var(--accent-soft);
-  color: var(--accent-ink);
-  font-weight: 600;
+  .sgm-head-side {
+    flex-direction: column-reverse;
+    align-items: flex-end;
+    gap: 8px;
+  }
+
+  .group-picker-buttons,
+  .group-picker-actions {
+    margin-left: 0;
+    width: 100%;
+  }
+
+  /* 分段控件整行铺满时，三个按钮要等宽平分，否则会变成「左中右三点」 */
+  .source-group-manager .group-picker-actions .subtle-button.compact {
+    flex: 1 1 0;
+  }
+
+  .group-picker-new {
+    flex: 1 1 100%;
+  }
 }
 
 @media (max-width: 768px) {

@@ -32,7 +32,16 @@ object SourceCodec {
         ValidateResponse(false, listOf(error.message ?: "JSON 无效"), emptyList())
     }
 
-    fun parse(text: String): ParsedSource {
+    /**
+     * 解析书源 JSON。
+     *
+     * @param keepGroup 是否保留书源自带的 `bookSourceGroup`（书源分组）：
+     *   - `true`（默认，编辑器保存 / 备份导入）：按原样保留；
+     *   - `false`（**导入书源 JSON 文件 / 订阅更新**）：丢弃分组，让书源落在「未分组」。
+     *     注意**同时从归一化后的 payload 里删掉该字段** —— 只清列不清 payload 会留下隐患：
+     *     编辑弹窗读的是 payload，会显示一个库里并不存在的分组，用户一保存又把它写回列里。
+     */
+    fun parse(text: String, keepGroup: Boolean = true): ParsedSource {
         val cleanText = text.trim().removePrefix("\uFEFF")
         require(cleanText.toByteArray().size <= MAX_SOURCE_BYTES) { "书源不能超过 1 MiB" }
         val objectValue = try { json.parseToJsonElement(cleanText) as? JsonObject } catch (_: Exception) { null }
@@ -62,6 +71,7 @@ object SourceCodec {
         val normalizedMap = objectValue.toMutableMap()
         normalizedMap["bookSourceUrl"] = JsonPrimitive(url)
         normalizedMap["bookSourceName"] = JsonPrimitive(name)
+        if (!keepGroup) GROUP_KEYS.forEach { normalizedMap.remove(it) }
         val normalizedJson = json.encodeToString(
             JsonElement.serializer(),
             JsonObject(normalizedMap),
@@ -73,7 +83,7 @@ object SourceCodec {
             id = url,
             name = name,
             url = url,
-            group = group,
+            group = group?.takeIf { keepGroup },
             enabled = enabled,
             isJs = !objectValue.string("mainJs").isNullOrBlank(),
             hasLogin = hasLogin,
@@ -107,4 +117,7 @@ object SourceCodec {
     }
 
     private const val MAX_SOURCE_BYTES = 1024 * 1024
+
+    /** `bookSourceGroup` 的各种历史写法；`keepGroup = false` 时全部删净。 */
+    private val GROUP_KEYS = listOf("bookSourceGroup", "sourceGroup", "group")
 }

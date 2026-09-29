@@ -518,7 +518,8 @@ npm run build
 │   │   ├── ReaderScreen.tsx             # 沉浸式阅读器、VirtualChapterList 虚拟大目录与 TTS 对齐
 │   │   ├── ReplaceRulesPage.tsx         # 替换净化规则一级主管理页面
 │   │   ├── ReplaceRulesModal.tsx        # 替换规则编辑与实时测试弹窗
-│   │   ├── SourceGroupModal.tsx         # 书源分组管理弹窗
+│   │   ├── SearchScopeBar.tsx           # 书库页搜索栏下方的「全部书源 / 书源分组」范围选项卡
+│   │   ├── SourceGroupManagerModal.tsx  # 书源分组管理面板（查看/重命名/删除 + 批量勾选归类）
 │   │   ├── SourceHealthModal.tsx        # 书源连通性体检与延迟探测弹窗
 │   │   ├── SourceLoginModal.tsx         # 书源登录与 Cookie 代理弹窗
 │   │   ├── SourceSwitchModal.tsx        # 实时换源与同名章节智能对齐弹窗

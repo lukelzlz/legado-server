@@ -26,7 +26,7 @@ export type BookshelfBatchRequest = {
   targetGroup?: string
   completed?: boolean
 }
-export type ImportResponse = { imported: number; updated: number; skipped: number; errors: string[] }
+export type ImportResponse = { imported: number; updated: number; skipped: number; errors: string[]; sourceGroups?: number }
 export type LocalBookImportItem = { filename: string; success: boolean; bookUrl?: string; name?: string; author?: string; totalChapters: number; error?: string }
 export type LocalBookImportResponse = { total: number; imported: number; failed: number; results: LocalBookImportItem[] }
 export type SourceSubscription = { id: number; url: string; enabled: boolean; createdAt: number; updatedAt: number; lastSuccessAt?: number; lastAttemptAt?: number; lastError?: string; lastImported: number; contentHash?: string }
@@ -45,6 +45,27 @@ export type BatchSourceResponse = {
   action: string
   message?: string
 }
+
+/** 一个书源分组：`sourceCount` 是组内总数，`enabledCount` 是其中已启用的（搜索实际会用到的）。 */
+export type SourceGroupSummary = {
+  name: string
+  sourceCount: number
+  enabledCount: number
+}
+
+export type SourceGroupMutationResponse = {
+  ok: boolean
+  affected: number
+  message: string
+}
+
+/**
+ * 「未分组」在搜索范围里的取值。
+ *
+ * 必须与服务端 `SourceGroupFilter.UNGROUPED` 一致：服务端据此翻译成
+ * `source_group is null or trim(source_group) = ''`，而不是当成一个真的分组名。
+ */
+export const UNGROUPED_SOURCE_GROUP = '__ungrouped__'
 
 export type SourceHealthCheckItem = {
   id: string
@@ -84,6 +105,8 @@ export type BackupImportSummary = {
   bookmarks?: number
   /** 因所属书籍未导入（本地图书/音频）而跳过的书签数 */
   bookmarksSkipped?: number
+  /** 随书源一起导入的书源分组数（书源分组是书源自带的 `bookSourceGroup`，无独立条目） */
+  sourceGroups?: number
 }
 
 export type ReplaceRule = {
@@ -299,6 +322,14 @@ export const api = {
     request<string[]>(`/api/sources/export${ids && ids.length > 0 ? `?${ids.map(id => `id=${encodeURIComponent(id)}`).join('&')}` : ''}`),
   validate: (id: string) => request<{ valid: boolean; errors: string[]; warnings: string[] }>(`/api/sources/${encodeURIComponent(id)}/validate`, { method: 'POST' }),
   import: (sources: string[]) => request<ImportResponse>('/api/sources/import', { method: 'POST', body: JSON.stringify({ sources }) }),
+  /** 书源分组列表（不含「未分组」，它由前端用 UNGROUPED_SOURCE_GROUP 单独提供） */
+  sourceGroups: () => request<SourceGroupSummary[]>('/api/source-groups'),
+  /** 书源分组改名；目标分组已存在时等价于合并 */
+  renameSourceGroup: (from: string, to: string) =>
+    request<SourceGroupMutationResponse>('/api/source-groups/rename', { method: 'PUT', body: JSON.stringify({ from, to }) }),
+  /** 删除书源分组：只把这些书源变为未分组，**不删除书源** */
+  clearSourceGroup: (name: string) =>
+    request<SourceGroupMutationResponse>(`/api/source-groups?name=${encodeURIComponent(name)}`, { method: 'DELETE' }),
   subscriptions: () => request<SourceSubscription[]>('/api/subscriptions'),
   saveSubscription: (url: string, enabled = true) => request<SourceSubscription>('/api/subscriptions', { method: 'POST', body: JSON.stringify({ url, enabled }) }),
   removeSubscription: (id: number) => request<void>(`/api/subscriptions/${id}`, { method: 'DELETE' }),
@@ -322,7 +353,8 @@ export const api = {
     request<{ key: string }>(`/api/sources/${encodeURIComponent(sourceId)}/browser/inline`, { method: 'POST', body: JSON.stringify({ token, url }) }),
   sourceBrowserInlineUrl: (sourceId: string, token: string, key: string) =>
     `/api/sources/${encodeURIComponent(sourceId)}/browser/page?t=${encodeURIComponent(token)}&i=${encodeURIComponent(key)}`,
-  search: (keyword: string, sourceIds?: string[], signal?: AbortSignal) => request<SearchResult[]>('/api/search', { method: 'POST', body: JSON.stringify({ keyword, sourceIds }), signal }),
+  search: (keyword: string, sourceIds?: string[], signal?: AbortSignal, group?: string) =>
+    request<SearchResult[]>('/api/search', { method: 'POST', body: JSON.stringify({ keyword, sourceIds, group }), signal }),
   details: (sourceId: string, bookUrl: string, signal?: AbortSignal) => request<BookDetails>('/api/books/details', { method: 'POST', body: JSON.stringify({ sourceId, bookUrl }), signal }),
   chapters: (sourceId: string, bookUrl: string, signal?: AbortSignal) => request<Chapter[]>('/api/books/chapters', { method: 'POST', body: JSON.stringify({ sourceId, bookUrl }), signal }),
   content: async (sourceId: string, chapterUrl: string, bookUrl?: string, signal?: AbortSignal) => {
@@ -472,12 +504,22 @@ export const api = {
   },
 }
 
-export function streamSearch(keyword: string, sourceIds: string[] | undefined, onEvent: (event: SearchStreamEvent) => void, onError: (message: string) => void, onClose: () => void): WebSocket {
+/**
+ * 流式搜索（WebSocket）。
+ *
+ * @param group 只在这些书源分组里搜索（`UNGROUPED_SOURCE_GROUP` 表示未分组）；
+ *   省略时按 `sourceIds` 决定范围，两者都不给即「全部已启用书源」。
+ *   注意：payload 里**只在有值时**带上 `group`，避免把 `undefined` 序列化成 `null`
+ *   （服务端把 null 与空白都当作「不过滤」，但保持报文最小更利于回归断言）。
+ */
+export function streamSearch(keyword: string, sourceIds: string[] | undefined, onEvent: (event: SearchStreamEvent) => void, onError: (message: string) => void, onClose: () => void, group?: string): WebSocket {
   const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:'
   const socket = new WebSocket(`${protocol}//${location.host}/api/search/stream?csrf=${encodeURIComponent(csrfToken ?? '')}`)
   let reported = false
   socket.addEventListener('open', () => queueMicrotask(() => {
-    if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ keyword, sourceIds }))
+    if (socket.readyState === WebSocket.OPEN) {
+      socket.send(JSON.stringify(group ? { keyword, sourceIds, group } : { keyword, sourceIds }))
+    }
   }))
   socket.addEventListener('message', event => {
     try { onEvent(JSON.parse(event.data) as SearchStreamEvent) }

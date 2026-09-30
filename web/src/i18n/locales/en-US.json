@@ -580,6 +580,7 @@
     "deleteConfirm": "Are you sure you want to delete the selected {{count}} sources?",
     "enabledCount": "{{enabled}}/{{total}} sources enabled",
     "batchManage": "Batch Manage",
+    "batchManageTooltip": "Batch enable / disable / export / delete sources",
     "newSource": "New Source",
     "sectionKicker": "Source Categories",
     "groupManage": "Group Management",

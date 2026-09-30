@@ -580,6 +580,7 @@
     "deleteConfirm": "確定要刪除選中的 {{count}} 個書源嗎？",
     "enabledCount": "已啟用 {{enabled}}/{{total}} 個書源",
     "batchManage": "批次管理",
+    "batchManageTooltip": "批次啟用 / 停用 / 匯出 / 刪除書源",
     "newSource": "新增書源",
     "sectionKicker": "書源分類",
     "groupManage": "分組管理",

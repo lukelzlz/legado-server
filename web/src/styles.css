@@ -3484,6 +3484,12 @@ mark.search-highlight { background: var(--accent-soft); color: var(--accent); fo
   transition: background-color .15s ease, color .15s ease, border-color .15s ease, transform .15s ease;
 }
 
+.source-sidebar-top-actions .subtle-button span {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .source-sidebar-top-actions .subtle-button svg {
   width: 16px;
   height: 16px;

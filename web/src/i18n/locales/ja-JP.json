@@ -580,6 +580,7 @@
     "deleteConfirm": "選択した {{count}} 個のソースを削除しますか？",
     "enabledCount": "{{enabled}}/{{total}} ソース有効",
     "batchManage": "一括管理",
+    "batchManageTooltip": "書源の一括有効化/無効化/エクスポート/削除",
     "newSource": "新規ソース",
     "sectionKicker": "書源カテゴリ",
     "groupManage": "グループ管理",

@@ -2,6 +2,7 @@ package io.legado.server
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -131,5 +132,33 @@ class SourceCodecTest {
         assertFalse(cleared.contains("bookSourceGroup"))
         val clearedBlank = SourceCodec.withGroup(withGroup, "   ")
         assertFalse(clearedBlank.contains("bookSourceGroup"))
+    }
+
+    @Test
+    fun `parseSourceList unwraps every known collection shape`() {
+        // 两条真实社区链接的响应体都是「顶层数组」，但 Legado 生态还有若干种外层包装
+        val one = """{"bookSourceUrl":"https://a.example.com","bookSourceName":"A"}"""
+        val two = """{"bookSourceUrl":"https://b.example.com","bookSourceName":"B"}"""
+
+        assertEquals(2, SourceCodec.parseSourceList("[$one,$two]").size)
+        assertEquals(2, SourceCodec.parseSourceList("""{"data":[$one,$two]}""").size)
+        assertEquals(2, SourceCodec.parseSourceList("""{"sources":[$one,$two]}""").size)
+        assertEquals(2, SourceCodec.parseSourceList("""{"bookSources":[$one,$two]}""").size)
+        assertEquals(2, SourceCodec.parseSourceList("""{"list":[$one,$two]}""").size)
+        // 单个书源对象（站点直接回一条源）
+        assertEquals(1, SourceCodec.parseSourceList(one).size)
+        // UTF-8 BOM：PowerShell / 记事本另存常见
+        assertEquals(2, SourceCodec.parseSourceList("\uFEFF[$one,$two]").size)
+
+        // 拆出来的每一条都必须能独立喂给 parse()（订阅更新与网络导入共用本函数的关键前提）
+        SourceCodec.parseSourceList("""{"data":[$one,$two]}""").forEach { SourceCodec.parse(it) }
+    }
+
+    @Test
+    fun `parseSourceList rejects non JSON content`() {
+        val error = assertThrows(IllegalArgumentException::class.java) {
+            SourceCodec.parseSourceList("<html><body>404 Not Found</body></html>")
+        }
+        assertTrue(error.message!!.contains("不是有效 JSON"))
     }
 }

@@ -1,0 +1,299 @@
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useTranslation } from 'react-i18next'
+import { api, type ImportResponse, type NetworkImportPreview } from './api'
+import { Icon } from './icons'
+
+/** 「不分组」用的哨兵：与真实分组名区分开。 */
+const NO_GROUP = ''
+/** 「新建分组…」用的哨兵。 */
+const NEW_GROUP = '\u0000new'
+
+interface NetworkImportModalProps {
+  /**
+   * 预填地址。内置浏览器里点书源「更新书源」页的线路时由宿主传入，给了就自动拉取。
+   * 书源页直接点「网络导入」时不传，由用户自己填。
+   */
+  initialUrl?: string
+  /** 可选的目标分组候选（书源页已有的分组）。 */
+  groups?: string[]
+  onClose: () => void
+  /** 导入成功回调（父级据此刷新书源列表）。 */
+  onImported?: (result: ImportResponse) => void
+  onToast: (message: string, type?: 'info' | 'success' | 'error') => void
+}
+
+/**
+ * 网络书源导入弹窗（书源页与内置浏览器**共用同一个组件**）。
+ *
+ * 布局对齐 Legado 手机端的「导入书源」面板：标题 + 自定义源分组 + ⋮ 菜单；
+ * 每行 = 勾选框 + 书源名 + 状态标签（新增 / 更新 / 不可导入）+ 圆形详情按钮；
+ * 底部 = 「取消全选（n/N）」+ 取消 / 确认。
+ *
+ * ⚠️ 调用方必须把它挂成**平级分支**，严禁嵌在另一个 `.modal-backdrop` 内部
+ * （仓库既有教训：带 `animation`/`transform` 的遮罩会形成层叠上下文，导致幽灵穿透）。
+ */
+export const NetworkImportModal: React.FC<NetworkImportModalProps> = ({
+  initialUrl,
+  groups = [],
+  onClose,
+  onImported,
+  onToast,
+}) => {
+  const { t } = useTranslation()
+  const [url, setUrl] = useState(initialUrl ?? '')
+  const [fetching, setFetching] = useState(false)
+  const [committing, setCommitting] = useState(false)
+  const [preview, setPreview] = useState<NetworkImportPreview | null>(null)
+  const [selected, setSelected] = useState<Set<number>>(new Set())
+  const [detailIndex, setDetailIndex] = useState<number | null>(null)
+  const [menuOpen, setMenuOpen] = useState(false)
+  const [groupOpen, setGroupOpen] = useState(false)
+  const [groupChoice, setGroupChoice] = useState<string>(NO_GROUP)
+  const [newGroupName, setNewGroupName] = useState('')
+  /** 已自动拉取过，避免父组件重渲染时反复请求。 */
+  const autoFetchedRef = useRef(false)
+
+  const effectiveGroup = groupChoice === NEW_GROUP ? newGroupName.trim() : groupChoice
+
+  const runPreview = useCallback(async (target: string) => {
+    const value = target.trim()
+    if (!value) {
+      onToast(t('source.networkImportUrlRequired', '请填写书源地址'), 'info')
+      return
+    }
+    setFetching(true)
+    try {
+      const result = await api.previewNetworkImport(value)
+      setPreview(result)
+      // 默认全选「可导入」的条目（与手机端一致）
+      setSelected(new Set(result.sources.filter(item => item.status !== 'invalid').map(item => item.index)))
+      setDetailIndex(null)
+    } catch (error) {
+      setPreview(null)
+      setSelected(new Set())
+      onToast(error instanceof Error ? error.message : t('source.networkImportFailed', '拉取失败'), 'error')
+    } finally {
+      setFetching(false)
+    }
+  }, [onToast, t])
+
+  // 从内置浏览器线路进来时自动拉取一次
+  useEffect(() => {
+    if (autoFetchedRef.current) return
+    if (!initialUrl || !initialUrl.trim()) return
+    autoFetchedRef.current = true
+    void runPreview(initialUrl)
+  }, [initialUrl, runPreview])
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') onClose()
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [onClose])
+
+  const selectable = useMemo(
+    () => (preview?.sources ?? []).filter(item => item.status !== 'invalid'),
+    [preview],
+  )
+
+  const toggleOne = (index: number) => {
+    setSelected(prev => {
+      const next = new Set(prev)
+      if (next.has(index)) next.delete(index)
+      else next.add(index)
+      return next
+    })
+  }
+
+  const selectAll = () => setSelected(new Set(selectable.map(item => item.index)))
+  const clearAll = () => setSelected(new Set())
+  const invert = () => setSelected(prev => new Set(selectable.map(i => i.index).filter(index => !prev.has(index))))
+
+  const handleConfirm = async () => {
+    if (!preview) return
+    const indexes = [...selected].sort((a, b) => a - b)
+    if (indexes.length === 0) {
+      onToast(t('source.networkImportEmptySelection', '请先勾选要导入的书源'), 'info')
+      return
+    }
+    setCommitting(true)
+    try {
+      const result = await api.commitNetworkImport(preview.token, indexes, effectiveGroup || null)
+      onToast(
+        t('source.networkImportDone', {
+          imported: result.imported,
+          updated: result.updated,
+          defaultValue: `导入完成：新增 ${result.imported} 个，更新 ${result.updated} 个`,
+        }),
+        'success',
+      )
+      onImported?.(result)
+      onClose()
+    } catch (error) {
+      onToast(error instanceof Error ? error.message : t('source.networkImportCommitFailed', '导入失败'), 'error')
+    } finally {
+      setCommitting(false)
+    }
+  }
+
+  const groupLabel = effectiveGroup || t('source.networkImportNoGroup', '不分组')
+
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <div className="network-import-modal" onClick={event => event.stopPropagation()}>
+        <header className="network-import-header">
+          <h3 className="network-import-title">{t('source.networkImportTitle', '导入书源')}</h3>
+          <div className="network-import-header-actions">
+            <button
+              type="button"
+              className="network-import-group-btn"
+              title={t('source.networkImportCustomGroupHint', '选择本次导入的目标分组')}
+              onClick={() => { setGroupOpen(open => !open); setMenuOpen(false) }}
+            >
+              {t('source.networkImportCustomGroup', '自定义源分组')}
+              {effectiveGroup ? <span className="network-import-group-current">{groupLabel}</span> : null}
+            </button>
+            <button
+              type="button"
+              className="network-import-more-btn"
+              aria-label={t('common.more', '更多')}
+              onClick={() => { setMenuOpen(open => !open); setGroupOpen(false) }}
+            >
+              <Icon name="more" />
+            </button>
+          </div>
+        </header>
+
+        {groupOpen && (
+          <div className="network-import-popover">
+            <select
+              className="network-import-group-select"
+              value={groupChoice}
+              onChange={event => setGroupChoice(event.target.value)}
+            >
+              <option value={NO_GROUP}>{t('source.networkImportNoGroup', '不分组')}</option>
+              {groups.filter(Boolean).map(name => <option key={name} value={name}>{name}</option>)}
+              <option value={NEW_GROUP}>{t('source.networkImportNewGroup', '新建分组…')}</option>
+            </select>
+            {groupChoice === NEW_GROUP && (
+              <input
+                className="network-import-group-input"
+                placeholder={t('source.networkImportGroupNamePlaceholder', '输入新分组名')}
+                value={newGroupName}
+                onChange={event => setNewGroupName(event.target.value)}
+              />
+            )}
+            <p className="network-import-popover-hint">
+              {t('source.networkImportGroupHint', '不选则保持原分组不变，新书源落「未分组」。')}
+            </p>
+          </div>
+        )}
+
+        {menuOpen && (
+          <div className="network-import-popover network-import-menu">
+            <button type="button" onClick={() => { selectAll(); setMenuOpen(false) }}>{t('source.networkImportSelectAll', '全选')}</button>
+            <button type="button" onClick={() => { clearAll(); setMenuOpen(false) }}>{t('source.networkImportDeselectAll', '取消全选')}</button>
+            <button type="button" onClick={() => { invert(); setMenuOpen(false) }}>{t('source.networkImportInvert', '反选')}</button>
+          </div>
+        )}
+
+        <div className="network-import-body">
+          <div className="network-import-url-row">
+            <input
+              className="network-import-url-input"
+              placeholder="https://example.com/book-sources.json"
+              value={url}
+              onChange={event => { setUrl(event.target.value); setPreview(null); setSelected(new Set()) }}
+              onKeyDown={event => { if (event.key === 'Enter') void runPreview(url) }}
+            />
+            <button type="button" className="network-import-fetch-btn" disabled={fetching} onClick={() => void runPreview(url)}>
+              {fetching ? t('source.networkImportFetching', '拉取中…') : t('source.networkImportFetch', '拉取')}
+            </button>
+          </div>
+
+          {preview && (
+            <>
+              <p className="network-import-summary">
+                {t('source.networkImportSummary', {
+                  total: preview.total,
+                  newCount: preview.newCount,
+                  updateCount: preview.updateCount,
+                  invalidCount: preview.invalidCount,
+                  defaultValue: `共 ${preview.total} 条：新增 ${preview.newCount}，更新 ${preview.updateCount}，不可导入 ${preview.invalidCount}`,
+                })}
+              </p>
+              <div className="network-import-list">
+                {preview.sources.map(item => {
+                  const invalid = item.status === 'invalid'
+                  const checked = selected.has(item.index)
+                  return (
+                    <div key={item.index} className={`network-import-row ${invalid ? 'is-invalid' : ''}`}>
+                      <label className="network-import-row-main">
+                        <input
+                          type="checkbox"
+                          className="network-import-check"
+                          checked={checked}
+                          disabled={invalid}
+                          onChange={() => toggleOne(item.index)}
+                        />
+                        <span className="network-import-name" title={item.name}>{item.name}</span>
+                      </label>
+                      <span className={`network-import-badge is-${item.status}`}>
+                        {invalid
+                          ? t('source.networkImportBadgeInvalid', '不可导入')
+                          : item.status === 'update'
+                            ? t('source.networkImportBadgeUpdate', '更新')
+                            : t('source.networkImportBadgeNew', '新增')}
+                      </span>
+                      {invalid ? (
+                        <span className="network-import-reason" title={item.reason ?? undefined}>{item.reason}</span>
+                      ) : (
+                        <button
+                          type="button"
+                          className="network-import-detail-btn"
+                          title={t('source.networkImportDetail', '查看书源详情')}
+                          aria-label={t('source.networkImportDetail', '查看书源详情')}
+                          onClick={() => setDetailIndex(detailIndex === item.index ? null : item.index)}
+                        >
+                          <Icon name="edit" />
+                        </button>
+                      )}
+                      {detailIndex === item.index && !invalid && (
+                        <div className="network-import-detail">
+                          <span>{t('source.networkImportFieldUrl', '地址')}：{item.url || '—'}</span>
+                        </div>
+                      )}
+                    </div>
+                  )
+                })}
+              </div>
+              <button type="button" className="network-import-selectall-pill" onClick={clearAll}>
+                {t('source.networkImportDeselectAllCount', {
+                  selected: selected.size,
+                  total: selectable.length,
+                  defaultValue: `取消全选（${selected.size}/${selectable.length}）`,
+                })}
+              </button>
+            </>
+          )}
+        </div>
+
+        <footer className="network-import-footer">
+          <button type="button" className="network-import-cancel-btn" onClick={onClose}>
+            {t('common.cancel', '取消')}
+          </button>
+          <button
+            type="button"
+            className="network-import-confirm-btn"
+            disabled={!preview || committing || fetching}
+            onClick={() => void handleConfirm()}
+          >
+            {committing ? t('common.loading', '处理中…') : t('source.networkImportConfirm', '确认')}
+          </button>
+        </footer>
+      </div>
+    </div>
+  )
+}

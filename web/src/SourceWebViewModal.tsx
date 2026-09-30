@@ -18,6 +18,12 @@ interface SourceWebViewModalProps {
   onLoggedIn?: () => void
   /** 书源设置结果已落库：调用方据此刷新源变量显示，并取消「重跑触发动作」 */
   onSettingsSaved?: () => void
+  /**
+   * 被代理页面里点了书源的「更新书源」线路链接
+   * （`yuedu://booksource/importonline?src=…`，由代理层在捕获阶段拦下并换算成真实 http(s) 地址）。
+   * 调用方据此打开「网络导入」弹窗。见 [ADR-023]。
+   */
+  onImportOnline?: (url: string) => void
 }
 
 type NavState = { list: string[]; index: number }
@@ -38,6 +44,7 @@ export const SourceWebViewModal: React.FC<SourceWebViewModalProps> = ({
   onToast,
   onLoggedIn,
   onSettingsSaved,
+  onImportOnline,
 }) => {
   const { t } = useTranslation()
   const [token, setToken] = useState('')
@@ -59,6 +66,9 @@ export const SourceWebViewModal: React.FC<SourceWebViewModalProps> = ({
   const resultIdRef = useRef('')
   const savedRef = useRef(false)
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  /** 用 ref 持有回调，避免父组件每次渲染都重建消息监听（与 flushRef 同一手法）。 */
+  const onImportOnlineRef = useRef<((url: string) => void) | undefined>(onImportOnline)
+  onImportOnlineRef.current = onImportOnline
 
   /**
    * 把页面回传的设置结果提交给服务端落库。
@@ -152,6 +162,14 @@ export const SourceWebViewModal: React.FC<SourceWebViewModalProps> = ({
         else settingsRef.current = parsed.settings
         resultIdRef.current = parsed.resultId
         scheduleFlush()
+        return
+      }
+      if (data.type === 'import-online') {
+        // 同样是跨源消息，必须靠 event.source 认定来源，不能只信 payload
+        if (!iframeRef.current || event.source !== iframeRef.current.contentWindow) return
+        const target = typeof data.url === 'string' ? data.url.trim() : ''
+        if (!target) return
+        onImportOnlineRef.current?.(target)
         return
       }
       if (data.type !== 'navigated') return

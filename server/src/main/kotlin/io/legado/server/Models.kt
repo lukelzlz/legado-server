@@ -194,6 +194,50 @@ data class SourceLoginStateRecord(
      */
     val sourceGroups: Int = 0,
 )
+/** 网络书源导入：预览请求。只给地址，拉取、SSRF 校验与解析全部在服务端完成。 */
+@Serializable data class NetworkImportPreviewRequest(val url: String)
+
+/**
+ * 预览列表里的一条书源。
+ *
+ * @param status `new`（新增）/ `update`（更新）/ `invalid`（不可导入）
+ * @param reason 仅 `invalid` 有值：直接来自 [SourceCodec.parse] 的报错，用于在弹窗里如实说明原因
+ */
+@Serializable data class NetworkImportPreviewItem(
+    val index: Int,
+    val name: String,
+    val url: String,
+    val status: String,
+    val reason: String? = null,
+)
+
+/**
+ * 预览响应：**只回传元数据**，完整书源原文留在服务端内存缓存里由 [token] 引用。
+ *
+ * 这样 383 条 / 1.63 MB 的集合不会在浏览器与服务端之间来回搬运两次（见 [ADR-023]）。
+ */
+@Serializable data class NetworkImportPreviewResponse(
+    val token: String,
+    val url: String,
+    val total: Int,
+    val newCount: Int,
+    val updateCount: Int,
+    val invalidCount: Int,
+    val sources: List<NetworkImportPreviewItem>,
+)
+
+/**
+ * 网络书源导入：确认请求。
+ *
+ * @param selected 预览列表里的**下标**（不是书源 id —— 集合里可能存在重复 id，用下标才无歧义）
+ * @param group 目标分组；为空表示**不改动**分组（新源落「未分组」，已有分组保持原样）
+ */
+@Serializable data class NetworkImportCommitRequest(
+    val token: String,
+    val selected: List<Int>,
+    val group: String? = null,
+)
+
 @Serializable data class SubscriptionWriteRequest(val url: String, val enabled: Boolean = true)
 @Serializable data class SourceSubscription(
     val id: Long,

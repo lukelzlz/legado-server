@@ -652,6 +652,36 @@ class WebViewProxy(private val database: Database) {
                     return nativeOpen.apply(this,arguments)
                   };
                   window.open=function(url){ if(url){ window.location.href=toPage(url) } return window };
+                  // 书源「更新书源」页的线路按钮用的是客户端私有协议
+                  //   yuedu://booksource/importonline?src=<urlencoded 书源地址>
+                  // 浏览器 iframe 不认识该协议（点了完全没反应），而代理层既无法把 href 改写成
+                  // 代理地址（它没有对应的网络请求），也改写不了 JS 对 location 的赋值。
+                  // 因此在**捕获阶段**拦下点击，把 src 抽出来 postMessage 交回宿主，
+                  // 由宿主走「网络书源导入」弹窗（服务端代抓 + 票据预览）。
+                  document.addEventListener('click', function(event){
+                    var node=event.target;
+                    while(node&&node.nodeType===1&&node.tagName!=='A'){ node=node.parentElement }
+                    if(!node||node.tagName!=='A') return;
+                    var href=node.getAttribute('href')||'';
+                    if(href.indexOf('yuedu://booksource/importonline')!==0) return;
+                    var raw=null;
+                    try{ raw=new URL(href).searchParams.get('src') }catch(e){}
+                    if(!raw){
+                      var q=href.indexOf('?');
+                      if(q>=0){
+                        var m=href.substring(q+1).match(/(?:^|&)src=([^&]*)/);
+                        if(m){ try{ raw=decodeURIComponent(m[1]) }catch(e){ raw=m[1] } }
+                      }
+                    }
+                    if(!raw) return;
+                    event.preventDefault();
+                    event.stopPropagation();
+                    try{
+                      if(window.__legadoHost&&window.__legadoHost!==window){
+                        window.__legadoHost.postMessage({source:'legado-webview',type:'import-online',url:String(raw)},'*')
+                      }
+                    }catch(e){}
+                  }, true);
                 })();
                 """.trimIndent(),
             )

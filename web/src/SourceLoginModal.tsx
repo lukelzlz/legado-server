@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
 import { api, SourceLoginUiItem, SourceLoginUiResponse } from './api'
 import { SourceWebViewModal } from './SourceWebViewModal'
+import { NetworkImportModal } from './NetworkImportModal'
 import { isInlineBrowserTarget } from './sourceSettingsResult'
 
 interface SourceLoginModalProps {
@@ -33,6 +34,8 @@ export const SourceLoginModal: React.FC<SourceLoginModalProps> = ({
   const [webViewStartUrl, setWebViewStartUrl] = useState<string | undefined>(undefined)
   /** 触发内置浏览器的登录动作，登录完成后需要带 Cookie 重跑一次 */
   const pendingBrowserActionRef = useRef<string | null>(null)
+  /** 内置浏览器里点了「更新书源」线路后要导入的地址；非 null 即打开网络导入弹窗。 */
+  const [networkImportUrl, setNetworkImportUrl] = useState<string | null>(null)
 
   const loadLoginUi = useCallback(async () => {
     try {
@@ -656,9 +659,23 @@ export const SourceLoginModal: React.FC<SourceLoginModalProps> = ({
                 await handleAction(pending, false, false)
               }
             }}
+            onImportOnline={url => setNetworkImportUrl(url)}
           />
         )}
       </div>
+
+      {/*
+        网络导入弹窗：必须与内置浏览器弹窗**平级**挂载，严禁嵌在它的 .modal-backdrop 内部
+        （仓库既有约定：带 animation/transform 的遮罩会形成层叠上下文，嵌套会导致幽灵穿透）。
+      */}
+      {networkImportUrl !== null && (
+        <NetworkImportModal
+          initialUrl={networkImportUrl}
+          onClose={() => setNetworkImportUrl(null)}
+          onImported={() => { void loadLoginUi() }}
+          onToast={onToast}
+        />
+      )}
     </div>
   )
 }

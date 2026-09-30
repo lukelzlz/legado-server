@@ -64,6 +64,9 @@ fun Route.apiRoutes(
 ) {
     val webView = WebViewProxy(database)
 
+    /** 网络书源导入：服务端代抓 + 内存票据两步式（见 [ADR-023]）。 */
+    val networkImport = NetworkSourceImport(database, log = { message -> application.log.info(message) })
+
     /**
      * 把一本书的字节导入为本地书籍（**两个入口共用**）。
      *
@@ -306,6 +309,39 @@ fun Route.apiRoutes(
             val response = database.importSources(call.receive<ImportRequest>().sources, applyGroups = false)
             call.application.log.info("source import completed: imported={}, updated={}, skipped={}", response.imported, response.updated, response.skipped)
             call.respond(response)
+        }
+        /**
+         * 网络书源导入：**预览**。
+         *
+         * 由服务端代抓（浏览器跨域 + 信任边界，见 [ADR-023]）→ 逐条试解析 → 只回传元数据与
+         * 一次性票据；完整书源原文留在 [networkImport] 的内存缓存里等 commit。
+         */
+        post("/sources/import-url/preview") {
+            if (auth.requireSession(call, true) == null) return@post
+            val request = runCatching { call.receive<NetworkImportPreviewRequest>() }.getOrNull()
+                ?: return@post call.respondApiError(HttpStatusCode.BadRequest, "invalid_request", "请求格式无效")
+            try {
+                call.respond(networkImport.preview(request.url))
+            } catch (error: NetworkImportException) {
+                call.respondApiError(HttpStatusCode.BadRequest, error.code, error.message)
+            }
+        }
+        /**
+         * 网络书源导入：**确认落库**。
+         *
+         * `selected` 是预览列表下标；`group` 为空表示不改动分组（新源落「未分组」）。
+         */
+        post("/sources/import-url/commit") {
+            if (auth.requireSession(call, true) == null) return@post
+            val request = runCatching { call.receive<NetworkImportCommitRequest>() }.getOrNull()
+                ?: return@post call.respondApiError(HttpStatusCode.BadRequest, "invalid_request", "请求格式无效")
+            try {
+                call.respond(networkImport.commit(request.token, request.selected, request.group))
+            } catch (error: NetworkImportException) {
+                call.respondApiError(HttpStatusCode.BadRequest, error.code, error.message)
+            } catch (error: IllegalArgumentException) {
+                call.respondApiError(HttpStatusCode.BadRequest, "invalid_source", error.message ?: "书源无效")
+            }
         }
         route("/sources/{id}") {
             get {

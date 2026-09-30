@@ -12,6 +12,7 @@ import { cleanAuthor, cleanTitle, defaultSearchFilters, filterSearchGroups, isEx
 import { groupSearchResults, SourceChoice, SourceChoiceStatus, useSearchStore } from './searchStore'
 import { SourceSwitchModal } from './SourceSwitchModal'
 import { SourceLoginModal } from './SourceLoginModal'
+import { NetworkImportModal } from './NetworkImportModal'
 import { ReplaceRulesModal } from './ReplaceRulesModal'
 import { ReplaceRulesPage } from './ReplaceRulesPage'
 import { WebDavSettingsPage } from './WebDavSettingsPage'
@@ -548,6 +549,8 @@ function SourcesPage({ selected, onSelect, onSourcesChange }: { selected: Source
   const [showGroupManager, setShowGroupManager] = useState(false)
   const [busyBatch, setBusyBatch] = useState(false)
   const [loginModalSource, setLoginModalSource] = useState<SourceSummary | null>(null)
+  /** 网络导入弹窗是否打开（与「导入 JSON」并列的另一种导入方式）。 */
+  const [showNetworkImport, setShowNetworkImport] = useState(false)
 
   const load = useCallback(async () => {
     try {
@@ -844,6 +847,16 @@ function SourcesPage({ selected, onSelect, onSourcesChange }: { selected: Source
           />
         </label>
 
+        {/* 网络导入：从社区书源站/书源的「更新书源」页给的 URL 直接拉取并导入 */}
+        <button
+          type="button"
+          className="import-button import-button-network"
+          onClick={() => setShowNetworkImport(true)}
+        >
+          <Icon name="cloudDownload" />
+          {t('source.networkImport', '网络导入')}
+        </button>
+
         {notice && <p className="sidebar-notice">{notice}</p>}
 
         <nav className="source-list">
@@ -1010,6 +1023,20 @@ function SourcesPage({ selected, onSelect, onSourcesChange }: { selected: Source
           sourceId={loginModalSource.id}
           sourceName={loginModalSource.name}
           onClose={() => setLoginModalSource(null)}
+          onToast={(msg, type) => {
+            if (type === 'error') toast.error(msg)
+            else if (type === 'success') toast.success(msg)
+            else toast.info(msg)
+          }}
+        />
+      )}
+
+      {/* 网络导入弹窗：与上面的弹窗**平级**挂载（严禁嵌套 backdrop，见仓库弹窗架构约定） */}
+      {showNetworkImport && (
+        <NetworkImportModal
+          groups={allGroups}
+          onClose={() => setShowNetworkImport(false)}
+          onImported={() => { void load() }}
           onToast={(msg, type) => {
             if (type === 'error') toast.error(msg)
             else if (type === 'success') toast.success(msg)

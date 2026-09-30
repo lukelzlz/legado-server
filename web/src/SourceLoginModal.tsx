@@ -352,7 +352,9 @@ export const SourceLoginModal: React.FC<SourceLoginModalProps> = ({
   }
 
   return (
-    <div className="modal-backdrop" onClick={onClose}>
+    // 内置浏览器打开时这层也要关掉毛玻璃：它是 iframe 的**外层**祖先，
+    // 两层 blur 叠加会把 hover 动画压到 8 FPS（只去内层仅回到 23 FPS）。详见 styles.css。
+    <div className={`modal-backdrop ${webViewOpen ? 'is-blurless' : ''}`} onClick={onClose}>
       <div className="source-login-dialog" onClick={e => e.stopPropagation()} role="dialog" aria-modal="true">
         <div className="source-login-header">
           <div className="source-login-title-group">

@@ -252,7 +252,9 @@ export const SourceWebViewModal: React.FC<SourceWebViewModalProps> = ({
   }
 
   return (
-    <div className="modal-backdrop" onClick={onClose}>
+    // is-blurless：关掉毛玻璃。实测 backdrop-filter + 内部 iframe 持续重绘 = 8 FPS
+    // （hover 动画卡成幻灯片），两层都去掉后回到 58 FPS。详见 styles.css 的注释。
+    <div className="modal-backdrop is-blurless" onClick={onClose}>
       <div className="source-webview-dialog" onClick={e => e.stopPropagation()} role="dialog" aria-modal="true">
         <div className="source-webview-toolbar">
           <div className="source-webview-nav-group">

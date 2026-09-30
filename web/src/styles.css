@@ -784,6 +784,32 @@ mark.search-highlight { background: var(--accent-soft); color: var(--accent); fo
 
 /* Book Manage Modal Sheet */
 .modal-backdrop { position: fixed; inset: 0; z-index: 100; background: rgba(0, 0, 0, .45); backdrop-filter: blur(4px); display: grid; place-items: center; padding: 18px; animation: fadeIn .18s ease; }
+
+/* ------------------------------------------------------------------
+   内置浏览器（iframe）打开时**必须**关掉毛玻璃。
+
+   实测（真实 Edge，hover 上游页面按钮期间测 iframe 内 rAF 帧率）：
+
+   | 场景                              | 帧率    |
+   | :-------------------------------- | ------: |
+   | 普通弹窗（无 iframe，带 blur）      | 61 FPS  |  ← blur 本身几乎免费
+   | 普通弹窗（无 iframe，去掉 blur）    | 60 FPS  |
+   | webview：两层 blur（原状）          | **8 FPS** |
+   | webview：只去内层 blur              | 23 FPS  |
+   | webview：两层 blur 都去             | 58 FPS  |
+
+   结论：**不是 blur 本身贵，而是「blur 层 + 其内部 iframe 持续重绘」的组合**——
+   被代理页面每帧的重绘都会让祖先的 backdrop-filter 失效并重新模糊（两层就模糊两遍）。
+   8 FPS 正是用户报告的「鼠标放到按钮上、hover 动画很卡」。
+
+   试过但**无效**的替代方案（同样实测）：把 iframe 提升为独立合成层（translateZ(0) /
+   will-change: transform）= 9 FPS；iframe `contain: strict` = 8 FPS；
+   遮罩 `isolation: isolate` = 8 FPS。所以只能在这两处关掉 blur。
+
+   刻意**不**动全局 `.modal-backdrop`：普通弹窗带 blur 仍是 61 FPS，毛玻璃是免费的好效果。
+   去掉 blur 后把遮罩加深一点，视觉上仍像模态。
+   ------------------------------------------------------------------ */
+.modal-backdrop.is-blurless { backdrop-filter: none; background: rgba(0, 0, 0, .58); }
 .book-manage-sheet { width: min(440px, 100%); background: var(--surface); border: 1px solid var(--line); border-radius: 14px; box-shadow: 0 16px 48px rgba(0, 0, 0, .22); overflow: hidden; animation: scaleUp .2s cubic-bezier(0.25, 1, 0.5, 1); }
 @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
 @keyframes scaleUp { from { transform: scale(0.95); opacity: 0; } to { transform: scale(1); opacity: 1; } }

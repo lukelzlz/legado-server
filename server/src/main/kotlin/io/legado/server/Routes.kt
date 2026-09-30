@@ -1639,6 +1639,9 @@ private suspend fun ApplicationCall.respondProxied(block: () -> ProxiedPayload) 
     response.headers.append(HttpHeaders.AccessControlAllowOrigin, "*")
     try {
         val payload = withContext(Dispatchers.IO) { block() }
+        // 透传上游的缓存元数据：此前一个都不转发，浏览器什么都缓存不了，
+        // 连 CDN 明确声明 `max-age=30672000, immutable` 的字体/JS/CSS 也被迫每次重下。
+        payload.cacheHeaders.forEach { (name, value) -> response.headers.append(name, value) }
         respondBytes(
             bytes = payload.body,
             contentType = runCatching { ContentType.parse(payload.contentType) }.getOrNull(),

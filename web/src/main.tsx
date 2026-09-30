@@ -772,12 +772,24 @@ function SourcesPage({ selected, onSelect, onSourcesChange }: { selected: Source
             <button
               type="button"
               className={`subtle-button batch-mode-btn ${isBatchMode ? 'active-batch-btn' : ''}`}
+              title="批量启用 / 停用 / 导出 / 删除书源"
               onClick={() => {
                 setIsBatchMode(prev => !prev)
                 setSelectedIds(new Set())
               }}
             >
-              {isBatchMode ? t('common.ok', '退出批量') : t('source.batchManage', '批量管理')}
+            <button
+              type="button"
+              className={`subtle-button batch-mode-btn ${isBatchMode ? 'active-batch-btn' : ''}`}
+              title="批量启用 / 停用 / 导出 / 删除书源"
+              onClick={() => {
+                setIsBatchMode(prev => !prev)
+                setSelectedIds(new Set())
+              }}
+            >
+              <Icon name="list" />
+              <span>{isBatchMode ? '退出批量' : '批量管理'}</span>
+            </button>
             </button>
             <button
               type="button"

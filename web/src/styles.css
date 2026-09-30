@@ -432,8 +432,12 @@ svg { width: 18px; height: 18px; flex: none; }
 .source-sidebar { min-height: 100vh; display: flex; flex-direction: column; border-right: 1px solid var(--line); background: var(--surface); }
 .sources-page { height: calc(100vh - 68px); display: grid; grid-template-columns: 280px minmax(0, 1fr); overflow: hidden; }
 .sources-page .source-sidebar { height: 100%; min-height: 0; overflow: hidden; }
-.source-sidebar-heading { display: flex; justify-content: space-between; align-items: center; padding: 20px 18px 3px; color: var(--ink); font-family: Georgia, "Noto Serif SC", serif; font-size: 17px; }
-.source-sidebar-heading small { color: var(--muted); font-family: Inter, sans-serif; font-size: 12px; }
+/* 侧栏顶部两行：第一行「书源 + 个数」，第二行三个操作按钮。
+   原来是单行 flex + space-between，280px 侧栏放不下 ⇒「书源」被挤成竖排、按钮文字在按钮内折行（实测截图）。 */
+.source-sidebar-heading { display: flex; flex-direction: column; align-items: stretch; gap: 10px; padding: 18px 18px 12px; color: var(--ink); font-family: Georgia, "Noto Serif SC", serif; font-size: 17px; }
+.source-sidebar-title-row { display: flex; align-items: center; gap: 8px; white-space: nowrap; }
+/* 个数做成胶囊徽标：它是这一行的信息主体，不再是被挤到角落的小字 */
+.source-sidebar-heading small { padding: 1px 9px; border-radius: 999px; background: var(--surface-muted); color: var(--muted); font-family: Inter, sans-serif; font-size: 12px; font-weight: 600; font-variant-numeric: tabular-nums; line-height: 18px; }
 .sources-content { width: min(1000px, 100%); display: grid; align-content: start; gap: 28px; padding: clamp(28px, 5vw, 68px); margin: 0 auto; overflow-y: auto; min-height: 0; overscroll-behavior: contain; }
 .page-title { display: flex; align-items: end; justify-content: space-between; gap: 22px; }
 .page-title h1, .library-hero h1 { font-family: Georgia, "Noto Serif SC", serif; font-size: clamp(28px, 3vw, 38px); font-weight: 600; line-height: 1.2; }
@@ -1190,7 +1194,7 @@ mark.search-highlight { background: var(--accent-soft); color: var(--accent); fo
   }
   .sources-page { min-height: calc(100vh - 58px); grid-template-columns: 1fr; }
   .sources-page .source-sidebar { min-height: auto; height: auto; }
-  .source-sidebar-heading { padding: 14px 14px 6px; }
+  .source-sidebar-heading { padding: 14px 14px 10px; }
   .sources-content { padding: 28px 18px; }
   .page-title { align-items: start; }
   .library-page { gap: 22px; padding: 42px 18px; }
@@ -3451,36 +3455,63 @@ mark.search-highlight { background: var(--accent-soft); color: var(--accent); fo
    Source Batch Management, Grouping & Health Check Styles
    ========================================================== */
 
-.source-sidebar-title-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
+/* 三个操作按钮：等宽三宫格「图标在上、文字在下」。
+   这样每个按钮的宽度需求只取决于文字（4 字 ×12px=48px），280px 侧栏里不会折行；
+   图标与文字改为纵向排列，也不再需要为图标预留横向空间。 */
 .source-sidebar-top-actions {
-  display: flex;
-  align-items: center;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 6px;
 }
 
 .source-sidebar-top-actions .subtle-button {
-  padding: 4px 8px;
-  font-size: 12px;
-  height: 28px;
-  border-radius: 6px;
-}
-
-.health-probe-btn {
   display: inline-flex;
+  flex-direction: column;
   align-items: center;
-  gap: 4px;
-  color: var(--accent);
+  justify-content: center;
+  gap: 3px;
+  height: auto;
+  min-height: 46px;
+  padding: 7px 4px;
+  border-color: transparent;
+  border-radius: 10px;
+  background: var(--surface-muted);
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.15;
+  white-space: nowrap;
+  transition: background-color .15s ease, color .15s ease, border-color .15s ease, transform .15s ease;
 }
 
+.source-sidebar-top-actions .subtle-button svg {
+  width: 16px;
+  height: 16px;
+  color: var(--accent);
+  transition: color .15s ease;
+}
+
+.source-sidebar-top-actions .subtle-button:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--accent) 38%, var(--line));
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+  transform: translateY(-1px);
+}
+
+.source-sidebar-top-actions .subtle-button:active:not(:disabled) {
+  transform: translateY(0);
+}
+
+/* 开启态用「实心主色 + 白字」，与 `.scope-tab.active` / `.rules-group-pill.active` 保持一致；
+   和 hover 的浅色反馈区分开，一眼能看出批量模式正在开着。 */
 .active-batch-btn {
-  background: var(--accent-soft) !important;
-  color: var(--accent-ink) !important;
+  background: var(--accent) !important;
+  color: #fff !important;
   border: 1px solid var(--accent) !important;
+}
+
+.active-batch-btn svg {
+  color: #fff !important;
 }
 
 .source-group-filter-bar {

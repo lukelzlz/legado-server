@@ -44,12 +44,12 @@ export function sanitizeImageUrl(url: string | null | undefined): string | null 
   const trimmed = url.trim()
   if (!trimmed) return null
   if (trimmed.startsWith('/') && !trimmed.startsWith('//') && !trimmed.includes('\\')) {
-    return trimmed
+    return encodeURI(trimmed)
   }
   try {
     const parsed = new URL(trimmed)
     if (parsed.protocol === 'http:' || parsed.protocol === 'https:') {
-      return trimmed
+      return parsed.href
     }
   } catch {
     return null

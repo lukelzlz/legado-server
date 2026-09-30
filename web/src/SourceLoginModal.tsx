@@ -68,10 +68,10 @@ export const SourceLoginModal: React.FC<SourceLoginModalProps> = ({
   const bookmarkletCode = useMemo(() => {
     const serverOrigin = window.location.origin
     const targetSourceId = encodeURIComponent(sourceId)
-    const noCookie = t('source.bookmarkletNoCookie', '⚠️ 当前页面未检测到任何 Cookie！').replace(/'/g, "\\'")
-    const successMsg = t('source.bookmarkletSuccess', '✅ 成功将当前站点的 Cookie 同步至阅读服务器！').replace(/'/g, "\\'")
-    const failMsg = t('source.bookmarkletFailed', '❌ 同步失败: ').replace(/'/g, "\\'")
-    return `javascript:(function(){var c=document.cookie;var u=location.href;if(!c){alert('${noCookie}');return;}fetch('${serverOrigin}/api/sources/${targetSourceId}/login-cookie',{method:'POST',mode:'cors',headers:{'Content-Type':'application/json'},body:JSON.stringify({cookie:c,url:u})}).then(function(r){return r.json()}).then(function(d){alert('${successMsg}')}).catch(function(e){alert('${failMsg}'+e)});})();`
+    const noCookie = JSON.stringify(t('source.bookmarkletNoCookie', '⚠️ 当前页面未检测到任何 Cookie！'))
+    const successMsg = JSON.stringify(t('source.bookmarkletSuccess', '✅ 成功将当前站点的 Cookie 同步至阅读服务器！'))
+    const failMsg = JSON.stringify(t('source.bookmarkletFailed', '❌ 同步失败: '))
+    return `javascript:(function(){var c=document.cookie;var u=location.href;if(!c){alert(${noCookie});return;}fetch('${serverOrigin}/api/sources/${targetSourceId}/login-cookie',{method:'POST',mode:'cors',headers:{'Content-Type':'application/json'},body:JSON.stringify({cookie:c,url:u})}).then(function(r){return r.json()}).then(function(d){alert(${successMsg})}).catch(function(e){alert(${failMsg}+e)});})();`
   }, [sourceId, t])
 
   const handleInputChange = (key: string, val: string) => {

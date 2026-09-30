@@ -9,6 +9,8 @@ import org.jsoup.Jsoup
 import org.jsoup.nodes.DataNode
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
+import java.io.ByteArrayOutputStream
+import java.io.InputStream
 import java.net.URI
 import java.net.URLEncoder
 import java.net.http.HttpClient
@@ -24,8 +26,19 @@ import java.util.zip.InflaterInputStream
 /** 反向代理失败时抛出，由路由层转换为 4xx 响应。 */
 class WebViewException(message: String) : RuntimeException(message)
 
-/** 代理结果：状态码 + 内容类型 + 响应体。 */
-data class ProxiedPayload(val status: Int, val contentType: String, val body: ByteArray)
+/**
+ * 代理结果：状态码 + 内容类型 + 响应体 + 需要透传给浏览器的缓存头。
+ *
+ * [cacheHeaders] 用于把上游的 `Cache-Control` / `ETag` / `Last-Modified` / `Expires`
+ * 原样转发给浏览器。此前一个都不转发 ⇒ 浏览器**什么都缓存不了**：实测 cdnjs 的
+ * font-awesome / jquery 明确给了 `public, max-age=30672000, immutable`，也被我们丢掉了。
+ */
+data class ProxiedPayload(
+    val status: Int,
+    val contentType: String,
+    val body: ByteArray,
+    val cacheHeaders: List<Pair<String, String>> = emptyList(),
+)
 
 /**
  * 内置 WebView 登录引擎。
@@ -103,15 +116,15 @@ class WebViewProxy(private val database: Database) {
         val uri = validateTarget(ticket, target, enforceDomain = true)
         val response = requestFollowing(uri, "GET", null, null, sourceId, referer = null)
         val contentType = response.headers().firstValue("content-type").orElse("")
-        val raw = response.body()
+        // 解压只在 bodyOf 这一个收口做，之后所有分支拿到的都是**已解压**字节
+        val raw = bodyOf(response)
         val mime = contentType.substringBefore(';').trim().lowercase()
         if (mime.isNotEmpty() && !mime.contains("html")) {
             // 目标其实是个文件（如 PDF/图片），直接透传
             return ProxiedPayload(response.statusCode(), sanitizeContentType(contentType), raw)
         }
         val charset = detectCharset(contentType, raw)
-        val html = decodeBody(raw, response.headers().firstValue("content-encoding").orElse(""), charset)
-        val rewritten = rewriteHtml(html, uri, sourceId, token)
+        val rewritten = rewriteHtml(String(raw, charset), uri, sourceId, token)
         return ProxiedPayload(response.statusCode(), "text/html; charset=utf-8", rewritten.toByteArray(Charsets.UTF_8))
     }
 
@@ -121,21 +134,20 @@ class WebViewProxy(private val database: Database) {
         val uri = validateTarget(ticket, target, enforceDomain = false)
         val response = requestFollowing(uri, "GET", null, null, sourceId, referer = refererFor(uri))
         val contentType = response.headers().firstValue("content-type").orElse("application/octet-stream")
-        val raw = response.body()
+        val raw = bodyOf(response)
+        val cache = cacheHeadersOf(response)
         val mime = contentType.substringBefore(';').trim().lowercase()
         if (mime.contains("html")) {
             // 某些资源实际返回了 HTML（例如防盗链跳转页），同样重写以便站内跳转可用
             val charset = detectCharset(contentType, raw)
-            val html = decodeBody(raw, response.headers().firstValue("content-encoding").orElse(""), charset)
-            return ProxiedPayload(response.statusCode(), "text/html; charset=utf-8", rewriteHtml(html, uri, sourceId, token).toByteArray(Charsets.UTF_8))
+            return ProxiedPayload(response.statusCode(), "text/html; charset=utf-8", rewriteHtml(String(raw, charset), uri, sourceId, token).toByteArray(Charsets.UTF_8), cache)
         }
         if (mime.contains("css")) {
             val charset = detectCharset(contentType, raw)
-            val css = decodeBody(raw, response.headers().firstValue("content-encoding").orElse(""), charset)
-            val rewritten = rewriteCss(css, uri, sourceId, token)
-            return ProxiedPayload(response.statusCode(), "text/css; charset=utf-8", rewritten.toByteArray(Charsets.UTF_8))
+            val rewritten = rewriteCss(String(raw, charset), uri, sourceId, token)
+            return ProxiedPayload(response.statusCode(), "text/css; charset=utf-8", rewritten.toByteArray(Charsets.UTF_8), cache)
         }
-        return ProxiedPayload(response.statusCode(), sanitizeContentType(contentType), raw)
+        return ProxiedPayload(response.statusCode(), sanitizeContentType(contentType), raw, cache)
     }
 
     /** 表单提交转发（GET / POST 均可）。 */
@@ -155,14 +167,13 @@ class WebViewProxy(private val database: Database) {
             requestFollowing(uri, "GET", null, null, sourceId, referer = refererFor(uri))
         }
         val responseContentType = response.headers().firstValue("content-type").orElse("")
-        val raw = response.body()
+        val raw = bodyOf(response)
         val mime = responseContentType.substringBefore(';').trim().lowercase()
         if (mime.isNotEmpty() && !mime.contains("html")) {
             return ProxiedPayload(response.statusCode(), sanitizeContentType(responseContentType), raw)
         }
         val charset = detectCharset(responseContentType, raw)
-        val html = decodeBody(raw, response.headers().firstValue("content-encoding").orElse(""), charset)
-        return ProxiedPayload(response.statusCode(), "text/html; charset=utf-8", rewriteHtml(html, uri, sourceId, token).toByteArray(Charsets.UTF_8))
+        return ProxiedPayload(response.statusCode(), "text/html; charset=utf-8", rewriteHtml(String(raw, charset), uri, sourceId, token).toByteArray(Charsets.UTF_8))
     }
 
     /** 当前书源已捕获到的 Cookie（按域名分组），用于前端展示登录结果。 */
@@ -446,13 +457,70 @@ class WebViewProxy(private val database: Database) {
             return Charsets.UTF_8
         }
 
-        private fun decodeBody(bytes: ByteArray, contentEncoding: String, charset: Charset): String {
-            val decoded = when (contentEncoding.lowercase()) {
-                "gzip" -> runCatching { GZIPInputStream(bytes.inputStream()).readAllBytes() }.getOrDefault(bytes)
-                "deflate" -> runCatching { InflaterInputStream(bytes.inputStream()).readAllBytes() }.getOrDefault(bytes)
-                else -> bytes
+        /**
+         * 把上游的缓存元数据透传给浏览器。
+         *
+         * 只做**忠实转发**，不自己编造 `max-age`：上游（如 CDN）说能缓存多久就多久，
+         * 上游没给（例如本项目的目标站点对 HTML/JSON 一个缓存头都不发）就不缓存 ——
+         * 避免把可能因登录态变化的页面缓存成陈旧副本。
+         */
+        private fun cacheHeadersOf(response: HttpResponse<ByteArray>): List<Pair<String, String>> {
+            val names = listOf("cache-control", "etag", "last-modified", "expires")
+            return names.mapNotNull { name ->
+                response.headers().firstValue(name).orElse("").takeIf { it.isNotBlank() }?.let { name to it }
             }
-            return String(decoded, charset)
+        }
+
+        /**
+         * 读取响应体并**按魔数兜底解压**。
+         *
+         * ⚠️ 这是整个代理读取 body 的**唯一收口**。原先只有 html/css 会经 `decodeBody` 解压，
+         * 其它资源（JS / JSON / SVG / 字体）一律直接透传 `response.body()`；而请求头声明了
+         * `Accept-Encoding: gzip`，而 JDK HttpClient **不会自动解压** ⇒ 实测 `jquery.min.js`
+         * 交给浏览器的前 4 字节是 `1F 8B 08 00`（gzip），浏览器又拿不到 `Content-Encoding`
+         * （我们不转发该头）⇒ **脚本变成乱码、根本无法执行**，页面表现为一直转圈 / 按钮无反应 /
+         * 更新页卡在「正在检查更新…」。
+         *
+         * 仓库既有教训（SESSION-027「`BodyHandlers.ofByteArray()` 不解压 gzip」）在这里同样适用，
+         * 且**必须按魔数判断、不能只信 `Content-Encoding`**——上游会谎报，强行解压反而会弄坏
+         * 已经解压过的好数据。
+         */
+        private fun bodyOf(response: HttpResponse<ByteArray>): ByteArray =
+            decompress(response.body(), response.headers().firstValue("content-encoding").orElse(""))
+
+        /**
+         * 放开为 `internal` 仅为让单测直接锁定「**按魔数**解压」这一核心行为
+         * （见 `WebViewProxyDecompressTest`）——该修复一旦被无声改回「只信响应头」，
+         * 所有 gzip 过的 JS 又会变回乱码。
+         */
+        internal fun decompress(bytes: ByteArray, contentEncoding: String): ByteArray {
+            val gzipMagic = bytes.size >= 2 && bytes[0] == 0x1F.toByte() && bytes[1] == 0x8B.toByte()
+            val header = contentEncoding.lowercase()
+            // 魔数优先：上游会谎报 Content-Encoding，凭头部强行解压会弄坏已经解压过的好数据
+            val useGzip = gzipMagic || header.contains("gzip")
+            val useInflate = !useGzip && header.contains("deflate")
+            if (!useGzip && !useInflate) return bytes
+            // ⚠️ `GZIPInputStream(...)` / `InflaterInputStream(...)` 的**构造函数本身**就可能抛
+            // ZipException / EOFException（魔数对但内容是坏数据，或上游谎报 gzip）。
+            // 因此**流的构造与读取必须一起**包在 runCatching 里 —— 只包读取会让异常冒泡成 500，
+            // 把整个资源请求打挂（本类的调用方只捕获 WebViewException）。
+            // `readBounded` 同时给解压结果加上限：坏数据可能解出天文数字体积（放大炸弹）。
+            return runCatching {
+                val stream: InputStream = if (useGzip) GZIPInputStream(bytes.inputStream()) else InflaterInputStream(bytes.inputStream())
+                stream.use { it.readBounded(MAX_BODY_BYTES) }
+            }.getOrDefault(bytes)
+        }
+
+        private fun InputStream.readBounded(limit: Int): ByteArray {
+            val out = ByteArrayOutputStream()
+            val buffer = ByteArray(16 * 1024)
+            while (true) {
+                val read = read(buffer)
+                if (read < 0) break
+                if (out.size() + read > limit) throw IllegalStateException("解压后超过 ${limit / 1024 / 1024} MiB")
+                out.write(buffer, 0, read)
+            }
+            return out.toByteArray()
         }
 
         private fun absolutize(raw: String, base: URI): String? {

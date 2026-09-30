@@ -225,6 +225,10 @@ export type SourceBrowserCookies = {
   domains: string[]
   cookies: Record<string, string>
 }
+export type SourceBrowserResult = {
+  saved: boolean
+  keys: number
+}
 
 
 /** WebDAV 相对路径 → 逐段编码的 URL 路径（空段会被丢弃，避免出现 `//`）。 */
@@ -354,6 +358,9 @@ export const api = {
   /** 书源 JS 生成的数据地址页面：交给服务端解码托管，避免超长 URL 触发请求行 8192 上限 */
   registerSourceBrowserInline: (sourceId: string, token: string, url: string) =>
     request<{ key: string }>(`/api/sources/${encodeURIComponent(sourceId)}/browser/inline`, { method: 'POST', body: JSON.stringify({ token, url }) }),
+  /** 书源自生成页面的设置结果回传：服务端校验票据后写入源变量。 */
+  saveSourceBrowserResult: (sourceId: string, token: string, settings: Record<string, unknown>, resultId = '') =>
+    request<SourceBrowserResult>(`/api/sources/${encodeURIComponent(sourceId)}/browser/result`, { method: 'POST', body: JSON.stringify({ token, settings, resultId }) }),
   sourceBrowserInlineUrl: (sourceId: string, token: string, key: string) =>
     `/api/sources/${encodeURIComponent(sourceId)}/browser/page?t=${encodeURIComponent(token)}&i=${encodeURIComponent(key)}`,
   search: (keyword: string, sourceIds?: string[], signal?: AbortSignal, group?: string) =>

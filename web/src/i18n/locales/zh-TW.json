@@ -793,6 +793,8 @@
     "builtInPage": "內建頁面",
     "cannotOpenBrowser": "無法開啟內建瀏覽器",
     "browserLoginSuccess": "登入成功，已捕獲 {{count}} 個網域的 Cookie",
+    "settingsSaved": "書源設定已儲存",
+    "settingsSaveFailed": "書源設定儲存失敗",
     "noValidCredentialsDetected": "尚未檢測到有效登入憑證，請完成站點登入後重試",
     "checkLoginFailed": "檢查登入狀態失敗",
     "browserBack": "後退",

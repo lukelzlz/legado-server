@@ -1,6 +1,7 @@
 package io.legado.server
 
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.JsonObject
 
 @Serializable data class ApiError(val code: String, val message: String)
 @Serializable data class LoginRequest(val password: String)
@@ -139,6 +140,25 @@ data class SourceBrowserCookieResponse(
     val count: Int,
     val domains: List<String>,
     val cookies: Map<String, String>,
+)
+
+/**
+ * 书源自生成页面（设置中心 / 段评气泡）回传的设置结果。
+ *
+ * 页面里的 `#…-settings-result` 容器由代理层注入的采集脚本读取后 postMessage 给宿主，
+ * 宿主再原样送给服务端落库；等价于安卓端 `startBrowserAwait` 的返回体通道。
+ */
+@Serializable
+data class SourceBrowserResultRequest(
+    val token: String,
+    val settings: JsonObject,
+    val resultId: String = "",
+)
+
+@Serializable
+data class SourceBrowserResultResponse(
+    val saved: Boolean,
+    val keys: Int = 0,
 )
 
 data class SourceLoginStateRecord(

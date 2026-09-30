@@ -366,11 +366,23 @@ class RuleRunner(private val responseFetcher: ((String) -> String)? = null, inte
         jsSandbox.eval(fullScript, bindings, execContext)
         val state = database?.getSourceLoginState(sourceUrl)
         val failure = execContext.lastError
+        val openUrl = execContext.openUrl
+
+        // 无头端 `startBrowserAwait` 是立即返回的 stub（body 恒为空），因此书源脚本在「已请求打开
+        // 内置页面」之后必然读不到设置结果，会吐一句「未读取到设置结果，已保留原配置」的**误报**——
+        // 真实结果由内置浏览器回传通道（POST /browser/result）落库，这里把误报替换成如实提示。
+        val inlineBrowser = openUrl != null && !openUrl.startsWith("http://") && !openUrl.startsWith("https://")
+        val suppressedStaleResult = inlineBrowser && execContext.toastMessages.any { it.contains(NO_SETTINGS_RESULT_MARKER) }
+        val toastMessages = if (inlineBrowser) {
+            execContext.toastMessages.filterNot { it.contains(NO_SETTINGS_RESULT_MARKER) }
+        } else {
+            execContext.toastMessages
+        }
 
         return SourceLoginActionResult(
             success = failure == null,
             error = failure,
-            toastMessages = execContext.toastMessages,
+            toastMessages = if (suppressedStaleResult) toastMessages + INLINE_BROWSER_SAVE_HINT else toastMessages,
             openUrl = execContext.openUrl,
             copyText = execContext.copyText,
             updatedLoginInfo = execContext.initialLoginInfo.ifEmpty { state?.loginInfo ?: emptyMap() },
@@ -814,7 +826,15 @@ class RuleRunner(private val responseFetcher: ((String) -> String)? = null, inte
     private fun String.objectValue(): JsonObject = json.parseToJsonElement(this).jsonObject
     private fun JsonObject.objectValue(key: String): JsonObject? = get(key)?.jsonObject
     private fun JsonObject.string(key: String): String? = (get(key) as? JsonPrimitive)?.contentOrNull
-    private companion object { const val MAX_BODY_BYTES = 2 * 1024 * 1024 }
+    private companion object {
+        const val MAX_BODY_BYTES = 2 * 1024 * 1024
+
+        /** 书源脚本在 startBrowserAwait 之后自报「读不到设置结果」的文案标记（无头端必然触发，属误报）。 */
+        const val NO_SETTINGS_RESULT_MARKER = "未读取到设置结果"
+
+        /** 替代误报的如实提示：改动由内置浏览器回传通道自动保存。 */
+        const val INLINE_BROWSER_SAVE_HINT = "设置中心已在内置浏览器中打开，改动会自动保存"
+    }
 }
 
 private class JsSourceRunner(private val runner: RuleRunner, private val source: JsonObject) {

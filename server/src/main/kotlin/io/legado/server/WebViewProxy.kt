@@ -1,6 +1,7 @@
 package io.legado.server
 
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonObject
@@ -74,6 +75,10 @@ class WebViewProxy(private val database: Database) {
     fun revokeTicket(token: String) {
         tickets.remove(token)
     }
+
+    /** 票据是否属于该书源且未过期：设置结果回传必须凭当前会话的票据才允许落库。 */
+    fun hasTicket(sourceId: String, token: String): Boolean =
+        runCatching { resolveTicket(token, sourceId) }.isSuccess
 
     private fun resolveTicket(token: String, sourceId: String): Ticket {
         val ticket = tickets[token] ?: throw WebViewException("登录会话已失效，请重新打开内置浏览器")
@@ -326,6 +331,41 @@ class WebViewProxy(private val database: Database) {
         private const val MAX_BODY_BYTES = 8 * 1024 * 1024
         private const val MAX_INLINE_BYTES = 4 * 1024 * 1024
         private const val MAX_INLINE_PAGES = 16
+
+        /** 书源自生成页面的结果容器 id；出现这些 id 才注入采集脚本。 */
+        val RESULT_CONTAINER_IDS = listOf(
+            "source-settings-final-result",
+            "source-settings-result",
+            "bubble-settings-result",
+        )
+
+        /** 单份设置结果的上限：页面状态是几百字节级，超过即视为异常载荷。 */
+        private const val MAX_SETTINGS_BYTES = 64 * 1024
+
+        /** 结果必须至少命中一个已知设置键，避免把无关页面的 JSON 写进源变量。 */
+        private val SETTINGS_MARKER_KEYS =
+            setOf("tab", "sources", "server", "tone_id", "shuqi_tone_id", "pstyle", "proxy", "find_source")
+
+        /**
+         * 把页面回传的设置收敛成可落库的源变量。
+         *
+         * 兜底口径与书源 JS 自己 `source.setVariable()` 之前的三步保持一致：
+         * 丢弃一次性 nonce、书旗音色回落 `multi_role`、`pstyle` 归一为字符串。
+         * 结构不可信（空对象 / 无任何已知键 / 超长）时返回 null，由路由层给出明确提示。
+         */
+        fun normalizeSettingsResult(settings: JsonObject): JsonObject? {
+            if (settings.isEmpty()) return null
+            if (SETTINGS_MARKER_KEYS.none { settings.containsKey(it) }) return null
+            val cleaned = settings.toMutableMap()
+            cleaned.remove("_settings_nonce")
+            val tone = (cleaned["shuqi_tone_id"] as? JsonPrimitive)?.contentOrNull
+            if (tone.isNullOrBlank() || tone == "默认音色") cleaned["shuqi_tone_id"] = JsonPrimitive("multi_role")
+            val pstyle = (cleaned["pstyle"] as? JsonPrimitive)?.contentOrNull.orEmpty().ifBlank { "0" }
+            cleaned["pstyle"] = JsonPrimitive(pstyle)
+            val normalized = JsonObject(cleaned)
+            if (normalized.toString().toByteArray(Charsets.UTF_8).size > MAX_SETTINGS_BYTES) return null
+            return normalized
+        }
         const val DESKTOP_USER_AGENT =
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 
@@ -523,6 +563,7 @@ class WebViewProxy(private val database: Database) {
             }
 
             injectBootstrap(document, base, sourceId, token)
+            injectSettingsCollector(document, html)
             return document.outerHtml()
         }
 
@@ -563,8 +604,10 @@ class WebViewProxy(private val database: Database) {
 
         /**
          * 注入引导脚本：
-         * 1. 屏蔽 frame-busting（把 top/parent/frameElement 指向自身）；
-         * 2. 把页面内 JS 发起的 fetch / XHR / window.open 也改写到代理路径上。
+         * 1. 在屏蔽 frame-busting 之前**先抓住真实宿主窗口**（`__legadoHost`），否则
+         *    `window.parent` 被指向自身后，页面再也无法向宿主 postMessage；
+         * 2. 把页面内 JS 发起的 fetch / XHR / window.open 也改写到代理路径上；
+         * 3. 用真实宿主回报地址变化（地址栏与前进/后退）。
          */
         private fun injectBootstrap(document: Document, base: URI, sourceId: String, token: String) {
             // Jsoup 的 head() 在缺失时会自动补建，因此必定非空
@@ -575,6 +618,9 @@ class WebViewProxy(private val database: Database) {
                 script,
                 """
                 (function(){
+                  var HOST=null;
+                  try{ HOST=window.parent }catch(e){}
+                  try{ if(HOST&&HOST!==window) window.__legadoHost=HOST }catch(e){}
                   try{Object.defineProperty(window,'top',{get:function(){return window},configurable:true})}catch(e){}
                   try{Object.defineProperty(window,'parent',{get:function(){return window},configurable:true})}catch(e){}
                   try{Object.defineProperty(window,'frameElement',{get:function(){return null},configurable:true})}catch(e){}
@@ -586,8 +632,8 @@ class WebViewProxy(private val database: Database) {
                   var toRes=function(u){return build('res',u)}, toPage=function(u){return build('page',u)};
                   window.__legadoProxy={toRes:toRes,toPage:toPage};
                   try{
-                    if(window.parent&&window.parent!==window){
-                      window.parent.postMessage({source:'legado-webview',type:'navigated',url:BASE},'*')
+                    if(window.__legadoHost){
+                      window.__legadoHost.postMessage({source:'legado-webview',type:'navigated',url:BASE},'*')
                     }
                   }catch(e){}
                   var nativeFetch=window.fetch;
@@ -610,6 +656,54 @@ class WebViewProxy(private val database: Database) {
                 """.trimIndent(),
             )
             host.prependChild(script)
+        }
+
+        /**
+         * 注入「设置结果采集」脚本（仅当页面存在结果容器时）。
+         *
+         * 安卓端由 `startBrowserAwait` 直接返回关闭时的页面 body，书源 JS 再从 body 里解析
+         * `<script id="source-settings-*-result">`；无头端这个 body 通道不存在，于是改为
+         * 在代理层采集容器文本并 postMessage 给宿主，由宿主回传服务端落库。
+         */
+        private fun injectSettingsCollector(document: Document, html: String) {
+            if (RESULT_CONTAINER_IDS.none { html.contains(it) }) return
+            val host = document.head()
+            val script = document.createElement("script")
+            script.attr("data-legado-proxy", "settings-collector")
+            replaceRawContent(
+                script,
+                """
+                (function(){
+                  var IDS=${RESULT_CONTAINER_IDS.joinToString(prefix = "[", postfix = "]") { jsString(it) }};
+                  var HOST=null;
+                  try{ HOST=(window.__legadoHost&&window.__legadoHost!==window)?window.__legadoHost:window.parent }catch(e){}
+                  if(!HOST||HOST===window) return;
+                  var last={};
+                  function report(){
+                    for(var i=0;i<IDS.length;i++){
+                      var id=IDS[i];
+                      var el=document.getElementById(id);
+                      var text=el?String(el.textContent||'').trim():'';
+                      if(!text||last[id]===text) continue;
+                      last[id]=text;
+                      var settings=null;
+                      try{ settings=JSON.parse(decodeURIComponent(text)) }catch(e){ continue }
+                      if(!settings||typeof settings!=='object'||Array.isArray(settings)) continue;
+                      try{ HOST.postMessage({source:'legado-webview',type:'settings-result',resultId:id,settings:settings},'*') }catch(e){}
+                    }
+                  }
+                  try{
+                    new MutationObserver(report).observe(document.documentElement||document,{subtree:true,childList:true,characterData:true});
+                  }catch(e){}
+                  document.addEventListener('DOMContentLoaded',report);
+                  window.addEventListener('load',report);
+                  window.addEventListener('pagehide',report);
+                  window.addEventListener('beforeunload',report);
+                  setInterval(report,1500);
+                })();
+                """.trimIndent(),
+            )
+            host.appendChild(script)
         }
 
         private fun jsString(value: String): String =

@@ -793,6 +793,8 @@
     "builtInPage": "Built-in Page",
     "cannotOpenBrowser": "Cannot open built-in browser",
     "browserLoginSuccess": "Login successful, captured cookies for {{count}} domain(s)",
+    "settingsSaved": "Source settings saved",
+    "settingsSaveFailed": "Failed to save source settings",
     "noValidCredentialsDetected": "No valid credentials detected yet, please log in on the site and try again",
     "checkLoginFailed": "Failed to check login status",
     "browserBack": "Back",

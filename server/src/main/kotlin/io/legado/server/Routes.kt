@@ -512,6 +512,35 @@ fun Route.apiRoutes(
                         call.respond(HttpStatusCode.BadRequest, ApiError("inline_page_failed", error.message ?: "内置页面无法打开"))
                     }
                 }
+                // 书源自生成页面（设置中心 / 段评气泡）的结果回传：等价于安卓端 startBrowserAwait 的返回体
+                post("/result") {
+                    if (auth.requireSession(call, true) == null) return@post
+                    val sourceId = call.parameters["id"]!!
+                    val req = runCatching { call.receive<SourceBrowserResultRequest>() }.getOrNull()
+                        ?: run {
+                            call.respondApiError(HttpStatusCode.BadRequest, "invalid_browser_result", "设置结果格式无效")
+                            return@post
+                        }
+                    if (database.getSource(sourceId) == null) {
+                        call.respondApiError(HttpStatusCode.NotFound, "not_found", "书源不存在")
+                        return@post
+                    }
+                    if (!webView.hasTicket(sourceId, req.token)) {
+                        call.respondApiError(HttpStatusCode.BadRequest, "browser_session_expired", "内置浏览器会话已失效，请重新打开设置中心")
+                        return@post
+                    }
+                    val settings = WebViewProxy.normalizeSettingsResult(req.settings)
+                        ?: run {
+                            call.respondApiError(HttpStatusCode.BadRequest, "invalid_settings_result", "设置结果无法识别")
+                            return@post
+                        }
+                    database.saveSourceVariable(sourceId, settings.toString())
+                    call.application.log.info(
+                        "source settings saved: {} ({} keys, container={})",
+                        sourceId, settings.size, req.resultId.ifBlank { "unknown" },
+                    )
+                    call.respond(SourceBrowserResultResponse(saved = true, keys = settings.size))
+                }
                 get("/res") {
                     val sourceId = call.parameters["id"]!!
                     val token = call.request.queryParameters["t"]

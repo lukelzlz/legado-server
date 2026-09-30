@@ -793,6 +793,8 @@
     "builtInPage": "内置页面",
     "cannotOpenBrowser": "无法打开内置浏览器",
     "browserLoginSuccess": "登录成功，已捕获 {{count}} 个域名的 Cookie",
+    "settingsSaved": "书源设置已保存",
+    "settingsSaveFailed": "书源设置保存失败",
     "noValidCredentialsDetected": "尚未检测到有效登录凭据，请完成站点登录后重试",
     "checkLoginFailed": "检查登录状态失败",
     "browserBack": "后退",

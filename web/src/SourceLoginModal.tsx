@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
 import { api, SourceLoginUiItem, SourceLoginUiResponse } from './api'
 import { SourceWebViewModal } from './SourceWebViewModal'
+import { isInlineBrowserTarget } from './sourceSettingsResult'
 
 interface SourceLoginModalProps {
   sourceId: string
@@ -101,7 +102,9 @@ export const SourceLoginModal: React.FC<SourceLoginModalProps> = ({
       if (res.openUrl) {
         // 书源 JS 通过 java.startBrowserAwait(url) 请求打开网页：在本应用内置浏览器中打开，
         // 而不是弹到外部标签页，这样登录产生的 Cookie 能直接落到书源 Credential 里。
-        if (allowBuiltInBrowser) {
+        // 书源自生成的内联页（data:text/html;base64,…）只能由代理层在 iframe 里渲染——
+        // 直接 window.open 只会开出一个空白新标签，且拿不到任何回传结果。
+        if (allowBuiltInBrowser || isInlineBrowserTarget(res.openUrl)) {
           pendingBrowserActionRef.current = actionCode
           setWebViewStartUrl(res.openUrl)
           setWebViewOpen(true)
@@ -637,6 +640,12 @@ export const SourceLoginModal: React.FC<SourceLoginModalProps> = ({
             startUrl={webViewStartUrl}
             onClose={() => setWebViewOpen(false)}
             onToast={onToast}
+            onSettingsSaved={() => {
+              // 设置已落库：本轮浏览器会话的使命完成，不能再重跑触发动作
+              // （否则书源 JS 会再次返回 data: 内联页地址，把设置页又开一遍）
+              pendingBrowserActionRef.current = null
+              void loadLoginUi()
+            }}
             onLoggedIn={async () => {
               await loadLoginUi()
               // 内置浏览器登录成功后，带着已落库的 Cookie 重跑当初触发浏览器的动作，

@@ -33,6 +33,7 @@ import './source-group-search.test.ts'
 import './source-group-manager.test.ts'
 import './search-scope-bar.test.ts'
 import './ShelfGrouping.test.ts'
+import './source-settings-result.test.ts'
 
 console.log('🚀 Running Legado Web Frontend Comprehensive Test Suite (Tier 1, 2, 4 + Challenger Stress)...\n')
 import './webdav-settings.test.ts'

@@ -1,6 +1,12 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { api } from './api'
+import {
+  isBubbleResult,
+  mergeBubbleResult,
+  readSettingsResultMessage,
+  type SettingsPayload,
+} from './sourceSettingsResult'
 
 interface SourceWebViewModalProps {
   sourceId: string
@@ -10,6 +16,8 @@ interface SourceWebViewModalProps {
   onClose: () => void
   onToast: (message: string, type?: 'info' | 'success' | 'error') => void
   onLoggedIn?: () => void
+  /** 书源设置结果已落库：调用方据此刷新源变量显示，并取消「重跑触发动作」 */
+  onSettingsSaved?: () => void
 }
 
 type NavState = { list: string[]; index: number }
@@ -29,6 +37,7 @@ export const SourceWebViewModal: React.FC<SourceWebViewModalProps> = ({
   onClose,
   onToast,
   onLoggedIn,
+  onSettingsSaved,
 }) => {
   const { t } = useTranslation()
   const [token, setToken] = useState('')
@@ -43,6 +52,49 @@ export const SourceWebViewModal: React.FC<SourceWebViewModalProps> = ({
   const [busy, setBusy] = useState(false)
   const [addressDraft, setAddressDraft] = useState('')
   const tokenRef = useRef('')
+  const iframeRef = useRef<HTMLIFrameElement | null>(null)
+  /** 页面回传的最新设置结果 / 气泡结果；两者在提交前合并（与书源 JS 的合并口径一致） */
+  const settingsRef = useRef<SettingsPayload | null>(null)
+  const bubbleRef = useRef<SettingsPayload | null>(null)
+  const resultIdRef = useRef('')
+  const savedRef = useRef(false)
+  const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  /**
+   * 把页面回传的设置结果提交给服务端落库。
+   *
+   * 安卓端由 `startBrowserAwait` 返回关闭时的页面 body 完成这一步；无头端改成
+   * 「代理层采集 → postMessage → 这里回传」，因此必须显式 flush（关闭弹窗 / 检测登录前）。
+   */
+  const flushSettings = useCallback(async () => {
+    if (saveTimerRef.current) {
+      clearTimeout(saveTimerRef.current)
+      saveTimerRef.current = null
+    }
+    const settings = mergeBubbleResult(settingsRef.current, bubbleRef.current)
+    const currentToken = tokenRef.current
+    if (!settings || !currentToken) return
+    try {
+      await api.saveSourceBrowserResult(sourceId, currentToken, settings, resultIdRef.current)
+      if (!savedRef.current) {
+        savedRef.current = true
+        onToast(t('source.settingsSaved', '书源设置已保存'), 'success')
+        onSettingsSaved?.()
+      }
+    } catch (err) {
+      onToast(err instanceof Error ? err.message : t('source.settingsSaveFailed', '书源设置保存失败'), 'error')
+    }
+  }, [sourceId, onToast, onSettingsSaved, t])
+
+  // 会话建立 effect 的依赖必须保持稳定，否则父组件每次渲染都会重建浏览器会话
+  const flushRef = useRef(flushSettings)
+  flushRef.current = flushSettings
+
+  // 页面每次改动都会重写结果容器，这里做短防抖合并，避免逐次写库
+  const scheduleFlush = useCallback(() => {
+    if (saveTimerRef.current) clearTimeout(saveTimerRef.current)
+    saveTimerRef.current = setTimeout(() => { void flushRef.current() }, 300)
+  }, [])
 
   const currentUrl = nav.list[nav.index] ?? ''
 
@@ -79,15 +131,30 @@ export const SourceWebViewModal: React.FC<SourceWebViewModalProps> = ({
     void open()
     return () => {
       cancelled = true
-      if (tokenRef.current) void api.closeSourceBrowserSession(sourceId, tokenRef.current).catch(() => undefined)
+      // 关闭弹窗前把最后一次设置结果落库，再回收票据
+      void flushRef.current().finally(() => {
+        if (tokenRef.current) void api.closeSourceBrowserSession(sourceId, tokenRef.current).catch(() => undefined)
+      })
     }
   }, [sourceId, startUrlOverride, t])
 
-  // 监听被代理页面回报的地址变化，用于地址栏与前进/后退
+  // 监听被代理页面回报的地址变化与设置结果
   useEffect(() => {
     const onMessage = (event: MessageEvent) => {
       const data = event.data as { source?: string; type?: string; url?: string } | null
-      if (!data || data.source !== 'legado-webview' || data.type !== 'navigated') return
+      if (!data || data.source !== 'legado-webview') return
+      if (data.type === 'settings-result') {
+        // iframe 是不透明源（sandbox 无 allow-same-origin），必须靠 event.source 认定来源
+        if (!iframeRef.current || event.source !== iframeRef.current.contentWindow) return
+        const parsed = readSettingsResultMessage(data)
+        if (!parsed) return
+        if (isBubbleResult(parsed.resultId)) bubbleRef.current = parsed.settings
+        else settingsRef.current = parsed.settings
+        resultIdRef.current = parsed.resultId
+        scheduleFlush()
+        return
+      }
+      if (data.type !== 'navigated') return
       const url = typeof data.url === 'string' ? data.url : ''
       if (!url) return
       setNav(prev => {
@@ -100,7 +167,7 @@ export const SourceWebViewModal: React.FC<SourceWebViewModalProps> = ({
     }
     window.addEventListener('message', onMessage)
     return () => window.removeEventListener('message', onMessage)
-  }, [])
+  }, [scheduleFlush])
 
   const refreshCookies = useCallback(async () => {
     try {
@@ -141,6 +208,8 @@ export const SourceWebViewModal: React.FC<SourceWebViewModalProps> = ({
   const handleCheckLogin = async () => {
     setBusy(true)
     try {
+      // 先落库设置结果，避免「检测登录」触发关闭时把用户在设置页做的改动丢掉
+      await flushRef.current()
       const count = await refreshCookies()
       const status = await api.checkSourceLogin(sourceId)
       if (status.loggedIn) {
@@ -264,6 +333,7 @@ export const SourceWebViewModal: React.FC<SourceWebViewModalProps> = ({
               {pageSrc && (
                 <iframe
                   key={navSeq}
+                  ref={iframeRef}
                   className="source-webview-frame"
                   title={t('source.sourceSiteLoginTitle', { name: sourceName, defaultValue: `${sourceName} 登录` })}
                   src={pageSrc}

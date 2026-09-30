@@ -793,6 +793,8 @@
     "builtInPage": "内蔵ページ",
     "cannotOpenBrowser": "内蔵ブラウザを開けません",
     "browserLoginSuccess": "ログイン成功、{{count}} ドメインのCookieを取得しました",
+    "settingsSaved": "ブックソース設定を保存しました",
+    "settingsSaveFailed": "ブックソース設定の保存に失敗しました",
     "noValidCredentialsDetected": "有効な認証情報がまだ検出されていません。ログインを完了してから再試行してください",
     "checkLoginFailed": "ログイン状態の確認に失敗しました",
     "browserBack": "戻る",

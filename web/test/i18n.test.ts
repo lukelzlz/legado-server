@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import i18n, { changeAppLanguage, getCurrentLocale } from '../src/i18n'
+import i18n, { changeAppLanguage, getCurrentLocale, resources } from '../src/i18n'
 import {
   DEFAULT_LOCALE,
   normalizeLocale,
@@ -107,15 +107,12 @@ test('i18n - api client automatically sends Accept-Language header', async () =>
 })
 
 test('i18n - all 4 locales have 100% key parity and non-empty strings', async () => {
-  const fs = await import('node:fs')
-  const path = await import('node:path')
-  const localesDir = path.resolve('web/src/i18n/locales')
   const locales = ['zh-CN', 'zh-TW', 'en-US', 'ja-JP'] as const
-  const data: Record<string, Record<string, unknown>> = {}
-
-  for (const loc of locales) {
-    const raw = fs.readFileSync(path.join(localesDir, `${loc}.json`), 'utf-8')
-    data[loc] = JSON.parse(raw)
+  const data: Record<string, Record<string, unknown>> = {
+    'zh-CN': resources['zh-CN'].translation as Record<string, unknown>,
+    'zh-TW': resources['zh-TW'].translation as Record<string, unknown>,
+    'en-US': resources['en-US'].translation as Record<string, unknown>,
+    'ja-JP': resources['ja-JP'].translation as Record<string, unknown>,
   }
 
   function getLeafKeys(obj: Record<string, unknown>, prefix = ''): Record<string, string> {

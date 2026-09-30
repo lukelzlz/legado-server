@@ -286,7 +286,7 @@ class WebDavRoutesTest {
             assertNotNull(token)
             assertTrue(token!!.startsWith("opaquelocktoken:"))
             assertTrue(lock.bodyAsText().contains("<D:locktoken><D:href>$token</D:href></D:locktoken>"))
-            assertTrue(lock.bodyAsText().contains("<D:timeout>Second-59"))
+            assertTrue(Regex("<D:timeout>Second-(59\\d|600)</D:timeout>").containsMatchIn(lock.bodyAsText()))
             assertTrue(Files.exists(fixture.dataDir.resolve("webdav/locked.txt")))
 
             val propfind = client.request("/webdav/locked.txt") {

@@ -1,4 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react'
+import { useTranslation } from 'react-i18next'
+import { i18n } from './i18n'
 import { Icon } from './icons'
 import { Logo } from './Logo'
 
@@ -50,30 +52,32 @@ let activeRegistration: ServiceWorkerRegistration | null = null
 let triggerNeedRefresh: ((val: boolean) => void) | null = null
 
 export async function checkForAppUpdate(): Promise<{ hasUpdate: boolean; message: string }> {
+  const t = i18n.t.bind(i18n)
   if (typeof navigator === 'undefined' || !('serviceWorker' in navigator)) {
-    return { hasUpdate: false, message: '当前环境未启用 Service Worker' }
+    return { hasUpdate: false, message: t('pwa.swNotEnabled') }
   }
   try {
     const reg = activeRegistration || await navigator.serviceWorker.getRegistration()
     if (!reg) {
-      return { hasUpdate: false, message: '当前应用已是最新版本' }
+      return { hasUpdate: false, message: t('pwa.appUpToDate') }
     }
     if (reg.waiting) {
       if (triggerNeedRefresh) triggerNeedRefresh(true)
-      return { hasUpdate: true, message: '检测到新版本，已准备就绪' }
+      return { hasUpdate: true, message: t('pwa.newVersionReady') }
     }
     await reg.update()
     if (reg.waiting || reg.installing) {
       if (triggerNeedRefresh) triggerNeedRefresh(true)
-      return { hasUpdate: true, message: '发现新版本，正在就绪...' }
+      return { hasUpdate: true, message: t('pwa.newVersionPreparing') }
     }
-    return { hasUpdate: false, message: '当前已是最新版本' }
-  } catch (error) {
-    return { hasUpdate: false, message: '检查更新完成，未发现新版本' }
+    return { hasUpdate: false, message: t('pwa.appUpToDate') }
+  } catch {
+    return { hasUpdate: false, message: t('pwa.updateCheckDone') }
   }
 }
 
 export function PwaManager() {
+  const { t } = useTranslation()
   const [canInstall, setCanInstall] = useState(false)
   const [dismissedBanner, setDismissedBanner] = useState(() => {
     try {
@@ -204,13 +208,13 @@ export function PwaManager() {
           <div className="pwa-update-content">
             <span className="pwa-update-dot" />
             <div className="pwa-update-text">
-              <strong>发现新版本</strong>
-              <small>服务端功能已更新，点击即刻生效</small>
+              <strong>{t('pwa.updateAvailable')}</strong>
+              <small>{t('pwa.updateDesc')}</small>
             </div>
           </div>
           <div className="pwa-update-actions">
             <button type="button" className="primary-button pwa-update-btn" onClick={handleUpdate}>
-              立即更新
+              {t('pwa.updateNow')}
             </button>
             <button type="button" className="subtle-button pwa-close-btn" onClick={() => setNeedRefresh(false)}>
               <Icon name="close" />
@@ -221,22 +225,22 @@ export function PwaManager() {
 
       {/* PWA Install Bottom Banner */}
       {showBanner && (
-        <div className="pwa-install-banner" role="region" aria-label="安装应用提示">
+        <div className="pwa-install-banner" role="region" aria-label={t('pwa.installBannerAria')}>
           <div className="pwa-banner-left">
             <div className="pwa-banner-logo">
               <Logo size={28} />
             </div>
             <div className="pwa-banner-info">
-              <strong>安装「阅读」到桌面 / 主屏幕</strong>
-              <p>享受无浏览器工具栏的沉浸式全屏与离线阅读体验</p>
+              <strong>{t('pwa.installTitle')}</strong>
+              <p>{t('pwa.installDesc')}</p>
             </div>
           </div>
           <div className="pwa-banner-actions">
             <button type="button" className="primary-button pwa-install-btn" onClick={() => void handleInstallClick()}>
               <Icon name="download" />
-              <span>立即安装</span>
+              <span>{t('pwa.installNow')}</span>
             </button>
-            <button type="button" className="subtle-button pwa-dismiss-btn" onClick={handleDismissBanner} aria-label="稍后提醒">
+            <button type="button" className="subtle-button pwa-dismiss-btn" onClick={handleDismissBanner} aria-label={t('pwa.remindLater')}>
               <Icon name="close" />
             </button>
           </div>

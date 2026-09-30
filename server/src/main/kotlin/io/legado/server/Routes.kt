@@ -142,6 +142,24 @@ fun Route.apiRoutes(
     }
 
     route("/api") {
+        route("/settings") {
+            get("/locale") {
+                val locale = database.getSetting("locale")
+                call.respond(LocaleSettingResponse(locale = locale))
+            }
+            put("/locale") {
+                if (auth.requireSession(call, csrfRequired = true) == null) return@put
+                val req = runCatching { call.receive<LocaleSettingRequest>() }.getOrNull()
+                val normalized = ServerMessages.normalizeLocale(req?.locale)
+                if (normalized == null) {
+                    call.respondApiError(HttpStatusCode.BadRequest, "invalid_locale", "不支持的语言代码")
+                    return@put
+                }
+                database.setSetting("locale", normalized)
+                call.application.log.info("server locale setting updated to: {}", normalized)
+                call.respond(LocaleSettingResponse(locale = normalized))
+            }
+        }
         get("/sources") {
             if (auth.requireSession(call) == null) return@get
             call.respond(database.listSources(call.request.queryParameters["q"]))
@@ -150,7 +168,7 @@ fun Route.apiRoutes(
             if (auth.requireSession(call, true) == null) return@post
             val req = call.receive<BatchSourceRequest>()
             if (req.ids.isEmpty()) {
-                call.respond(HttpStatusCode.BadRequest, ApiError("empty_selection", "请先选择需要操作的书源"))
+                call.respondApiError(HttpStatusCode.BadRequest, "empty_selection", "请先选择需要操作的书源")
                 return@post
             }
             try {
@@ -165,10 +183,10 @@ fun Route.apiRoutes(
                 call.application.log.info("source batch operation: action={}, count={}", req.action, count)
                 call.respond(BatchSourceResponse(ok = true, affected = count, action = req.action, message = msg))
             } catch (error: IllegalArgumentException) {
-                call.respond(HttpStatusCode.BadRequest, ApiError("invalid_action", error.message ?: "无效的批量操作"))
+                call.respondApiError(HttpStatusCode.BadRequest, "invalid_action", error.message ?: "无效的批量操作")
             } catch (error: Throwable) {
                 call.application.log.error("source batch operation failed", error)
-                call.respond(HttpStatusCode.InternalServerError, ApiError("batch_failed", error.message ?: "批量操作失败"))
+                call.respondApiError(HttpStatusCode.InternalServerError, "batch_failed", error.message ?: "批量操作失败")
             }
         }
         post("/sources/health-check") {

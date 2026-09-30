@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import { api } from './api'
 
 interface SourceWebViewModalProps {
@@ -29,6 +30,7 @@ export const SourceWebViewModal: React.FC<SourceWebViewModalProps> = ({
   onToast,
   onLoggedIn,
 }) => {
+  const { t } = useTranslation()
   const [token, setToken] = useState('')
   const [startUrl, setStartUrl] = useState('')
   const [navTarget, setNavTarget] = useState('')
@@ -60,8 +62,8 @@ export const SourceWebViewModal: React.FC<SourceWebViewModalProps> = ({
           const { key } = await api.registerSourceBrowserInline(sourceId, session.token, (startUrlOverride ?? '').trim())
           if (cancelled) return
           setInlineKey(key)
-          setAddressDraft('内置页面（由书源脚本生成）')
-          setNav({ list: ['内置页面'], index: 0 })
+          setAddressDraft(t('source.builtInPageScriptGenerated', '内置页面（由书源脚本生成）'))
+          setNav({ list: [t('source.builtInPage', '内置页面')], index: 0 })
         } else {
           setNavTarget(session.startUrl)
           setAddressDraft(session.startUrl)
@@ -69,7 +71,7 @@ export const SourceWebViewModal: React.FC<SourceWebViewModalProps> = ({
         }
       } catch (err) {
         if (cancelled) return
-        setError(err instanceof Error ? err.message : '无法打开内置浏览器')
+        setError(err instanceof Error ? err.message : t('source.cannotOpenBrowser', '无法打开内置浏览器'))
       } finally {
         if (!cancelled) setLoading(false)
       }
@@ -79,7 +81,7 @@ export const SourceWebViewModal: React.FC<SourceWebViewModalProps> = ({
       cancelled = true
       if (tokenRef.current) void api.closeSourceBrowserSession(sourceId, tokenRef.current).catch(() => undefined)
     }
-  }, [sourceId, startUrlOverride])
+  }, [sourceId, startUrlOverride, t])
 
   // 监听被代理页面回报的地址变化，用于地址栏与前进/后退
   useEffect(() => {
@@ -142,14 +144,14 @@ export const SourceWebViewModal: React.FC<SourceWebViewModalProps> = ({
       const count = await refreshCookies()
       const status = await api.checkSourceLogin(sourceId)
       if (status.loggedIn) {
-        onToast(`登录成功，已捕获 ${count ?? 0} 个域名的 Cookie`, 'success')
+        onToast(t('source.browserLoginSuccess', { count: count ?? 0, defaultValue: `登录成功，已捕获 ${count ?? 0} 个域名的 Cookie` }), 'success')
         onLoggedIn?.()
         setTimeout(onClose, 600)
       } else {
-        onToast(status.message ?? '尚未检测到有效登录凭据，请完成站点登录后重试', 'info')
+        onToast(status.message ?? t('source.noValidCredentialsDetected', '尚未检测到有效登录凭据，请完成站点登录后重试'), 'info')
       }
     } catch (err) {
-      onToast(err instanceof Error ? err.message : '检查登录状态失败', 'error')
+      onToast(err instanceof Error ? err.message : t('source.checkLoginFailed', '检查登录状态失败'), 'error')
     } finally {
       setBusy(false)
     }
@@ -170,7 +172,7 @@ export const SourceWebViewModal: React.FC<SourceWebViewModalProps> = ({
             <button
               type="button"
               className="source-webview-icon-btn"
-              title="后退"
+              title={t('source.browserBack', '后退')}
               disabled={!canGoBack}
               onClick={() => canGoBack && navigate(nav.list[nav.index - 1])}
             >
@@ -179,7 +181,7 @@ export const SourceWebViewModal: React.FC<SourceWebViewModalProps> = ({
             <button
               type="button"
               className="source-webview-icon-btn"
-              title="前进"
+              title={t('source.browserForward', '前进')}
               disabled={!canGoForward}
               onClick={() => canGoForward && navigate(nav.list[nav.index + 1])}
             >
@@ -188,7 +190,7 @@ export const SourceWebViewModal: React.FC<SourceWebViewModalProps> = ({
             <button
               type="button"
               className="source-webview-icon-btn"
-              title="刷新"
+              title={t('source.browserRefresh', '刷新')}
               disabled={!token}
               onClick={() => {
                 setLoading(true)
@@ -200,7 +202,7 @@ export const SourceWebViewModal: React.FC<SourceWebViewModalProps> = ({
             <button
               type="button"
               className="source-webview-icon-btn"
-              title="回到登录页"
+              title={t('source.browserHome', '回到登录页')}
               disabled={!startUrl}
               onClick={() => navigate(startUrl)}
             >
@@ -214,20 +216,20 @@ export const SourceWebViewModal: React.FC<SourceWebViewModalProps> = ({
               value={addressDraft}
               spellCheck={false}
               onChange={e => setAddressDraft(e.target.value)}
-              placeholder="输入该书源站点内的网址"
+              placeholder={t('source.browserUrlPlaceholder', '输入该书源站点内的网址')}
             />
           </form>
 
           <div className="source-webview-actions">
             {cookieCount !== null && (
-              <span className="source-webview-cookie-badge" title="已捕获的 Cookie 域名数">
+              <span className="source-webview-cookie-badge" title={t('source.capturedCookieCount', '已捕获的 Cookie 域名数')}>
                 🍪 {cookieCount}
               </span>
             )}
             <button
               type="button"
               className="source-webview-icon-btn"
-              title="在新标签页打开"
+              title={t('source.openInNewTab', '在新标签页打开')}
               disabled={!pageSrc}
               onClick={() => pageSrc && window.open(pageSrc, '_blank', 'noopener,noreferrer')}
             >
@@ -239,9 +241,9 @@ export const SourceWebViewModal: React.FC<SourceWebViewModalProps> = ({
               disabled={busy || !token}
               onClick={handleCheckLogin}
             >
-              {busy ? '检测中...' : '✓ 登录完成'}
+              {busy ? t('source.loginChecking', '检测中...') : `✓ ${t('source.loginCompleted', '登录完成')}`}
             </button>
-            <button type="button" className="source-webview-icon-btn" title="关闭" onClick={onClose}>
+            <button type="button" className="source-webview-icon-btn" title={t('common.close', '关闭')} onClick={onClose}>
               ✕
             </button>
           </div>
@@ -250,20 +252,20 @@ export const SourceWebViewModal: React.FC<SourceWebViewModalProps> = ({
         <div className="source-webview-body">
           {error ? (
             <div className="source-webview-placeholder error">
-              <div className="source-webview-placeholder-title">无法打开内置浏览器</div>
+              <div className="source-webview-placeholder-title">{t('source.cannotOpenBrowser', '无法打开内置浏览器')}</div>
               <div className="source-webview-placeholder-text">{error}</div>
               <div className="source-webview-placeholder-text">
-                可在书源中补全 <code>loginUrl</code> 后重试，或改用「快捷填入 Cookie / 一键同步书签」方式。
+                {t('source.cannotOpenBrowserHint', '可在书源中补全 loginUrl 后重试，或改用「快捷填入 Cookie / 一键同步书签」方式。')}
               </div>
             </div>
           ) : (
             <>
-              {loading && <div className="source-webview-loading">正在打开 {sourceName} ...</div>}
+              {loading && <div className="source-webview-loading">{t('source.openingSourceSite', { name: sourceName, defaultValue: `正在打开 ${sourceName} ...` })}</div>}
               {pageSrc && (
                 <iframe
                   key={navSeq}
                   className="source-webview-frame"
-                  title={`${sourceName} 登录`}
+                  title={t('source.sourceSiteLoginTitle', { name: sourceName, defaultValue: `${sourceName} 登录` })}
                   src={pageSrc}
                   sandbox="allow-forms allow-scripts allow-popups allow-modals allow-downloads"
                   referrerPolicy="no-referrer"
@@ -275,7 +277,7 @@ export const SourceWebViewModal: React.FC<SourceWebViewModalProps> = ({
         </div>
 
         <div className="source-webview-footnote">
-          页面由服务端代理渲染（站点 JS 在隔离沙箱中运行，无法访问本应用数据）。登录成功后 Cookie 会自动保存到该书源，无需手动复制。
+          {t('source.browserFootnote', '页面由服务端代理渲染（站点 JS 在隔离沙箱中运行，无法访问本应用数据）。登录成功后 Cookie 会自动保存到该书源，无需手动复制。')}
         </div>
       </div>
     </div>

@@ -434,12 +434,12 @@ private suspend fun ApplicationCall.requireWebDavAuth(auth: AuthService, write: 
         if (csrf != null) {
             // 浏览器（Web 设置页）走会话鉴权：写操作必须带 CSRF 头，避免被跨站请求伪造。
             if (!write || request.headers[AuthService.CSRF_HEADER] == csrf) return true
-            respond(HttpStatusCode.Forbidden, ApiError("csrf_invalid", "请求验证失败"))
+            respondApiError(HttpStatusCode.Forbidden, "csrf_invalid", "请求验证失败")
             return false
         }
     }
     response.header(HttpHeaders.WWWAuthenticate, "Basic realm=\"Legado WebDAV\", charset=\"UTF-8\"")
-    respond(HttpStatusCode.Unauthorized, ApiError("unauthenticated", "WebDAV 需要管理员密码认证"))
+    respondApiError(HttpStatusCode.Unauthorized, "unauthenticated", "WebDAV 需要管理员密码认证")
     return false
 }
 
@@ -448,9 +448,9 @@ private suspend fun ApplicationCall.serveWebDavInfo(auth: AuthService, storage: 
     if (!requireWebDavAuth(auth)) return
     val relative = request.queryParameters["path"].orEmpty().trim('/')
     val target = storage.resolve(relative)
-    if (target == null) return respond(HttpStatusCode.BadRequest, ApiError("invalid_path", "路径无效"))
+    if (target == null) return respondApiError(HttpStatusCode.BadRequest, "invalid_path", "路径无效")
     if (!Files.isDirectory(target, LinkOption.NOFOLLOW_LINKS)) {
-        return respond(HttpStatusCode.NotFound, ApiError("not_found", "目录不存在"))
+        return respondApiError(HttpStatusCode.NotFound, "not_found", "目录不存在")
     }
     val usage = withContext(Dispatchers.IO) { storage.usage() }
     val entries = withContext(Dispatchers.IO) { storage.list(target) }.map { child ->

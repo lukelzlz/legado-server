@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import { api, TtsVoice } from './api'
 import { Icon } from './icons'
 import { ReaderSettings, TtsEngineType } from './readerSettings'
@@ -40,6 +41,7 @@ export const TtsSettingsModal: React.FC<TtsSettingsModalProps> = ({
   remainingSeconds,
   onClose,
 }) => {
+  const { t } = useTranslation()
   const [edgeVoices, setEdgeVoices] = useState<TtsVoice[]>(DEFAULT_EDGE_VOICES)
   const [localVoices, setLocalVoices] = useState<SpeechSynthesisVoice[]>([])
 
@@ -87,39 +89,39 @@ export const TtsSettingsModal: React.FC<TtsSettingsModalProps> = ({
       <div className="tts-settings-dialog" onClick={e => e.stopPropagation()} role="dialog" aria-modal="true">
         <header className="source-login-header">
           <div className="source-login-title-group">
-            <h3 className="source-login-title"><Icon name="volume2" /> 听书朗读设置</h3>
+            <h3 className="source-login-title"><Icon name="volume2" /> {t('tts.title', '听书朗读设置')}</h3>
           </div>
-          <button type="button" className="source-login-action-btn" onClick={onClose} title="关闭">✕</button>
+          <button type="button" className="source-login-action-btn" onClick={onClose} title={t('common.close', '关闭')}>✕</button>
         </header>
 
         <div className="source-login-body tts-modal-content">
           {/* Engine Selection */}
           <div className="tts-setting-section">
-            <label className="tts-section-label">朗读引擎</label>
+            <label className="tts-section-label">{t('tts.engine', '朗读引擎')}</label>
             <div className="tts-engine-grid">
               <button
                 type="button"
                 className={`tts-engine-btn ${settings.ttsEngine === 'edge' ? 'active' : ''}`}
                 onClick={() => handleEngineChange('edge')}
               >
-                <strong>微软 Edge-TTS</strong>
-                <span>高拟真 AI 神经网络音色 (推荐)</span>
+                <strong>{t('tts.engineEdge', '微软 Edge-TTS')}</strong>
+                <span>{t('tts.engineEdgeDesc', '高拟真 AI 神经网络音色 (推荐)')}</span>
               </button>
               <button
                 type="button"
                 className={`tts-engine-btn ${settings.ttsEngine === 'webSpeech' ? 'active' : ''}`}
                 onClick={() => handleEngineChange('webSpeech')}
               >
-                <strong>浏览器 Web Speech</strong>
-                <span>系统本地音色·零流量秒开</span>
+                <strong>{t('tts.engineWebSpeech', '浏览器 Web Speech')}</strong>
+                <span>{t('tts.engineWebSpeechDesc', '系统本地音色·零流量秒开')}</span>
               </button>
               <button
                 type="button"
                 className={`tts-engine-btn ${settings.ttsEngine === 'custom' ? 'active' : ''}`}
                 onClick={() => handleEngineChange('custom')}
               >
-                <strong>自定义 HTTP 源</strong>
-                <span>自建 API 或第三方 TTS</span>
+                <strong>{t('tts.engineCustom', '自定义 HTTP 源')}</strong>
+                <span>{t('tts.engineCustomDesc', '自建 API 或第三方 TTS')}</span>
               </button>
             </div>
           </div>
@@ -127,7 +129,7 @@ export const TtsSettingsModal: React.FC<TtsSettingsModalProps> = ({
           {/* Voice Selection */}
           {settings.ttsEngine === 'edge' && (
             <div className="tts-setting-section">
-              <label className="tts-section-label">发音人 (音色)</label>
+              <label className="tts-section-label">{t('tts.voice', '发音人 (音色)')}</label>
               <select
                 className="login-ui-select"
                 value={settings.ttsVoice}
@@ -135,7 +137,7 @@ export const TtsSettingsModal: React.FC<TtsSettingsModalProps> = ({
               >
                 {edgeVoices.map(v => (
                   <option key={v.id} value={v.id}>
-                    {v.name} ({v.localeName})
+                    {t(`tts.voice_${v.id}`, v.name)} ({t(`tts.locale_${v.lang}`, v.localeName)})
                   </option>
                 ))}
               </select>
@@ -144,7 +146,7 @@ export const TtsSettingsModal: React.FC<TtsSettingsModalProps> = ({
 
           {settings.ttsEngine === 'webSpeech' && (
             <div className="tts-setting-section">
-              <label className="tts-section-label">系统发音人</label>
+              <label className="tts-section-label">{t('tts.systemVoice', '系统发音人')}</label>
               <select
                 className="login-ui-select"
                 value={settings.ttsVoice}
@@ -162,7 +164,7 @@ export const TtsSettingsModal: React.FC<TtsSettingsModalProps> = ({
           {/* Speed / Rate */}
           <div className="tts-setting-section">
             <div className="tts-slider-header">
-              <label className="tts-section-label">语速调节</label>
+              <label className="tts-section-label">{t('tts.speed', '语速调节')}</label>
               <span className="tts-value-badge">{settings.ttsSpeed.toFixed(1)}x</span>
             </div>
             <input
@@ -191,7 +193,7 @@ export const TtsSettingsModal: React.FC<TtsSettingsModalProps> = ({
           {/* Pitch */}
           <div className="tts-setting-section">
             <div className="tts-slider-header">
-              <label className="tts-section-label">语调 (Pitch)</label>
+              <label className="tts-section-label">{t('tts.pitch', '语调 (Pitch)')}</label>
               <span className="tts-value-badge">{settings.ttsPitch.toFixed(2)}</span>
             </div>
             <input
@@ -208,9 +210,9 @@ export const TtsSettingsModal: React.FC<TtsSettingsModalProps> = ({
           {/* Sleep Timer */}
           <div className="tts-setting-section">
             <div className="tts-slider-header">
-              <label className="tts-section-label">睡眠定时器 (定时关闭)</label>
+              <label className="tts-section-label">{t('tts.sleepTimer', '睡眠定时器 (定时关闭)')}</label>
               {remainingSeconds !== null && remainingSeconds > 0 && (
-                <span className="tts-countdown-badge">⏳ 倒计时 {formatTimerRemaining(remainingSeconds)}</span>
+                <span className="tts-countdown-badge">⏳ {t('tts.countdown', { time: formatTimerRemaining(remainingSeconds), defaultValue: `倒计时 ${formatTimerRemaining(remainingSeconds)}` })}</span>
               )}
             </div>
             <div className="tts-timer-grid">
@@ -219,42 +221,42 @@ export const TtsSettingsModal: React.FC<TtsSettingsModalProps> = ({
                 className={`tts-timer-btn ${sleepTimer === 'off' ? 'active' : ''}`}
                 onClick={() => onSleepTimerChange('off')}
               >
-                关闭
+                {t('tts.timerOff', '关闭')}
               </button>
               <button
                 type="button"
                 className={`tts-timer-btn ${sleepTimer === '15' ? 'active' : ''}`}
                 onClick={() => onSleepTimerChange('15')}
               >
-                15 分钟
+                {t('tts.timerMins', { mins: 15, defaultValue: '15 分钟' })}
               </button>
               <button
                 type="button"
                 className={`tts-timer-btn ${sleepTimer === '30' ? 'active' : ''}`}
                 onClick={() => onSleepTimerChange('30')}
               >
-                30 分钟
+                {t('tts.timerMins', { mins: 30, defaultValue: '30 分钟' })}
               </button>
               <button
                 type="button"
                 className={`tts-timer-btn ${sleepTimer === '45' ? 'active' : ''}`}
                 onClick={() => onSleepTimerChange('45')}
               >
-                45 分钟
+                {t('tts.timerMins', { mins: 45, defaultValue: '45 分钟' })}
               </button>
               <button
                 type="button"
                 className={`tts-timer-btn ${sleepTimer === '60' ? 'active' : ''}`}
                 onClick={() => onSleepTimerChange('60')}
               >
-                60 分钟
+                {t('tts.timerMins', { mins: 60, defaultValue: '60 分钟' })}
               </button>
               <button
                 type="button"
                 className={`tts-timer-btn ${sleepTimer === 'chapter' ? 'active' : ''}`}
                 onClick={() => onSleepTimerChange('chapter')}
               >
-                读完本章
+                {t('tts.timerChapter', '读完本章')}
               </button>
             </div>
           </div>
@@ -263,7 +265,7 @@ export const TtsSettingsModal: React.FC<TtsSettingsModalProps> = ({
           <div className="tts-setting-section">
             <div className="tts-toggle-row">
               <label className="login-ui-toggle-label">
-                <span>读完本章自动连播下一章</span>
+                <span>{t('tts.autoNextChapter', '读完本章自动连播下一章')}</span>
                 <input
                   type="checkbox"
                   checked={settings.ttsAutoNextChapter}
@@ -273,7 +275,7 @@ export const TtsSettingsModal: React.FC<TtsSettingsModalProps> = ({
             </div>
             <div className="tts-toggle-row">
               <label className="login-ui-toggle-label">
-                <span>过滤特殊标点与多余装饰符号</span>
+                <span>{t('tts.filterSpecialChars', '过滤特殊标点与多余装饰符号')}</span>
                 <input
                   type="checkbox"
                   checked={settings.ttsFilterSymbols}
@@ -286,12 +288,12 @@ export const TtsSettingsModal: React.FC<TtsSettingsModalProps> = ({
           {/* Custom HTTP TTS Settings */}
           {settings.ttsEngine === 'custom' && (
             <div className="tts-setting-section tts-custom-section">
-              <label className="tts-section-label">自定义 HTTP 源参数</label>
+              <label className="tts-section-label">{t('tts.customHttpParams', '自定义 HTTP 源参数')}</label>
               <p className="tts-hint">
-                可用占位符：<code>&#123;&#123;speakText&#125;&#125;</code>, <code>&#123;&#123;speakSpeed&#125;&#125;</code>, <code>&#123;&#123;speakVoice&#125;&#125;</code>
+                {t('tts.customHint', '可用占位符：')}<code>&#123;&#123;speakText&#125;&#125;</code>, <code>&#123;&#123;speakSpeed&#125;&#125;</code>, <code>&#123;&#123;speakVoice&#125;&#125;</code>
               </p>
               <div className="login-ui-item-field">
-                <label className="login-ui-field-label">接口 URL</label>
+                <label className="login-ui-field-label">{t('tts.apiUrl', '接口 URL')}</label>
                 <input
                   type="text"
                   className="login-ui-input"
@@ -301,7 +303,7 @@ export const TtsSettingsModal: React.FC<TtsSettingsModalProps> = ({
                 />
               </div>
               <div className="login-ui-item-field">
-                <label className="login-ui-field-label">请求方式 (GET / POST)</label>
+                <label className="login-ui-field-label">{t('tts.httpMethod', '请求方式 (GET / POST)')}</label>
                 <select
                   className="login-ui-select"
                   value={settings.ttsCustomMethod || 'GET'}
@@ -313,7 +315,7 @@ export const TtsSettingsModal: React.FC<TtsSettingsModalProps> = ({
               </div>
               {settings.ttsCustomMethod === 'POST' && (
                 <div className="login-ui-item-field">
-                  <label className="login-ui-field-label">POST 请求体 (Body JSON)</label>
+                  <label className="login-ui-field-label">{t('tts.postBody', 'POST 请求体 (Body JSON)')}</label>
                   <textarea
                     className="source-login-textarea"
                     rows={3}
@@ -328,7 +330,7 @@ export const TtsSettingsModal: React.FC<TtsSettingsModalProps> = ({
         </div>
 
         <div style={{ padding: '12px 18px', display: 'flex', justifyContent: 'flex-end', borderTop: '1px solid var(--line)' }}>
-          <button type="button" className="primary-button" onClick={onClose}>完成</button>
+          <button type="button" className="primary-button" onClick={onClose}>{t('common.done', '完成')}</button>
         </div>
       </div>
     </div>

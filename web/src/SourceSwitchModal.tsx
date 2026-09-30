@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import { api, Chapter, SearchResult, SearchStreamEvent, streamSearch } from './api'
 import { Icon } from './icons'
 import { toast } from './Toast'
@@ -78,6 +79,7 @@ export function SourceSwitchModal({
   onSwitch,
   onClose,
 }: SourceSwitchModalProps) {
+  const { t } = useTranslation()
   const [candidates, setCandidates] = useState<SourceCandidate[]>([])
   const [searchProgress, setSearchProgress] = useState<SearchStreamEvent | null>(null)
   const [searching, setSearching] = useState(true)
@@ -121,7 +123,7 @@ export function SourceSwitchModal({
         )
       )
     } catch (err) {
-      const errorMsg = err instanceof Error ? err.message : '无法获取目录'
+      const errorMsg = err instanceof Error ? err.message : t('source.unableToGetToc', '无法获取目录')
       setCandidates(prev =>
         prev.map(c =>
           c.result.sourceId === candidate.result.sourceId && c.result.bookUrl === candidate.result.bookUrl
@@ -132,7 +134,7 @@ export function SourceSwitchModal({
     } finally {
       fetchingTocRef.current.delete(key)
     }
-  }, [currentChapterIndex, currentChapterTitle])
+  }, [currentChapterIndex, currentChapterTitle, t])
 
   // Initialize known alternates
   useEffect(() => {
@@ -232,7 +234,7 @@ export function SourceSwitchModal({
 
   const handleSelect = async (candidate: SourceCandidate) => {
     if (candidate.isCurrent) {
-      toast.info('当前已是该书源')
+      toast.info(t('source.alreadyCurrentSource', '当前已是该书源'))
       return
     }
 
@@ -255,11 +257,11 @@ export function SourceSwitchModal({
         targetChapterIndex: targetIndex,
       })
 
-      const targetTitle = chapters[targetIndex]?.title || `第 ${targetIndex + 1} 章`
-      toast.success(`已切换至【${candidate.result.sourceId}】，定位至：${targetTitle}`)
+      const targetTitle = chapters[targetIndex]?.title || t('reader.chapterIndex', { index: targetIndex + 1, defaultValue: `第 ${targetIndex + 1} 章` })
+      toast.success(t('source.switchSourceSuccess', { source: candidate.result.sourceId, title: targetTitle, defaultValue: `已切换至【${candidate.result.sourceId}】，定位至：${targetTitle}` }))
       onClose()
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : '切换书源失败')
+      toast.error(err instanceof Error ? err.message : t('source.switchSourceFailed', '切换书源失败'))
     } finally {
       setSwitchingSourceId(null)
     }
@@ -292,18 +294,18 @@ export function SourceSwitchModal({
         onClick={e => e.stopPropagation()}
         role="dialog"
         aria-modal="true"
-        aria-label={`切换书源: ${bookName}`}
+        aria-label={t('source.switchSourceForBook', { name: bookName, defaultValue: `切换书源: ${bookName}` })}
       >
         <header className="source-switch-header">
           <div>
             <div className="source-switch-kicker">
               <Icon name="sliders" />
-              <span>切换书源</span>
+              <span>{t('source.switchSourceTitle', '切换书源')}</span>
             </div>
             <h2>{bookName}</h2>
-            <small>{author ? `作者: ${author}` : '未知作者'} · 当前：{currentSourceId}</small>
+            <small>{author ? `${t('library.author', '作者')}: ${author}` : t('library.unknownAuthor', '未知作者')} · {t('source.currentSourceBadge', '当前书源')}：{currentSourceId}</small>
           </div>
-          <button className="subtle-button close-btn" onClick={onClose} aria-label="关闭">
+          <button className="subtle-button close-btn" onClick={onClose} aria-label={t('common.close', '关闭')}>
             <Icon name="close" />
           </button>
         </header>
@@ -313,15 +315,15 @@ export function SourceSwitchModal({
           <div className="search-banner-text">
             <span>
               {searching ? (
-                <>正在全源检索《{bookName}》...</>
+                <>{t('source.searchingSourcesForBook', { name: bookName, defaultValue: `正在全源检索《${bookName}》...` })}</>
               ) : (
-                <>全源检索完成，共找到 {candidates.length} 个书源</>
+                <>{t('source.searchSourcesCompleted', { count: candidates.length, defaultValue: `全源检索完成，共找到 ${candidates.length} 个书源` })}</>
               )}
             </span>
             <small>
               {searchProgress
-                ? `已扫描 ${searchProgress.completedSources} / ${searchProgress.totalSources} 个书源`
-                : '准备检索...'}
+                ? t('source.scannedSourcesProgress', { completed: searchProgress.completedSources, total: searchProgress.totalSources, defaultValue: `已扫描 ${searchProgress.completedSources} / ${searchProgress.totalSources} 个书源` })
+                : t('source.preparingSearch', '准备检索...')}
             </small>
           </div>
           {searching && (
@@ -342,15 +344,15 @@ export function SourceSwitchModal({
             const isError = c.status === 'error'
             const isCurrent = c.isCurrent
 
-            let metaText = '点击拉取目录并切换'
+            let metaText = t('source.clickToFetchTocAndSwitch', '点击拉取目录并切换')
             if (isCurrent) {
-              metaText = '当前正在阅读的书源'
+              metaText = t('source.currentReadingSource', '当前正在阅读的书源')
             } else if (isLoading) {
-              metaText = '正在提取目录与章节...'
+              metaText = t('source.extractingTocAndChapters', '正在提取目录与章节...')
             } else if (isError) {
-              metaText = c.error || '获取目录失败'
+              metaText = c.error || t('source.unableToGetToc', '获取目录失败')
             } else if (c.status === 'loaded') {
-              metaText = `共 ${c.totalChapters ?? 0} 章 · 最新：${c.latestChapter || '无'}`
+              metaText = t('source.totalChaptersAndLatest', { count: c.totalChapters ?? 0, latest: c.latestChapter || t('common.none', '无'), defaultValue: `共 ${c.totalChapters ?? 0} 章 · 最新：${c.latestChapter || '无'}` })
             }
 
             return (
@@ -361,29 +363,29 @@ export function SourceSwitchModal({
                 <div className="candidate-main">
                   <div className="candidate-title-row">
                     <strong>{c.result.sourceId}</strong>
-                    {isCurrent && <span className="source-badge current">当前书源</span>}
+                    {isCurrent && <span className="source-badge current">{t('source.currentSourceBadge', '当前书源')}</span>}
                     {c.isKnownAlternate && !isCurrent && (
-                      <span className="source-badge alternate">已收录候选</span>
+                      <span className="source-badge alternate">{t('source.candidateBadge', '已收录候选')}</span>
                     )}
                   </div>
                   <p className="candidate-meta">{metaText}</p>
                   {c.matchedChapterTitle && !isCurrent && (
                     <small className="candidate-match">
-                      智能定位至：第 {(c.matchedChapterIndex ?? 0) + 1} 章 · {c.matchedChapterTitle}
+                      {t('source.smartMatchedPosition', { index: (c.matchedChapterIndex ?? 0) + 1, title: c.matchedChapterTitle, defaultValue: `智能定位至：第 ${(c.matchedChapterIndex ?? 0) + 1} 章 · ${c.matchedChapterTitle}` })}
                     </small>
                   )}
                 </div>
 
                 <div className="candidate-action">
                   {isCurrent ? (
-                    <span className="current-indicator">使用中</span>
+                    <span className="current-indicator">{t('source.inUse', '使用中')}</span>
                   ) : (
                     <button
                       className="primary-button switch-btn"
                       disabled={isSwitching}
                       onClick={() => void handleSelect(c)}
                     >
-                      {isSwitching ? '切换中...' : '切换'}
+                      {isSwitching ? t('source.switching', '切换中...') : t('source.switch', '切换')}
                     </button>
                   )}
                 </div>
@@ -394,7 +396,7 @@ export function SourceSwitchModal({
           {sortedCandidates.length === 0 && !searching && (
             <div className="source-switch-empty">
               <Icon name="book" />
-              <p>未在其他书源中发现匹配的《{bookName}》</p>
+              <p>{t('source.noMatchingBookFound', { name: bookName, defaultValue: `未在其他书源中发现匹配的《${bookName}》` })}</p>
             </div>
           )}
         </div>

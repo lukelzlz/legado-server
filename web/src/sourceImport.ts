@@ -1,3 +1,5 @@
+import i18n from './i18n'
+
 export function extractSourcesFromRaw(raw: unknown): unknown[] {
   if (!raw) return []
   if (Array.isArray(raw)) return raw
@@ -31,7 +33,7 @@ export function parseSourceJsonText(rawText: string): unknown[] {
     if (lineItems.length > 0) {
       parsed = lineItems
     } else {
-      throw new Error('文件不是有效的 JSON 格式')
+      throw new Error(i18n.t('source.invalidFormat', '文件不是有效的 JSON 格式'))
     }
   }
   return extractSourcesFromRaw(parsed)

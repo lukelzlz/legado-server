@@ -1,4 +1,5 @@
 import { CSSProperties, PointerEvent as ReactPointerEvent, useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import { api, BookDetails, Chapter, ReadingProgress, SearchResult } from './api'
 import { Icon } from './icons'
 import { calculatePaginationLayout, findFirstFullyVisibleParagraphIndex, isAtBottomBoundary, isAtTopBoundary, isInteractiveReaderTarget, isTapGesture, paginateTapZone, scrollTapZone, swipeDirection, ViewportBounds } from './readerInteractions'
@@ -28,10 +29,6 @@ type ReaderScreenProps = {
   onClose: () => void
 }
 
-const themes = [
-  ['light', '晓白'], ['paper', '护眼'], ['dark', '夜读'],
-] as const
-
 function IconButton({ label, icon, onClick, className = '' }: { label: string; icon: Parameters<typeof Icon>[0]['name']; onClick: () => void; className?: string }) {
   return <button className={`reader-icon-button ${className}`} title={label} aria-label={label} onClick={onClick}><Icon name={icon} /></button>
 }
@@ -49,16 +46,22 @@ function ReaderSettingsControls({
   onChange: (next: ReaderSettings) => void
   onOpenReplaceRules?: () => void
 }) {
+  const { t } = useTranslation()
+  const themes = [
+    ['light', t('reader.themeLight', '晓白')],
+    ['paper', t('reader.themePaper', '护眼')],
+    ['dark', t('reader.themeDark', '夜读')],
+  ] as const
   const update = (value: Partial<ReaderSettings>) => onChange({ ...settings, ...value })
   return <div className="drawer-scroll-content">
-    <section className="setting-section"><span className="setting-label">主题</span><div className="theme-grid">{themes.map(([theme, label]) => <button key={theme} className={`theme-choice theme-${theme} ${settings.theme === theme ? 'selected' : ''}`} onClick={() => update({ theme })}><i>{settings.theme === theme && <Icon name="check" />}</i><small>{label}</small></button>)}</div></section>
-    <section className="setting-section"><span className="setting-label">字体</span><label className="font-select"><select value={settings.font} onChange={event => update({ font: event.target.value as ReaderSettings['font'] })}><option value="song">思源宋体</option><option value="hei">黑体 / 苹方</option><option value="kai">华文楷体</option><option value="fangsong">华文仿宋</option><option value="system">系统字体</option></select><Icon name="chevronDown" /></label></section>
-    <section className="setting-section compact-settings"><div className="font-stepper"><span>字号</span><button aria-label="减小字号" onClick={() => update({ fontSize: Math.max(15, settings.fontSize - 1) })}>−</button><output>{settings.fontSize}</output><button aria-label="增大字号" onClick={() => update({ fontSize: Math.min(28, settings.fontSize + 1) })}>+</button></div><SettingRange label="字间距" value={settings.letterSpacing} min={-.25} max={1.5} step={.05} display={settings.letterSpacing.toFixed(2)} onChange={letterSpacing => update({ letterSpacing })} /><SettingRange label="行间距" value={settings.lineHeight} min={1.45} max={2.4} step={.05} display={settings.lineHeight.toFixed(2)} onChange={lineHeight => update({ lineHeight })} /><SettingRange label="段间距" value={settings.paragraphSpacing} min={.7} max={2} step={.05} display={settings.paragraphSpacing.toFixed(2)} onChange={paragraphSpacing => update({ paragraphSpacing })} /><SettingRange label="左右边距" value={settings.contentPadding} min={20} max={120} step={2} display={`${settings.contentPadding}`} onChange={contentPadding => update({ contentPadding })} /><SettingRange label="版心宽度" value={settings.maxWidth} min={560} max={1400} step={20} display={`${settings.maxWidth}px`} onChange={maxWidth => update({ maxWidth })} /></section>
-    <section className="setting-section"><span className="setting-label">翻页方式</span><div className="page-modes"><button className={settings.pageMode === 'scroll' ? 'selected' : ''} onClick={() => update({ pageMode: 'scroll' })}>连续滚动</button><button className={settings.pageMode === 'paginate' ? 'selected' : ''} onClick={() => update({ pageMode: 'paginate' })}>平移分页</button></div><small className="setting-hint">{settings.pageMode === 'paginate' ? '左右轻扫或点击屏幕两侧平滑翻页' : '垂直滚动阅读，点击上下可快速翻滚'}</small></section>
-    <section className="setting-section"><span className="setting-label">分栏排版</span><div className="page-modes column-modes"><button className={settings.columnMode === 'auto' ? 'selected' : ''} onClick={() => update({ columnMode: 'auto' })}>自适应</button><button className={settings.columnMode === 'single' ? 'selected' : ''} onClick={() => update({ columnMode: 'single' })}>单栏</button><button className={settings.columnMode === 'double' ? 'selected' : ''} onClick={() => update({ columnMode: 'double' })}>双栏</button></div><small className="setting-hint">{settings.columnMode === 'auto' ? '宽屏 (≥800px) 自动开启双页分栏' : settings.columnMode === 'double' ? '固定双栏双页排版' : '固定单栏排版'}</small></section>
+    <section className="setting-section"><span className="setting-label">{t('reader.themeSection', '主题')}</span><div className="theme-grid">{themes.map(([theme, label]) => <button key={theme} className={`theme-choice theme-${theme} ${settings.theme === theme ? 'selected' : ''}`} onClick={() => update({ theme })}><i>{settings.theme === theme && <Icon name="check" />}</i><small>{label}</small></button>)}</div></section>
+    <section className="setting-section"><span className="setting-label">{t('reader.fontSection', '字体')}</span><label className="font-select"><select value={settings.font} onChange={event => update({ font: event.target.value as ReaderSettings['font'] })}><option value="song">{t('reader.fontSong', '思源宋体')}</option><option value="hei">{t('reader.fontHei', '黑体 / 苹方')}</option><option value="kai">{t('reader.fontKai', '华文楷体')}</option><option value="fangsong">{t('reader.fontFangsong', '华文仿宋')}</option><option value="system">{t('reader.fontSystem', '系统字体')}</option></select><Icon name="chevronDown" /></label></section>
+    <section className="setting-section compact-settings"><div className="font-stepper"><span>{t('reader.fontSize', '字号')}</span><button aria-label={t('reader.decreaseFontSize', '减小字号')} onClick={() => update({ fontSize: Math.max(15, settings.fontSize - 1) })}>−</button><output>{settings.fontSize}</output><button aria-label={t('reader.increaseFontSize', '增大字号')} onClick={() => update({ fontSize: Math.min(28, settings.fontSize + 1) })}>+</button></div><SettingRange label={t('reader.letterSpacing', '字间距')} value={settings.letterSpacing} min={-.25} max={1.5} step={.05} display={settings.letterSpacing.toFixed(2)} onChange={letterSpacing => update({ letterSpacing })} /><SettingRange label={t('reader.lineHeight', '行间距')} value={settings.lineHeight} min={1.45} max={2.4} step={.05} display={settings.lineHeight.toFixed(2)} onChange={lineHeight => update({ lineHeight })} /><SettingRange label={t('reader.paragraphSpacing', '段间距')} value={settings.paragraphSpacing} min={.7} max={2} step={.05} display={settings.paragraphSpacing.toFixed(2)} onChange={paragraphSpacing => update({ paragraphSpacing })} /><SettingRange label={t('reader.contentPadding', '左右边距')} value={settings.contentPadding} min={20} max={120} step={2} display={`${settings.contentPadding}`} onChange={contentPadding => update({ contentPadding })} /><SettingRange label={t('reader.maxWidth', '版心宽度')} value={settings.maxWidth} min={560} max={1400} step={20} display={`${settings.maxWidth}px`} onChange={maxWidth => update({ maxWidth })} /></section>
+    <section className="setting-section"><span className="setting-label">{t('reader.pageMode', '翻页方式')}</span><div className="page-modes"><button className={settings.pageMode === 'scroll' ? 'selected' : ''} onClick={() => update({ pageMode: 'scroll' })}>{t('reader.pageScroll', '连续滚动')}</button><button className={settings.pageMode === 'paginate' ? 'selected' : ''} onClick={() => update({ pageMode: 'paginate' })}>{t('reader.pagePaginate', '平移分页')}</button></div><small className="setting-hint">{settings.pageMode === 'paginate' ? t('reader.pagePaginateHint', '左右轻扫或点击屏幕两侧平滑翻页') : t('reader.pageScrollHint', '垂直滚动阅读，点击上下可快速翻滚')}</small></section>
+    <section className="setting-section"><span className="setting-label">{t('reader.columnMode', '分栏排版')}</span><div className="page-modes column-modes"><button className={settings.columnMode === 'auto' ? 'selected' : ''} onClick={() => update({ columnMode: 'auto' })}>{t('reader.columnAuto', '自适应')}</button><button className={settings.columnMode === 'single' ? 'selected' : ''} onClick={() => update({ columnMode: 'single' })}>{t('reader.columnSingle', '单栏')}</button><button className={settings.columnMode === 'double' ? 'selected' : ''} onClick={() => update({ columnMode: 'double' })}>{t('reader.columnDouble', '双栏')}</button></div><small className="setting-hint">{settings.columnMode === 'auto' ? t('reader.columnAutoHint', '宽屏 (≥800px) 自动开启双页分栏') : settings.columnMode === 'double' ? t('reader.columnDoubleHint', '固定双栏双页排版') : t('reader.columnSingleHint', '固定单栏排版')}</small></section>
     {onOpenReplaceRules && (
       <section className="setting-section">
-        <span className="setting-label">内容净化</span>
+        <span className="setting-label">{t('reader.contentPurify', '内容净化')}</span>
         <button
           type="button"
           className="rules-setting-btn"
@@ -79,23 +82,24 @@ function ReaderSettingsControls({
         >
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
             <Icon name="edit" />
-            <span>替换净化规则管理</span>
+            <span>{t('reader.replaceRulesManage', '替换净化规则管理')}</span>
           </div>
           <Icon name="arrowRight" />
         </button>
-        <small className="setting-hint">针对当前书籍/书源过滤广告与特定字符</small>
+        <small className="setting-hint">{t('reader.replaceRulesHint', '针对当前书籍/书源过滤广告与特定字符')}</small>
       </section>
     )}
-    <button className="reset-settings" onClick={() => onChange({ ...defaultReaderSettings, theme: settings.theme })}>恢复默认设置</button>
+    <button className="reset-settings" onClick={() => onChange({ ...defaultReaderSettings, theme: settings.theme })}>{t('reader.restoreDefaults', '恢复默认设置')}</button>
   </div>
 }
 
 function ReaderContentSkeleton() {
+  const { t } = useTranslation()
   return (
-    <div className="reader-loading-container" aria-label="正在加载正文">
+    <div className="reader-loading-container" aria-label={t('reader.loadingChapter', '正在加载正文')}>
       <div className="reader-loading-badge">
         <span className="reader-loading-spinner-ring" />
-        <span>正在从书源拉取正文...</span>
+        <span>{t('reader.fetchingContent', '正在从书源拉取正文...')}</span>
       </div>
       <div className="reader-skeleton-paragraphs">
         <div className="skeleton-line" style={{ width: '100%' }} />
@@ -135,6 +139,7 @@ export function VirtualChapterList({
   className = '',
   autoScrollKey,
 }: VirtualChapterListProps) {
+  const { t } = useTranslation()
   const containerRef = useRef<HTMLElement | null>(null)
   const [scrollTop, setScrollTop] = useState(0)
   const [containerHeight, setContainerHeight] = useState(600)
@@ -203,7 +208,7 @@ export function VirtualChapterList({
     <nav
       ref={containerRef}
       className={`reader-chapters ${className}`}
-      aria-label="章节目录"
+      aria-label={t('reader.catalog', '章节目录')}
       onScroll={handleScroll}
     >
       {topSpacer > 0 && <div style={{ height: topSpacer }} aria-hidden="true" />}
@@ -215,21 +220,22 @@ export function VirtualChapterList({
             style={{ height: itemHeight }}
             className={`reader-chapter-item ${chapter.index === activeChapterIndex ? 'current' : ''} ${isCached ? 'cached' : ''}`}
             onClick={() => onSelect(chapter.index)}
-            title={`${chapter.title}${isCached ? ' (已离线缓存)' : ''}`}
+            title={`${chapter.title}${isCached ? ' ' + t('reader.cachedBadgeParens', '(已离线缓存)') : ''}`}
           >
             <i />
             <span className="reader-chapter-title">{chapter.title}</span>
-            {isCached && <span className="chapter-cached-badge" title="已离线缓存" />}
+            {isCached && <span className="chapter-cached-badge" title={t('reader.cachedBadge', '已离线缓存')} />}
           </button>
         )
       })}
       {bottomSpacer > 0 && <div style={{ height: bottomSpacer }} aria-hidden="true" />}
-      {count === 0 && <p className="reader-status" style={{ padding: '24px 0' }}>无匹配章节</p>}
+      {count === 0 && <p className="reader-status" style={{ padding: '24px 0' }}>{t('reader.noMatchingChapters', '无匹配章节')}</p>}
     </nav>
   )
 }
 
 export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange, onClose }: ReaderScreenProps) {
+  const { t } = useTranslation()
   const [currentBook, setCurrentBook] = useState<OpenBook>(openBook)
   const [chapterIndex, setChapterIndex] = useState(startIndex)
   const [content, setContent] = useState('')
@@ -297,7 +303,7 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
   const bodyRef = useRef<HTMLDivElement | null>(null)
 
   const chapter = currentBook.chapters[chapterIndex]
-  const bookName = currentBook.details.name || '书籍正文'
+  const bookName = currentBook.details.name || t('reader.defaultBookName', '书籍正文')
 
   // Sync cache status with bookshelf and local IndexedDB
   const syncCacheStatus = useCallback(async () => {
@@ -322,9 +328,9 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
         setCacheStatus(prev => {
           // If state changed to ready or failed, show notification
           if (prev.state === 'caching' && item.cacheState === 'ready') {
-            toast.success(`《${bookName}》离线缓存完成（共 ${item.cachedChapters} 章）`)
+            toast.success(t('reader.cacheCompleteToast', { name: bookName, count: item.cachedChapters, defaultValue: `《${bookName}》离线缓存完成（共 ${item.cachedChapters} 章）` }))
           } else if (prev.state === 'caching' && item.cacheState === 'failed') {
-            toast.warning(`《${bookName}》缓存中断：${item.cacheError || '部分章节未下载'}`)
+            toast.warning(t('reader.cacheInterruptedToast', { name: bookName, error: item.cacheError || t('reader.someChaptersFailed', '部分章节未下载'), defaultValue: `《${bookName}》缓存中断：${item.cacheError || '部分章节未下载'}` }))
           }
           return {
             state: item.cacheState,
@@ -339,7 +345,7 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
     } catch {
       // ignore
     }
-  }, [bookName, currentBook.bookUrl, currentBook.chapters.length, currentBook.details.sourceId])
+  }, [bookName, currentBook.bookUrl, currentBook.chapters.length, currentBook.details.sourceId, t])
 
   useEffect(() => {
     void syncCacheStatus()
@@ -352,12 +358,12 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
   }, [cacheStatus.state, syncCacheStatus])
 
   useEffect(() => {
-    const title = chapter?.title ? `${bookName} - ${chapter.title} | 阅读服务器` : `${bookName} | 阅读服务器`
+    const title = chapter?.title ? `${bookName} - ${chapter.title} | ${t('reader.serverTitle', '阅读服务器')}` : `${bookName} | ${t('reader.serverTitle', '阅读服务器')}`
     document.title = title
     return () => {
-      document.title = '阅读服务器'
+      document.title = t('reader.serverTitle', '阅读服务器')
     }
-  }, [bookName, chapter?.title])
+  }, [bookName, chapter?.title, t])
 
   const filteredChapters = useMemo(() => {
     const query = deferredQuery.trim().toLowerCase()
@@ -472,7 +478,7 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
     if (idx >= ttsData.chunks.length) {
       // Reached end of current chapter
       if (sleepTimer === 'chapter') {
-        toast.info('已读完本章，睡眠定时已触发')
+        toast.info(t('reader.chapterFinishedSleep', '已读完本章，睡眠定时已触发'))
         stopTts()
         return
       }
@@ -500,7 +506,7 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
         if (sleepTimer === 'paragraph') {
           const nextChunk = ttsData.chunks[nextIdx]
           if (!nextChunk || nextChunk.paragraphIndex !== chunk.paragraphIndex) {
-            toast.info('当前段落已读完，睡眠定时已触发')
+            toast.info(t('reader.paragraphFinishedSleep', '当前段落已读完，睡眠定时已触发'))
             stopTts()
             return
           }
@@ -509,7 +515,7 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
       },
       (err) => {
         if (isPlayInterruptedError(err)) return
-        toast.warning(err.message || '朗读中断')
+        toast.warning(err.message || t('reader.ttsInterrupted', '朗读中断'))
         setTtsPlayState('paused')
       },
       mode,
@@ -683,7 +689,7 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
   const changeChapter = useCallback((nextIndex: number, targetPage: 'first' | 'last' | 'auto' = 'auto') => {
     if (nextIndex < 0 || nextIndex >= currentBook.chapters.length || nextIndex === chapterIndex) {
       if (nextIndex < 0 || nextIndex >= currentBook.chapters.length) {
-        showBoundaryNotice(nextIndex < 0 ? '已是第一章' : '已是最后一章')
+        showBoundaryNotice(nextIndex < 0 ? t('reader.firstChapter', '已是第一章') : t('reader.lastChapter', '已是最后一章'))
       }
       return
     }
@@ -699,14 +705,14 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
     setLoading(true)
     setChapterIndex(nextIndex)
     setActiveDrawer(null)
-  }, [chapterIndex, currentBook.chapters.length, persist, settings.ttsEngine, showBoundaryNotice, stopTts, stopAllEngines])
+  }, [chapterIndex, currentBook.chapters.length, persist, settings.ttsEngine, showBoundaryNotice, stopTts, stopAllEngines, t])
 
   const toggleShelf = async () => {
     if (inShelf) {
-      if (!confirm(`移出“${bookName}”将清除书架、阅读进度和缓存封面，确定继续吗？`)) return
+      if (!confirm(t('shelf.removeFromShelfConfirm', { name: bookName, defaultValue: `移出“${bookName}”将清除书架、阅读进度和缓存封面，确定继续吗？` }))) return
       await api.removeFromBookshelf(currentBook.details.sourceId, currentBook.bookUrl)
       setInShelf(false)
-      toast.info(`《${bookName}》已移出书架`)
+      toast.info(t('reader.removedFromShelfToast', { name: bookName, defaultValue: `《${bookName}》已移出书架` }))
       return
     }
     const fallbackCover = currentBook.details.coverUrl || currentBook.details.alternateSources?.find(s => s.coverUrl?.trim())?.coverUrl?.trim()
@@ -720,7 +726,7 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
       alternateSources: currentBook.details.alternateSources,
     })
     setInShelf(true)
-    toast.success(`《${bookName}》已加入书架`)
+    toast.success(t('reader.addedToShelfToast', { name: bookName, defaultValue: `《${bookName}》已加入书架` }))
   }
 
   const handleCacheBook = async () => {
@@ -755,16 +761,16 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
       })
       toast.success(
         mode === 'all'
-          ? '已加入全本离线缓存队列'
+          ? t('shelf.addedToCacheQueueAll', '已加入全本离线缓存队列')
           : mode === 'next50'
-          ? '已开始缓存后续 50 章'
+          ? t('shelf.startedCacheNext50', '已开始缓存后续 50 章')
           : mode === 'next100'
-          ? '已开始缓存后续 100 章'
-          : `已开始缓存第 ${s + 1} ~ ${(e ?? 0) + 1} 章`
+          ? t('shelf.startedCacheNext100', '已开始缓存后续 100 章')
+          : t('shelf.startedCacheRange', { start: s + 1, end: (e ?? 0) + 1, defaultValue: `已开始缓存第 ${s + 1} ~ ${(e ?? 0) + 1} 章` })
       )
       setCacheStatus(prev => ({ ...prev, state: 'caching', error: undefined }))
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : '发起缓存失败')
+      toast.error(err instanceof Error ? err.message : t('shelf.cannotStartCache', '发起缓存失败'))
     }
   }
 
@@ -791,13 +797,13 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
         controller.signal
       )
       if (!controller.signal.aborted) {
-        toast.success(`离线同步完成：成功 ${res.successful} 章，跳过/已缓存 ${targetChapters.length - res.failed - res.successful} 章`)
+        toast.success(t('reader.offlineSyncSuccess', { success: res.successful, skipped: targetChapters.length - res.failed - res.successful, defaultValue: `离线同步完成：成功 ${res.successful} 章，跳过/已缓存 ${targetChapters.length - res.failed - res.successful} 章` }))
         const offlineSet = await getOfflineChaptersSet(currentBook.details.sourceId, currentBook.bookUrl)
         setCachedChapterUrls(offlineSet)
       }
     } catch (err) {
       if (!controller.signal.aborted) {
-        toast.error('离线同步中断')
+        toast.error(t('reader.offlineSyncInterrupted', '离线同步中断'))
       }
     } finally {
       if (!controller.signal.aborted) {
@@ -809,10 +815,10 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
   const handleCancelCache = async () => {
     try {
       await api.cancelBookCache(currentBook.details.sourceId, currentBook.bookUrl)
-      setCacheStatus(prev => ({ ...prev, state: 'failed', error: '已取消缓存' }))
-      toast.info(`已取消《${bookName}》的离线缓存`)
+      setCacheStatus(prev => ({ ...prev, state: 'failed', error: t('reader.cancelledCache', '已取消缓存') }))
+      toast.info(t('reader.cancelledCacheToast', { name: bookName, defaultValue: `已取消《${bookName}》的离线缓存` }))
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : '无法取消缓存')
+      toast.error(err instanceof Error ? err.message : t('reader.cancelCacheFailed', '无法取消缓存'))
     }
   }
 
@@ -825,7 +831,7 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
 
     const safeDetails: BookDetails = {
       ...details,
-      name: cleanTitle(details.name?.trim() || currentBook.details.name || '未知书名') || currentBook.details.name,
+      name: cleanTitle(details.name?.trim() || currentBook.details.name || t('common.unknown', '未知书名')) || currentBook.details.name,
       author: cleanAuthor(details.author?.trim() || currentBook.details.author) || currentBook.details.author,
       coverUrl: fallbackCover || undefined,
       intro: details.intro || currentBook.details.intro,
@@ -889,7 +895,7 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
       void api.content(currentBook.details.sourceId, chapter.url, currentBook.bookUrl)
         .then(result => applyContent(result.content))
         .catch(error => {
-          if (!cancelled) setMessage(error instanceof Error ? error.message : '无法读取正文')
+          if (!cancelled) setMessage(error instanceof Error ? error.message : t('reader.cannotReadContent', '无法读取正文'))
         })
         .finally(() => {
           if (!cancelled) setLoading(false)
@@ -1105,7 +1111,7 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
       setRemainingSeconds(prev => {
         if (prev === null || prev <= 1) {
           window.clearInterval(timer)
-          toast.info('睡眠定时时间到，已停止朗读')
+          toast.info(t('reader.sleepTimerEnded', '睡眠定时时间到，已停止朗读'))
           stopTts()
           return 0
         }
@@ -1113,14 +1119,14 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
       })
     }, 1000)
     return () => window.clearInterval(timer)
-  }, [sleepTimer, stopTts])
+  }, [sleepTimer, stopTts, t])
 
   // MediaSession API integration
   useEffect(() => {
     if (!('mediaSession' in navigator) || !ttsActive) return
     try {
       navigator.mediaSession.metadata = new MediaMetadata({
-        title: chapter?.title || '正文朗读',
+        title: chapter?.title || t('reader.listen', '正文朗读'),
         artist: currentBook.details.author || currentBook.details.name,
         album: bookName,
         artwork: currentBook.details.coverUrl ? [{ src: currentBook.details.coverUrl }] : undefined,
@@ -1296,9 +1302,9 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
     {/* Floating Header */}
     <header className="reader-header">
       <div className="reader-header-left">
-        <IconButton label="返回书架" icon="arrowLeft" onClick={() => { persist(); stopTts(); onClose() }} />
+        <IconButton label={t('reader.backToShelf', '返回书架')} icon="arrowLeft" onClick={() => { persist(); stopTts(); onClose() }} />
         <IconButton
-          label="目录"
+          label={t('reader.catalog', '目录')}
           icon="list"
           onClick={() => {
             if (settings.sidebarPinned) {
@@ -1312,10 +1318,10 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
       </div>
       <strong className="reader-header-title" title={bookName}>{bookName}</strong>
       <div className="reader-header-actions">
-        <IconButton label="切换书源" icon="sliders" onClick={() => setShowSourceSwitch(true)} />
-        <IconButton label="阅读设置" icon="settings" onClick={() => setActiveDrawer(d => d === 'settings' ? null : 'settings')} />
+        <IconButton label={t('reader.switchSource', '切换书源')} icon="sliders" onClick={() => setShowSourceSwitch(true)} />
+        <IconButton label={t('reader.settings', '阅读设置')} icon="settings" onClick={() => setActiveDrawer(d => d === 'settings' ? null : 'settings')} />
         <IconButton
-          label={!ttsActive ? '朗读本章' : ttsPlayState === 'playing' ? '暂停朗读' : '继续朗读'}
+          label={!ttsActive ? t('reader.readChapter', '朗读本章') : ttsPlayState === 'playing' ? t('reader.pauseReading', '暂停朗读') : t('reader.resumeReading', '继续朗读')}
           icon={ttsActive && ttsPlayState === 'playing' ? 'pause' : 'volume2'}
           onClick={toggleTts}
         />
@@ -1323,18 +1329,18 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
     </header>
 
     {/* TOC Drawer (Left) */}
-    <aside className={`reader-drawer reader-drawer-left ${activeDrawer === 'toc' ? 'open' : ''} ${settings.sidebarPinned ? 'pinned' : ''}`} aria-label="目录抽屉">
+    <aside className={`reader-drawer reader-drawer-left ${activeDrawer === 'toc' ? 'open' : ''} ${settings.sidebarPinned ? 'pinned' : ''}`} aria-label={t('reader.tocDrawer', '目录抽屉')}>
       <header className="drawer-header">
-        <div className="drawer-title"><Icon name="list" /><strong>目录</strong><small>共 {currentBook.chapters.length} 章</small></div>
+        <div className="drawer-title"><Icon name="list" /><strong>{t('reader.toc', '目录')}</strong><small>{t('reader.totalChapters', { count: currentBook.chapters.length, defaultValue: `共 ${currentBook.chapters.length} 章` })}</small></div>
         <div className="drawer-header-actions">
           <IconButton
             className={`desktop-pin-btn ${settings.sidebarPinned ? 'pinned' : ''}`}
-            label={settings.sidebarPinned ? '取消固定目录' : '固定目录到侧边栏'}
+            label={settings.sidebarPinned ? t('reader.unpinSidebar', '取消固定目录') : t('reader.pinSidebar', '固定目录到侧边栏')}
             icon={settings.sidebarPinned ? 'pinOff' : 'pin'}
             onClick={() => onSettingsChange({ ...settings, sidebarPinned: !settings.sidebarPinned })}
           />
           <IconButton
-            label="关闭目录"
+            label={t('reader.closeToc', '关闭目录')}
             icon="close"
             onClick={() => {
               if (settings.sidebarPinned) {
@@ -1347,7 +1353,7 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
       </header>
       <div className="chapter-search">
         <Icon name="search" />
-        <input value={chapterQuery} onChange={event => setChapterQuery(event.target.value)} placeholder="搜索章节" />
+        <input value={chapterQuery} onChange={event => setChapterQuery(event.target.value)} placeholder={t('reader.searchChapter', '搜索章节')} />
       </div>
       <VirtualChapterList
         chapters={filteredChapters}
@@ -1369,19 +1375,19 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
           {cacheStatus.state === 'caching' ? (
             <div className="drawer-cache-progress">
               <div className="cache-progress-text">
-                <span>正在服务端缓存</span>
-                <strong>{cachePercent}% ({cacheStatus.cached}/{cacheStatus.total || currentBook.chapters.length}章)</strong>
+                <span>{t('reader.serverCaching', '正在服务端缓存')}</span>
+                <strong>{cachePercent}% ({cacheStatus.cached}/{cacheStatus.total || currentBook.chapters.length}{t('reader.cacheCustomUnit', '章')})</strong>
               </div>
               <div className="cache-progress-bar-track">
                 <div className="cache-progress-bar-fill" style={{ width: `${cachePercent}%` }} />
               </div>
-              <button className="cache-cancel-btn" onClick={() => void handleCancelCache()}>取消缓存</button>
+              <button className="cache-cancel-btn" onClick={() => void handleCancelCache()}>{t('reader.cancelCache', '取消缓存')}</button>
             </div>
           ) : localSyncing ? (
             <div className="drawer-cache-progress">
               <div className="cache-progress-text">
-                <span>正在下载到本设备 (PWA)</span>
-                <strong>{localSyncProgress.current} / {localSyncProgress.total} 章</strong>
+                <span>{t('reader.localDownloading', '正在下载到本设备 (PWA)')}</span>
+                <strong>{localSyncProgress.current} / {localSyncProgress.total} {t('reader.cacheCustomUnit', '章')}</strong>
               </div>
               <div className="cache-progress-bar-track">
                 <div
@@ -1389,7 +1395,7 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
                   style={{ width: `${Math.min(100, Math.round((localSyncProgress.current / Math.max(1, localSyncProgress.total)) * 100))}%` }}
                 />
               </div>
-              <button className="cache-cancel-btn" onClick={() => { localSyncAbortRef.current?.abort(); setLocalSyncing(false) }}>取消本地下载</button>
+              <button className="cache-cancel-btn" onClick={() => { localSyncAbortRef.current?.abort(); setLocalSyncing(false) }}>{t('reader.cancelLocalDownload', '取消本地下载')}</button>
             </div>
           ) : (
             <div className="drawer-cache-idle">
@@ -1397,41 +1403,41 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
                 <button
                   type="button"
                   className="cache-range-btn"
-                  title="缓存当前章节后续 50 章"
+                  title={t('reader.cacheNext50Title', '缓存当前章节后续 50 章')}
                   onClick={() => void handleCacheRange('next50')}
                 >
-                  后 50 章
+                  {t('reader.cacheNext50', '后 50 章')}
                 </button>
                 <button
                   type="button"
                   className="cache-range-btn"
-                  title="缓存当前章节后续 100 章"
+                  title={t('reader.cacheNext100Title', '缓存当前章节后续 100 章')}
                   onClick={() => void handleCacheRange('next100')}
                 >
-                  后 100 章
+                  {t('reader.cacheNext100', '后 100 章')}
                 </button>
                 <button
                   type="button"
                   className="cache-range-btn"
-                  title="缓存全本小说"
+                  title={t('reader.cacheAllTitle', '缓存全本小说')}
                   onClick={() => void handleCacheRange('all')}
                 >
-                  全本缓存
+                  {t('reader.cacheAll', '全本缓存')}
                 </button>
                 <button
                   type="button"
                   className="cache-range-btn"
-                  title="自定义章节范围"
+                  title={t('reader.cacheCustomTitle', '自定义章节范围')}
                   onClick={() => setCustomRangeOpen(prev => !prev)}
                 >
-                  自定义...
+                  {t('reader.cacheCustom', '自定义...')}
                 </button>
               </div>
 
               {customRangeOpen && (
                 <div className="cache-custom-range-box">
                   <div className="range-inputs">
-                    <span>第</span>
+                    <span>{t('reader.cacheCustomFrom', '第')}</span>
                     <input
                       type="number"
                       min={1}
@@ -1439,7 +1445,7 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
                       value={customRangeStart}
                       onChange={e => setCustomRangeStart(Number(e.target.value))}
                     />
-                    <span>至</span>
+                    <span>{t('reader.cacheCustomTo', '至')}</span>
                     <input
                       type="number"
                       min={customRangeStart}
@@ -1447,7 +1453,7 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
                       value={customRangeEnd}
                       onChange={e => setCustomRangeEnd(Number(e.target.value))}
                     />
-                    <span>章</span>
+                    <span>{t('reader.cacheCustomUnit', '章')}</span>
                   </div>
                   <button
                     type="button"
@@ -1457,7 +1463,7 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
                       void handleCacheRange('custom', customRangeStart, customRangeEnd)
                     }}
                   >
-                    开始缓存
+                    {t('reader.startCache', '开始缓存')}
                   </button>
                 </div>
               )}
@@ -1467,16 +1473,16 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
                   type="button"
                   className="cache-sync-btn"
                   onClick={() => void handleSyncToLocal()}
-                  title="将已缓存章节下载到手机或电脑本地，断网脱机可读"
+                  title={t('reader.downloadToDeviceTitle', '将已缓存章节下载到手机或电脑本地，断网脱机可读')}
                 >
                   <Icon name="download" />
-                  <span>下载到本设备 (离线脱机)</span>
+                  <span>{t('reader.downloadToDevice', '下载到本设备 (离线脱机)')}</span>
                 </button>
                 <button
                   type="button"
                   className="cache-manage-btn"
                   onClick={() => setOfflineStatsModal(true)}
-                  title="管理本设备离线缓存"
+                  title={t('reader.manageOfflineCache', '管理本设备离线缓存')}
                 >
                   <Icon name="sliders" />
                 </button>
@@ -1488,20 +1494,20 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
         {/* Action Buttons */}
         <div className="drawer-footer-actions">
           <button className="shelf-button switch-source-btn" onClick={() => { setActiveDrawer(null); setShowSourceSwitch(true) }}>
-            <Icon name="sliders" />换源
+            <Icon name="sliders" />{t('reader.switchSource', '换源')}
           </button>
           <button className="shelf-button" onClick={() => void toggleShelf()}>
-            <Icon name={inShelf ? 'check' : 'plus'} />{inShelf ? '已在书架' : '加书架'}
+            <Icon name={inShelf ? 'check' : 'plus'} />{inShelf ? t('reader.inShelf', '已在书架') : t('reader.addToShelf', '加书架')}
           </button>
         </div>
       </footer>
     </aside>
 
     {/* Settings Drawer (Right) */}
-    <aside className={`reader-drawer reader-drawer-right ${activeDrawer === 'settings' ? 'open' : ''}`} aria-label="阅读设置">
+    <aside className={`reader-drawer reader-drawer-right ${activeDrawer === 'settings' ? 'open' : ''}`} aria-label={t('reader.settingsDrawer', '阅读设置')}>
       <header className="drawer-header">
-        <div className="drawer-title"><Icon name="settings" /><strong>阅读设置</strong></div>
-        <IconButton label="关闭设置" icon="close" onClick={() => setActiveDrawer(null)} />
+        <div className="drawer-title"><Icon name="settings" /><strong>{t('reader.settingsDrawer', '阅读设置')}</strong></div>
+        <IconButton label={t('reader.closeSettings', '关闭设置')} icon="close" onClick={() => setActiveDrawer(null)} />
       </header>
       <ReaderSettingsControls
         settings={settings}
@@ -1558,7 +1564,7 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
               {renderParagraphContent(line, index)}
             </p>
           ))}
-          {content && <footer className="reader-navigation"><button disabled={chapterIndex === 0 || loading} onClick={() => changeChapter(chapterIndex - 1)}><Icon name="arrowLeft" />上一章</button><div className="chapter-progress"><i style={{ width: `${chapterProgress}%` }} /><span>{chapterIndex + 1} / {currentBook.chapters.length}</span></div><button disabled={chapterIndex === currentBook.chapters.length - 1 || loading} onClick={() => changeChapter(chapterIndex + 1)}>下一章<Icon name="arrowRight" /></button></footer>}
+          {content && <footer className="reader-navigation"><button disabled={chapterIndex === 0 || loading} onClick={() => changeChapter(chapterIndex - 1)}><Icon name="arrowLeft" />{t('reader.prevChapter', '上一章')}</button><div className="chapter-progress"><i style={{ width: `${chapterProgress}%` }} /><span>{chapterIndex + 1} / {currentBook.chapters.length}</span></div><button disabled={chapterIndex === currentBook.chapters.length - 1 || loading} onClick={() => changeChapter(chapterIndex + 1)}>{t('reader.nextChapter', '下一章')}<Icon name="arrowRight" /></button></footer>}
         </article>
       )}
       {boundaryMessage && <p className="reader-boundary-message" role="status">{boundaryMessage}</p>}
@@ -1566,10 +1572,10 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
 
     {/* Floating Mobile Bottom Nav */}
     <nav className="mobile-reader-nav">
-      <button type="button" onClick={() => setActiveDrawer('toc')}><Icon name="list" /><span>目录</span></button>
-      <button type="button" onClick={() => setShowSourceSwitch(true)}><Icon name="sliders" /><span>换源</span></button>
-      <button type="button" onClick={toggleTts}><Icon name={ttsActive && ttsPlayState === 'playing' ? 'pause' : 'volume2'} /><span>{ttsActive ? (ttsPlayState === 'playing' ? '暂停' : '继续') : '朗读'}</span></button>
-      <button type="button" onClick={() => setActiveDrawer('settings')}><span className="aa">Aa</span><span>设置</span></button>
+      <button type="button" onClick={() => setActiveDrawer('toc')}><Icon name="list" /><span>{t('reader.catalog', '目录')}</span></button>
+      <button type="button" onClick={() => setShowSourceSwitch(true)}><Icon name="sliders" /><span>{t('reader.switchSource', '换源')}</span></button>
+      <button type="button" onClick={toggleTts}><Icon name={ttsActive && ttsPlayState === 'playing' ? 'pause' : 'volume2'} /><span>{ttsActive ? (ttsPlayState === 'playing' ? t('common.pause', '暂停') : t('common.continue', '继续')) : t('reader.listen', '朗读')}</span></button>
+      <button type="button" onClick={() => setActiveDrawer('settings')}><span className="aa">Aa</span><span>{t('reader.settings', '设置')}</span></button>
     </nav>
 
     {/* In-reader Source Switch Modal */}
@@ -1638,7 +1644,7 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
                 setLoadedChapterUrl(chapter.url)
               })
               .catch(err => {
-                setMessage(err.message || '加载章节内容失败')
+                setMessage(err.message || t('reader.chapterLoadFailed', '加载章节内容失败'))
               })
               .finally(() => {
                 setLoading(false)
@@ -1667,28 +1673,28 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
           onClick={e => e.stopPropagation()}
           role="dialog"
           aria-modal="true"
-          aria-label="离线语音提示"
+          aria-label={t('reader.offlineTtsTitle', '离线语音提示')}
         >
           <header className="source-login-header">
             <div className="source-login-title">
               <span className="source-login-icon"><Icon name="volume2" /></span>
               <div className="source-login-heading">
-                <h2>离线朗读提示</h2>
-                <small>当前设备处于离线状态</small>
+                <h2>{t('reader.offlineTtsTitle', '离线语音提示')}</h2>
+                <small>{t('reader.offlineTtsDesc', '当前设备处于离线状态')}</small>
               </div>
             </div>
-            <button type="button" className="subtle-button close-btn" onClick={() => setOfflineTtsConfirmOpen(false)} aria-label="关闭">
+            <button type="button" className="subtle-button close-btn" onClick={() => setOfflineTtsConfirmOpen(false)} aria-label={t('common.close', '关闭')}>
               <Icon name="close" />
             </button>
           </header>
           <div className="source-login-body">
             <p style={{ margin: '8px 0', fontSize: '14px', lineHeight: '1.6', color: 'var(--ink)' }}>
-              当前未连接到互联网，云端 Edge-TTS 朗读不可用。是否切换使用设备本地自带的<strong>系统语音 (Web Speech)</strong> 进行脱机朗读？
+              {t('reader.offlineTtsMessage', '当前未连接到互联网，云端 Edge-TTS 朗读不可用。是否切换使用设备本地自带的系统语音 (Web Speech) 进行脱机朗读？')}
             </p>
           </div>
           <footer className="source-login-footer">
             <button type="button" className="subtle-button" onClick={() => setOfflineTtsConfirmOpen(false)}>
-              取消
+              {t('common.cancel', '取消')}
             </button>
             <button
               type="button"
@@ -1701,7 +1707,7 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
                 playTtsChunk(startIdx)
               }}
             >
-              使用系统离线语音
+              {t('reader.useOfflineVoice', '使用系统离线语音')}
             </button>
           </footer>
         </div>

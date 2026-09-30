@@ -789,4 +789,15 @@ data class LocalBookImportResponse(
     val results: List<LocalBookImportItem> = emptyList(),
 )
 
+/** 语言偏好设置请求与响应 */
+@Serializable
+data class LocaleSettingRequest(
+    val locale: String,
+)
+
+@Serializable
+data class LocaleSettingResponse(
+    val locale: String?,
+)
+
 

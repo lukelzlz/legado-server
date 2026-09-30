@@ -286,6 +286,36 @@ svg { width: 18px; height: 18px; flex: none; }
   height: 12px;
   color: var(--accent);
 }
+.menu-lang-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 6px;
+}
+.menu-lang-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 8px 6px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: var(--surface-muted);
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 500;
+  position: relative;
+  transition: all 0.15s ease;
+  cursor: pointer;
+}
+.menu-lang-btn:hover {
+  border-color: var(--accent);
+}
+.menu-lang-btn.selected {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+  font-weight: 600;
+}
 .menu-divider {
   height: 1px;
   background: var(--line);
@@ -392,6 +422,10 @@ svg { width: 18px; height: 18px; flex: none; }
 .login-panel label { display: grid; gap: 8px; color: var(--ink); font-size: 13px; font-weight: 600; }
 .login-panel input, .source-filter input, .chapter-search input, .desk-header input { min-width: 0; border: 1px solid var(--line); border-radius: 5px; background: var(--surface); color: var(--ink); padding: 10px 11px; outline: none; }
 .login-panel .primary-button { height: 42px; }
+.login-lang-switch { display: flex; align-items: center; justify-content: center; gap: 8px; flex-wrap: wrap; margin-top: 4px; padding-top: 14px; border-top: 1px solid var(--line); }
+.login-lang-btn { background: transparent; border: 1px solid transparent; color: var(--muted); font-size: 12px; padding: 4px 9px; border-radius: 4px; cursor: pointer; transition: all 0.15s ease; }
+.login-lang-btn:hover { color: var(--ink); border-color: var(--line); background: var(--surface-muted); }
+.login-lang-btn.active { color: var(--accent); font-weight: 600; border-color: color-mix(in srgb, var(--accent) 30%, transparent); background: var(--accent-soft); }
 
 /* Source workspace */
 .app-workspace { min-height: 100vh; display: grid; grid-template-columns: 260px minmax(0, 1fr); background: var(--canvas); }

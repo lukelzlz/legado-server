@@ -1,5 +1,6 @@
 import { api, TtsSessionChunkRequest } from './api'
 import { ReaderSettings } from './readerSettings'
+import i18n from './i18n'
 
 export type TtsPlayState = 'idle' | 'buffering' | 'playing' | 'paused'
 export type TtsSpeakMode = 'replace' | 'continue'
@@ -57,7 +58,7 @@ export class WebSpeechEngine implements ITtsEngine {
   ): void {
     this.stop()
     if (!('speechSynthesis' in window)) {
-      onError(new Error('当前浏览器不支持 Web Speech 语音合成'))
+      onError(new Error(i18n.t('tts.webSpeechNotSupported', '当前浏览器不支持 Web Speech 语音合成')))
       return
     }
 
@@ -92,7 +93,7 @@ export class WebSpeechEngine implements ITtsEngine {
       this.clearWatchdog()
       this.currentUtterance = null
       if (e.error !== 'canceled' && e.error !== 'interrupted') {
-        this.onErrorCb?.(new Error(`语音播放异常: ${e.error}`))
+        this.onErrorCb?.(new Error(i18n.t('tts.playbackError', '语音播放异常: {{error}}', { error: e.error })))
       }
     }
 
@@ -190,11 +191,11 @@ export class HttpAudioTtsEngine implements ITtsEngine {
       this.audio.addEventListener('error', () => {
         if (!this.sessionId) return
         const err = this.audio?.error
-        this.recoverOrReport(new Error(err?.message || '音频播放遇到错误'))
+        this.recoverOrReport(new Error(err?.message || i18n.t('tts.audioPlaybackError', '音频播放遇到错误')))
       })
       this.audio.addEventListener('ended', () => {
         this.stopPlaybackMonitor()
-        this.recoverOrReport(new Error('音频流意外结束'))
+        this.recoverOrReport(new Error(i18n.t('tts.streamUnexpectedEnd', '音频流意外结束')))
       })
       this.audio.addEventListener('play', () => this.startPlaybackMonitor())
       this.audio.addEventListener('playing', () => {
@@ -341,7 +342,7 @@ export class HttpAudioTtsEngine implements ITtsEngine {
     if (this.sessionId) void api.controlTtsSession(this.sessionId, 'resume').catch(() => undefined)
     this.audio?.play().catch(err => {
       if (isPlayInterruptedError(err)) return
-      this.reportError(err instanceof Error ? err : new Error('无法继续播放音频'))
+      this.reportError(err instanceof Error ? err : new Error(i18n.t('tts.cannotContinuePlayback', '无法继续播放音频')))
     })
   }
 
@@ -419,11 +420,11 @@ export class HttpAudioTtsEngine implements ITtsEngine {
         if (this.isPaused) return
         await audio.play().catch(err => {
           if (isPlayInterruptedError(err)) return
-          this.reportError(err instanceof Error ? err : new Error('无法播放音频，请检查网络或点击页面授予音频权限'))
+          this.reportError(err instanceof Error ? err : new Error(i18n.t('tts.cannotPlayAudioCheckNetwork', '无法播放音频，请检查网络或点击页面授予音频权限')))
         })
       })
       .catch(error => {
-        if (generation === this.generation) this.reportError(error instanceof Error ? error : new Error('创建 TTS 音频流失败'))
+        if (generation === this.generation) this.reportError(error instanceof Error ? error : new Error(i18n.t('tts.createStreamFailed', '创建 TTS 音频流失败')))
       })
       .finally(() => {
         if (generation === this.generation) {
@@ -440,7 +441,7 @@ export class HttpAudioTtsEngine implements ITtsEngine {
       await api.appendTtsSessionChunk(this.sessionId, item.request)
     } catch (error) {
       this.submittedItems.delete(item.id)
-      if (generation === this.generation) this.reportError(error instanceof Error ? error : new Error('提交 TTS 朗读分片失败'))
+      if (generation === this.generation) this.reportError(error instanceof Error ? error : new Error(i18n.t('tts.appendChunkFailed', '提交 TTS 朗读分片失败')))
     }
   }
 
@@ -453,7 +454,7 @@ export class HttpAudioTtsEngine implements ITtsEngine {
         try {
           data = JSON.parse((event as MessageEvent).data) as TtsStreamEvent
         } catch {
-          this.reportError(new Error('TTS 进度事件格式无效'))
+          this.reportError(new Error(i18n.t('tts.progressEventFormatInvalid', 'TTS 进度事件格式无效')))
           return
         }
         if (type === 'chunk_end' && data.chunkId) {
@@ -463,9 +464,9 @@ export class HttpAudioTtsEngine implements ITtsEngine {
           })
           this.drainPlayback()
         } else if (type === 'tts_error') {
-          this.recoverOrReport(new Error(data.message || 'TTS 音频流合成失败'))
+          this.recoverOrReport(new Error(data.message || i18n.t('tts.synthFailed', 'TTS 音频流合成失败')))
         } else if (type === 'stopped' && data.message !== 'stopped' && data.message !== 'removed') {
-          this.recoverOrReport(new Error('TTS 音频流已停止'))
+          this.recoverOrReport(new Error(i18n.t('tts.streamStopped', 'TTS 音频流已停止')))
         }
       })
     }

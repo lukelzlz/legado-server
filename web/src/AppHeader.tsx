@@ -1,10 +1,13 @@
 import React, { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
+import { useTranslation } from 'react-i18next'
 import { Icon } from './icons'
 import { Logo } from './Logo'
 import { checkForAppUpdate, promptPwaInstall, subscribePwaInstall } from './PwaManager'
 import { toast } from './Toast'
 import type { ReaderSettings } from './readerSettings'
+import { SUPPORTED_LOCALES, type SupportedLocale, changeAppLanguage, getCurrentLocale } from './i18n'
+import { api } from './api'
 
 export type AppPage = 'sources' | 'subscriptions' | 'library' | 'shelf' | 'reader' | 'rules' | 'webdav'
 
@@ -19,10 +22,10 @@ export interface AppHeaderProps {
   onLogout: () => void
 }
 
-export const APP_THEMES: ReadonlyArray<{ id: ReaderSettings['theme']; name: string }> = [
-  { id: 'light', name: '晓白' },
-  { id: 'paper', name: '护眼' },
-  { id: 'dark', name: '夜读' },
+export const APP_THEMES: ReadonlyArray<{ id: ReaderSettings['theme']; name: string; key: string }> = [
+  { id: 'light', name: '晓白', key: 'header.themeLight' },
+  { id: 'paper', name: '护眼', key: 'header.themePaper' },
+  { id: 'dark', name: '夜读', key: 'header.themeDark' },
 ]
 
 export function AppHeader({
@@ -35,6 +38,7 @@ export function AppHeader({
   onOpenOfflineCache,
   onLogout,
 }: AppHeaderProps) {
+  const { t, i18n } = useTranslation()
   const [menuOpen, setMenuOpen] = useState(false)
   const [canInstall, setCanInstall] = useState(false)
   const [checkingUpdate, setCheckingUpdate] = useState(false)
@@ -58,7 +62,7 @@ export function AppHeader({
         toast.info(res.message)
       }
     } catch {
-      toast.error('检查更新失败')
+      toast.error(t('toast.checkUpdateFailed', '检查更新失败'))
     } finally {
       setCheckingUpdate(false)
     }
@@ -97,7 +101,7 @@ export function AppHeader({
   }, [menuOpen])
 
   const handleLogout = () => {
-    if (window.confirm('确定要退出登录吗？')) {
+    if (window.confirm(t('header.logoutConfirm'))) {
       setMenuOpen(false)
       onLogout()
     }
@@ -105,6 +109,17 @@ export function AppHeader({
 
   const handleThemeChange = (theme: ReaderSettings['theme']) => {
     onSettingsChange({ ...settings, theme })
+  }
+
+  const handleLanguageChange = async (locale: SupportedLocale) => {
+    await changeAppLanguage(locale)
+    try {
+      await api.setLocale(locale)
+    } catch {
+      // Ignore
+    }
+    const loc = SUPPORTED_LOCALES.find(l => l.code === locale)
+    toast.success(i18n.t('toast.localeSwitched', { lng: locale, lang: loc?.nativeName || locale }))
   }
 
   const canUseDOM = typeof document !== 'undefined'
@@ -116,30 +131,54 @@ export function AppHeader({
         onClick={() => setMenuOpen(false)}
         aria-hidden="true"
       />
-      <div className={`header-menu-dropdown theme-${settings.theme}`} ref={menuContainerRef} role="menu" aria-label="功能菜单">
+      <div className={`header-menu-dropdown theme-${settings.theme}`} ref={menuContainerRef} role="menu" aria-label={t('header.functionMenu')}>
         <div className="menu-header">
           <div className="menu-status-badge">
             <span className="menu-status-dot" />
-            <span className="menu-header-title">已登录服务</span>
+            <span className="menu-header-title">{t('header.serviceLoggedIn')}</span>
           </div>
         </div>
 
         <div className="menu-section">
-          <div className="menu-section-label">全站主题</div>
-          <div className="menu-theme-grid" role="radiogroup" aria-label="全站主题选择">
-            {APP_THEMES.map(t => {
-              const isSelected = settings.theme === t.id
+          <div className="menu-section-label">{t('header.themeSection')}</div>
+          <div className="menu-theme-grid" role="radiogroup" aria-label={t('header.themeSection')}>
+            {APP_THEMES.map(themeItem => {
+              const isSelected = settings.theme === themeItem.id
               return (
                 <button
-                  key={t.id}
+                  key={themeItem.id}
                   type="button"
-                  className={`menu-theme-btn theme-option-${t.id} ${isSelected ? 'selected' : ''}`}
+                  className={`menu-theme-btn theme-option-${themeItem.id} ${isSelected ? 'selected' : ''}`}
                   role="radio"
                   aria-checked={isSelected}
-                  onClick={() => handleThemeChange(t.id)}
+                  onClick={() => handleThemeChange(themeItem.id)}
                 >
-                  <span className={`theme-swatch theme-swatch-${t.id}`} />
-                  <span className="theme-name">{t.name}</span>
+                  <span className={`theme-swatch theme-swatch-${themeItem.id}`} />
+                  <span className="theme-name">{t(themeItem.key, themeItem.name)}</span>
+                  {isSelected && <Icon name="check" className="theme-check-icon" />}
+                </button>
+              )
+            })}
+          </div>
+        </div>
+
+        <div className="menu-divider" />
+
+        <div className="menu-section">
+          <div className="menu-section-label">{t('header.language')}</div>
+          <div className="menu-lang-grid" role="radiogroup" aria-label={t('header.language')}>
+            {SUPPORTED_LOCALES.map(loc => {
+              const isSelected = (i18n.language || getCurrentLocale()) === loc.code
+              return (
+                <button
+                  key={loc.code}
+                  type="button"
+                  className={`menu-lang-btn ${isSelected ? 'selected' : ''}`}
+                  role="radio"
+                  aria-checked={isSelected}
+                  onClick={() => void handleLanguageChange(loc.code)}
+                >
+                  <span>{loc.nativeName}</span>
                   {isSelected && <Icon name="check" className="theme-check-icon" />}
                 </button>
               )
@@ -158,7 +197,7 @@ export function AppHeader({
               onClick={() => void handlePwaInstall()}
             >
               <Icon name="download" />
-              <span>安装到桌面 / 主屏幕</span>
+              <span>{t('header.installPwa')}</span>
             </button>
           )}
           <button
@@ -169,7 +208,7 @@ export function AppHeader({
             onClick={() => void handleCheckUpdate()}
           >
             <Icon name="refresh" />
-            <span>{checkingUpdate ? '正在检查更新...' : '检查应用更新'}</span>
+            <span>{checkingUpdate ? t('header.checkingUpdate') : t('header.checkUpdate')}</span>
           </button>
           {onOpenOfflineCache && (
             <button
@@ -182,17 +221,17 @@ export function AppHeader({
               }}
             >
               <Icon name="book" />
-              <span>本地离线缓存管理</span>
+              <span>{t('header.offlineCache')}</span>
             </button>
           )}
           <a
             href="/simple/"
             className="menu-link-btn"
             role="menuitem"
-            title="切换到 Kindle / 墨水屏极简阅读器"
+            title={t('header.kindleTitle')}
           >
             <Icon name="book" />
-            <span>Kindle / 墨水屏版</span>
+            <span>{t('header.kindle')}</span>
           </a>
         </div>
 
@@ -206,7 +245,7 @@ export function AppHeader({
             onClick={handleLogout}
           >
             <Icon name="logOut" />
-            <span>退出登录</span>
+            <span>{t('header.logout')}</span>
           </button>
         </div>
       </div>
@@ -219,24 +258,24 @@ export function AppHeader({
         type="button"
         className="app-brand"
         onClick={() => onNavigate('library')}
-        aria-label="阅读服务器"
+        aria-label={t('login.brand')}
       >
         <Logo size={22} />
-        <strong>阅读服务器</strong>
+        <strong>{t('login.brand')}</strong>
       </button>
 
-      <nav aria-label="主导航">
+      <nav aria-label={t('header.mainNav')}>
         <button
           type="button"
           className={page === 'library' ? 'active' : ''}
           onClick={() => onNavigate('library')}
         >
-          书库
+          {t('header.library')}
           {searching && (
             <span
               className="nav-search-indicator"
-              title="后台正在搜索..."
-              aria-label="后台正在搜索"
+              title={t('header.searchingInBackground')}
+              aria-label={t('header.searchingInBackground')}
             />
           )}
         </button>
@@ -245,36 +284,36 @@ export function AppHeader({
           className={page === 'shelf' ? 'active' : ''}
           onClick={() => onNavigate('shelf')}
         >
-          书架
+          {t('header.shelf')}
         </button>
         <button
           type="button"
           className={page === 'sources' ? 'active' : ''}
           onClick={() => onNavigate('sources')}
         >
-          书源
+          {t('header.sources')}
         </button>
         <button
           type="button"
           className={page === 'subscriptions' ? 'active' : ''}
           onClick={() => onNavigate('subscriptions')}
         >
-          订阅
+          {t('header.subscriptions')}
         </button>
         <button
           type="button"
           className={page === 'rules' ? 'active' : ''}
           onClick={() => onNavigate('rules')}
         >
-          规则
+          {t('header.rules')}
         </button>
         <button
           type="button"
           className={page === 'webdav' ? 'active' : ''}
-          title="WebDAV 文件服务"
+          title={t('header.webdavTitle')}
           onClick={() => onNavigate('webdav')}
         >
-          文件
+          {t('header.webdav')}
         </button>
       </nav>
 
@@ -283,7 +322,7 @@ export function AppHeader({
           type="button"
           ref={menuButtonRef}
           className={`header-menu-btn ${menuOpen ? 'active' : ''}`}
-          aria-label={menuOpen ? '关闭功能菜单' : '打开功能菜单'}
+          aria-label={menuOpen ? t('header.closeMenu') : t('header.openMenu')}
           aria-expanded={menuOpen}
           aria-haspopup="true"
           onClick={() => setMenuOpen(prev => !prev)}

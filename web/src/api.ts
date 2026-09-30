@@ -6,6 +6,7 @@ import {
   enqueueOfflineProgress,
   flushOfflineProgress,
 } from './offlineStorage'
+import i18n, { getCurrentLocale } from './i18n'
 
 export type SourceSummary = { id: string; name: string; url: string; group?: string; enabled: boolean; isJsSource: boolean; hasLogin: boolean; updatedAt: number; version: number }
 export type SourceRecord = { id: string; json: string; version: number; updatedAt: number }
@@ -241,10 +242,11 @@ export const joinWebDavPath = (base: string, name: string) =>
 async function webDavWrite(path: string, init: RequestInit): Promise<void> {
   const headers = new Headers(init.headers)
   headers.set('X-CSRF-Token', csrfToken ?? '')
+  headers.set('Accept-Language', getCurrentLocale())
   const response = await fetch(webDavFileUrl(path), { ...init, headers, credentials: 'same-origin' })
   if (!response.ok) {
-    const body = await response.json().catch(() => ({ message: `操作失败（HTTP ${response.status}）` })) as { message?: string }
-    throw new Error(body.message ?? `操作失败（HTTP ${response.status}）`)
+    const body = await response.json().catch(() => ({ message: i18n.t('toast.operationFailedWithStatus', `操作失败（HTTP ${response.status}）`, { status: response.status }) })) as { message?: string }
+    throw new Error(body.message ?? i18n.t('toast.operationFailedWithStatus', `操作失败（HTTP ${response.status}）`, { status: response.status }))
   }
 }
 
@@ -255,10 +257,11 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const headers = new Headers(init.headers)
   if (init.body) headers.set('Content-Type', 'application/json')
   if (init.method && !['GET', 'HEAD'].includes(init.method)) headers.set('X-CSRF-Token', csrfToken ?? '')
+  headers.set('Accept-Language', getCurrentLocale())
   const response = await fetch(path, { ...init, headers, credentials: 'same-origin' })
   if (!response.ok) {
     const body = await response.json().catch(() => ({ message: response.statusText })) as { message?: string }
-    throw new Error(body.message ?? '请求失败')
+    throw new Error(body.message ?? i18n.t('toast.requestFailed', '请求失败'))
   }
   return response.status === 204 ? undefined as T : response.json() as Promise<T>
 }
@@ -436,7 +439,7 @@ export const api = {
     })
     if (!response.ok) {
       const err = await response.json().catch(() => ({ message: response.statusText })) as { message?: string }
-      throw new Error(err.message ?? '本地书籍上传失败')
+      throw new Error(err.message ?? i18n.t('shelf.importLocalBooksFailed', '本地书籍上传失败'))
     }
     return response.json() as Promise<LocalBookImportResponse>
   },
@@ -490,6 +493,7 @@ export const api = {
   fetchTtsAudioBlob: async (req: TtsSpeakRequest): Promise<Blob> => {
     const headers = new Headers({ 'Content-Type': 'application/json' })
     if (csrfToken) headers.set('X-CSRF-Token', csrfToken)
+    headers.set('Accept-Language', getCurrentLocale())
     const response = await fetch('/api/tts/speak', {
       method: 'POST',
       headers,
@@ -498,10 +502,15 @@ export const api = {
     })
     if (!response.ok) {
       const err = await response.json().catch(() => ({ message: response.statusText })) as { message?: string }
-      throw new Error(err.message ?? '语音合成失败')
+      throw new Error(err.message ?? i18n.t('tts.synthFailed', '语音合成失败'))
     }
     return response.blob()
   },
+  getLocale: () => request<{ locale: string | null }>('/api/settings/locale'),
+  setLocale: (locale: string) => request<{ locale: string | null }>('/api/settings/locale', {
+    method: 'PUT',
+    body: JSON.stringify({ locale }),
+  }),
 }
 
 /**
@@ -523,9 +532,9 @@ export function streamSearch(keyword: string, sourceIds: string[] | undefined, o
   }))
   socket.addEventListener('message', event => {
     try { onEvent(JSON.parse(event.data) as SearchStreamEvent) }
-    catch { reported = true; onError('搜索响应格式无效') }
+    catch { reported = true; onError(i18n.t('search.invalidFormat', '搜索响应格式无效')) }
   })
-  socket.addEventListener('error', () => { if (!reported) { reported = true; onError('搜索连接中断，请重试') } })
+  socket.addEventListener('error', () => { if (!reported) { reported = true; onError(i18n.t('search.connectionInterrupted', '搜索连接中断，请重试')) } })
   socket.addEventListener('close', () => { if (!reported) onClose() })
   return socket
 }

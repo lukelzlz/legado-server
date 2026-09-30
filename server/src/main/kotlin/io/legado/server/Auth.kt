@@ -18,10 +18,10 @@ class AuthService(val database: Database, private val secureCookies: Boolean) {
         val session = call.sessions.get<UserSession>()
         val csrf = session?.let(database::csrfFor)
         if (session == null || csrf == null) {
-            call.sessions.clear<UserSession>(); call.respond(HttpStatusCode.Unauthorized, ApiError("unauthenticated", "请先登录")); return null
+            call.sessions.clear<UserSession>(); call.respondApiError(HttpStatusCode.Unauthorized, "unauthenticated", "请先登录"); return null
         }
         if (csrfRequired && call.request.headers[CSRF_HEADER] != csrf) {
-            call.respond(HttpStatusCode.Forbidden, ApiError("csrf_invalid", "请求验证失败")); return null
+            call.respondApiError(HttpStatusCode.Forbidden, "csrf_invalid", "请求验证失败"); return null
         }
         return session
     }
@@ -81,10 +81,10 @@ fun Route.authRoutes(auth: AuthService) {
         }
         post("/login") {
             val remote = call.request.origin.remoteHost
-            if (!auth.canAttempt(remote)) { call.respond(HttpStatusCode.TooManyRequests, ApiError("rate_limited", "请稍后再试")); return@post }
+            if (!auth.canAttempt(remote)) { call.respondApiError(HttpStatusCode.TooManyRequests, "rate_limited", "请稍后再试"); return@post }
             val request = call.receive<LoginRequest>()
             if (!auth.database.verifyPassword(request.password)) {
-                auth.failure(remote); call.application.log.warn("authentication failed from {}", remote); call.respond(HttpStatusCode.Unauthorized, ApiError("invalid_credentials", "密码不正确")); return@post
+                auth.failure(remote); call.application.log.warn("authentication failed from {}", remote); call.respondApiError(HttpStatusCode.Unauthorized, "invalid_credentials", "密码不正确"); return@post
             }
             auth.success(remote)
             val session = auth.database.createSession()

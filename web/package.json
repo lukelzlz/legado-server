@@ -21,8 +21,10 @@
   },
   "dependencies": {
     "@vitejs/plugin-react": "4.6.0",
+    "i18next": "^26.4.2",
     "react": "19.1.0",
     "react-dom": "19.1.0",
+    "react-i18next": "^17.0.15",
     "typescript": "5.8.3",
     "vite": "6.3.5"
   },

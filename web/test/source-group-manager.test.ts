@@ -97,7 +97,11 @@ test('source group manager - header stats, sections and group avatar are present
 
 test('source group manager - button tag balance and non-nested batch manage button', async () => {
   const fs = await import('node:fs/promises')
-  const mainContent = await fs.readFile('web/src/main.tsx', 'utf8')
+  const path = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const currentDir = path.dirname(fileURLToPath(import.meta.url))
+  const mainTsxPath = path.resolve(currentDir, '../src/main.tsx')
+  const mainContent = await fs.readFile(mainTsxPath, 'utf8')
 
   // 1. 验证整个 main.tsx 中 <button> 与 </button> 成对闭合
   const openButtons = (mainContent.match(/<button[\s>]/g) || []).length

@@ -16,6 +16,45 @@ export type Chapter = { index: number; title: string; url: string }
 export type ReadingProgress = { sourceId: string; bookUrl: string; chapterUrl: string; chapterIndex: number; scrollPosition: number; updatedAt: number }
 /** 手机端进度文件（bookProgress/*.json）同步配置 */
 export type ProgressSyncSettings = { directoryName: string; directoryPath?: string; available: boolean; fileCount: number }
+
+/**
+ * 备份导出设置。
+ *
+ * `exportDir` 是 **WebDAV 根目录下的相对目录**（空串 = 根目录），这样导出的 zip 会直接出现在
+ * 「文件管理」列表里；`deviceName` 是设备名后缀，拼在日期之后（`backup2026-09-30-CD_Watch_A.zip`），
+ * 为空则不加后缀。
+ */
+export type BackupExportSettings = {
+  exportDir: string
+  deviceName: string
+  /** 关闭网页时自动导出一次。 */
+  exportOnPageClose: boolean
+  /** 关闭正在阅读的书时自动导出一次。 */
+  exportOnBookClose: boolean
+}
+
+/** 自动导出触发点。开关由**服务端**判定，前端只负责上报「发生了触发」。 */
+export type BackupAutoExportTrigger = 'page' | 'book'
+
+/** 自动导出结果：`exported=false` 属正常（开关没开），不是错误。 */
+export type BackupAutoExportResult = {
+  exported: boolean
+  reason?: string
+  fileName?: string
+  path?: string
+  size: number
+}
+
+/** 导出结果：文件名、相对 WebDAV 根的路径、字节数与各部分条数。 */
+export type BackupExportResult = {
+  fileName: string
+  path: string
+  size: number
+  books: number
+  sources: number
+  bookmarks: number
+  groups: number
+}
 export type ProgressMergeResponse = { source: 'file' | 'database'; progress?: ReadingProgress; fileFound: boolean; alignedIndex?: number }
 export type BookshelfItem = { sourceId: string; bookUrl: string; name: string; author?: string; tocUrl: string; coverKey?: string; coverUrl?: string; chapterIndex?: number; scrollPosition?: number; lastReadAt: number; cachedChapters: number; totalChapters: number; cacheState: 'idle' | 'caching' | 'ready' | 'failed'; cacheError?: string; completed: boolean; alternateSources?: SearchResult[]; groupName?: string }
 export type BookshelfWrite = { sourceId: string; bookUrl: string; name: string; author?: string; tocUrl: string; coverUrl?: string; alternateSources?: SearchResult[]; groupName?: string }
@@ -497,6 +536,20 @@ export const api = {
   webDavCreateFolder: (path: string) => webDavWrite(path, { method: 'MKCOL' }),
   webDavDelete: (path: string) => webDavWrite(path, { method: 'DELETE' }),
   webDavImport: (path: string) => request<BackupImportSummary>('/api/webdav/import', { method: 'POST', body: JSON.stringify({ path }) }),
+  /** 备份导出设置（导出路径 + 设备名后缀 + 两个自动导出开关）。 */
+  backupExportSettings: () => request<BackupExportSettings>('/api/webdav/export/settings'),
+  saveBackupExportSettings: (settings: BackupExportSettings) =>
+    request<BackupExportSettings>('/api/webdav/export/settings', { method: 'PUT', body: JSON.stringify(settings) }),
+  /** 按 Legado 格式导出备份（书源及分组 + 书架及分组 + 阅读进度），写入 WebDAV 存储区。 */
+  backupExport: () => request<BackupExportResult>('/api/webdav/export', { method: 'POST' }),
+  /**
+   * 自动导出：关闭网页 / 关闭书籍时由前端上报，服务端按开关决定是否真的写盘。
+   *
+   * `keepalive: true` 是关键 —— 页面正在卸载时普通 fetch 会被浏览器直接掐断，
+   * 只有 keepalive 请求才会在卸载后继续送达。
+   */
+  autoExportBackup: (trigger: BackupAutoExportTrigger) =>
+    request<BackupAutoExportResult>(`/api/webdav/export/auto?trigger=${trigger}`, { method: 'POST', keepalive: true }),
   /**
    * 从 WebDAV 存储区导入一本本地书籍（TXT / EPUB）。
    *

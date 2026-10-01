@@ -470,5 +470,146 @@ class WebDavRoutesTest {
             cleanup(fixture)
         }
     }
+
+    @Test
+    fun `backup export settings default to webdav root with no device suffix and auto export off`() = testApplication {
+        val fixture = fixture()
+        try {
+            application { legadoApplication(fixture.config) }
+            val client = createClient {
+                install(ContentNegotiation) { json(Json { ignoreUnknownKeys = true; explicitNulls = false }) }
+                install(HttpCookies)
+            }
+            client.loginSession()
+
+            val settings = client.get("/api/webdav/export/settings").body<BackupExportSettings>()
+            assertEquals("", settings.exportDir)
+            assertEquals("", settings.deviceName)
+            // 自动导出默认**关**：不勾选就不该有任何后台写盘
+            assertFalse(settings.exportOnPageClose)
+            assertFalse(settings.exportOnBookClose)
+        } finally {
+            cleanup(fixture)
+        }
+    }
+
+    @Test
+    fun `backup export settings round trip sanitizes the device name and keeps both switches`() = testApplication {
+        val fixture = fixture()
+        try {
+            application { legadoApplication(fixture.config) }
+            val client = createClient {
+                install(ContentNegotiation) { json(Json { ignoreUnknownKeys = true; explicitNulls = false }) }
+                install(HttpCookies)
+            }
+            val csrf = client.loginSession()
+
+            val saved = client.put("/api/webdav/export/settings") {
+                header(AuthService.CSRF_HEADER, csrf)
+                contentType(ContentType.Application.Json)
+                setBody(BackupExportSettingsUpdate("/backup-out/", "../CD:Watch", exportOnPageClose = true, exportOnBookClose = true))
+            }.body<BackupExportSettings>()
+
+            // 目录去掉首尾斜杠；设备名里的路径分隔符与冒号被剥掉（它会拼进文件名）
+            assertEquals("backup-out", saved.exportDir)
+            assertEquals("..CDWatch", saved.deviceName)
+            assertTrue(saved.exportOnPageClose)
+            assertTrue(saved.exportOnBookClose)
+
+            val reread = client.get("/api/webdav/export/settings").body<BackupExportSettings>()
+            assertEquals(saved, reread)
+        } finally {
+            cleanup(fixture)
+        }
+    }
+
+    @Test
+    fun `backup export writes into the configured directory and the same day export overwrites`() = testApplication {
+        val fixture = fixture()
+        try {
+            application { legadoApplication(fixture.config) }
+            val client = createClient {
+                install(ContentNegotiation) { json(Json { ignoreUnknownKeys = true; explicitNulls = false }) }
+                install(HttpCookies)
+            }
+            val csrf = client.loginSession()
+            client.put("/api/webdav/export/settings") {
+                header(AuthService.CSRF_HEADER, csrf)
+                contentType(ContentType.Application.Json)
+                setBody(BackupExportSettingsUpdate("backup-out", "CD_Watch_A"))
+            }
+
+            val first = client.post("/api/webdav/export") {
+                header(AuthService.CSRF_HEADER, csrf)
+            }.body<BackupExportResult>()
+            val second = client.post("/api/webdav/export") {
+                header(AuthService.CSRF_HEADER, csrf)
+            }.body<BackupExportResult>()
+
+            assertTrue("文件名应形如 backup<日期>-<设备名>.zip", first.fileName.startsWith("backup") && first.fileName.endsWith("-CD_Watch_A.zip"))
+            // 同名 ⇒ 覆盖：两次导出的文件名一致，且目录里只留一份
+            assertEquals(first.fileName, second.fileName)
+            val dir = fixture.dataDir.resolve("webdav/backup-out")
+            val zips = Files.list(dir).use { it.toList() }.filter { it.fileName.toString().endsWith(".zip") }
+            assertEquals("同一天多次导出只该留一份", 1, zips.size)
+            assertTrue(Files.size(zips.single()) > 0)
+            // 导出包里必须齐备 4 个文件（bookmark 是阅读进度的载体）
+            val names = java.util.zip.ZipFile(zips.single().toFile()).use { zip ->
+                zip.entries().asSequence().map { it.name }.toList()
+            }
+            assertEquals(listOf("bookGroup.json", "bookmark.json", "bookshelf.json", "bookSource.json"), names)
+        } finally {
+            cleanup(fixture)
+        }
+    }
+
+    @Test
+    fun `auto export is skipped while the switches are off and runs once they are on`() = testApplication {
+        val fixture = fixture()
+        try {
+            application { legadoApplication(fixture.config) }
+            val client = createClient {
+                install(ContentNegotiation) { json(Json { ignoreUnknownKeys = true; explicitNulls = false }) }
+                install(HttpCookies)
+            }
+            val csrf = client.loginSession()
+            val dir = fixture.dataDir.resolve("webdav")
+
+            // 开关没开：任何触发都不写盘（前端会无条件上报，必须由服务端挡住）
+            val skipped = client.post("/api/webdav/export/auto?trigger=page") {
+                header(AuthService.CSRF_HEADER, csrf)
+            }.body<BackupAutoExportResult>()
+            assertFalse(skipped.exported)
+            assertEquals("disabled", skipped.reason)
+            assertFalse(Files.exists(dir.resolve("backup-out")))
+
+            client.put("/api/webdav/export/settings") {
+                header(AuthService.CSRF_HEADER, csrf)
+                contentType(ContentType.Application.Json)
+                setBody(BackupExportSettingsUpdate("backup-out", "CD_Watch_A", exportOnPageClose = true, exportOnBookClose = false))
+            }
+
+            // 只开「关网页」：page 触发有效，book 触发仍被挡
+            val onPage = client.post("/api/webdav/export/auto?trigger=page") {
+                header(AuthService.CSRF_HEADER, csrf)
+            }.body<BackupAutoExportResult>()
+            assertTrue(onPage.exported)
+            assertEquals("backup-out/${onPage.fileName}", onPage.path)
+
+            val onBook = client.post("/api/webdav/export/auto?trigger=book") {
+                header(AuthService.CSRF_HEADER, csrf)
+            }.body<BackupAutoExportResult>()
+            assertFalse("book 开关没开，不该导出", onBook.exported)
+
+            // 未知触发点一律不导出，且**不报 5xx**（触发时页面可能正在卸载，没有界面接错误）
+            val bogus = client.post("/api/webdav/export/auto?trigger=bogus") {
+                header(AuthService.CSRF_HEADER, csrf)
+            }
+            assertEquals(HttpStatusCode.OK, bogus.status)
+            assertFalse(bogus.body<BackupAutoExportResult>().exported)
+        } finally {
+            cleanup(fixture)
+        }
+    }
 }
 

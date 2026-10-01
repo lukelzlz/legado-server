@@ -177,9 +177,14 @@ private class WebDavLocks {
 fun Route.webDavRoutes(auth: AuthService, storage: WebDavStorage, database: Database, coverCache: CoverCache? = null) {
     val locks = WebDavLocks()
     val backupImporter = BackupImporter(database, coverCache)
+    val backupExporter = BackupExporter(database)
     route("/api/webdav") {
         get("/info") { call.serveWebDavInfo(auth, storage) }
         post("/import") { call.serveBackupImport(auth, storage, backupImporter) }
+        get("/export/settings") { call.serveBackupExportSettings(auth, database) }
+        put("/export/settings") { call.serveBackupExportSettingsUpdate(auth, database) }
+        post("/export") { call.serveBackupExport(auth, storage, backupExporter, database) }
+        post("/export/auto") { call.serveBackupExportAuto(auth, storage, backupExporter, database) }
     }
     route(WEBDAV_URI_PREFIX) { webDavEndpoints(auth, storage, locks) }
     route("$WEBDAV_URI_PREFIX/{path...}") { webDavEndpoints(auth, storage, locks) }
@@ -227,6 +232,172 @@ private suspend fun ApplicationCall.serveBackupImport(auth: AuthService, storage
         summary.progress,
     )
     respond(summary)
+}
+
+/** 导出设置的存储键（与 `progress_sync_directory` 同属 `app_setting` 表）。 */
+private const val BACKUP_EXPORT_DIR_KEY = "backup_export_dir"
+private const val BACKUP_EXPORT_DEVICE_KEY = "backup_export_device"
+private const val BACKUP_EXPORT_ON_PAGE_CLOSE_KEY = "backup_export_on_page_close"
+private const val BACKUP_EXPORT_ON_BOOK_CLOSE_KEY = "backup_export_on_book_close"
+
+/** 自动导出的触发点标识（前端上报，服务端据此查对应开关）。 */
+internal const val TRIGGER_PAGE_CLOSE = "page"
+internal const val TRIGGER_BOOK_CLOSE = "book"
+
+/**
+ * 清洗设备名：它会拼进**文件名**，因此必须挡掉路径分隔符与各平台非法字符。
+ *
+ * 允许中文（用户会用「客厅平板」这类名字），但不允许 `/ \ : * ? " < > |` 与控制字符。
+ */
+internal fun sanitizeBackupDeviceName(raw: String): String =
+    raw.trim()
+        .filter { it.code >= 0x20 && it !in "\\/:*?\"<>|" }
+        .take(48)
+        .trim()
+
+private fun readBackupExportSettings(database: Database): BackupExportSettings = BackupExportSettings(
+    exportDir = database.getSetting(BACKUP_EXPORT_DIR_KEY).orEmpty().trim().trim('/'),
+    deviceName = database.getSetting(BACKUP_EXPORT_DEVICE_KEY).orEmpty(),
+    exportOnPageClose = database.getSetting(BACKUP_EXPORT_ON_PAGE_CLOSE_KEY) == "true",
+    exportOnBookClose = database.getSetting(BACKUP_EXPORT_ON_BOOK_CLOSE_KEY) == "true",
+)
+
+private suspend fun ApplicationCall.serveBackupExportSettings(auth: AuthService, database: Database) {
+    if (!requireWebDavAuth(auth)) return
+    respond(readBackupExportSettings(database))
+}
+
+private suspend fun ApplicationCall.serveBackupExportSettingsUpdate(auth: AuthService, database: Database) {
+    if (!requireWebDavAuth(auth, write = true)) return
+    val request = runCatching { receive<BackupExportSettingsUpdate>() }.getOrNull()
+        ?: return respond(HttpStatusCode.BadRequest, ApiError("invalid_backup", "缺少导出设置"))
+    // 目录先归一化（去掉首尾斜杠与空白），设备名要清洗成安全的文件名片段
+    val dir = request.exportDir.trim().trim('/')
+    val device = sanitizeBackupDeviceName(request.deviceName)
+    database.setSetting(BACKUP_EXPORT_DIR_KEY, dir)
+    database.setSetting(BACKUP_EXPORT_DEVICE_KEY, device)
+    database.setSetting(BACKUP_EXPORT_ON_PAGE_CLOSE_KEY, request.exportOnPageClose.toString())
+    database.setSetting(BACKUP_EXPORT_ON_BOOK_CLOSE_KEY, request.exportOnBookClose.toString())
+    respond(
+        BackupExportSettings(
+            exportDir = dir,
+            deviceName = device,
+            exportOnPageClose = request.exportOnPageClose,
+            exportOnBookClose = request.exportOnBookClose,
+        )
+    )
+}
+
+/**
+ * 导出备份：把书源及其分组、书架及书籍分组、阅读进度打包成 Legado 格式的 zip，
+ * 写入 WebDAV 存储区（这样它会直接出现在「文件管理」列表里，可当场下载，
+ * 也能被手机 App 通过 WebDAV 取走）。
+ *
+ * 同名文件（同一天 + 同设备名）**直接覆盖** —— 重复导出应当得到一份最新的，而不是堆一堆副本。
+ */
+private suspend fun ApplicationCall.serveBackupExport(
+    auth: AuthService,
+    storage: WebDavStorage,
+    exporter: BackupExporter,
+    database: Database,
+) {
+    if (!requireWebDavAuth(auth, write = true)) return
+    val settings = readBackupExportSettings(database)
+    val outcome = runCatching { performBackupExport(storage, exporter, settings) }.getOrElse { error ->
+        return respond(
+            HttpStatusCode.InternalServerError,
+            ApiError("backup_export_failed", error.message ?: "备份导出失败"),
+        )
+    }
+    application.log.info(
+        "webdav backup exported: {} (sources={}, books={}, bookmarks={}, groups={}, {} bytes)",
+        outcome.target.fileName.toString(),
+        outcome.result.sources,
+        outcome.result.books,
+        outcome.result.bookmarks,
+        outcome.result.groups,
+        outcome.result.bytes.size,
+    )
+    respond(outcome.toPayload(storage))
+}
+
+/**
+ * 自动导出的触发点：**关闭网页** / **关闭正在阅读的书**。
+ *
+ * 是否真的导出由**服务端**按设置判定（客户端只上报「发生了触发」）—— 这样前端不必先拉一次设置，
+ * 也不给客户端「绕过开关直接写盘」的机会。
+ *
+ * 失败刻意**不返回 5xx**：触发时页面可能正在卸载，用户根本没有界面可以接错误；
+ * 后台行为失败只记日志并如实回报 `exported=false`。
+ */
+private suspend fun ApplicationCall.serveBackupExportAuto(
+    auth: AuthService,
+    storage: WebDavStorage,
+    exporter: BackupExporter,
+    database: Database,
+) {
+    if (!requireWebDavAuth(auth, write = true)) return
+    val trigger = request.queryParameters["trigger"].orEmpty()
+    val settings = readBackupExportSettings(database)
+    val enabled = when (trigger) {
+        TRIGGER_PAGE_CLOSE -> settings.exportOnPageClose
+        TRIGGER_BOOK_CLOSE -> settings.exportOnBookClose
+        else -> false
+    }
+    if (!enabled) {
+        return respond(BackupAutoExportResult(exported = false, reason = "disabled"))
+    }
+    val outcome = runCatching { performBackupExport(storage, exporter, settings) }.getOrElse { error ->
+        application.log.warn("auto backup export failed ({}): {}", trigger, error.message)
+        return respond(BackupAutoExportResult(exported = false, reason = error.message ?: "failed"))
+    }
+    application.log.info("auto backup exported on {}: {}", trigger, outcome.target.fileName.toString())
+    val payload = outcome.toPayload(storage)
+    respond(
+        BackupAutoExportResult(
+            exported = true,
+            fileName = payload.fileName,
+            path = payload.path,
+            size = payload.size,
+        )
+    )
+}
+
+/** 落盘后的结果（文件名、绝对路径、各部分条数）。 */
+private data class BackupExportOutcome(val result: BackupExporter.Result, val target: Path) {
+    fun toPayload(storage: WebDavStorage) = BackupExportResult(
+        fileName = result.fileName,
+        path = storage.root.relativize(target).toString().replace('\\', '/'),
+        size = result.bytes.size.toLong(),
+        books = result.books,
+        sources = result.sources,
+        bookmarks = result.bookmarks,
+        groups = result.groups,
+    )
+}
+
+/**
+ * 真正落盘的那一步：**手动导出与自动导出共用**，避免两条路径各自实现一遍覆盖语义。
+ *
+ * 同名文件（同一天 + 同设备名）**直接覆盖** —— `Files.write` 默认 `CREATE + TRUNCATE_EXISTING`，
+ * 因此「同一天产生多个备份」只会留下一份最新的，不会堆一堆副本。
+ * 文件名刻意**只到日期**（与真实备份 `backup2026-09-28-CD_Watch_A.zip` 同构），
+ * 覆盖语义才成立；若哪天要在文件名里加时分，就必须额外写「删除同日旧文件」的逻辑。
+ */
+private suspend fun performBackupExport(
+    storage: WebDavStorage,
+    exporter: BackupExporter,
+    settings: BackupExportSettings,
+): BackupExportOutcome {
+    val directory = storage.resolve(settings.exportDir)
+        ?: throw IllegalArgumentException("导出路径不合法")
+    val result = withContext(Dispatchers.IO) { exporter.export(settings.deviceName) }
+    val target = directory.resolve(result.fileName)
+    withContext(Dispatchers.IO) {
+        Files.createDirectories(directory)
+        Files.write(target, result.bytes)
+    }
+    return BackupExportOutcome(result, target)
 }
 
 private suspend fun ApplicationCall.serveWebDavOptions() {

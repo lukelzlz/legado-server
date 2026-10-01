@@ -363,6 +363,57 @@ data class SourceLoginStateRecord(
     val fileCount: Int = 0,
 )
 @Serializable data class ProgressSyncSettingsUpdate(val directoryName: String)
+
+// ---------------------------------------------------------------------------
+// 备份导出（Legado 格式 `backup<日期>-<设备名>.zip`）
+// ---------------------------------------------------------------------------
+/**
+ * 备份导出设置。
+ *
+ * @param exportDir  WebDAV 根目录下的相对目录，空串表示**根目录**（这样导出的 zip 会直接
+ *   出现在「文件管理」列表里，可当场下载，也能被手机 App 通过 WebDAV 取走）。
+ * @param deviceName 设备名后缀，拼在日期之后（`backup2026-09-30-CD_Watch_A.zip`）；空则不加后缀。
+ * @param exportOnPageClose 关闭网页时自动导出一次（默认关）。
+ * @param exportOnBookClose 关闭正在阅读的书时自动导出一次（默认关）。
+ */
+@Serializable data class BackupExportSettings(
+    val exportDir: String = "",
+    val deviceName: String = "",
+    val exportOnPageClose: Boolean = false,
+    val exportOnBookClose: Boolean = false,
+)
+
+@Serializable data class BackupExportSettingsUpdate(
+    val exportDir: String,
+    val deviceName: String,
+    val exportOnPageClose: Boolean = false,
+    val exportOnBookClose: Boolean = false,
+)
+
+/**
+ * 自动导出的响应。
+ *
+ * `exported=false` 是**正常结果**（开关没开），不是错误 —— 前端在页面关闭时无条件上报，
+ * 是否真的导出由**服务端**判定（信任边界：客户端不该决定要不要写盘）。
+ */
+@Serializable data class BackupAutoExportResult(
+    val exported: Boolean,
+    val reason: String? = null,
+    val fileName: String? = null,
+    val path: String? = null,
+    val size: Long = 0,
+)
+
+/** 导出结果。`path` 是相对 WebDAV 根的路径，便于前端提示与定位。 */
+@Serializable data class BackupExportResult(
+    val fileName: String,
+    val path: String,
+    val size: Long,
+    val books: Int,
+    val sources: Int,
+    val bookmarks: Int,
+    val groups: Int,
+)
 @Serializable data class ProgressMergeRequest(
     val sourceId: String,
     val bookUrl: String,

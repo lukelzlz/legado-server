@@ -2850,6 +2850,24 @@ function App() {
     }
   }, [settings])
 
+  /**
+   * 「关闭网页时自动备份」的触发点。
+   *
+   * 用 `pagehide` 而不是 `beforeunload`：前者在关标签页、页面跳转以及进 bfcache 时都会触发，
+   * 覆盖面更广，移动端也不会被忽略。请求走 `keepalive`，否则页面卸载会把它掐断。
+   *
+   * 这里**无条件上报**，「要不要真的导出」由服务端按开关判定 —— 前端不必先拉一次设置，
+   * 也拿不到绕过开关直接写盘的机会。
+   */
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    const onPageHide = () => {
+      void api.autoExportBackup('page').catch(() => undefined)
+    }
+    window.addEventListener('pagehide', onPageHide)
+    return () => window.removeEventListener('pagehide', onPageHide)
+  }, [])
+
   useEffect(() => {
     const handleOnline = () => {
       void flushOfflineProgress(async (item) => {
@@ -3013,7 +3031,13 @@ function App() {
           startIndex={reader.index}
           settings={settings}
           onSettingsChange={setSettings}
-          onClose={() => navigate(readerReturnPage)}
+          onClose={() => {
+            // 「关闭书籍时自动备份」的触发点：这里是退出阅读器的**唯一**出口，
+            // 因此放在这里而不是各个按钮的回调里，避免漏掉某条退出路径。
+            // 同样无条件上报，服务端按开关决定是否写盘；失败静默（用户此时在离开，无从提示）。
+            void api.autoExportBackup('book').catch(() => undefined)
+            navigate(readerReturnPage)
+          }}
         />
       </div>
     )

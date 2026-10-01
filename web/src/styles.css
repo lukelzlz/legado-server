@@ -4566,6 +4566,13 @@ mark.search-highlight { background: var(--accent-soft); color: var(--accent); fo
   background: var(--surface);
 }
 .progress-sync-field { display: grid; gap: 6px; }
+/* 输入框 + 保存按钮同一行：保存紧跟在输入框后面（原先按钮单独占一行，还要先滚过一行空白） */
+.progress-sync-row { display: flex; gap: 10px; align-items: flex-end; }
+.progress-sync-row .progress-sync-field { flex: 1 1 auto; min-width: 0; }
+/* 行内让输入框铺满可用宽度，保存按钮才会**紧跟在输入框后面**（否则被 340px 的
+   max-width 顶到最右侧，中间留一大片空白） */
+.progress-sync-row .progress-sync-field input { max-width: none; }
+.progress-sync-row > .primary-button { flex: 0 0 auto; height: 38px; align-self: end; }
 .progress-sync-label { font-size: 13px; font-weight: 600; color: var(--ink); }
 .progress-sync-field input {
   width: 100%;
@@ -4581,6 +4588,11 @@ mark.search-highlight { background: var(--accent-soft); color: var(--accent); fo
 .progress-sync-field input:focus { outline: none; border-color: var(--accent); }
 .progress-sync-field input:disabled { opacity: .6; }
 .progress-sync-hint { font-size: 12px; color: var(--muted); line-height: 1.6; }
+/* 备份导出的两个自动触发开关 */
+.export-auto-switches { display: flex; flex-wrap: wrap; gap: 8px 20px; }
+.export-auto-switch { display: inline-flex; align-items: center; gap: 7px; font-size: 13px; color: var(--ink); cursor: pointer; }
+.export-auto-switch input { width: 15px; height: 15px; accent-color: var(--accent); cursor: pointer; }
+.export-auto-switch input:disabled { cursor: default; }
 .progress-sync-hint code {
   padding: 1px 5px;
   border-radius: 4px;

@@ -1554,6 +1554,32 @@ class Database(private val path: String) : Closeable, AutoCloseable {
         }
     }
 
+    /** 全部书签（导出备份用）。按书籍、章节与位置排序，保证输出稳定。 */
+    fun listAllBookmarks(): List<Bookmark> = connect { db ->
+        db.prepareStatement(
+            "select id,book_name,book_author,chapter_index,chapter_name,chapter_pos,book_text,content,created_at " +
+                "from bookmark order by book_name asc, chapter_index asc, chapter_pos asc"
+        ).use { stmt ->
+            stmt.executeQuery().use { rs ->
+                buildList {
+                    while (rs.next()) add(
+                        Bookmark(
+                            id = rs.getLong(1),
+                            bookName = rs.getString(2),
+                            bookAuthor = rs.getString(3),
+                            chapterIndex = rs.getInt(4),
+                            chapterName = rs.getString(5),
+                            chapterPos = rs.getInt(6),
+                            bookText = rs.getString(7),
+                            content = rs.getString(8),
+                            createdAt = rs.getLong(9),
+                        )
+                    )
+                }
+            }
+        }
+    }
+
     /** 某本书的全部书签，按章节与位置排序。 */
     fun listBookmarks(bookName: String, bookAuthor: String?): List<Bookmark> = connect { db ->
         db.prepareStatement(

@@ -599,6 +599,7 @@ data class TtsSpeakRequest(
     val customHeader: String? = null,
     val customMethod: String? = null,
     val customBody: String? = null,
+    val httpTtsId: Long? = null,
 )
 
 @Serializable
@@ -622,6 +623,7 @@ data class TtsSessionChunkRequest(
     val customHeader: String? = null,
     val customMethod: String? = null,
     val customBody: String? = null,
+    val httpTtsId: Long? = null,
 )
 
 @Serializable
@@ -941,6 +943,40 @@ data class LocaleSettingRequest(
 @Serializable
 data class LocaleSettingResponse(
     val locale: String?,
+)
+
+/** 自定义 HTTP TTS 规则，对齐 Legado httpTTS.json 规范 */
+@Serializable
+data class HttpTts(
+    val id: Long = 0L,
+    val name: String = "",
+    val url: String = "",
+    val header: String? = null,
+    val contentType: String? = null,
+    val concurrentRate: String? = null,
+    val loginUrl: String? = null,
+    val loginCheckJs: String? = null,
+    val loginUi: String? = null,
+    val jsLib: String? = null,
+    val enabledCookieJar: Boolean = false,
+    val lastUpdateTime: Long = 0L,
+)
+
+/** HTTP TTS 连通性测试请求 */
+@Serializable
+data class HttpTtsTestRequest(
+    val tts: HttpTts,
+    val text: String = "欢迎使用开源阅读自定义朗读",
+    val speed: Double = 1.0,
+    val voice: String = "",
+)
+
+/** HTTP TTS 导入响应 */
+@Serializable
+data class HttpTtsImportResponse(
+    val total: Int,
+    val imported: Int,
+    val failed: Int,
 )
 
 

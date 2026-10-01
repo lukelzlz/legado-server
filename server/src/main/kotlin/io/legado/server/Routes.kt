@@ -61,6 +61,7 @@ fun Route.apiRoutes(
      * 默认从 [progressSync] 所在的 webdav 根推导，保持与 WebDAV 服务端同一目录。
      */
     webDavStorage: WebDavStorage = WebDavStorage(Path.of(".data/webdav")),
+    httpTtsService: HttpTtsService = HttpTtsService(database),
 ) {
     val webView = WebViewProxy(database)
 
@@ -1499,7 +1500,20 @@ fun Route.apiRoutes(
                     return@post
                 }
                 try {
-                    if (req.engine == "custom" && !req.customUrl.isNullOrBlank()) {
+                    if (req.httpTtsId != null) {
+                        val speedMultiplier = (1.0 + req.rate / 100.0).coerceIn(0.2, 4.0)
+                        val (contentType, audioBytes) = httpTtsService.synthesizeById(
+                            id = req.httpTtsId,
+                            text = text,
+                            speed = speedMultiplier,
+                            voice = req.voice,
+                        )
+                        call.respondBytes(
+                            bytes = audioBytes,
+                            contentType = ContentType.parse(contentType),
+                            status = HttpStatusCode.OK,
+                        )
+                    } else if (req.engine == "custom" && !req.customUrl.isNullOrBlank()) {
                         val (contentType, audioBytes) = edgeTts.synthesizeCustom(req)
                         call.respondBytes(
                             bytes = audioBytes,
@@ -1544,6 +1558,70 @@ fun Route.apiRoutes(
                 } catch (e: Exception) {
                     call.application.log.warn("TTS get speak failed: {}", e.message)
                     call.respond(HttpStatusCode.InternalServerError, ApiError("tts_failed", e.message ?: "语音合成失败"))
+                }
+            }
+        }
+        route("/http-tts") {
+            get {
+                if (auth.requireSession(call) == null) return@get
+                val query = call.request.queryParameters["query"]
+                call.respond(database.listHttpTts(query))
+            }
+            get("/{id}") {
+                if (auth.requireSession(call) == null) return@get
+                val id = call.parameters["id"]?.toLongOrNull()
+                    ?: return@get call.respond(HttpStatusCode.BadRequest, ApiError("invalid_id", "TTS ID 无效"))
+                val tts = database.getHttpTts(id)
+                    ?: return@get call.respond(HttpStatusCode.NotFound, ApiError("not_found", "未找到该 HTTP TTS"))
+                call.respond(tts)
+            }
+            post {
+                if (auth.requireSession(call, true) == null) return@post
+                val tts = call.receive<HttpTts>()
+                if (tts.name.isBlank()) {
+                    return@post call.respond(HttpStatusCode.BadRequest, ApiError("invalid_name", "名称不能为空"))
+                }
+                if (tts.url.isBlank()) {
+                    return@post call.respond(HttpStatusCode.BadRequest, ApiError("invalid_url", "URL 不能为空"))
+                }
+                val saved = database.saveHttpTts(tts)
+                call.respond(saved)
+            }
+            delete("/{id}") {
+                if (auth.requireSession(call, true) == null) return@delete
+                val id = call.parameters["id"]?.toLongOrNull()
+                    ?: return@delete call.respond(HttpStatusCode.BadRequest, ApiError("invalid_id", "TTS ID 无效"))
+                val deleted = database.deleteHttpTts(id)
+                if (deleted) {
+                    call.respond(HttpStatusCode.NoContent)
+                } else {
+                    call.respond(HttpStatusCode.NotFound, ApiError("not_found", "未找到该 HTTP TTS"))
+                }
+            }
+            post("/import") {
+                if (auth.requireSession(call, true) == null) return@post
+                val list = call.receive<List<HttpTts>>()
+                val result = database.importHttpTts(list)
+                call.respond(result)
+            }
+            post("/test") {
+                if (auth.requireSession(call, true) == null) return@post
+                val req = call.receive<HttpTtsTestRequest>()
+                try {
+                    val (contentType, audioBytes) = httpTtsService.synthesize(
+                        tts = req.tts,
+                        text = req.text.ifBlank { "欢迎使用开源阅读自定义朗读" },
+                        speed = req.speed,
+                        voice = req.voice,
+                    )
+                    call.respondBytes(
+                        bytes = audioBytes,
+                        contentType = ContentType.parse(contentType),
+                        status = HttpStatusCode.OK,
+                    )
+                } catch (e: Exception) {
+                    call.application.log.warn("HTTP TTS test failed: {}", e.message)
+                    call.respond(HttpStatusCode.BadRequest, ApiError("tts_test_failed", e.message ?: "合成失败"))
                 }
             }
         }

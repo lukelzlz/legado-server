@@ -18,6 +18,7 @@ import java.nio.file.Path
 import java.security.MessageDigest
 import java.security.SecureRandom
 import java.sql.Connection
+import java.sql.ResultSet
 import java.util.Base64
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.locks.ReentrantLock
@@ -212,6 +213,21 @@ class Database(private val path: String) : Closeable, AutoCloseable {
                 );
                 create index if not exists idx_replace_rule_enabled on replace_rule(is_enabled, sort_order asc);
                 create index if not exists idx_replace_rule_group on replace_rule(group_name);
+                create table if not exists http_tts (
+                  id integer primary key,
+                  name text not null,
+                  url text not null,
+                  header text,
+                  content_type text,
+                  concurrent_rate text,
+                  login_url text,
+                  login_check_js text,
+                  login_ui text,
+                  js_lib text,
+                  enabled_cookie_jar integer not null default 0,
+                  last_update_time integer not null
+                );
+                create index if not exists idx_http_tts_name on http_tts(name);
             """.trimIndent())
         }
         migrateReadingProgress(db)
@@ -2265,6 +2281,97 @@ class Database(private val path: String) : Closeable, AutoCloseable {
             db.createStatement().use { it.executeUpdate("alter table book_content_cache add column raw_content text") }
         }
     }
+    fun listHttpTts(query: String? = null): List<HttpTts> = connect { db ->
+        val sql = if (!query.isNullOrBlank()) {
+            "select id, name, url, header, content_type, concurrent_rate, login_url, login_check_js, login_ui, js_lib, enabled_cookie_jar, last_update_time from http_tts where name like ? or url like ? order by id asc"
+        } else {
+            "select id, name, url, header, content_type, concurrent_rate, login_url, login_check_js, login_ui, js_lib, enabled_cookie_jar, last_update_time from http_tts order by id asc"
+        }
+        db.prepareStatement(sql).use { stmt ->
+            if (!query.isNullOrBlank()) {
+                val q = "%${query.trim()}%"
+                stmt.setString(1, q)
+                stmt.setString(2, q)
+            }
+            stmt.executeQuery().use { rs ->
+                val list = mutableListOf<HttpTts>()
+                while (rs.next()) {
+                    list.add(rs.toHttpTts())
+                }
+                list
+            }
+        }
+    }
+
+    fun getHttpTts(id: Long): HttpTts? = connect { db ->
+        db.prepareStatement("select id, name, url, header, content_type, concurrent_rate, login_url, login_check_js, login_ui, js_lib, enabled_cookie_jar, last_update_time from http_tts where id = ?").use { stmt ->
+            stmt.setLong(1, id)
+            stmt.executeQuery().use { rs -> if (rs.next()) rs.toHttpTts() else null }
+        }
+    }
+
+    fun saveHttpTts(tts: HttpTts): HttpTts = write { db ->
+        val now = System.currentTimeMillis()
+        val id = if (tts.id != 0L) tts.id else now
+        val lastUpdate = if (tts.lastUpdateTime > 0L) tts.lastUpdateTime else now
+        db.prepareStatement("""
+            insert into http_tts(id, name, url, header, content_type, concurrent_rate, login_url, login_check_js, login_ui, js_lib, enabled_cookie_jar, last_update_time)
+            values(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            on conflict(id) do update set
+              name = excluded.name,
+              url = excluded.url,
+              header = excluded.header,
+              content_type = excluded.content_type,
+              concurrent_rate = excluded.concurrent_rate,
+              login_url = excluded.login_url,
+              login_check_js = excluded.login_check_js,
+              login_ui = excluded.login_ui,
+              js_lib = excluded.js_lib,
+              enabled_cookie_jar = excluded.enabled_cookie_jar,
+              last_update_time = excluded.last_update_time
+        """.trimIndent()).use { stmt ->
+            stmt.setLong(1, id)
+            stmt.setString(2, tts.name.ifBlank { "未命名" })
+            stmt.setString(3, tts.url)
+            stmt.setString(4, tts.header)
+            stmt.setString(5, tts.contentType)
+            stmt.setString(6, tts.concurrentRate)
+            stmt.setString(7, tts.loginUrl)
+            stmt.setString(8, tts.loginCheckJs)
+            stmt.setString(9, tts.loginUi)
+            stmt.setString(10, tts.jsLib)
+            stmt.setInt(11, if (tts.enabledCookieJar) 1 else 0)
+            stmt.setLong(12, lastUpdate)
+            stmt.executeUpdate()
+        }
+        getHttpTts(id) ?: tts.copy(id = id, lastUpdateTime = lastUpdate)
+    }
+
+    fun deleteHttpTts(id: Long): Boolean = write { db ->
+        db.prepareStatement("delete from http_tts where id = ?").use { stmt ->
+            stmt.setLong(1, id)
+            stmt.executeUpdate() > 0
+        }
+    }
+
+    fun importHttpTts(list: List<HttpTts>): HttpTtsImportResponse {
+        var imported = 0
+        var failed = 0
+        for (item in list) {
+            try {
+                if (item.url.isBlank()) {
+                    failed++
+                    continue
+                }
+                saveHttpTts(item)
+                imported++
+            } catch (_: Throwable) {
+                failed++
+            }
+        }
+        return HttpTtsImportResponse(total = list.size, imported = imported, failed = failed)
+    }
+
     private fun secret(): String = ByteArray(32).also(random::nextBytes).let { Base64.getUrlEncoder().withoutPadding().encodeToString(it) }
     private fun passwordHash(password: String): String {
         val salt = ByteArray(SALT_BYTES).also(random::nextBytes)
@@ -2290,4 +2397,19 @@ class Database(private val path: String) : Closeable, AutoCloseable {
 }
 
 class VersionConflict : RuntimeException()
+
+private fun ResultSet.toHttpTts(): HttpTts = HttpTts(
+    id = getLong("id"),
+    name = getString("name"),
+    url = getString("url"),
+    header = getString("header"),
+    contentType = getString("content_type"),
+    concurrentRate = getString("concurrent_rate"),
+    loginUrl = getString("login_url"),
+    loginCheckJs = getString("login_check_js"),
+    loginUi = getString("login_ui"),
+    jsLib = getString("js_lib"),
+    enabledCookieJar = getInt("enabled_cookie_jar") == 1,
+    lastUpdateTime = getLong("last_update_time"),
+)
 

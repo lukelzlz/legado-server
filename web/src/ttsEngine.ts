@@ -361,7 +361,7 @@ export class HttpAudioTtsEngine implements ITtsEngine {
   }
 
   private getSettingsKey(settings: ReaderSettings): string {
-    return `${settings.ttsEngine}:${settings.ttsVoice}:${settings.ttsSpeed}:${settings.ttsPitch}:${settings.ttsCustomUrl}:${settings.ttsCustomHeader}:${settings.ttsCustomMethod}:${settings.ttsCustomBody}`
+    return `${settings.ttsEngine}:${settings.ttsVoice}:${settings.ttsSpeed}:${settings.ttsPitch}:${settings.ttsHttpTtsId}:${settings.ttsCustomUrl}:${settings.ttsCustomHeader}:${settings.ttsCustomMethod}:${settings.ttsCustomBody}`
   }
 
   private createItem(text: string, settings: ReaderSettings, context: TtsChunkContext = {}): StreamItem {
@@ -385,6 +385,7 @@ export class HttpAudioTtsEngine implements ITtsEngine {
       voice: settings.ttsVoice || 'zh-CN-XiaoxiaoNeural',
       rate: ratePercent,
       pitch: pitchHz,
+      httpTtsId: settings.ttsHttpTtsId,
       customUrl: settings.ttsCustomUrl,
       customHeader: settings.ttsCustomHeader,
       customMethod: settings.ttsCustomMethod,

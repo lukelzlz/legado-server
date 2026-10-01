@@ -32,7 +32,8 @@ fun Application.legadoApplication(config: ServerConfig = ServerConfig.fromEnviro
     val runner = RuleRunner(database = database)
     val bookCache = BookCacheService(database, runner) { message -> log.info(message) }
     val edgeTts = EdgeTtsService()
-    val ttsSessions = TtsSessionService(edgeTts)
+    val httpTtsService = HttpTtsService(database)
+    val ttsSessions = TtsSessionService(edgeTts, httpTtsService)
     // WebDAV 存储区在多个地方用到（WebDAV 服务端 + 「从 WebDAV 导入书籍」+ 定时备份导出），
     // 因此在这里先建好，保证几边看到的是同一个根目录。
     val webDavStorage = WebDavStorage(config.webDavDirectory)
@@ -79,6 +80,7 @@ fun Application.legadoApplication(config: ServerConfig = ServerConfig.fromEnviro
             // 进度文件落在 WebDAV 根目录下的 bookProgress（与手机端备份结构一致）
             BookProgressSync(config.webDavDirectory, database),
             webDavStorage,
+            httpTtsService,
         )
         webDavRoutes(auth, webDavStorage, database, coverCache)
         staticWeb()

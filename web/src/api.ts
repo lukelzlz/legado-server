@@ -362,6 +362,7 @@ export type TtsSpeakRequest = {
   customHeader?: string
   customMethod?: string
   customBody?: string
+  httpTtsId?: number
 }
 
 export type TtsSessionInfo = {
@@ -383,6 +384,22 @@ export type TtsSessionChunkRequest = {
   customHeader?: string
   customMethod?: string
   customBody?: string
+  httpTtsId?: number
+}
+
+export type HttpTts = {
+  id?: number
+  name: string
+  url: string
+  header?: string | null
+  contentType?: string | null
+  concurrentRate?: string | null
+  loginUrl?: string | null
+  loginCheckJs?: string | null
+  loginUi?: string | null
+  jsLib?: string | null
+  enabledCookieJar?: boolean
+  lastUpdateTime?: number
 }
 
 export const api = {
@@ -606,6 +623,27 @@ export const api = {
     if (csrfToken) headers.set('X-CSRF-Token', csrfToken)
     headers.set('Accept-Language', getCurrentLocale())
     const response = await fetch('/api/tts/speak', {
+      method: 'POST',
+      headers,
+      credentials: 'same-origin',
+      body: JSON.stringify(req),
+    })
+    if (!response.ok) {
+      const err = await response.json().catch(() => ({ message: response.statusText })) as { message?: string }
+      throw new Error(err.message ?? i18n.t('tts.synthFailed', '语音合成失败'))
+    }
+    return response.blob()
+  },
+  getHttpTtsList: (query?: string) => request<HttpTts[]>(query ? `/api/http-tts?query=${encodeURIComponent(query)}` : '/api/http-tts'),
+  getHttpTts: (id: number) => request<HttpTts>(`/api/http-tts/${encodeURIComponent(id)}`),
+  saveHttpTts: (tts: HttpTts) => request<HttpTts>('/api/http-tts', { method: 'POST', body: JSON.stringify(tts) }),
+  deleteHttpTts: (id: number) => request<void>(`/api/http-tts/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  importHttpTts: (list: HttpTts[]) => request<{ total: number; imported: number; failed: number }>('/api/http-tts/import', { method: 'POST', body: JSON.stringify(list) }),
+  testHttpTts: async (req: { tts: HttpTts; text?: string; speed?: number; voice?: string }): Promise<Blob> => {
+    const headers = new Headers({ 'Content-Type': 'application/json' })
+    if (csrfToken) headers.set('X-CSRF-Token', csrfToken)
+    headers.set('Accept-Language', getCurrentLocale())
+    const response = await fetch('/api/http-tts/test', {
       method: 'POST',
       headers,
       credentials: 'same-origin',

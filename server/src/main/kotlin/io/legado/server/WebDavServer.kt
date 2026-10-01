@@ -177,9 +177,14 @@ private class WebDavLocks {
 fun Route.webDavRoutes(auth: AuthService, storage: WebDavStorage, database: Database, coverCache: CoverCache? = null) {
     val locks = WebDavLocks()
     val backupImporter = BackupImporter(database, coverCache)
+    val backupExporter = BackupExporter(database)
     route("/api/webdav") {
         get("/info") { call.serveWebDavInfo(auth, storage) }
         post("/import") { call.serveBackupImport(auth, storage, backupImporter) }
+        get("/export/settings") { call.serveBackupExportSettings(auth, database) }
+        put("/export/settings") { call.serveBackupExportSettingsUpdate(auth, database) }
+        post("/export") { call.serveBackupExport(auth, storage, backupExporter, database) }
+        post("/export/auto") { call.serveBackupExportAuto(auth, storage, backupExporter, database) }
     }
     route(WEBDAV_URI_PREFIX) { webDavEndpoints(auth, storage, locks) }
     route("$WEBDAV_URI_PREFIX/{path...}") { webDavEndpoints(auth, storage, locks) }
@@ -229,6 +234,100 @@ private suspend fun ApplicationCall.serveBackupImport(auth: AuthService, storage
     respond(summary)
 }
 
+private suspend fun ApplicationCall.serveBackupExportSettings(auth: AuthService, database: Database) {
+    if (!requireWebDavAuth(auth)) return
+    respond(readBackupExportSettings(database))
+}
+
+private suspend fun ApplicationCall.serveBackupExportSettingsUpdate(auth: AuthService, database: Database) {
+    if (!requireWebDavAuth(auth, write = true)) return
+    val request = runCatching { receive<BackupExportSettingsUpdate>() }.getOrNull()
+        ?: return respond(HttpStatusCode.BadRequest, ApiError("invalid_backup", "缺少导出设置"))
+    val saved = runCatching { applyBackupExportSettingsUpdate(database, request) }.getOrElse { error ->
+        // 刻意用**不在四语字典里**的 code：字典里已有的 `invalid_backup` 会盖掉具体原因
+        // （用户只会看到「备份文件无效」），而这里真正可据以行动的是「时间要 HH:mm」这类细节。
+        return respondApiError(HttpStatusCode.BadRequest, "invalid_export_setting", error.message ?: "导出设置无效")
+    }
+    respond(saved)
+}
+
+/**
+ * 导出备份：把书源及其分组、书架及书籍分组、阅读进度打包成 Legado 格式的 zip，
+ * 写入 WebDAV 存储区（这样它会直接出现在「文件管理」列表里，可当场下载，
+ * 也能被手机 App 通过 WebDAV 取走）。
+ *
+ * 同名文件（同一天 + 同设备名）**直接覆盖** —— 重复导出应当得到一份最新的，而不是堆一堆副本。
+ */
+private suspend fun ApplicationCall.serveBackupExport(
+    auth: AuthService,
+    storage: WebDavStorage,
+    exporter: BackupExporter,
+    database: Database,
+) {
+    if (!requireWebDavAuth(auth, write = true)) return
+    val settings = readBackupExportSettings(database)
+    val outcome = runCatching { performBackupExport(storage, exporter, settings) }.getOrElse { error ->
+        return respond(
+            HttpStatusCode.InternalServerError,
+            ApiError("backup_export_failed", error.message ?: "备份导出失败"),
+        )
+    }
+    application.log.info(
+        "webdav backup exported: {} (sources={}, books={}, bookmarks={}, groups={}, {} bytes)",
+        outcome.target.fileName.toString(),
+        outcome.result.sources,
+        outcome.result.books,
+        outcome.result.bookmarks,
+        outcome.result.groups,
+        outcome.result.bytes.size,
+    )
+    respond(outcome.toPayload(storage))
+}
+
+/**
+ * 自动导出的触发点：**关闭网页** / **关闭正在阅读的书**。
+ *
+ * 是否真的导出由**服务端**按设置判定（客户端只上报「发生了触发」）—— 这样前端不必先拉一次设置，
+ * 也不给客户端「绕过开关直接写盘」的机会。
+ *
+ * 失败刻意**不返回 5xx**：触发时页面可能正在卸载，用户根本没有界面可以接错误；
+ * 后台行为失败只记日志并如实回报 `exported=false`。
+ */
+private suspend fun ApplicationCall.serveBackupExportAuto(
+    auth: AuthService,
+    storage: WebDavStorage,
+    exporter: BackupExporter,
+    database: Database,
+) {
+    if (!requireWebDavAuth(auth, write = true)) return
+    val trigger = request.queryParameters["trigger"].orEmpty()
+    val settings = readBackupExportSettings(database)
+    // 总开关（autoExport）优先：关掉时子开关一律不生效
+    val enabled = settings.autoExport && when (trigger) {
+        TRIGGER_PAGE_CLOSE -> settings.exportOnPageClose
+        TRIGGER_BOOK_CLOSE -> settings.exportOnBookClose
+        else -> false
+    }
+    if (!enabled) {
+        return respond(BackupAutoExportResult(exported = false, reason = "disabled"))
+    }
+    val outcome = runCatching { performBackupExport(storage, exporter, settings) }.getOrElse { error ->
+        application.log.warn("auto backup export failed ({}): {}", trigger, error.message)
+        return respond(BackupAutoExportResult(exported = false, reason = error.message ?: "failed"))
+    }
+    application.log.info("auto backup exported on {}: {}", trigger, outcome.target.fileName.toString())
+    val payload = outcome.toPayload(storage)
+    respond(
+        BackupAutoExportResult(
+            exported = true,
+            fileName = payload.fileName,
+            path = payload.path,
+            size = payload.size,
+        )
+    )
+}
+
+/** 落盘后的结果（文件名、绝对路径、各部分条数）已移到 [BackupExportScheduler.kt]。 */
 private suspend fun ApplicationCall.serveWebDavOptions() {
     response.header(HttpHeaders.DAV, DAV_CLASSES)
     response.header(HttpHeaders.Allow, DAV_ALLOW)

@@ -82,13 +82,43 @@ class NetworkSourceImport(
     suspend fun preview(url: String): NetworkImportPreviewResponse = withContext(Dispatchers.IO) {
         val target = url.trim()
         if (target.isEmpty()) throw NetworkImportException("import_url_required", "请填写书源地址")
-        val body = download(target)
+        buildPreview(target, download(target))
+    }
+
+    /**
+     * **本地文件**预览：内容由浏览器读出后提交，服务端**不发起任何网络请求**。
+     *
+     * 与 [preview] 共用 [buildPreview]，因此「新增 / 更新 / 不可导入」的判定口径、
+     * 名称兜底时的 id 改写、以及凭票据落库的整套流程完全一致 ——
+     * 本地导入与网络导入不会出现两套规则漂移（仓库既有教训：两处口径必须同源）。
+     *
+     * 信任边界与既有 `POST /api/sources/import` 相同：客户端只能提供**原始文本**，
+     * 解析、体积上限与最终落库 payload 全部由服务端产出。
+     *
+     * @param label 仅用于日志与界面展示（通常传文件名）；不参与任何判定。
+     */
+    suspend fun previewLocal(content: String, label: String = ""): NetworkImportPreviewResponse = withContext(Dispatchers.IO) {
+        if (content.isBlank()) throw NetworkImportException("import_content_empty", "文件内容为空")
+        // 单次上传的内容同样受体积上限约束，避免超大文件把服务端内存吃光
+        val bytes = content.toByteArray(Charsets.UTF_8)
+        if (bytes.size > MAX_BYTES) {
+            throw NetworkImportException("import_too_large", "文件超过 ${MAX_BYTES / 1024 / 1024} MiB 上限")
+        }
+        buildPreview(label.ifBlank { "本地文件" }, content)
+    }
+
+    /**
+     * 解析集合 → 逐条判定 → 存票据。
+     *
+     * [label] 只用于日志与响应里的 `url` 字段（网络导入是地址，本地导入是文件名）。
+     */
+    private fun buildPreview(label: String, body: String): NetworkImportPreviewResponse {
         val rawList = try {
             SourceCodec.parseSourceList(body)
         } catch (_: IllegalArgumentException) {
-            throw NetworkImportException("import_content_invalid", "该地址返回的内容不是有效的书源 JSON")
+            throw NetworkImportException("import_content_invalid", "内容不是有效的书源 JSON")
         }
-        if (rawList.isEmpty()) throw NetworkImportException("import_empty", "未从该地址解析出任何书源")
+        if (rawList.isEmpty()) throw NetworkImportException("import_empty", "未解析出任何书源")
 
         // 现有书源：先用 bookSourceUrl（id）精确匹配，未命中再按名称兜底（兼容改名的书源，
         // 例如「大灰狼融合VIP5.0」这类名称带版本号、URL 却对不上的情况）。
@@ -116,12 +146,12 @@ class NetworkSourceImport(
         }
 
         val token = newToken()
-        store(token, CachedPreview(target, items, System.currentTimeMillis()))
-        log("source network preview: url=$target, total=${items.size}, new=${items.count { it.status == STATUS_NEW }}, update=${items.count { it.status == STATUS_UPDATE }}, invalid=${items.count { it.status == STATUS_INVALID }}")
+        store(token, CachedPreview(label, items, System.currentTimeMillis()))
+        log("source preview: source=$label, total=${items.size}, new=${items.count { it.status == STATUS_NEW }}, update=${items.count { it.status == STATUS_UPDATE }}, invalid=${items.count { it.status == STATUS_INVALID }}")
 
-        NetworkImportPreviewResponse(
+        return NetworkImportPreviewResponse(
             token = token,
-            url = target,
+            url = label,
             total = items.size,
             newCount = items.count { it.status == STATUS_NEW },
             updateCount = items.count { it.status == STATUS_UPDATE },

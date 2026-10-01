@@ -238,6 +238,19 @@ data class SourceLoginStateRecord(
     val group: String? = null,
 )
 
+/**
+ * 本地书源文件预览请求。
+ *
+ * 只提交**原始文本**：解析、体积上限与最终落库 payload 全部由服务端产出
+ * （与 `POST /api/sources/import` 的信任边界相同）。
+ *
+ * @param label 文件名，仅用于日志与界面展示，不参与任何判定
+ */
+@Serializable data class LocalSourcePreviewRequest(
+    val content: String,
+    val label: String = "",
+)
+
 @Serializable data class SubscriptionWriteRequest(val url: String, val enabled: Boolean = true)
 @Serializable data class SourceSubscription(
     val id: Long,
@@ -363,6 +376,72 @@ data class SourceLoginStateRecord(
     val fileCount: Int = 0,
 )
 @Serializable data class ProgressSyncSettingsUpdate(val directoryName: String)
+
+// ---------------------------------------------------------------------------
+// 备份导出（Legado 格式 `backup<日期>-<设备名>.zip`）
+// ---------------------------------------------------------------------------
+/**
+ * 备份导出设置。
+ *
+ * @param exportDir  WebDAV 根目录下的相对目录，空串表示**根目录**（这样导出的 zip 会直接
+ *   出现在「文件管理」列表里，可当场下载，也能被手机 App 通过 WebDAV 取走）。默认 `legado`。
+ * @param deviceName 设备名后缀，拼在日期之后（`backup2026-09-30-web.zip`）。默认 `web`。
+ * @param autoExport **总开关**：关掉时下面三个子开关一律不生效。
+ * @param exportOnPageClose 关闭网页时自动导出一次。
+ * @param exportOnBookClose 关闭正在阅读的书时自动导出一次。
+ * @param scheduledExport 定时导出。
+ * @param scheduledTime 定时时刻，`HH:mm`（24 小时制），默认 `03:00`。
+ */
+@Serializable data class BackupExportSettings(
+    val exportDir: String = "legado",
+    val deviceName: String = "web",
+    val autoExport: Boolean = false,
+    val exportOnPageClose: Boolean = false,
+    val exportOnBookClose: Boolean = false,
+    val scheduledExport: Boolean = false,
+    val scheduledTime: String = "03:00",
+)
+
+/**
+ * 导出设置的**局部**更新：为 null 的字段表示「这次不改」。
+ *
+ * 页面上「导出路径」「设备名后缀」各有独立保存按钮，勾选类开关是勾了就存，
+ * 因此契约必须支持「改哪个存哪个」，不能整个覆盖。
+ */
+@Serializable data class BackupExportSettingsUpdate(
+    val exportDir: String? = null,
+    val deviceName: String? = null,
+    val autoExport: Boolean? = null,
+    val exportOnPageClose: Boolean? = null,
+    val exportOnBookClose: Boolean? = null,
+    val scheduledExport: Boolean? = null,
+    val scheduledTime: String? = null,
+)
+
+/**
+ * 自动导出的响应。
+ *
+ * `exported=false` 是**正常结果**（开关没开），不是错误 —— 前端在页面关闭时无条件上报，
+ * 是否真的导出由**服务端**判定（信任边界：客户端不该决定要不要写盘）。
+ */
+@Serializable data class BackupAutoExportResult(
+    val exported: Boolean,
+    val reason: String? = null,
+    val fileName: String? = null,
+    val path: String? = null,
+    val size: Long = 0,
+)
+
+/** 导出结果。`path` 是相对 WebDAV 根的路径，便于前端提示与定位。 */
+@Serializable data class BackupExportResult(
+    val fileName: String,
+    val path: String,
+    val size: Long,
+    val books: Int,
+    val sources: Int,
+    val bookmarks: Int,
+    val groups: Int,
+)
 @Serializable data class ProgressMergeRequest(
     val sourceId: String,
     val bookUrl: String,

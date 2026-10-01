@@ -4566,6 +4566,16 @@ mark.search-highlight { background: var(--accent-soft); color: var(--accent); fo
   background: var(--surface);
 }
 .progress-sync-field { display: grid; gap: 6px; }
+/* 输入框 + 保存按钮同一行：保存紧跟在输入框后面（原先按钮单独占一行，还要先滚过一行空白） */
+.progress-sync-row { display: flex; gap: 10px; align-items: flex-end; }
+.progress-sync-row .progress-sync-field { flex: 1 1 auto; min-width: 0; }
+/* 行内让输入框铺满可用宽度，保存按钮才会**紧跟在输入框后面**（否则被 340px 的
+   max-width 顶到最右侧，中间留一大片空白） */
+.progress-sync-row .progress-sync-field input { max-width: none; }
+/* 固定最小宽度：「保存」与「保存中…」字数不同，不给宽度下限的话按钮会随文案变宽变窄，
+   flex 行随之重排 —— 那正是用户看到的「闪回 + 向左拖影」。 */
+.progress-sync-row > .primary-button { flex: 0 0 auto; height: 38px; min-width: 82px; align-self: end; }
+.export-auto-row .subtle-button { min-width: 76px; }
 .progress-sync-label { font-size: 13px; font-weight: 600; color: var(--ink); }
 .progress-sync-field input {
   width: 100%;
@@ -4581,6 +4591,34 @@ mark.search-highlight { background: var(--accent-soft); color: var(--accent); fo
 .progress-sync-field input:focus { outline: none; border-color: var(--accent); }
 .progress-sync-field input:disabled { opacity: .6; }
 .progress-sync-hint { font-size: 12px; color: var(--muted); line-height: 1.6; }
+/* 备份导出的自动导出区：总开关 + 定时 + 特定情况 */
+.export-auto-block { display: grid; gap: 10px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 10px; background: var(--bg); }
+.export-auto-switch { display: inline-flex; align-items: center; gap: 7px; font-size: 13px; color: var(--ink); cursor: pointer; }
+.export-auto-switch input { width: 15px; height: 15px; accent-color: var(--accent); cursor: pointer; }
+.export-auto-switch input:disabled { cursor: default; }
+.export-auto-switch.is-master { font-weight: 600; flex-wrap: wrap; }
+.export-auto-switch.is-master small { font-weight: 400; font-size: 12px; color: var(--muted); }
+/* 顶格的总开关 + 下面缩进的 3 个子选项（定时导出 / 关闭网页 / 关闭书籍）各自成行、左边缘对齐。
+   总开关没开时整块 `is-locked`：灰掉并锁死（控件本身也都带了 disabled，这里只负责视觉）。 */
+.export-auto-children { display: grid; gap: 10px; padding-left: 22px; }
+.export-auto-children.is-locked { opacity: .45; }
+.export-auto-children.is-locked .export-auto-switch { cursor: not-allowed; }
+.export-auto-children.is-locked .export-auto-switch input { cursor: not-allowed; }
+.export-auto-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; }
+.export-time-input {
+  width: 78px;
+  padding: 6px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--ink);
+  font-size: 13px;
+  font-family: inherit;
+  text-align: center;
+  letter-spacing: .5px;
+}
+.export-time-input:focus { outline: none; border-color: var(--accent); }
+.export-auto-note { font-size: 12px; color: var(--muted); }
 .progress-sync-hint code {
   padding: 1px 5px;
   border-radius: 4px;

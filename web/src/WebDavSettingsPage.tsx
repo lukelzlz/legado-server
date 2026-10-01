@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { i18n } from './i18n'
-import { api, joinWebDavPath, webDavFileUrl, WebDavInfo, ProgressSyncSettings } from './api'
+import { api, joinWebDavPath, webDavFileUrl, WebDavInfo, ProgressSyncSettings, BackupExportSettings } from './api'
 import { toast } from './Toast'
 import { Icon } from './icons'
 
@@ -22,41 +22,6 @@ export function isSupportedLocalBook(filename: string): boolean {
   return /\.(txt|text|epub)$/i.test(filename)
 }
 
-/** 客户端接入指引：按当前访问来源拼出可复制的连接信息。 */
-export function webDavClientGuides(origin: string, urlPath: string, t: (k: string, opt?: any) => string = (k, opt) => String(i18n.t(k, opt as any))) {
-  const url = `${origin}${urlPath}`
-  return [
-    {
-      id: 'windows',
-      title: t('webdav.guideWindowsTitle', { defaultValue: 'Windows 资源管理器' }),
-      steps: t('webdav.guideWindowsSteps', { defaultValue: '「此电脑」→ 右键 → 映射网络驱动器 → 粘贴下面的地址 → 使用其他凭据连接（用户名任意填，密码为登录密码）' }),
-      command: url,
-      copyLabel: t('webdav.copyUrl', { defaultValue: '复制地址' }),
-    },
-    {
-      id: 'macos',
-      title: t('webdav.guideMacosTitle', { defaultValue: 'macOS Finder' }),
-      steps: t('webdav.guideMacosSteps', { defaultValue: 'Finder → 前往 → 连接服务器（⌘K）→ 粘贴下面的地址 → 注册用户（用户名任意填，密码为登录密码）' }),
-      command: url,
-      copyLabel: t('webdav.copyUrl', { defaultValue: '复制地址' }),
-    },
-    {
-      id: 'rclone',
-      title: t('webdav.guideRcloneTitle', { defaultValue: 'rclone / 命令行' }),
-      steps: t('webdav.guideRcloneSteps', { defaultValue: '先配置远端（密码用 rclone obscure 生成），随后即可像本地目录一样拷贝文件' }),
-      command: `rclone config create legado webdav url=${url} vendor=other user=legado pass=$(rclone obscure '${t('webdav.yourPassword', { defaultValue: '你的登录密码' })}')\nrclone copy ./some-book.txt legado:books/`,
-      copyLabel: t('webdav.copyCommand', { defaultValue: '复制命令' }),
-    },
-    {
-      id: 'legado',
-      title: t('webdav.guideLegadoTitle', { defaultValue: 'Legado App 备份' }),
-      steps: t('webdav.guideLegadoSteps', { defaultValue: '在 App 的「备份与恢复 / WebDAV」中填入下面的地址，账号任意填，密码为当前登录密码，备份文件会落到数据目录的 webdav 文件夹' }),
-      command: url,
-      copyLabel: t('webdav.copyUrl', { defaultValue: '复制地址' }),
-    },
-  ]
-}
-
 /** 字节数易读化（服务端返回的是精确字节）。 */
 export function formatDavSize(bytes: number): string {
   if (!Number.isFinite(bytes) || bytes <= 0) return '0 B'
@@ -70,17 +35,22 @@ export function formatDavSize(bytes: number): string {
   return `${unit === 0 ? value : value.toFixed(value >= 100 ? 0 : 1)} ${units[unit]}`
 }
 
-/** 修改时间：近期显示相对时间，超过 7 天显示日期。 */
+/**
+ * 修改时间：**24 小时内**用相对时间（刚刚 / N 分钟前 / N 小时前），
+ * **超过 24 小时**直接给绝对时刻 `YYYY-MM-DD HH:mm`（24 小时制，精确到分钟）。
+ *
+ * 刻意不再有「N 天前」这一档：文件列表里最常见的问题是「这份备份到底是几点生成的」，
+ * 相对天数答不了这个问题，而带时分的绝对时刻可以。
+ */
 export function formatDavTime(timestamp: number, now = Date.now(), t: (k: string, opt?: any) => string = (k, opt) => String(i18n.t(k, opt as any))): string {
   if (!Number.isFinite(timestamp) || timestamp <= 0) return '-'
   const diff = now - timestamp
   if (diff < 60_000) return t('webdav.timeJustNow', { defaultValue: '刚刚' })
   if (diff < 3_600_000) return t('webdav.timeMinutesAgo', { count: Math.floor(diff / 60_000), defaultValue: `${Math.floor(diff / 60_000)} 分钟前` })
   if (diff < 86_400_000) return t('webdav.timeHoursAgo', { count: Math.floor(diff / 3_600_000), defaultValue: `${Math.floor(diff / 3_600_000)} 小时前` })
-  if (diff < 7 * 86_400_000) return t('webdav.timeDaysAgo', { count: Math.floor(diff / 86_400_000), defaultValue: `${Math.floor(diff / 86_400_000)} 天前` })
   const date = new Date(timestamp)
   const pad = (value: number) => String(value).padStart(2, '0')
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`
 }
 
 /** 面包屑：根目录 + 逐级路径。 */
@@ -129,6 +99,30 @@ export function WebDavSettingsPage() {
   const [syncSettings, setSyncSettings] = useState<ProgressSyncSettings | null>(null)
   const [syncDirInput, setSyncDirInput] = useState('')
   const [syncSaving, setSyncSaving] = useState(false)
+
+  // 备份导出（Legado 格式 zip 写入 WebDAV 存储区）
+  const [exportSettings, setExportSettings] = useState<BackupExportSettings | null>(null)
+  const [exportDirInput, setExportDirInput] = useState('')
+  const [deviceNameInput, setDeviceNameInput] = useState('')
+  const [scheduledTimeInput, setScheduledTimeInput] = useState('')
+  /**
+   * 哪个字段正在保存（`null` = 空闲）。
+   *
+   * ⚠️ 刻意**不是**一个全局布尔：三个「保存」按钮原先共用它，点任意一个都会让三个按钮
+   * 同时从「保存」变成「保存中…」（2 字 → 4 字，按钮变宽），而它们位于 flex 行末尾，
+   * 一变宽就把左侧输入框压窄、自身左边缘左移，保存完再弹回 —— 表现就是「闪回 + 向左拖影」。
+   */
+  const [savingField, setSavingField] = useState<'dir' | 'device' | 'time' | null>(null)
+  /** 勾选类开关的忙碌标记：**不改任何按钮文案**，因此不会有宽度变化引起的重排。 */
+  const [autoBusy, setAutoBusy] = useState(false)
+  /**
+   * 总开关没开（或设置还没读出来）⇒ 下面三个子项**整体锁死**：灰掉且不可操作。
+   *
+   * 这样「自动导出」就是真正的总闸：不开它，子项既改不动、也看不出来是开着的，
+   * 避免出现「界面显示已勾选、实际因为总开关没开而完全不生效」的误导。
+   */
+  const autoLocked = exportSettings === null || !exportSettings.autoExport
+  const [exporting, setExporting] = useState(false)
 
   // 本地书籍导入（仅 TXT / EPUB）
   const localBookInputRef = useRef<HTMLInputElement>(null)
@@ -202,6 +196,110 @@ export function WebDavSettingsPage() {
     }
   }
 
+  const loadExportSettings = useCallback(async () => {
+    try {
+      const s = await api.backupExportSettings()
+      setExportSettings(s)
+      setExportDirInput(s.exportDir)
+      setDeviceNameInput(s.deviceName)
+      setScheduledTimeInput(s.scheduledTime)
+    } catch {
+      // 与进度同步同理：导出设置读取失败不该影响文件页其它功能
+      setExportSettings(null)
+    }
+  }, [])
+
+  /**
+   * 局部保存：`patch` 里只放本次真正要改的字段。
+   *
+   * @param field   点了哪个「保存」按钮 —— 只有它自己会显示「保存中…」；
+   *                传 `null` 表示这是勾选类开关触发的，**不改任何按钮文案**。
+   * @param message 成功提示（可选）
+   */
+  const saveExportPatch = useCallback(async (
+    patch: Partial<BackupExportSettings>,
+    field: 'dir' | 'device' | 'time' | null,
+    message?: string,
+  ) => {
+    if (field) setSavingField(field)
+    else setAutoBusy(true)
+    try {
+      const saved = await api.saveBackupExportSettings(patch)
+      setExportSettings(saved)
+      // ⚠️ **只回填被保存的那一个输入框**。原先三个一起回填，等于把用户正在别处输入的
+      // 未保存内容悄悄冲掉，视觉上就是「整个框都刷新了一遍」。
+      if (field === 'dir') setExportDirInput(saved.exportDir)
+      if (field === 'device') setDeviceNameInput(saved.deviceName)
+      if (field === 'time') setScheduledTimeInput(saved.scheduledTime)
+      if (message) toast.success(message)
+      return saved
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : t('webdav.saveFailed', { defaultValue: '保存失败' }))
+      return null
+    } finally {
+      if (field) setSavingField(null)
+      else setAutoBusy(false)
+    }
+  }, [t])
+
+  const handleSaveExportDir = () =>
+    void saveExportPatch(
+      { exportDir: exportDirInput.trim() },
+      'dir',
+      t('webdav.exportDirSaved', { dir: exportDirInput.trim() || '/', defaultValue: `导出路径已保存：${exportDirInput.trim() || 'WebDAV 根目录'}` }),
+    )
+
+  const handleSaveDeviceName = () =>
+    void saveExportPatch(
+      { deviceName: deviceNameInput.trim() },
+      'device',
+      t('webdav.exportDeviceSaved', { name: deviceNameInput.trim() || '—', defaultValue: `设备名后缀已保存：${deviceNameInput.trim() || '（空）'}` }),
+    )
+
+  /** 勾选即保存：开关类控件不设独立保存按钮，也不触发任何按钮文案变化。 */
+  const handleToggleAutoExport = (checked: boolean) => void saveExportPatch({ autoExport: checked }, null)
+  const handleToggleScheduled = (checked: boolean) => void saveExportPatch({ scheduledExport: checked }, null)
+  const handleTogglePageClose = (checked: boolean) => void saveExportPatch({ exportOnPageClose: checked }, null)
+  const handleToggleBookClose = (checked: boolean) => void saveExportPatch({ exportOnBookClose: checked }, null)
+
+  const handleSaveScheduledTime = () => {
+    const value = scheduledTimeInput.trim()
+    // 前端先粗校验一次（HH:mm，24 小时制）给出即时反馈；服务端还会再校验一遍
+    if (!/^([01]?\d|2[0-3]):[0-5]?\d$/.test(value)) {
+      toast.warning(t('webdav.scheduledTimeInvalid', { defaultValue: '定时时间格式应为 HH:mm（24 小时制），如 03:00' }))
+      return
+    }
+    void saveExportPatch({ scheduledTime: value }, 'time', t('webdav.scheduledTimeSaved', { time: value, defaultValue: `定时导出时间已保存：每天 ${value}` }))
+  }
+
+  /**
+   * 导出备份到 WebDAV 存储区。
+   *
+   * 导出后必须**刷新当前目录列表**：文件落在「导出路径」里，如果用户正好停在那层目录，
+   * 不刷新就看不到刚生成的 zip。
+   */
+  const handleExportBackup = async () => {
+    setExporting(true)
+    try {
+      const result = await api.backupExport()
+      toast.success(
+        t('webdav.exportSuccess', {
+          name: result.fileName,
+          sources: result.sources,
+          books: result.books,
+          bookmarks: result.bookmarks,
+          size: formatDavSize(result.size),
+          defaultValue: `已导出 ${result.fileName}（书源 ${result.sources} 个、书籍 ${result.books} 本、书签 ${result.bookmarks} 条、${formatDavSize(result.size)}）`,
+        }),
+      )
+      if (path === (exportSettings?.exportDir ?? '')) void load(path)
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : t('webdav.exportFailed', { defaultValue: '备份导出失败' }))
+    } finally {
+      setExporting(false)
+    }
+  }
+
   const load = useCallback(async (target: string) => {
     setLoading(true)
     try {
@@ -222,13 +320,16 @@ export function WebDavSettingsPage() {
     void loadSyncSettings()
   }, [loadSyncSettings])
 
+  useEffect(() => {
+    void loadExportSettings()
+  }, [loadExportSettings])
+
   const refresh = () => void load(path)
 
+  // 概览卡片的「复制地址」要用它拼完整 URL；刻意走 currentOrigin() 而不是裸用全局 `origin`，
+  // 否则在无头渲染（web/test 的 renderToStaticMarkup）下会取到 undefined。
   const origin = currentOrigin()
-  const guides = useMemo(
-    () => webDavClientGuides(origin, info?.url ?? '/webdav', t),
-    [origin, info?.url, t],
-  )
+
   const breadcrumbs = useMemo(() => davBreadcrumbs(path, t), [path, t])
   const entries = info?.entries ?? []
 
@@ -375,7 +476,7 @@ export function WebDavSettingsPage() {
         <div>
           <span className="section-kicker">{t('webdav.sectionKicker', { defaultValue: '文件服务' })}</span>
           <h1>WebDAV</h1>
-          <p>{t('webdav.sectionDesc', { defaultValue: '把电脑或手机上的文件直接投递到服务器数据目录，支持资源管理器、Finder、rclone 与 Legado App 备份。' })}</p>
+          <p>{t('webdav.sectionDesc', { defaultValue: '把电脑或手机上的文件直接投递到服务器数据目录；也能在这里同步阅读进度、导入本地书籍，或按 Legado 格式导出备份。' })}</p>
         </div>
         <button type="button" className="ghost-button" onClick={refresh} disabled={loading}>
           <Icon name="refresh" />
@@ -423,29 +524,27 @@ export function WebDavSettingsPage() {
           {t('webdav.syncDesc', { defaultValue: '读取并写回 Legado 手机端的进度文件夹。打开书籍时会取「数据库」与「进度文件」中较新的一份；之后每翻一章都会自动写回进度文件，手机与网页进度保持一致。' })}
         </p>
         <div className="progress-sync-card">
-          <label className="progress-sync-field">
-            <span className="progress-sync-label">{t('webdav.syncFolderLabel', { defaultValue: '进度文件夹名' })}</span>
-            <input
-              type="text"
-              value={syncDirInput}
-              placeholder="bookProgress"
-              onChange={e => setSyncDirInput(e.target.value)}
-              spellCheck={false}
-              disabled={syncSaving}
-            />
-            <small className="progress-sync-hint">
-              {t('webdav.syncFolderHint', { defaultValue: '相对 WebDAV 根目录。手机端备份通常是 legado/bookProgress，就按这个填（支持多级子目录）。' })}
-            </small>
-          </label>
-          <div className="progress-sync-actions">
+          {/* 输入框后面直接跟「保存」，不再单列一行按钮区（原「重新读取」按钮已删除：
+              每次进入本页都会自动读取，手动刷新没有意义） */}
+          <div className="progress-sync-row">
+            <label className="progress-sync-field">
+              <span className="progress-sync-label">{t('webdav.syncFolderLabel', { defaultValue: '进度文件夹名' })}</span>
+              <input
+                type="text"
+                value={syncDirInput}
+                placeholder="bookProgress"
+                onChange={e => setSyncDirInput(e.target.value)}
+                spellCheck={false}
+                disabled={syncSaving}
+              />
+            </label>
             <button type="button" className="primary-button" onClick={() => void handleSaveSyncSettings()} disabled={syncSaving}>
               {syncSaving ? t('common.saving', { defaultValue: '保存中…' }) : t('common.save', { defaultValue: '保存' })}
             </button>
-            <button type="button" className="ghost-button" onClick={() => void loadSyncSettings()} disabled={syncSaving}>
-              <Icon name="refresh" />
-              <span>{t('common.refresh', { defaultValue: '重新读取' })}</span>
-            </button>
           </div>
+          <small className="progress-sync-hint">
+            {t('webdav.syncFolderHint', { defaultValue: '相对 WebDAV 根目录。手机端备份通常是 legado/bookProgress，就按这个填（支持多级子目录）。' })}
+          </small>
           <div className="progress-sync-status">
             {syncSettings === null ? (
               <span className="progress-sync-badge is-warn">{t('webdav.syncBadgeWarn', { defaultValue: '未读取到配置' })}</span>
@@ -469,21 +568,125 @@ export function WebDavSettingsPage() {
       </section>
 
       <section className="webdav-section">
-        <h2 className="webdav-section-title">{t('webdav.clientGuideTitle', { defaultValue: '客户端接入' })}</h2>
-        <div className="webdav-guide-grid">
-          {guides.map(guide => (
-            <article key={guide.id} className="webdav-guide">
-              <div className="webdav-guide-head">
-                <strong>{guide.title}</strong>
-                <button type="button" className="subtle-button" onClick={() => void copyText(guide.command, t('common.copied', { defaultValue: '已复制到剪贴板' }))}>
-                  <Icon name="copy" />
-                  <span>{guide.copyLabel}</span>
+        <h2 className="webdav-section-title">{t('webdav.exportTitle', { defaultValue: '备份导出' })}</h2>
+        <p className="webdav-section-desc">
+          {t('webdav.exportDesc', { defaultValue: '按 Legado 备份包格式导出书源及其分组、书架及书籍分组、阅读进度，写入下面的导出路径。导出的 zip 会出现在「文件管理」里，可直接下载，也能被手机 App 通过 WebDAV 取走。' })}
+        </p>
+        <div className="progress-sync-card">
+          {/* 两个字段**各自独立保存**：导出行一个按钮、设备名行一个按钮 */}
+          <div className="progress-sync-row">
+            <label className="progress-sync-field">
+              <span className="progress-sync-label">{t('webdav.exportPathLabel', { defaultValue: '导出路径' })}</span>
+              <input
+                type="text"
+                value={exportDirInput}
+                placeholder="legado"
+                onChange={e => setExportDirInput(e.target.value)}
+                spellCheck={false}
+                disabled={savingField === 'dir'}
+              />
+            </label>
+            <button type="button" className="primary-button" onClick={handleSaveExportDir} disabled={savingField === 'dir'}>
+              {savingField === 'dir' ? t('common.saving', { defaultValue: '保存中…' }) : t('common.save', { defaultValue: '保存' })}
+            </button>
+          </div>
+          <div className="progress-sync-row">
+            <label className="progress-sync-field">
+              <span className="progress-sync-label">{t('webdav.exportDeviceLabel', { defaultValue: '设备名后缀' })}</span>
+              <input
+                type="text"
+                value={deviceNameInput}
+                placeholder="web"
+                onChange={e => setDeviceNameInput(e.target.value)}
+                spellCheck={false}
+                disabled={savingField === 'device'}
+              />
+            </label>
+            <button type="button" className="primary-button" onClick={handleSaveDeviceName} disabled={savingField === 'device'}>
+              {savingField === 'device' ? t('common.saving', { defaultValue: '保存中…' }) : t('common.save', { defaultValue: '保存' })}
+            </button>
+          </div>
+          <small className="progress-sync-hint">
+            {t('webdav.exportHint', { defaultValue: '导出路径相对 WebDAV 根目录，留空即根目录（支持多级子目录）。设备名拼在日期之后，生成 backup2026-09-30-web.zip 这样的文件名；留空则只有日期。' })}
+          </small>
+
+          {/* 自动导出（顶格总开关）+ 下面 3 个子选项（统一缩进）；勾选类开关**勾了就直接保存** */}
+          <div className="export-auto-block">
+            <label className="export-auto-switch is-master">
+              <input
+                type="checkbox"
+                checked={exportSettings?.autoExport ?? false}
+                onChange={e => handleToggleAutoExport(e.target.checked)}
+                disabled={autoBusy || exportSettings === null}
+              />
+              <span>{t('webdav.autoExportMaster', { defaultValue: '自动导出' })}</span>
+              <small>{t('webdav.autoExportMasterHint', { defaultValue: '总开关，关掉后下面三个选项都不生效' })}</small>
+            </label>
+
+            <div className={`export-auto-children ${autoLocked ? 'is-locked' : ''}`}>
+              <div className="export-auto-row">
+                <label className="export-auto-switch">
+                  <input
+                    type="checkbox"
+                    checked={exportSettings?.scheduledExport ?? false}
+                    onChange={e => handleToggleScheduled(e.target.checked)}
+                    disabled={autoLocked || autoBusy}
+                  />
+                  <span>{t('webdav.scheduledExport', { defaultValue: '定时导出' })}</span>
+                </label>
+                <input
+                  type="text"
+                  className="export-time-input"
+                  value={scheduledTimeInput}
+                  placeholder="03:00"
+                  inputMode="numeric"
+                  maxLength={5}
+                  onChange={e => setScheduledTimeInput(e.target.value)}
+                  disabled={autoLocked || savingField === 'time'}
+                  aria-label={t('webdav.scheduledTimeLabel', { defaultValue: '定时导出时间（24 小时制）' })}
+                />
+                <button type="button" className="subtle-button" onClick={handleSaveScheduledTime} disabled={autoLocked || savingField === 'time'}>
+                  {savingField === 'time' ? t('common.saving', { defaultValue: '保存中…' }) : t('common.save', { defaultValue: '保存' })}
                 </button>
+                <small className="export-auto-note">{t('webdav.scheduledTimeNote', { defaultValue: '24 小时制，如 03:00 / 14:30' })}</small>
               </div>
-              <p>{guide.steps}</p>
-              <pre className="webdav-guide-command">{guide.command}</pre>
-            </article>
-          ))}
+
+              <div className="export-auto-row">
+                <label className="export-auto-switch">
+                  <input
+                    type="checkbox"
+                    checked={exportSettings?.exportOnPageClose ?? false}
+                    onChange={e => handleTogglePageClose(e.target.checked)}
+                    disabled={autoLocked || autoBusy}
+                  />
+                  <span>{t('webdav.exportOnPageClose', { defaultValue: '关闭网页时自动导出' })}</span>
+                </label>
+              </div>
+
+              <div className="export-auto-row">
+                <label className="export-auto-switch">
+                  <input
+                    type="checkbox"
+                    checked={exportSettings?.exportOnBookClose ?? false}
+                    onChange={e => handleToggleBookClose(e.target.checked)}
+                    disabled={autoLocked || autoBusy}
+                  />
+                  <span>{t('webdav.exportOnBookClose', { defaultValue: '关闭书籍时自动导出' })}</span>
+                </label>
+              </div>
+            </div>
+          </div>
+          <small className="progress-sync-hint">
+            {t('webdav.autoExportHint', { defaultValue: '同一天、同一设备名只保留最新一份（新备份直接覆盖旧备份）。开关勾选后立即生效。' })}
+          </small>
+          {exportSettings !== null && (
+            <div className="progress-sync-status">
+              <span className="progress-sync-badge is-ok">{t('webdav.exportBadgeSaved', { defaultValue: '已配置' })}</span>
+              <span className="progress-sync-path">
+                {t('webdav.exportCurrent', { dir: exportSettings.exportDir || '/', name: exportSettings.deviceName || t('webdav.exportNoDevice', { defaultValue: '未设设备名' }), defaultValue: `导出到 ${exportSettings.exportDir || 'WebDAV 根目录'} · ${exportSettings.deviceName || '未设设备名'}` })}
+              </span>
+            </div>
+          )}
         </div>
       </section>
 
@@ -533,6 +736,16 @@ export function WebDavSettingsPage() {
             <button type="button" className="subtle-button" onClick={handleCreateFolder} disabled={busy}>
               <Icon name="plus" />
               <span>{t('webdav.newFolder', { defaultValue: '新建文件夹' })}</span>
+            </button>
+            <button
+              type="button"
+              className="subtle-button"
+              onClick={() => void handleExportBackup()}
+              disabled={busy || exporting}
+              title={t('webdav.exportBackupTitle', { defaultValue: '按 Legado 备份格式导出书源及分组、书架及分组、阅读进度到导出路径' })}
+            >
+              <Icon name="download" />
+              <span>{exporting ? t('webdav.exporting', { defaultValue: '导出中…' }) : t('webdav.exportBackup', { defaultValue: '导出备份' })}</span>
             </button>
             <button type="button" className="primary-button" onClick={() => uploadInputRef.current?.click()} disabled={busy}>
               <Icon name="upload" />

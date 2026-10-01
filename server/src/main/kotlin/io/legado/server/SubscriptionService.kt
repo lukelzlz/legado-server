@@ -9,10 +9,6 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
-import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.JsonArray
-import kotlinx.serialization.json.JsonElement
-import kotlinx.serialization.json.JsonObject
 import java.net.InetAddress
 import java.net.URI
 import java.net.http.HttpClient
@@ -85,21 +81,14 @@ class SubscriptionService(private val database: Database, private val log: (Stri
         throw IllegalArgumentException("订阅重定向次数超过限制")
     }
 
-    private fun parseSources(body: String): List<String> {
-        val cleanBody = body.trim().removePrefix("\uFEFF")
-        val element = try { Json.parseToJsonElement(cleanBody) } catch (_: Exception) { throw IllegalArgumentException("订阅内容不是有效 JSON") }
-        val values = when (element) {
-            is JsonArray -> element
-            is JsonObject -> when {
-                element["data"] is JsonArray -> element["data"] as JsonArray
-                element["sources"] is JsonArray -> element["sources"] as JsonArray
-                element["bookSources"] is JsonArray -> element["bookSources"] as JsonArray
-                element["list"] is JsonArray -> element["list"] as JsonArray
-                else -> listOf(element)
-            }
-            else -> listOf(element)
-        }
-        return values.map { Json.encodeToString(JsonElement.serializer(), it) }
+    /**
+     * 书源集合解析**统一走 [SourceCodec.parseSourceList]**（网络导入共用同一实现），
+     * 这里只负责把「不是合法 JSON」翻译成订阅语境下的措辞。
+     */
+    private fun parseSources(body: String): List<String> = try {
+        SourceCodec.parseSourceList(body)
+    } catch (error: IllegalArgumentException) {
+        throw IllegalArgumentException("订阅内容${error.message ?: "解析失败"}")
     }
 
     private fun validate(uri: URI) {

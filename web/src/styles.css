@@ -451,6 +451,8 @@ svg { width: 18px; height: 18px; flex: none; }
 .import-button { margin: 0 16px 16px; min-height: 36px; display: flex; align-items: center; justify-content: center; gap: 7px; border: 1px dashed color-mix(in srgb, var(--accent) 44%, var(--line)); border-radius: 5px; color: var(--accent); font-size: 13px; cursor: pointer; }
 .import-button:hover { background: var(--accent-soft); }
 .import-button input { display: none; }
+/* 「网络导入」是与「导入 JSON」并列的 <button>（不是 <label>），需显式清掉浏览器默认按钮底色与字体 */
+.import-button-network { background: transparent; color: var(--accent); font-family: inherit; text-align: center; }
 .sidebar-notice { margin: 0 16px 10px; color: var(--muted); font-size: 12px; line-height: 1.55; }
 .source-list-label { display: flex; justify-content: space-between; padding: 10px 20px; color: var(--muted); border-top: 1px solid var(--line); font-size: 12px; }
 .source-list { display: grid; overflow-y: auto; overflow-x: hidden; align-content: start; min-width: 0; flex: 1 1 auto; min-height: 0; overscroll-behavior: contain; }
@@ -782,6 +784,32 @@ mark.search-highlight { background: var(--accent-soft); color: var(--accent); fo
 
 /* Book Manage Modal Sheet */
 .modal-backdrop { position: fixed; inset: 0; z-index: 100; background: rgba(0, 0, 0, .45); backdrop-filter: blur(4px); display: grid; place-items: center; padding: 18px; animation: fadeIn .18s ease; }
+
+/* ------------------------------------------------------------------
+   内置浏览器（iframe）打开时**必须**关掉毛玻璃。
+
+   实测（真实 Edge，hover 上游页面按钮期间测 iframe 内 rAF 帧率）：
+
+   | 场景                              | 帧率    |
+   | :-------------------------------- | ------: |
+   | 普通弹窗（无 iframe，带 blur）      | 61 FPS  |  ← blur 本身几乎免费
+   | 普通弹窗（无 iframe，去掉 blur）    | 60 FPS  |
+   | webview：两层 blur（原状）          | **8 FPS** |
+   | webview：只去内层 blur              | 23 FPS  |
+   | webview：两层 blur 都去             | 58 FPS  |
+
+   结论：**不是 blur 本身贵，而是「blur 层 + 其内部 iframe 持续重绘」的组合**——
+   被代理页面每帧的重绘都会让祖先的 backdrop-filter 失效并重新模糊（两层就模糊两遍）。
+   8 FPS 正是用户报告的「鼠标放到按钮上、hover 动画很卡」。
+
+   试过但**无效**的替代方案（同样实测）：把 iframe 提升为独立合成层（translateZ(0) /
+   will-change: transform）= 9 FPS；iframe `contain: strict` = 8 FPS；
+   遮罩 `isolation: isolate` = 8 FPS。所以只能在这两处关掉 blur。
+
+   刻意**不**动全局 `.modal-backdrop`：普通弹窗带 blur 仍是 61 FPS，毛玻璃是免费的好效果。
+   去掉 blur 后把遮罩加深一点，视觉上仍像模态。
+   ------------------------------------------------------------------ */
+.modal-backdrop.is-blurless { backdrop-filter: none; background: rgba(0, 0, 0, .58); }
 .book-manage-sheet { width: min(440px, 100%); background: var(--surface); border: 1px solid var(--line); border-radius: 14px; box-shadow: 0 16px 48px rgba(0, 0, 0, .22); overflow: hidden; animation: scaleUp .2s cubic-bezier(0.25, 1, 0.5, 1); }
 @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
 @keyframes scaleUp { from { transform: scale(0.95); opacity: 0; } to { transform: scale(1); opacity: 1; } }
@@ -4704,5 +4732,336 @@ mark.search-highlight { background: var(--accent-soft); color: var(--accent); fo
   .webdav-file-row { flex-wrap: wrap; }
   .webdav-file-actions { width: 100%; justify-content: flex-end; }
   .webdav-guide-grid { grid-template-columns: 1fr; }
+}
+
+/* ------------------------------------------------------------------
+   网络书源导入弹窗（书源页与内置浏览器共用）
+
+   全部取色走主题变量，因此 light / paper / dark 三套主题自动跟随，
+   不需要为深色单独写一套覆盖（仓库既有教训：脱离 .theme-* 容器会丢变量）。
+   ------------------------------------------------------------------ */
+.network-import-modal {
+  position: relative;
+  width: min(560px, 94vw);
+  max-height: 88vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  box-shadow: 0 24px 64px rgba(0, 0, 0, .32);
+  animation: scaleUp .2s cubic-bezier(0.25, 1, 0.5, 1);
+}
+
+.network-import-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px 20px 12px;
+}
+
+.network-import-title {
+  margin: 0;
+  font-family: Georgia, "Noto Serif SC", serif;
+  font-size: 21px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+/* 注意：这里**不能**加 position: relative —— 否则它会成为浮层的包含块，
+   浮层在弹窗较矮时会被 .network-import-modal 的 overflow: hidden 裁掉。
+   让包含块落在弹窗本体上，浮层位置才可预测。 */
+.network-import-header-actions { display: flex; align-items: center; gap: 4px; }
+
+.network-import-group-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--ink);
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.network-import-group-btn:hover { background: var(--surface-muted); }
+
+.network-import-group-current {
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+  font-size: 11px;
+  font-weight: 600;
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.network-import-more-btn {
+  width: 32px;
+  height: 32px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.network-import-more-btn:hover { background: var(--surface-muted); color: var(--ink); }
+.network-import-more-btn svg { width: 18px; height: 18px; }
+
+/* 分组选择与 ⋮ 菜单共用的浮层：绝对定位在头部下方 */
+.network-import-popover {
+  position: absolute;
+  z-index: 5;
+  top: 62px;
+  right: 20px;
+  width: min(280px, 80vw);
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+
+.network-import-popover-hint { margin: 0; font-size: 11px; line-height: 1.6; color: var(--muted); }
+
+.network-import-group-select,
+.network-import-group-input {
+  width: 100%;
+  height: 34px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-muted);
+  color: var(--ink);
+  font-size: 13px;
+  outline: 0;
+}
+
+.network-import-menu { width: min(180px, 70vw); gap: 2px; padding: 6px; }
+
+.network-import-menu button {
+  width: 100%;
+  padding: 9px 10px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--ink);
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.network-import-menu button:hover { background: var(--surface-muted); }
+
+.network-import-body {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 0 20px;
+  overflow-y: auto;
+}
+
+.network-import-url-row { display: flex; gap: 8px; }
+
+.network-import-url-input {
+  flex: 1;
+  min-width: 0;
+  height: 38px;
+  padding: 0 11px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--surface-muted);
+  color: var(--ink);
+  font-size: 13px;
+  outline: 0;
+}
+
+.network-import-fetch-btn {
+  height: 38px;
+  padding: 0 16px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--surface-muted);
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 550;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.network-import-fetch-btn:hover:not(:disabled) { border-color: var(--accent); color: var(--accent-ink); }
+.network-import-fetch-btn:disabled { opacity: .55; cursor: default; }
+
+.network-import-summary { margin: 0; font-size: 12px; color: var(--muted); }
+
+.network-import-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 46vh;
+  overflow-y: auto;
+}
+
+.network-import-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 10px 8px;
+  border-radius: 10px;
+}
+
+.network-import-row:hover { background: var(--surface-muted); }
+.network-import-row.is-invalid { opacity: .8; }
+
+.network-import-row-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  cursor: pointer;
+}
+
+.network-import-check {
+  width: 18px;
+  height: 18px;
+  flex: none;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.network-import-check:disabled { cursor: default; }
+
+.network-import-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ink);
+  font-size: 14px;
+}
+
+/* 状态标签：还原手机端「新增 / 更新」胶囊；不可导入用 danger 色以示区分 */
+.network-import-badge {
+  flex: none;
+  min-width: 52px;
+  padding: 4px 10px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 12px;
+  text-align: center;
+  white-space: nowrap;
+}
+
+.network-import-badge.is-new { border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); color: var(--accent-ink); }
+.network-import-badge.is-update { border-color: var(--accent); color: var(--accent-ink); background: var(--accent-soft); }
+.network-import-badge.is-invalid { border-color: color-mix(in srgb, var(--danger) 55%, var(--line)); color: var(--danger); }
+
+.network-import-detail-btn {
+  flex: none;
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--ink) 12%, transparent);
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.network-import-detail-btn:hover { background: color-mix(in srgb, var(--ink) 20%, transparent); }
+.network-import-detail-btn svg { width: 16px; height: 16px; }
+
+.network-import-reason {
+  flex: 1 1 100%;
+  padding-left: 28px;
+  color: var(--danger);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.network-import-detail {
+  flex: 1 1 100%;
+  padding-left: 28px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.6;
+  word-break: break-all;
+}
+
+.network-import-selectall-pill {
+  align-self: flex-start;
+  margin: 4px 0 12px;
+  padding: 9px 18px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--surface-muted);
+  color: var(--ink);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.network-import-selectall-pill:hover { background: color-mix(in srgb, var(--ink) 12%, transparent); }
+
+.network-import-footer {
+  display: flex;
+  justify-content: center;
+  gap: 14px;
+  padding: 14px 20px max(14px, var(--safe-bottom));
+}
+
+.network-import-cancel-btn,
+.network-import-confirm-btn {
+  min-width: 112px;
+  height: 42px;
+  border-radius: 999px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.network-import-cancel-btn {
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--ink);
+}
+
+.network-import-cancel-btn:hover { background: var(--surface-muted); }
+
+.network-import-confirm-btn {
+  border: 0;
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+}
+
+.network-import-confirm-btn:hover:not(:disabled) { background: color-mix(in srgb, var(--accent) 26%, var(--surface)); }
+.network-import-confirm-btn:disabled { opacity: .55; cursor: default; }
+
+@media (max-width: 720px) {
+  .network-import-modal { width: 100%; max-height: 92vh; }
+  .network-import-list { max-height: 40vh; }
+  .network-import-footer { gap: 10px; }
+  .network-import-cancel-btn,
+  .network-import-confirm-btn { min-width: 0; flex: 1; }
 }
 

@@ -4,6 +4,7 @@ import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.contentOrNull
 
@@ -89,6 +90,38 @@ object SourceCodec {
             hasLogin = hasLogin,
             json = normalizedJson,
         )
+    }
+
+    /**
+     * 把一份「书源集合」响应体拆成**逐条书源 JSON 字符串**。
+     *
+     * Legado 生态里同一个语义有五六种外层包装，必须全部兼容：
+     * 顶层数组、`{ data: [...] }`、`{ sources: [...] }`、`{ bookSources: [...] }`、
+     * `{ list: [...] }`，以及「单个书源对象」（某站直接返回一条源时）。
+     *
+     * **订阅更新与网络导入共用本函数**：两处各写一份解析器迟早会漂移
+     * （仓库既有教训：「同一语义要多路径生效 / 两处口径必须同源」）。
+     */
+    fun parseSourceList(body: String): List<String> {
+        val cleanBody = body.trim().removePrefix("\uFEFF")
+        val element = try { json.parseToJsonElement(cleanBody) } catch (_: Exception) { null }
+            ?: throw IllegalArgumentException("内容不是有效 JSON")
+        val values = when (element) {
+            is JsonArray -> element
+            is JsonObject -> when {
+                element["data"] is JsonArray -> element["data"] as JsonArray
+                element["sources"] is JsonArray -> element["sources"] as JsonArray
+                element["bookSources"] is JsonArray -> element["bookSources"] as JsonArray
+                element["list"] is JsonArray -> element["list"] as JsonArray
+                else -> listOf(element)
+            }
+            // 顶层既不是数组也不是对象 ⇒ 一定不是书源集合，必须显式拒绝。
+            // ⚠️ 本对象的 `json` 是 `isLenient = true`（为兼容 Legado 的伪 JSON），
+            // 它会把 `<html>…</html>` 这类文本当成「未加引号的字符串」**解析成功**并返回字面量，
+            // 若在这里放行，HTML 错误页会被误判成「1 条不合格书源」而不是「该地址不是书源 JSON」。
+            else -> throw IllegalArgumentException("内容不是有效的书源集合")
+        }
+        return values.map { json.encodeToString(JsonElement.serializer(), it) }
     }
 
     /** 对外复用：把书源标识（可带 `#` / `##` 注解）归一化为服务端使用的 sourceId（备份导入时对齐书架 origin）。 */

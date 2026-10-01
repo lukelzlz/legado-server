@@ -28,6 +28,31 @@ export type BookshelfBatchRequest = {
   completed?: boolean
 }
 export type ImportResponse = { imported: number; updated: number; skipped: number; errors: string[]; sourceGroups?: number }
+
+/** 网络导入预览列表里的一条书源；`invalid` 表示该条注定无法导入（`reason` 说明原因）。 */
+export type NetworkImportPreviewItem = {
+  index: number
+  name: string
+  url: string
+  status: 'new' | 'update' | 'invalid'
+  reason?: string | null
+}
+
+/**
+ * 网络导入预览结果。
+ *
+ * **只含元数据**：完整书源原文留在服务端内存缓存里，由 `token` 引用（见 ADR-023）。
+ * 因此 383 条 / 1.63 MB 的集合不会在浏览器与服务端之间来回搬运两趟。
+ */
+export type NetworkImportPreview = {
+  token: string
+  url: string
+  total: number
+  newCount: number
+  updateCount: number
+  invalidCount: number
+  sources: NetworkImportPreviewItem[]
+}
 export type LocalBookImportItem = { filename: string; success: boolean; bookUrl?: string; name?: string; author?: string; totalChapters: number; error?: string }
 export type LocalBookImportResponse = { total: number; imported: number; failed: number; results: LocalBookImportItem[] }
 export type SourceSubscription = { id: number; url: string; enabled: boolean; createdAt: number; updatedAt: number; lastSuccessAt?: number; lastAttemptAt?: number; lastError?: string; lastImported: number; contentHash?: string }
@@ -329,6 +354,10 @@ export const api = {
     request<string[]>(`/api/sources/export${ids && ids.length > 0 ? `?${ids.map(id => `id=${encodeURIComponent(id)}`).join('&')}` : ''}`),
   validate: (id: string) => request<{ valid: boolean; errors: string[]; warnings: string[] }>(`/api/sources/${encodeURIComponent(id)}/validate`, { method: 'POST' }),
   import: (sources: string[]) => request<ImportResponse>('/api/sources/import', { method: 'POST', body: JSON.stringify({ sources }) }),
+  /** 网络导入第一步：服务端代抓 + 逐条试解析，只回元数据与一次性票据（避开跨域与体积搬运）。 */
+  previewNetworkImport: (url: string) => request<NetworkImportPreview>('/api/sources/import-url/preview', { method: 'POST', body: JSON.stringify({ url }) }),
+  /** 网络导入第二步：按票据与勾选下标落库；`group` 为空表示不改动分组。 */
+  commitNetworkImport: (token: string, selected: number[], group?: string | null) => request<ImportResponse>('/api/sources/import-url/commit', { method: 'POST', body: JSON.stringify({ token, selected, group: group ?? null }) }),
   /** 书源分组列表（不含「未分组」，它由前端用 UNGROUPED_SOURCE_GROUP 单独提供） */
   sourceGroups: () => request<SourceGroupSummary[]>('/api/source-groups'),
   /** 书源分组改名；目标分组已存在时等价于合并 */

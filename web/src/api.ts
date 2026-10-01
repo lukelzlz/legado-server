@@ -11,6 +11,8 @@ import i18n, { getCurrentLocale } from './i18n'
 export type SourceSummary = { id: string; name: string; url: string; group?: string; enabled: boolean; isJsSource: boolean; hasLogin: boolean; updatedAt: number; version: number }
 export type SourceRecord = { id: string; json: string; version: number; updatedAt: number }
 export type SearchResult = { sourceId: string; name: string; author?: string; bookUrl: string; coverUrl?: string; intro?: string }
+export type ExploreSourceItem = { id: string; name: string; group?: string | null; enabled: boolean }
+export type ExploreCategory = { title: string; url?: string | null; subCategories: ExploreCategory[] }
 export type BookDetails = { sourceId: string; name: string; author?: string; intro?: string; coverUrl?: string; tocUrl: string; alternateSources?: SearchResult[] }
 export type Chapter = { index: number; title: string; url: string }
 export type ReadingProgress = { sourceId: string; bookUrl: string; chapterUrl: string; chapterIndex: number; scrollPosition: number; updatedAt: number }
@@ -660,6 +662,10 @@ export const api = {
     method: 'PUT',
     body: JSON.stringify({ locale }),
   }),
+  exploreSources: () => request<ExploreSourceItem[]>('/api/explore/sources'),
+  exploreCategories: (sourceId: string) => request<ExploreCategory[]>(`/api/explore/categories?sourceId=${encodeURIComponent(sourceId)}`),
+  exploreBooks: (sourceId: string, url: string, page: number = 1) =>
+    request<SearchResult[]>(`/api/explore/books?sourceId=${encodeURIComponent(sourceId)}&url=${encodeURIComponent(url)}&page=${page}`),
 }
 
 /**

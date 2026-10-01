@@ -9,7 +9,7 @@ import type { ReaderSettings } from './readerSettings'
 import { SUPPORTED_LOCALES, type SupportedLocale, changeAppLanguage, getCurrentLocale } from './i18n'
 import { api } from './api'
 
-export type AppPage = 'sources' | 'subscriptions' | 'library' | 'shelf' | 'reader' | 'rules' | 'webdav'
+export type AppPage = 'sources' | 'subscriptions' | 'library' | 'shelf' | 'reader' | 'rules' | 'webdav' | 'explore'
 
 export interface AppHeaderProps {
   page: AppPage
@@ -278,6 +278,13 @@ export function AppHeader({
               aria-label={t('header.searchingInBackground')}
             />
           )}
+        </button>
+        <button
+          type="button"
+          className={page === 'explore' ? 'active' : ''}
+          onClick={() => onNavigate('explore')}
+        >
+          {t('header.explore', '发现')}
         </button>
         <button
           type="button"

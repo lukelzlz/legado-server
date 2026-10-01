@@ -316,6 +316,33 @@ class Database(private val path: String) : Closeable, AutoCloseable {
         }
     }
 
+    /** 列出所有配置了有效 exploreUrl 的书源 */
+    fun listExploreSources(): List<ExploreSourceItem> = connect { db ->
+        val sql = """
+            select id, name, source_group, enabled
+            from source
+            where json_extract(payload, '$.exploreUrl') is not null
+              and trim(json_extract(payload, '$.exploreUrl')) != ''
+            order by enabled desc, name collate nocase
+        """.trimIndent()
+        db.prepareStatement(sql).use { statement ->
+            statement.executeQuery().use { rs ->
+                buildList {
+                    while (rs.next()) {
+                        add(
+                            ExploreSourceItem(
+                                id = rs.getString(1),
+                                name = rs.getString(2),
+                                group = rs.getString(3),
+                                enabled = rs.getInt(4) == 1,
+                            )
+                        )
+                    }
+                }
+            }
+        }
+    }
+
     fun getSource(id: String): SourceRecord? = connect { db ->
         db.prepareStatement("select id, payload, version, updated_at, source_group from source where id = ?").use {
             it.setString(1, id)

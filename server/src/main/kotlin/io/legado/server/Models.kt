@@ -979,4 +979,22 @@ data class HttpTtsImportResponse(
     val failed: Int,
 )
 
+/** 书源发现分类结构 */
+@Serializable
+data class ExploreCategory(
+    val title: String,
+    val url: String? = null,
+    val subCategories: List<ExploreCategory> = emptyList(),
+)
+
+/** 带有发现页的书源摘要 */
+@Serializable
+data class ExploreSourceItem(
+    val id: String,
+    val name: String,
+    val group: String? = null,
+    val enabled: Boolean = true,
+)
+
+
 

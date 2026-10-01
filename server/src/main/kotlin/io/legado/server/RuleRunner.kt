@@ -80,6 +80,191 @@ class RuleRunner(private val responseFetcher: ((String) -> String)? = null, inte
     }
 
     /**
+     * 解析书源的发现分类树结构。
+     *
+     * 支持三种生态形式：
+     * 1. 包含 <js> 或 @js: 的沙箱脚本求值；
+     * 2. JSON 数组/树形结构；
+     * 3. 经典多行纯文本（以 :: 或 && 分隔标题与 URL，支持层级缩进或平铺）。
+     */
+    fun exploreCategories(sourceJson: String): List<ExploreCategory> {
+        val source = sourceJson.objectValue()
+        val rawExploreUrl = source.string("exploreUrl")?.trim() ?: return emptyList()
+        if (rawExploreUrl.isBlank()) return emptyList()
+        val sourceUrl = source.string("bookSourceUrl") ?: ""
+        val execContext = sourceContext(source, sourceUrl)
+
+        val evaluated = jsSandbox.withSourceContext(execContext) {
+            if (rawExploreUrl.trimStart().startsWith("@js:") || rawExploreUrl.trimStart().startsWith("js:") || rawExploreUrl.contains("<js>")) {
+                val jsCode = if (rawExploreUrl.contains("<js>")) {
+                    rawExploreUrl.substringAfter("<js>").substringBefore("</js>")
+                } else {
+                    rawExploreUrl.trimStart().removePrefix("@js:").removePrefix("js:")
+                }
+                jsSandbox.eval(jsCode, mapOf("baseUrl" to sourceUrl, "sourceId" to sourceUrl), execContext) ?: ""
+            } else {
+                rawExploreUrl
+            }
+        }.trim()
+
+        if (evaluated.isBlank()) return emptyList()
+        return parseExploreCategoriesText(evaluated, sourceUrl)
+    }
+
+    private fun parseExploreCategoriesText(text: String, baseUrl: String): List<ExploreCategory> {
+        val trimmed = text.trim()
+        if (trimmed.startsWith("[") && trimmed.endsWith("]")) {
+            val jsonCategories = runCatching {
+                val element = json.parseToJsonElement(trimmed)
+                if (element is JsonArray) {
+                    parseJsonCategories(element, baseUrl)
+                } else null
+            }.getOrNull()
+            if (!jsonCategories.isNullOrEmpty()) {
+                return jsonCategories
+            }
+        }
+        return parseLineBasedCategories(text, baseUrl)
+    }
+
+    private fun parseJsonCategories(array: JsonArray, baseUrl: String): List<ExploreCategory> {
+        return array.mapNotNull { elem ->
+            if (elem !is JsonObject) return@mapNotNull null
+            val title = elem.string("title") ?: elem.string("name") ?: return@mapNotNull null
+            val urlElem = elem["url"]
+            if (urlElem is JsonArray) {
+                val sub = parseJsonCategories(urlElem, baseUrl)
+                ExploreCategory(title = title, url = null, subCategories = sub)
+            } else {
+                val rawUrl = (urlElem as? JsonPrimitive)?.contentOrNull
+                val subArray = (elem["subCategories"] ?: elem["children"] ?: elem["list"] ?: elem["items"]) as? JsonArray
+                val sub = if (subArray != null) parseJsonCategories(subArray, baseUrl) else emptyList()
+                ExploreCategory(
+                    title = title,
+                    url = rawUrl?.takeIf { it.isNotBlank() },
+                    subCategories = sub,
+                )
+            }
+        }
+    }
+
+    private fun parseLineBasedCategories(text: String, baseUrl: String): List<ExploreCategory> {
+        val lines = text.lines()
+        val result = mutableListOf<ExploreCategory>()
+        var currentGroup: String? = null
+        val currentGroupItems = mutableListOf<ExploreCategory>()
+
+        fun flushGroup() {
+            if (currentGroup != null) {
+                if (currentGroupItems.isNotEmpty()) {
+                    result.add(ExploreCategory(title = currentGroup!!, url = null, subCategories = currentGroupItems.toList()))
+                    currentGroupItems.clear()
+                } else {
+                    result.add(ExploreCategory(title = currentGroup!!, url = null))
+                }
+                currentGroup = null
+            }
+        }
+
+        for (line in lines) {
+            val trimmedLine = line.trim()
+            if (trimmedLine.isBlank()) continue
+
+            val separator = when {
+                line.contains("::") -> "::"
+                line.contains("&&") -> "&&"
+                else -> null
+            }
+
+            if (separator != null) {
+                val parts = line.split(separator)
+                val title = parts[0].trim()
+                val url = if (parts.size > 1) {
+                    val rawUrlPart = parts[1].trim()
+                    rawUrlPart.takeIf { it.isNotBlank() }
+                } else null
+
+                val hasIndent = line.startsWith(" ") || line.startsWith("\t") || line.startsWith("　")
+                val item = ExploreCategory(title = title, url = url)
+
+                if (hasIndent && currentGroup != null) {
+                    currentGroupItems.add(item)
+                } else if (currentGroup != null) {
+                    currentGroupItems.add(item)
+                } else {
+                    result.add(item)
+                }
+            } else {
+                flushGroup()
+                currentGroup = trimmedLine
+            }
+        }
+        flushGroup()
+        return result
+    }
+
+    /**
+     * 根据分类 URL 获取发现书籍列表。
+     *
+     * 遵循 Legado 生态规范：优先使用 ruleExplore，若为空自动回退至 ruleSearch。
+     */
+    fun exploreBooks(sourceJson: String, exploreUrl: String, page: Int = 1): List<SearchResult> {
+        val source = sourceJson.objectValue()
+        val sourceUrl = source.string("bookSourceUrl") ?: throw RuleExecutionException("书源缺少 bookSourceUrl")
+        val execContext = sourceContext(source, sourceUrl)
+
+        return jsSandbox.withSourceContext(execContext) {
+            val evaluatedUrl = if (exploreUrl.trimStart().startsWith("@js:") || exploreUrl.trimStart().startsWith("js:") || exploreUrl.contains("<js>")) {
+                val jsCode = if (exploreUrl.contains("<js>")) {
+                    exploreUrl.substringAfter("<js>").substringBefore("</js>")
+                } else {
+                    exploreUrl.trimStart().removePrefix("@js:").removePrefix("js:")
+                }
+                jsSandbox.eval(jsCode, mapOf("page" to page, "baseUrl" to sourceUrl, "sourceId" to sourceUrl), execContext)
+                    ?: throw RuleExecutionException("exploreUrl JS 计算未返回有效地址：${execContext.lastError ?: "脚本无返回值"}")
+            } else {
+                exploreUrl
+            }
+
+            val pStr = page.coerceAtLeast(1).toString()
+            val renderedUrl = evaluatedUrl
+                .replace("{{page}}", pStr)
+                .replace("{{page+1}}", (page + 1).toString())
+                .replace("{{page-1}}", (page - 1).coerceAtLeast(1).toString())
+
+            val (urlTemplate, options) = splitUrlOptions(renderedUrl)
+            val mergedOptions = mergeOptions(parseSourceHeaders(source, sourceUrl), options)
+            val rendered = urlTemplate.absolute(sourceUrl)
+            val body = fetchUrl(rendered, mergedOptions, null, sourceUrl, database)
+
+            val ruleExplore = source.objectValue("ruleExplore")
+            val ruleSearch = source.objectValue("ruleSearch")
+            val rule = if (ruleExplore != null && !ruleExplore.string("bookList").isNullOrBlank()) {
+                ruleExplore
+            } else if (ruleSearch != null && !ruleSearch.string("bookList").isNullOrBlank()) {
+                ruleSearch
+            } else {
+                throw RuleExecutionException("书源未配置 ruleExplore 且未配置有效 ruleSearch")
+            }
+
+            val listRule = rule.string("bookList") ?: throw RuleExecutionException("缺少 bookList 规则")
+            val items = nodes(body, listRule)
+            items.mapNotNull { item ->
+                val url = item.value(rule.string("bookUrl"), jsSandbox, body, sourceUrl)?.absolute(sourceUrl) ?: return@mapNotNull null
+                val name = item.value(rule.string("name"), jsSandbox, body, sourceUrl) ?: return@mapNotNull null
+                SearchResult(
+                    sourceId = sourceUrl,
+                    name = name,
+                    author = item.value(rule.string("author"), jsSandbox, body, sourceUrl),
+                    bookUrl = url,
+                    coverUrl = item.value(rule.string("coverUrl"), jsSandbox, body, sourceUrl)?.absolute(sourceUrl),
+                    intro = item.value(rule.string("intro"), jsSandbox, body, sourceUrl),
+                )
+            }
+        }
+    }
+
+    /**
      * 构造当前书源的 JS 执行上下文（含 jsLib，规则 JS 因此可以调用书源工具函数）。
      *
      * 注意：Legado 约定里 `loginUrl` 可以不是网址，而是**整段登录用 JS**（聚合源普遍如此），

@@ -50,6 +50,7 @@
   "header": {
     "shelf": "Bookshelf",
     "library": "Library",
+    "explore": "Explore",
     "sources": "Sources",
     "subscriptions": "Subscriptions",
     "rules": "Rules",
@@ -144,6 +145,25 @@
     "author": "Author",
     "unknownAuthor": "Unknown Author",
     "unitsBook": "books"
+  },
+  "explore": {
+    "title": "Explore",
+    "selectSource": "Select Source",
+    "searchSourcePlaceholder": "Filter sources...",
+    "noExploreSources": "No sources with explore page available",
+    "loadingCategories": "Loading categories...",
+    "noCategories": "No valid categories configured for this source",
+    "selectCategoryTip": "Select a category from the left to browse books",
+    "loadingBooks": "Loading books...",
+    "noBooks": "No books found in this category",
+    "loadMore": "Load More",
+    "loadingMore": "Loading...",
+    "noMoreBooks": "No more books",
+    "addToShelf": "Add to Shelf",
+    "addingToShelf": "Adding...",
+    "inShelf": "In Shelf",
+    "readNow": "Read Now",
+    "sourceCount": "{{count}} sources available"
   },
   "shelf": {
     "headerTitle": "My Bookshelf",

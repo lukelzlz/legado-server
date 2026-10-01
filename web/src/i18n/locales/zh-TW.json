@@ -50,6 +50,7 @@
   "header": {
     "shelf": "書架",
     "library": "書庫",
+    "explore": "發現",
     "sources": "書源",
     "subscriptions": "訂閱",
     "rules": "規則",
@@ -144,6 +145,25 @@
     "author": "作者",
     "unknownAuthor": "未知作者",
     "unitsBook": "本"
+  },
+  "explore": {
+    "title": "發現",
+    "selectSource": "選擇書源",
+    "searchSourcePlaceholder": "篩選書源...",
+    "noExploreSources": "暫無支援發現頁的書源",
+    "loadingCategories": "正在載入分類...",
+    "noCategories": "該書源未配置有效分類",
+    "selectCategoryTip": "請選擇左側分類瀏覽推薦書籍",
+    "loadingBooks": "正在載入書籍...",
+    "noBooks": "該分類下暫無書籍",
+    "loadMore": "載入更多",
+    "loadingMore": "載入中...",
+    "noMoreBooks": "沒有更多書籍了",
+    "addToShelf": "加入書架",
+    "addingToShelf": "加入中...",
+    "inShelf": "已在書架",
+    "readNow": "立即閱讀",
+    "sourceCount": "{{count}} 個書源可用"
   },
   "shelf": {
     "headerTitle": "我的書架",

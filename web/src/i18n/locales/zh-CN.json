@@ -50,6 +50,7 @@
   "header": {
     "shelf": "书架",
     "library": "书库",
+    "explore": "发现",
     "sources": "书源",
     "subscriptions": "订阅",
     "rules": "规则",
@@ -144,6 +145,25 @@
     "author": "作者",
     "unknownAuthor": "未知作者",
     "unitsBook": "本"
+  },
+  "explore": {
+    "title": "发现",
+    "selectSource": "选择书源",
+    "searchSourcePlaceholder": "筛选书源...",
+    "noExploreSources": "暂无支持发现页的书源",
+    "loadingCategories": "正在加载分类...",
+    "noCategories": "该书源未配置有效分类",
+    "selectCategoryTip": "请选择左侧分类浏览推荐书籍",
+    "loadingBooks": "正在加载书籍...",
+    "noBooks": "该分类下暂无书籍",
+    "loadMore": "加载更多",
+    "loadingMore": "加载中...",
+    "noMoreBooks": "没有更多书籍了",
+    "addToShelf": "加入书架",
+    "addingToShelf": "加入中...",
+    "inShelf": "已在书架",
+    "readNow": "立即阅读",
+    "sourceCount": "{{count}} 个书源可用"
   },
   "shelf": {
     "headerTitle": "我的书架",

@@ -260,6 +260,7 @@ AI 与人类协作时必须明确当前达到的完成度阶梯，严禁混淆�
 | PROPOSAL-022 | 全栈多语言国际化与服务端语言偏好持久化（四语基准 + react-i18next + Ktor Accept-Language 解析与 SQLite 持久化漫游） | [`docs/proposals/PROPOSAL-022-fullstack-i18n-and-server-locale-persistence.md`](docs/proposals/PROPOSAL-022-fullstack-i18n-and-server-locale-persistence.md) | Tested |
 | PROPOSAL-023 | 网络书源导入（URL 拉取 + 服务端内存票据两步预览 + 内置浏览器 `yuedu://` 线路导入 + 可选目标分组 + 新增/更新/不可导入标注） | [`docs/proposals/PROPOSAL-023-network-book-source-import.md`](docs/proposals/PROPOSAL-023-network-book-source-import.md) | Accepted |
 | PROPOSAL-024 | 自定义 HTTP 朗读引擎体系与 Legado 规范管理互通（Issue #25：httpTTS.json 导入导出 + SQLite 持久化 + TTS 管理中心 + 试听与模板求值） | [`docs/proposals/PROPOSAL-024-custom-http-tts-engine-and-management.md`](docs/proposals/PROPOSAL-024-custom-http-tts-engine-and-management.md) | Accepted |
+| PROPOSAL-025 | 书源发现页（Explore）与多维分类浏览体系（Issue #24：exploreUrl 全语法解析 + ruleExplore/ruleSearch 继承回退 + 发现选项卡与加架直读） | [`docs/proposals/PROPOSAL-025-source-explore-page.md`](docs/proposals/PROPOSAL-025-source-explore-page.md) | Accepted |
 
 ### 架构决策记录 (ADR)
 | 编号 | 决策标题 | 关联文档 | 状态 |
@@ -288,6 +289,7 @@ AI 与人类协作时必须明确当前达到的完成度阶梯，严禁混淆�
 | ADR-022 | 采用 react-i18next 与 Ktor Accept-Language 解析的全栈国际化架构（零破坏错误码、四语基准与 app_setting 键值漫游） | [`docs/decisions/ADR-022-react-i18next-and-ktor-accept-language-resolution.md`](docs/decisions/ADR-022-react-i18next-and-ktor-accept-language-resolution.md) | Accepted |
 | ADR-023 | 网络导入采用「服务端代抓 + 内存票据两步预览」与「代理层捕获阶段拦截 `yuedu://` 导入链接」（含预览期逐条试解析暴露不可导入项） | [`docs/decisions/ADR-023-network-import-preview-cache-and-yuedu-link-interception.md`](docs/decisions/ADR-023-network-import-preview-cache-and-yuedu-link-interception.md) | Accepted |
 | ADR-024 | 自定义 HTTP TTS 采用 Legado 规范兼容模型、服务端 SQLite 持久化与 Rhino 模板求值 | [`docs/decisions/ADR-024-http-tts-legado-compat-and-server-storage.md`](docs/decisions/ADR-024-http-tts-legado-compat-and-server-storage.md) | Accepted |
+| ADR-025 | 书源发现页（Explore）服务端解析管线与响应式 UI 架构 | [`docs/decisions/ADR-025-source-explore-parsing-and-ui.md`](docs/decisions/ADR-025-source-explore-parsing-and-ui.md) | Accepted |
 
 ### 工作记忆与历史推演归档 (Sessions Chronicle)
 | 日期 / ID | 类型 | 标题 / 议题 | 关联文档 | 状态 |
@@ -372,6 +374,7 @@ AI 与人类协作时必须明确当前达到的完成度阶梯，严禁混淆�
 | 2026-10-01 | Fix | **修复听书睡眠定时器选项显示 `{{count}} 分钟` 与自定义引擎无 URL 报 `customUrl 不能为空` (Issue #21)**：① `TtsSettingsModal.tsx` 睡眠定时器按钮国际化传参修复（`mins` -> `count`），正确渲染「15/30/45/60 分钟」；② `readerSettings.ts` 新增 `ensureValidTtsSettings` 并在加载配置与 `HttpAudioTtsEngine.speak/prefetch` 提交分片前增加边界兜底，若引擎为 `custom` 但未配置接口 URL 时自动降级回退至默认 Edge 引擎，杜绝非法请求直击后端报 `customUrl 不能为空`。新增单测回归覆盖，前后端测试全绿 | - | Pushed |
 | 2026-10-01 | Fix | **修复书源界面「批量管理」按钮因嵌套 `<button>` 标签导致点击无反应 (Issue #22)**：消除 `web/src/main.tsx` 中书源侧栏顶部批量管理按钮由于误引入导致的同名父子 `<button>` 嵌套，恢复标准单一按钮结构与点击事件冒泡，并在 `source-group-manager.test.ts` 中新增标签平衡与嵌套深度防线测试。前后端测试全绿 | - | Pushed |
 | 2026-10-01 | Feat | **自定义 HTTP 朗读引擎体系与 Legado 规范管理互通 (Issue #25)**：① 100% 兼容 Legado 原生 `httpTTS.json` 规则字段（id, name, url, header, contentType 等），支持单项导出与全量批量导出，与手机端开源阅读双向互通；② 服务端新增 `http_tts` 表持久化与标准 REST API（`/api/http-tts*`，列表/保存/删除/批量导入/连通性试听测试）；③ 新增 `HttpTtsService`，服务端解析 `url,{options}` 语法并通过 Rhino JS 沙箱求值 `{{speakText}}`、`{{speakSpeed}}` 及 `{{java.encodeURI(...)}}` 模板宏变量，彻底规避浏览器 CORS 限制；④ 前端听书设置集成：改造 `TtsSettingsModal` 支持平滑点选已配置的自定义 HTTP 音源，新增 `HttpTtsManagerModal` 管理中心（新建/编辑/删除/一键试听/导入导出），支持四语国际化。新增前后端单测全绿，零回归 | [`docs/acceptance/ACCEPT-024-custom-http-tts-management.md`](docs/acceptance/ACCEPT-024-custom-http-tts-management.md) · [`docs/proposals/PROPOSAL-024-custom-http-tts-engine-and-management.md`](docs/proposals/PROPOSAL-024-custom-http-tts-engine-and-management.md) · [`docs/decisions/ADR-024-http-tts-legado-compat-and-server-storage.md`](docs/decisions/ADR-024-http-tts-legado-compat-and-server-storage.md) | Pushed (PR #26) |
+| 2026-10-01 | Feat | **书源发现页（Explore）与多维分类浏览体系 (Issue #24)**：① 顶栏新增「发现」一级导航（type Page = 'explore'），提供双栏响应式卡片流；② RuleRunner 激活书源发现能力，全语法兼容 exploreUrl（多行文本::/&&、JSON 数组/树结构、<js> 沙箱动态求值）；③ ruleExplore 规则继承与智能回退（缺失时自动回退 ruleSearch）；④ 前端支持书源筛选、分类切换、流式分页（加载更多）、一键加入书架（去重与已在书架状态指示）与秒开阅读，四语国际化全覆盖。新增前后端单测全绿，零回归 | [`docs/acceptance/ACCEPT-025-source-explore-page.md`](docs/acceptance/ACCEPT-025-source-explore-page.md) · [`docs/proposals/PROPOSAL-025-source-explore-page.md`](docs/proposals/PROPOSAL-025-source-explore-page.md) · [`docs/decisions/ADR-025-source-explore-parsing-and-ui.md`](docs/decisions/ADR-025-source-explore-parsing-and-ui.md) | Tested |
 
 ---
 

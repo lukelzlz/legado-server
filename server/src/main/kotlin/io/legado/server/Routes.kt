@@ -164,6 +164,54 @@ fun Route.apiRoutes(
                 call.respond(LocaleSettingResponse(locale = normalized))
             }
         }
+        route("/explore") {
+            get("/sources") {
+                if (auth.requireSession(call) == null) return@get
+                call.respond(database.listExploreSources())
+            }
+            get("/categories") {
+                if (auth.requireSession(call) == null) return@get
+                val sourceId = call.request.queryParameters["sourceId"]
+                if (sourceId.isNullOrBlank()) {
+                    call.respondApiError(HttpStatusCode.BadRequest, "source_id_required", "缺少 sourceId 参数")
+                    return@get
+                }
+                val source = database.getSource(sourceId)
+                if (source == null) {
+                    call.respondApiError(HttpStatusCode.NotFound, "source_not_found", "书源不存在")
+                    return@get
+                }
+                try {
+                    val categories = runner.exploreCategories(source.json)
+                    call.respond(categories)
+                } catch (e: Throwable) {
+                    call.application.log.warn("explore categories failed for source $sourceId: ${e.message}")
+                    call.respondApiError(HttpStatusCode.InternalServerError, "explore_categories_failed", e.message ?: "解析发现分类失败")
+                }
+            }
+            get("/books") {
+                if (auth.requireSession(call) == null) return@get
+                val sourceId = call.request.queryParameters["sourceId"]
+                val exploreUrl = call.request.queryParameters["url"]
+                val page = call.request.queryParameters["page"]?.toIntOrNull() ?: 1
+                if (sourceId.isNullOrBlank() || exploreUrl.isNullOrBlank()) {
+                    call.respondApiError(HttpStatusCode.BadRequest, "params_missing", "缺少 sourceId 或 url 参数")
+                    return@get
+                }
+                val source = database.getSource(sourceId)
+                if (source == null) {
+                    call.respondApiError(HttpStatusCode.NotFound, "source_not_found", "书源不存在")
+                    return@get
+                }
+                try {
+                    val books = runner.exploreBooks(source.json, exploreUrl, page)
+                    call.respond(books)
+                } catch (e: Throwable) {
+                    call.application.log.warn("explore books failed for source $sourceId, url $exploreUrl: ${e.message}")
+                    call.respondApiError(HttpStatusCode.InternalServerError, "explore_books_failed", e.message ?: "获取发现书籍列表失败")
+                }
+            }
+        }
         get("/sources") {
             if (auth.requireSession(call) == null) return@get
             call.respond(database.listSources(call.request.queryParameters["q"]))

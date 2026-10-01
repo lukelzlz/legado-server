@@ -87,10 +87,33 @@ export function parseTtsEngine(engine: unknown): TtsEngineType {
   return defaultReaderSettings.ttsEngine
 }
 
+/**
+ * 确保 TTS 设置处于合法可用状态：
+ * 若引擎为 custom 但未配置有效 customUrl，降级回退到稳定的默认 Edge 引擎，
+ * 避免向服务端提交非法 chunk 触发 "customUrl 不能为空" 报错。
+ */
+export function ensureValidTtsSettings(settings: ReaderSettings): ReaderSettings {
+  if (settings.ttsEngine === 'custom' && (!settings.ttsCustomUrl || !settings.ttsCustomUrl.trim())) {
+    return {
+      ...settings,
+      ttsEngine: defaultReaderSettings.ttsEngine,
+      ttsVoice: defaultReaderSettings.ttsVoice,
+    }
+  }
+  return settings
+}
+
 export function loadReaderSettings(): ReaderSettings {
   try {
     const raw = window.localStorage.getItem(storageKey) || window.localStorage.getItem('legado-reader-settings-v1')
     const saved = JSON.parse(raw ?? '{}') as Partial<ReaderSettings> & { font?: string }
+    const loadedEngine = parseTtsEngine(saved.ttsEngine)
+    const customUrl = typeof saved.ttsCustomUrl === 'string' ? saved.ttsCustomUrl : ''
+    // 若保存的引擎是 custom 但并未配置接口 URL，安全回退到默认引擎
+    const ttsEngine = loadedEngine === 'custom' && !customUrl.trim() ? defaultReaderSettings.ttsEngine : loadedEngine
+    const ttsVoice = ttsEngine === 'edge' && (!saved.ttsVoice || saved.ttsVoice === 'zh-CN-XiaoxiaoNeural' || !saved.ttsVoice.trim())
+      ? defaultReaderSettings.ttsVoice
+      : (typeof saved.ttsVoice === 'string' && saved.ttsVoice.trim() ? saved.ttsVoice : defaultReaderSettings.ttsVoice)
     return {
       theme: saved.theme === 'paper' || saved.theme === 'dark' ? saved.theme : defaultReaderSettings.theme,
       fontSize: typeof saved.fontSize === 'number' ? Math.min(28, Math.max(15, saved.fontSize)) : defaultReaderSettings.fontSize,
@@ -103,13 +126,13 @@ export function loadReaderSettings(): ReaderSettings {
       maxWidth: parseMaxWidth(saved.maxWidth),
       columnMode: parseColumnMode(saved.columnMode),
       sidebarPinned: typeof saved.sidebarPinned === 'boolean' ? saved.sidebarPinned : defaultReaderSettings.sidebarPinned,
-      ttsEngine: parseTtsEngine(saved.ttsEngine),
-      ttsVoice: typeof saved.ttsVoice === 'string' && saved.ttsVoice.trim() ? saved.ttsVoice : defaultReaderSettings.ttsVoice,
+      ttsEngine,
+      ttsVoice,
       ttsSpeed: typeof saved.ttsSpeed === 'number' && Number.isFinite(saved.ttsSpeed) ? Math.min(3.0, Math.max(0.5, saved.ttsSpeed)) : defaultReaderSettings.ttsSpeed,
       ttsPitch: typeof saved.ttsPitch === 'number' && Number.isFinite(saved.ttsPitch) ? Math.min(1.5, Math.max(0.5, saved.ttsPitch)) : defaultReaderSettings.ttsPitch,
       ttsAutoNextChapter: typeof saved.ttsAutoNextChapter === 'boolean' ? saved.ttsAutoNextChapter : defaultReaderSettings.ttsAutoNextChapter,
       ttsFilterSymbols: typeof saved.ttsFilterSymbols === 'boolean' ? saved.ttsFilterSymbols : defaultReaderSettings.ttsFilterSymbols,
-      ttsCustomUrl: typeof saved.ttsCustomUrl === 'string' ? saved.ttsCustomUrl : '',
+      ttsCustomUrl: customUrl,
       ttsCustomHeader: typeof saved.ttsCustomHeader === 'string' ? saved.ttsCustomHeader : '',
       ttsCustomBody: typeof saved.ttsCustomBody === 'string' ? saved.ttsCustomBody : '',
       ttsCustomMethod: saved.ttsCustomMethod === 'POST' ? 'POST' : 'GET',

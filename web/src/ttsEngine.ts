@@ -1,5 +1,5 @@
 import { api, TtsSessionChunkRequest } from './api'
-import { ReaderSettings } from './readerSettings'
+import { ensureValidTtsSettings, ReaderSettings } from './readerSettings'
 import i18n from './i18n'
 
 export type TtsPlayState = 'idle' | 'buffering' | 'playing' | 'paused'
@@ -258,10 +258,11 @@ export class HttpAudioTtsEngine implements ITtsEngine {
     }
   }
 
-  async prefetch(text: string, settings: ReaderSettings, context: TtsChunkContext = {}): Promise<void> {
+  async prefetch(text: string, rawSettings: ReaderSettings, context: TtsChunkContext = {}): Promise<void> {
     const clean = text.trim()
     if (!isEffectiveText(clean)) return
     if (!this.sessionId && !this.sessionPromise) return
+    const settings = ensureValidTtsSettings(rawSettings)
     const key = this.getCacheKey(clean, settings)
     const chunkId = context.chunkId || ''
     if (
@@ -280,7 +281,7 @@ export class HttpAudioTtsEngine implements ITtsEngine {
 
   speak(
     text: string,
-    settings: ReaderSettings,
+    rawSettings: ReaderSettings,
     onEnd: () => void,
     onError: (err: Error) => void,
     mode: TtsSpeakMode = 'replace',
@@ -291,6 +292,7 @@ export class HttpAudioTtsEngine implements ITtsEngine {
       setTimeout(onEnd, 0)
       return
     }
+    const settings = ensureValidTtsSettings(rawSettings)
     if (mode === 'replace' || (this.sessionId && this.sessionSettingsKey !== this.getSettingsKey(settings))) {
       this.resetSession()
     }

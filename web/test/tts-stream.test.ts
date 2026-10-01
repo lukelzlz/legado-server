@@ -383,5 +383,51 @@ test('Stall watchdog triggers onEnd when audio halts 400ms before chunk end due 
   engine.stop()
 })
 
+test('TTS custom engine without URL safely falls back to default edge engine without errors', async t => {
+  const originalAudio = globalThis.Audio
+  const originalEventSource = globalThis.EventSource
+  const originalFetch = globalThis.fetch
+
+  Object.assign(globalThis, { Audio: FakeAudio, EventSource: FakeEventSource })
+  let requestedBody: any = null
+  globalThis.fetch = async (input, init) => {
+    const url = String(input)
+    if (url === '/api/tts/session') {
+      return new Response(JSON.stringify({
+        sessionId: 'session-custom-fallback',
+        audioUrl: '/api/tts/session/session-custom-fallback/audio',
+        eventsUrl: '/api/tts/session/session-custom-fallback/events',
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    }
+    if (url.includes('/chunks')) {
+      requestedBody = JSON.parse(String(init?.body || '{}'))
+      return new Response(JSON.stringify({ accepted: true }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    }
+    return new Response(JSON.stringify({ accepted: true }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+  }
+  t.after(() => {
+    globalThis.Audio = originalAudio
+    globalThis.EventSource = originalEventSource
+    globalThis.fetch = originalFetch
+  })
+
+  const customWithoutUrlSettings = {
+    ...defaultReaderSettings,
+    ttsEngine: 'custom' as const,
+    ttsCustomUrl: '',
+  }
+
+  const engine = new HttpAudioTtsEngine()
+  let errorCaught: Error | null = null
+  engine.speak('测试自定义引擎回退。', customWithoutUrlSettings, () => {}, err => { errorCaught = err }, 'replace', { chunkId: 'chunk-fb' })
+  await new Promise(resolve => setTimeout(resolve, 20))
+
+  assert.equal(errorCaught, null, 'Should not throw error')
+  assert.ok(requestedBody, 'Chunk request should be submitted')
+  assert.equal(requestedBody.engine, 'edge', 'Engine should fall back to edge')
+  assert.equal(requestedBody.voice, defaultReaderSettings.ttsVoice)
+  engine.stop()
+})
+
 
 

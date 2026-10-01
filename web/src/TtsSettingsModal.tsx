@@ -228,28 +228,28 @@ export const TtsSettingsModal: React.FC<TtsSettingsModalProps> = ({
                 className={`tts-timer-btn ${sleepTimer === '15' ? 'active' : ''}`}
                 onClick={() => onSleepTimerChange('15')}
               >
-                {t('tts.timerMins', { mins: 15, defaultValue: '15 分钟' })}
+                {t('tts.timerMins', { count: 15, defaultValue: '15 分钟' })}
               </button>
               <button
                 type="button"
                 className={`tts-timer-btn ${sleepTimer === '30' ? 'active' : ''}`}
                 onClick={() => onSleepTimerChange('30')}
               >
-                {t('tts.timerMins', { mins: 30, defaultValue: '30 分钟' })}
+                {t('tts.timerMins', { count: 30, defaultValue: '30 分钟' })}
               </button>
               <button
                 type="button"
                 className={`tts-timer-btn ${sleepTimer === '45' ? 'active' : ''}`}
                 onClick={() => onSleepTimerChange('45')}
               >
-                {t('tts.timerMins', { mins: 45, defaultValue: '45 分钟' })}
+                {t('tts.timerMins', { count: 45, defaultValue: '45 分钟' })}
               </button>
               <button
                 type="button"
                 className={`tts-timer-btn ${sleepTimer === '60' ? 'active' : ''}`}
                 onClick={() => onSleepTimerChange('60')}
               >
-                {t('tts.timerMins', { mins: 60, defaultValue: '60 分钟' })}
+                {t('tts.timerMins', { count: 60, defaultValue: '60 分钟' })}
               </button>
               <button
                 type="button"

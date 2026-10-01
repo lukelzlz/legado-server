@@ -234,34 +234,6 @@ private suspend fun ApplicationCall.serveBackupImport(auth: AuthService, storage
     respond(summary)
 }
 
-/** 导出设置的存储键（与 `progress_sync_directory` 同属 `app_setting` 表）。 */
-private const val BACKUP_EXPORT_DIR_KEY = "backup_export_dir"
-private const val BACKUP_EXPORT_DEVICE_KEY = "backup_export_device"
-private const val BACKUP_EXPORT_ON_PAGE_CLOSE_KEY = "backup_export_on_page_close"
-private const val BACKUP_EXPORT_ON_BOOK_CLOSE_KEY = "backup_export_on_book_close"
-
-/** 自动导出的触发点标识（前端上报，服务端据此查对应开关）。 */
-internal const val TRIGGER_PAGE_CLOSE = "page"
-internal const val TRIGGER_BOOK_CLOSE = "book"
-
-/**
- * 清洗设备名：它会拼进**文件名**，因此必须挡掉路径分隔符与各平台非法字符。
- *
- * 允许中文（用户会用「客厅平板」这类名字），但不允许 `/ \ : * ? " < > |` 与控制字符。
- */
-internal fun sanitizeBackupDeviceName(raw: String): String =
-    raw.trim()
-        .filter { it.code >= 0x20 && it !in "\\/:*?\"<>|" }
-        .take(48)
-        .trim()
-
-private fun readBackupExportSettings(database: Database): BackupExportSettings = BackupExportSettings(
-    exportDir = database.getSetting(BACKUP_EXPORT_DIR_KEY).orEmpty().trim().trim('/'),
-    deviceName = database.getSetting(BACKUP_EXPORT_DEVICE_KEY).orEmpty(),
-    exportOnPageClose = database.getSetting(BACKUP_EXPORT_ON_PAGE_CLOSE_KEY) == "true",
-    exportOnBookClose = database.getSetting(BACKUP_EXPORT_ON_BOOK_CLOSE_KEY) == "true",
-)
-
 private suspend fun ApplicationCall.serveBackupExportSettings(auth: AuthService, database: Database) {
     if (!requireWebDavAuth(auth)) return
     respond(readBackupExportSettings(database))
@@ -271,21 +243,12 @@ private suspend fun ApplicationCall.serveBackupExportSettingsUpdate(auth: AuthSe
     if (!requireWebDavAuth(auth, write = true)) return
     val request = runCatching { receive<BackupExportSettingsUpdate>() }.getOrNull()
         ?: return respond(HttpStatusCode.BadRequest, ApiError("invalid_backup", "缺少导出设置"))
-    // 目录先归一化（去掉首尾斜杠与空白），设备名要清洗成安全的文件名片段
-    val dir = request.exportDir.trim().trim('/')
-    val device = sanitizeBackupDeviceName(request.deviceName)
-    database.setSetting(BACKUP_EXPORT_DIR_KEY, dir)
-    database.setSetting(BACKUP_EXPORT_DEVICE_KEY, device)
-    database.setSetting(BACKUP_EXPORT_ON_PAGE_CLOSE_KEY, request.exportOnPageClose.toString())
-    database.setSetting(BACKUP_EXPORT_ON_BOOK_CLOSE_KEY, request.exportOnBookClose.toString())
-    respond(
-        BackupExportSettings(
-            exportDir = dir,
-            deviceName = device,
-            exportOnPageClose = request.exportOnPageClose,
-            exportOnBookClose = request.exportOnBookClose,
-        )
-    )
+    val saved = runCatching { applyBackupExportSettingsUpdate(database, request) }.getOrElse { error ->
+        // 刻意用**不在四语字典里**的 code：字典里已有的 `invalid_backup` 会盖掉具体原因
+        // （用户只会看到「备份文件无效」），而这里真正可据以行动的是「时间要 HH:mm」这类细节。
+        return respondApiError(HttpStatusCode.BadRequest, "invalid_export_setting", error.message ?: "导出设置无效")
+    }
+    respond(saved)
 }
 
 /**
@@ -339,7 +302,8 @@ private suspend fun ApplicationCall.serveBackupExportAuto(
     if (!requireWebDavAuth(auth, write = true)) return
     val trigger = request.queryParameters["trigger"].orEmpty()
     val settings = readBackupExportSettings(database)
-    val enabled = when (trigger) {
+    // 总开关（autoExport）优先：关掉时子开关一律不生效
+    val enabled = settings.autoExport && when (trigger) {
         TRIGGER_PAGE_CLOSE -> settings.exportOnPageClose
         TRIGGER_BOOK_CLOSE -> settings.exportOnBookClose
         else -> false
@@ -363,43 +327,7 @@ private suspend fun ApplicationCall.serveBackupExportAuto(
     )
 }
 
-/** 落盘后的结果（文件名、绝对路径、各部分条数）。 */
-private data class BackupExportOutcome(val result: BackupExporter.Result, val target: Path) {
-    fun toPayload(storage: WebDavStorage) = BackupExportResult(
-        fileName = result.fileName,
-        path = storage.root.relativize(target).toString().replace('\\', '/'),
-        size = result.bytes.size.toLong(),
-        books = result.books,
-        sources = result.sources,
-        bookmarks = result.bookmarks,
-        groups = result.groups,
-    )
-}
-
-/**
- * 真正落盘的那一步：**手动导出与自动导出共用**，避免两条路径各自实现一遍覆盖语义。
- *
- * 同名文件（同一天 + 同设备名）**直接覆盖** —— `Files.write` 默认 `CREATE + TRUNCATE_EXISTING`，
- * 因此「同一天产生多个备份」只会留下一份最新的，不会堆一堆副本。
- * 文件名刻意**只到日期**（与真实备份 `backup2026-09-28-CD_Watch_A.zip` 同构），
- * 覆盖语义才成立；若哪天要在文件名里加时分，就必须额外写「删除同日旧文件」的逻辑。
- */
-private suspend fun performBackupExport(
-    storage: WebDavStorage,
-    exporter: BackupExporter,
-    settings: BackupExportSettings,
-): BackupExportOutcome {
-    val directory = storage.resolve(settings.exportDir)
-        ?: throw IllegalArgumentException("导出路径不合法")
-    val result = withContext(Dispatchers.IO) { exporter.export(settings.deviceName) }
-    val target = directory.resolve(result.fileName)
-    withContext(Dispatchers.IO) {
-        Files.createDirectories(directory)
-        Files.write(target, result.bytes)
-    }
-    return BackupExportOutcome(result, target)
-}
-
+/** 落盘后的结果（文件名、绝对路径、各部分条数）已移到 [BackupExportScheduler.kt]。 */
 private suspend fun ApplicationCall.serveWebDavOptions() {
     response.header(HttpHeaders.DAV, DAV_CLASSES)
     response.header(HttpHeaders.Allow, DAV_ALLOW)

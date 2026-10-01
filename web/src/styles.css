@@ -4588,11 +4588,32 @@ mark.search-highlight { background: var(--accent-soft); color: var(--accent); fo
 .progress-sync-field input:focus { outline: none; border-color: var(--accent); }
 .progress-sync-field input:disabled { opacity: .6; }
 .progress-sync-hint { font-size: 12px; color: var(--muted); line-height: 1.6; }
-/* 备份导出的两个自动触发开关 */
-.export-auto-switches { display: flex; flex-wrap: wrap; gap: 8px 20px; }
+/* 备份导出的自动导出区：总开关 + 定时 + 特定情况 */
+.export-auto-block { display: grid; gap: 10px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 10px; background: var(--bg); }
 .export-auto-switch { display: inline-flex; align-items: center; gap: 7px; font-size: 13px; color: var(--ink); cursor: pointer; }
 .export-auto-switch input { width: 15px; height: 15px; accent-color: var(--accent); cursor: pointer; }
 .export-auto-switch input:disabled { cursor: default; }
+.export-auto-switch.is-master { font-weight: 600; flex-wrap: wrap; }
+.export-auto-switch.is-master small { font-weight: 400; font-size: 12px; color: var(--muted); }
+/* 总开关关掉时，子项整体降透明度但仍可读（不是 disabled —— 用户仍可先配好再开总闸） */
+.export-auto-children { display: grid; gap: 10px; padding-left: 22px; }
+.export-auto-children.is-disabled { opacity: .55; }
+.export-auto-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; }
+.export-auto-group-label { font-size: 13px; font-weight: 600; color: var(--ink); }
+.export-time-input {
+  width: 78px;
+  padding: 6px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--ink);
+  font-size: 13px;
+  font-family: inherit;
+  text-align: center;
+  letter-spacing: .5px;
+}
+.export-time-input:focus { outline: none; border-color: var(--accent); }
+.export-auto-note { font-size: 12px; color: var(--muted); }
 .progress-sync-hint code {
   padding: 1px 5px;
   border-radius: 4px;

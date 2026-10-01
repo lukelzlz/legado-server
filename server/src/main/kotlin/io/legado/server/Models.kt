@@ -371,23 +371,38 @@ data class SourceLoginStateRecord(
  * 备份导出设置。
  *
  * @param exportDir  WebDAV 根目录下的相对目录，空串表示**根目录**（这样导出的 zip 会直接
- *   出现在「文件管理」列表里，可当场下载，也能被手机 App 通过 WebDAV 取走）。
- * @param deviceName 设备名后缀，拼在日期之后（`backup2026-09-30-CD_Watch_A.zip`）；空则不加后缀。
- * @param exportOnPageClose 关闭网页时自动导出一次（默认关）。
- * @param exportOnBookClose 关闭正在阅读的书时自动导出一次（默认关）。
+ *   出现在「文件管理」列表里，可当场下载，也能被手机 App 通过 WebDAV 取走）。默认 `legado`。
+ * @param deviceName 设备名后缀，拼在日期之后（`backup2026-09-30-web.zip`）。默认 `web`。
+ * @param autoExport **总开关**：关掉时下面三个子开关一律不生效。
+ * @param exportOnPageClose 关闭网页时自动导出一次。
+ * @param exportOnBookClose 关闭正在阅读的书时自动导出一次。
+ * @param scheduledExport 定时导出。
+ * @param scheduledTime 定时时刻，`HH:mm`（24 小时制），默认 `03:00`。
  */
 @Serializable data class BackupExportSettings(
-    val exportDir: String = "",
-    val deviceName: String = "",
+    val exportDir: String = "legado",
+    val deviceName: String = "web",
+    val autoExport: Boolean = false,
     val exportOnPageClose: Boolean = false,
     val exportOnBookClose: Boolean = false,
+    val scheduledExport: Boolean = false,
+    val scheduledTime: String = "03:00",
 )
 
+/**
+ * 导出设置的**局部**更新：为 null 的字段表示「这次不改」。
+ *
+ * 页面上「导出路径」「设备名后缀」各有独立保存按钮，勾选类开关是勾了就存，
+ * 因此契约必须支持「改哪个存哪个」，不能整个覆盖。
+ */
 @Serializable data class BackupExportSettingsUpdate(
-    val exportDir: String,
-    val deviceName: String,
-    val exportOnPageClose: Boolean = false,
-    val exportOnBookClose: Boolean = false,
+    val exportDir: String? = null,
+    val deviceName: String? = null,
+    val autoExport: Boolean? = null,
+    val exportOnPageClose: Boolean? = null,
+    val exportOnBookClose: Boolean? = null,
+    val scheduledExport: Boolean? = null,
+    val scheduledTime: String? = null,
 )
 
 /**

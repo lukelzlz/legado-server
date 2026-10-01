@@ -25,12 +25,20 @@ export type ProgressSyncSettings = { directoryName: string; directoryPath?: stri
  * 为空则不加后缀。
  */
 export type BackupExportSettings = {
+  /** WebDAV 根目录下的相对目录，空串 = 根目录。默认 legado。 */
   exportDir: string
+  /** 设备名后缀，拼在日期之后。默认 web。 */
   deviceName: string
+  /** **总开关**：关掉时下面三个子开关一律不生效。 */
+  autoExport: boolean
   /** 关闭网页时自动导出一次。 */
   exportOnPageClose: boolean
   /** 关闭正在阅读的书时自动导出一次。 */
   exportOnBookClose: boolean
+  /** 定时导出。 */
+  scheduledExport: boolean
+  /** 定时时刻，`HH:mm`（24 小时制）。 */
+  scheduledTime: string
 }
 
 /** 自动导出触发点。开关由**服务端**判定，前端只负责上报「发生了触发」。 */
@@ -538,8 +546,14 @@ export const api = {
   webDavImport: (path: string) => request<BackupImportSummary>('/api/webdav/import', { method: 'POST', body: JSON.stringify({ path }) }),
   /** 备份导出设置（导出路径 + 设备名后缀 + 两个自动导出开关）。 */
   backupExportSettings: () => request<BackupExportSettings>('/api/webdav/export/settings'),
-  saveBackupExportSettings: (settings: BackupExportSettings) =>
-    request<BackupExportSettings>('/api/webdav/export/settings', { method: 'PUT', body: JSON.stringify(settings) }),
+  /**
+   * 保存备份导出设置 —— **局部更新**：只提交传进来的字段。
+   *
+   * 页面上「导出路径」「设备名后缀」各有独立保存按钮，勾选类开关是勾了就存，
+   * 因此必须支持「改哪个存哪个」，否则点一下开关会把用户还没保存的输入一起写进去。
+   */
+  saveBackupExportSettings: (patch: Partial<BackupExportSettings>) =>
+    request<BackupExportSettings>('/api/webdav/export/settings', { method: 'PUT', body: JSON.stringify(patch) }),
   /** 按 Legado 格式导出备份（书源及分组 + 书架及分组 + 阅读进度），写入 WebDAV 存储区。 */
   backupExport: () => request<BackupExportResult>('/api/webdav/export', { method: 'POST' }),
   /**

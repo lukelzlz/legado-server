@@ -104,8 +104,7 @@ export function WebDavSettingsPage() {
   const [exportSettings, setExportSettings] = useState<BackupExportSettings | null>(null)
   const [exportDirInput, setExportDirInput] = useState('')
   const [deviceNameInput, setDeviceNameInput] = useState('')
-  const [autoPageCloseInput, setAutoPageCloseInput] = useState(false)
-  const [autoBookCloseInput, setAutoBookCloseInput] = useState(false)
+  const [scheduledTimeInput, setScheduledTimeInput] = useState('')
   const [exportSaving, setExportSaving] = useState(false)
   const [exporting, setExporting] = useState(false)
 
@@ -187,38 +186,63 @@ export function WebDavSettingsPage() {
       setExportSettings(s)
       setExportDirInput(s.exportDir)
       setDeviceNameInput(s.deviceName)
-      setAutoPageCloseInput(s.exportOnPageClose)
-      setAutoBookCloseInput(s.exportOnBookClose)
+      setScheduledTimeInput(s.scheduledTime)
     } catch {
       // 与进度同步同理：导出设置读取失败不该影响文件页其它功能
       setExportSettings(null)
     }
   }, [])
 
-  const handleSaveExportSettings = async () => {
+  /**
+   * 局部保存：`patch` 里只放本次真正要改的字段。
+   *
+   * 两类调用方：① 「导出路径 / 设备名后缀」两个输入框各自的保存按钮；
+   * ② 勾选类开关 —— 勾了就直接存，不要求再点保存。
+   */
+  const saveExportPatch = useCallback(async (patch: Partial<BackupExportSettings>, successMessage?: string) => {
     setExportSaving(true)
     try {
-      const saved = await api.saveBackupExportSettings({
-        exportDir: exportDirInput.trim(),
-        deviceName: deviceNameInput.trim(),
-        exportOnPageClose: autoPageCloseInput,
-        exportOnBookClose: autoBookCloseInput,
-      })
+      const saved = await api.saveBackupExportSettings(patch)
       setExportSettings(saved)
       setExportDirInput(saved.exportDir)
       setDeviceNameInput(saved.deviceName)
-      setAutoPageCloseInput(saved.exportOnPageClose)
-      setAutoBookCloseInput(saved.exportOnBookClose)
-      toast.success(
-        saved.deviceName
-          ? t('webdav.exportConfigSaved', { dir: saved.exportDir || '/', device: saved.deviceName, defaultValue: `已保存：导出到 ${saved.exportDir || 'WebDAV 根目录'}，设备名 ${saved.deviceName}` })
-          : t('webdav.exportConfigSavedNoDevice', { dir: saved.exportDir || '/', defaultValue: `已保存：导出到 ${saved.exportDir || 'WebDAV 根目录'}（未设设备名）` }),
-      )
+      setScheduledTimeInput(saved.scheduledTime)
+      if (successMessage) toast.success(successMessage)
+      return saved
     } catch (error) {
       toast.error(error instanceof Error ? error.message : t('webdav.saveFailed', { defaultValue: '保存失败' }))
+      return null
     } finally {
       setExportSaving(false)
     }
+  }, [t])
+
+  const handleSaveExportDir = () =>
+    void saveExportPatch(
+      { exportDir: exportDirInput.trim() },
+      t('webdav.exportDirSaved', { dir: exportDirInput.trim() || '/', defaultValue: `导出路径已保存：${exportDirInput.trim() || 'WebDAV 根目录'}` }),
+    )
+
+  const handleSaveDeviceName = () =>
+    void saveExportPatch(
+      { deviceName: deviceNameInput.trim() },
+      t('webdav.exportDeviceSaved', { name: deviceNameInput.trim() || '—', defaultValue: `设备名后缀已保存：${deviceNameInput.trim() || '（空）'}` }),
+    )
+
+  /** 勾选即保存：开关类控件不设独立保存按钮。 */
+  const handleToggleAutoExport = (checked: boolean) => void saveExportPatch({ autoExport: checked })
+  const handleToggleScheduled = (checked: boolean) => void saveExportPatch({ scheduledExport: checked })
+  const handleTogglePageClose = (checked: boolean) => void saveExportPatch({ exportOnPageClose: checked })
+  const handleToggleBookClose = (checked: boolean) => void saveExportPatch({ exportOnBookClose: checked })
+
+  const handleSaveScheduledTime = () => {
+    const value = scheduledTimeInput.trim()
+    // 前端先粗校验一次（HH:mm，24 小时制）给出即时反馈；服务端还会再校验一遍
+    if (!/^([01]?\d|2[0-3]):[0-5]?\d$/.test(value)) {
+      toast.warning(t('webdav.scheduledTimeInvalid', { defaultValue: '定时时间格式应为 HH:mm（24 小时制），如 03:00' }))
+      return
+    }
+    void saveExportPatch({ scheduledTime: value }, t('webdav.scheduledTimeSaved', { time: value, defaultValue: `定时导出时间已保存：每天 ${value}` }))
   }
 
   /**
@@ -522,19 +546,20 @@ export function WebDavSettingsPage() {
           {t('webdav.exportDesc', { defaultValue: '按 Legado 备份包格式导出书源及其分组、书架及书籍分组、阅读进度，写入下面的导出路径。导出的 zip 会出现在「文件管理」里，可直接下载，也能被手机 App 通过 WebDAV 取走。' })}
         </p>
         <div className="progress-sync-card">
+          {/* 两个字段**各自独立保存**：导出行一个按钮、设备名行一个按钮 */}
           <div className="progress-sync-row">
             <label className="progress-sync-field">
               <span className="progress-sync-label">{t('webdav.exportPathLabel', { defaultValue: '导出路径' })}</span>
               <input
                 type="text"
                 value={exportDirInput}
-                placeholder={t('webdav.exportPathPlaceholder', { defaultValue: '留空 = WebDAV 根目录' })}
+                placeholder="legado"
                 onChange={e => setExportDirInput(e.target.value)}
                 spellCheck={false}
                 disabled={exportSaving}
               />
             </label>
-            <button type="button" className="primary-button" onClick={() => void handleSaveExportSettings()} disabled={exportSaving}>
+            <button type="button" className="primary-button" onClick={handleSaveExportDir} disabled={exportSaving}>
               {exportSaving ? t('common.saving', { defaultValue: '保存中…' }) : t('common.save', { defaultValue: '保存' })}
             </button>
           </div>
@@ -544,39 +569,86 @@ export function WebDavSettingsPage() {
               <input
                 type="text"
                 value={deviceNameInput}
-                placeholder="CD_Watch_A"
+                placeholder="web"
                 onChange={e => setDeviceNameInput(e.target.value)}
                 spellCheck={false}
                 disabled={exportSaving}
               />
             </label>
+            <button type="button" className="primary-button" onClick={handleSaveDeviceName} disabled={exportSaving}>
+              {exportSaving ? t('common.saving', { defaultValue: '保存中…' }) : t('common.save', { defaultValue: '保存' })}
+            </button>
           </div>
           <small className="progress-sync-hint">
-            {t('webdav.exportHint', { defaultValue: '导出路径相对 WebDAV 根目录，留空即根目录（支持多级子目录）。设备名拼在日期之后，生成 backup2026-09-30-CD_Watch_A.zip 这样的文件名；留空则只有日期。' })}
+            {t('webdav.exportHint', { defaultValue: '导出路径相对 WebDAV 根目录，留空即根目录（支持多级子目录）。设备名拼在日期之后，生成 backup2026-09-30-web.zip 这样的文件名；留空则只有日期。' })}
           </small>
-          {/* 自动导出触发点：开关存在服务端，前端只上报「发生了触发」，由服务端决定要不要写盘 */}
-          <div className="export-auto-switches">
-            <label className="export-auto-switch">
+
+          {/* 自动导出：总开关 + 定时 + 特定情况。全部**勾了就直接保存** */}
+          <div className="export-auto-block">
+            <label className="export-auto-switch is-master">
               <input
                 type="checkbox"
-                checked={autoPageCloseInput}
-                onChange={e => setAutoPageCloseInput(e.target.checked)}
-                disabled={exportSaving}
+                checked={exportSettings?.autoExport ?? false}
+                onChange={e => handleToggleAutoExport(e.target.checked)}
+                disabled={exportSaving || exportSettings === null}
               />
-              <span>{t('webdav.exportOnPageClose', { defaultValue: '关闭网页时自动备份' })}</span>
+              <span>{t('webdav.autoExportMaster', { defaultValue: '自动导出' })}</span>
+              <small>{t('webdav.autoExportMasterHint', { defaultValue: '总开关，关掉后下面的定时与特定情况都不生效' })}</small>
             </label>
-            <label className="export-auto-switch">
-              <input
-                type="checkbox"
-                checked={autoBookCloseInput}
-                onChange={e => setAutoBookCloseInput(e.target.checked)}
-                disabled={exportSaving}
-              />
-              <span>{t('webdav.exportOnBookClose', { defaultValue: '关闭书籍时自动备份' })}</span>
-            </label>
+
+            <div className={`export-auto-children ${exportSettings?.autoExport ? '' : 'is-disabled'}`}>
+              <div className="export-auto-row">
+                <label className="export-auto-switch">
+                  <input
+                    type="checkbox"
+                    checked={exportSettings?.scheduledExport ?? false}
+                    onChange={e => handleToggleScheduled(e.target.checked)}
+                    disabled={exportSaving || exportSettings === null}
+                  />
+                  <span>{t('webdav.scheduledExport', { defaultValue: '定时导出' })}</span>
+                </label>
+                <input
+                  type="text"
+                  className="export-time-input"
+                  value={scheduledTimeInput}
+                  placeholder="03:00"
+                  inputMode="numeric"
+                  maxLength={5}
+                  onChange={e => setScheduledTimeInput(e.target.value)}
+                  disabled={exportSaving || exportSettings === null}
+                  aria-label={t('webdav.scheduledTimeLabel', { defaultValue: '定时导出时间（24 小时制）' })}
+                />
+                <button type="button" className="subtle-button" onClick={handleSaveScheduledTime} disabled={exportSaving || exportSettings === null}>
+                  {t('common.save', { defaultValue: '保存' })}
+                </button>
+                <small className="export-auto-note">{t('webdav.scheduledTimeNote', { defaultValue: '24 小时制，如 03:00 / 14:30' })}</small>
+              </div>
+
+              <div className="export-auto-row">
+                <span className="export-auto-group-label">{t('webdav.situationExport', { defaultValue: '特定情况导出' })}</span>
+                <label className="export-auto-switch">
+                  <input
+                    type="checkbox"
+                    checked={exportSettings?.exportOnPageClose ?? false}
+                    onChange={e => handleTogglePageClose(e.target.checked)}
+                    disabled={exportSaving || exportSettings === null}
+                  />
+                  <span>{t('webdav.exportOnPageClose', { defaultValue: '关闭网页时自动备份' })}</span>
+                </label>
+                <label className="export-auto-switch">
+                  <input
+                    type="checkbox"
+                    checked={exportSettings?.exportOnBookClose ?? false}
+                    onChange={e => handleToggleBookClose(e.target.checked)}
+                    disabled={exportSaving || exportSettings === null}
+                  />
+                  <span>{t('webdav.exportOnBookClose', { defaultValue: '关闭书籍时自动备份' })}</span>
+                </label>
+              </div>
+            </div>
           </div>
           <small className="progress-sync-hint">
-            {t('webdav.autoExportHint', { defaultValue: '勾选后，关闭本页面或退出阅读时会自动导出一次。同一天、同一设备名只保留最新一份（新备份直接覆盖旧备份）。' })}
+            {t('webdav.autoExportHint', { defaultValue: '同一天、同一设备名只保留最新一份（新备份直接覆盖旧备份）。开关勾选后立即生效。' })}
           </small>
           {exportSettings !== null && (
             <div className="progress-sync-status">

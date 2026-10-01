@@ -47,9 +47,27 @@ test('WebDavSettingsPage - backup export box and button are present', () => {
   assert.ok(html.includes('导出路径'), 'export box should offer a path field')
   assert.ok(html.includes('设备名后缀'), 'export box should offer a device-name field')
   assert.ok(html.includes('导出备份'), 'file manager should offer an export button')
-  assert.ok(html.includes('backup2026-09-30-CD_Watch_A.zip'), 'hint should show the resulting file name shape')
+  assert.ok(html.includes('backup2026-09-30-web.zip'), 'hint should show the resulting file name shape')
   // 进度同步的「重新读取」按钮已删除（每次进页都会自动读取，手动刷新没有意义）
   assert.equal(html.includes('重新读取'), false, 'the useless refresh button should be removed')
+})
+
+test('WebDavSettingsPage - automatic export exposes a master switch plus scheduled and event triggers', () => {
+  const html = renderToStaticMarkup(React.createElement(WebDavSettingsPage))
+
+  // 总开关 + 它统管的两类子项都必须出现
+  assert.ok(html.includes('自动导出'), 'master switch should be rendered')
+  assert.ok(html.includes('总开关'), 'master switch should be explained as the master switch')
+  assert.ok(html.includes('定时导出'), 'scheduled export option should be rendered')
+  assert.ok(html.includes('特定情况导出'), 'event-triggered group should be rendered')
+  assert.ok(html.includes('关闭网页时自动备份'), 'page-close trigger should be rendered')
+  assert.ok(html.includes('关闭书籍时自动备份'), 'book-close trigger should be rendered')
+  // 时间输入 24 小时制：占位为 03:00（真实默认值由服务端下发），并给出 HH:mm 提示
+  assert.ok(html.includes('placeholder="03:00"'), 'scheduled time should hint the 03:00 default')
+  assert.ok(html.includes('24 小时制'), 'the time field should say it is a 24-hour clock')
+  // 两个字段各自一个保存按钮 ⇒ 这一屏至少有三个保存（导出路径 / 设备名后缀 / 定时时间）
+  const saveButtons = (html.match(/>保存</g) || []).length
+  assert.ok(saveButtons >= 3, `expected at least 3 save buttons, got ${saveButtons}`)
 })
 
 test('WebDavSettingsPage - exposes a local book import entry limited to TXT and EPUB', () => {

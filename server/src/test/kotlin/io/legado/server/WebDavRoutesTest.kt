@@ -472,7 +472,7 @@ class WebDavRoutesTest {
     }
 
     @Test
-    fun `backup export settings default to webdav root with no device suffix and auto export off`() = testApplication {
+    fun `backup export settings default to the legado folder with device suffix web and auto export off`() = testApplication {
         val fixture = fixture()
         try {
             application { legadoApplication(fixture.config) }
@@ -483,9 +483,13 @@ class WebDavRoutesTest {
             client.loginSession()
 
             val settings = client.get("/api/webdav/export/settings").body<BackupExportSettings>()
-            assertEquals("", settings.exportDir)
-            assertEquals("", settings.deviceName)
-            // 自动导出默认**关**：不勾选就不该有任何后台写盘
+            // 默认落点是 WebDAV 根目录下的 legado，设备名后缀 web（与手机端 CD_Watch_A 之类区分开）
+            assertEquals("legado", settings.exportDir)
+            assertEquals("web", settings.deviceName)
+            assertEquals("03:00", settings.scheduledTime)
+            // 自动导出默认**关**：不主动打开就不该有任何后台写盘
+            assertFalse(settings.autoExport)
+            assertFalse(settings.scheduledExport)
             assertFalse(settings.exportOnPageClose)
             assertFalse(settings.exportOnBookClose)
         } finally {
@@ -586,7 +590,8 @@ class WebDavRoutesTest {
             client.put("/api/webdav/export/settings") {
                 header(AuthService.CSRF_HEADER, csrf)
                 contentType(ContentType.Application.Json)
-                setBody(BackupExportSettingsUpdate("backup-out", "CD_Watch_A", exportOnPageClose = true, exportOnBookClose = false))
+                // 总开关必须一起打开，否则子开关不生效
+                setBody(BackupExportSettingsUpdate(autoExport = true, exportOnPageClose = true, exportOnBookClose = false))
             }
 
             // 只开「关网页」：page 触发有效，book 触发仍被挡
@@ -594,7 +599,7 @@ class WebDavRoutesTest {
                 header(AuthService.CSRF_HEADER, csrf)
             }.body<BackupAutoExportResult>()
             assertTrue(onPage.exported)
-            assertEquals("backup-out/${onPage.fileName}", onPage.path)
+            assertEquals("legado/${onPage.fileName}", onPage.path)
 
             val onBook = client.post("/api/webdav/export/auto?trigger=book") {
                 header(AuthService.CSRF_HEADER, csrf)

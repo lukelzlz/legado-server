@@ -95,6 +95,41 @@ test('source group manager - header stats, sections and group avatar are present
   assert.ok(html.includes('勾选书源后可批量归类'), '底部要给出当前选中摘要')
 })
 
+test('source group manager - button tag balance and non-nested batch manage button', async () => {
+  const fs = await import('node:fs/promises')
+  const path = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const currentDir = path.dirname(fileURLToPath(import.meta.url))
+  const mainTsxPath = path.resolve(currentDir, '../src/main.tsx')
+  const mainContent = await fs.readFile(mainTsxPath, 'utf8')
+
+  // 1. 验证整个 main.tsx 中 <button> 与 </button> 成对闭合
+  const openButtons = (mainContent.match(/<button[\s>]/g) || []).length
+  const closeButtons = (mainContent.match(/<\/button>/g) || []).length
+  assert.strictEqual(openButtons, closeButtons, `<button> 数量 (${openButtons}) 必须与 </button> 数量 (${closeButtons}) 完全一致`)
+
+  // 2. 验证书源侧栏顶部三宫格按钮区中无嵌套 <button>
+  const sidebarActionsMatch = mainContent.match(/<div className="source-sidebar-top-actions">([\s\S]*?)<\/div>/)
+  assert.ok(sidebarActionsMatch, '必须包含 source-sidebar-top-actions 容器')
+  const actionsHtml = sidebarActionsMatch[1]
+
+  // 严禁存在嵌套的 <button> 标签：每一个 <button 之后在遇到下一个 <button 之前必须先闭合 </button>
+  const tags = [...actionsHtml.matchAll(/<\/?button/gi)].map(m => m[0].toLowerCase())
+  let depth = 0
+  let maxDepth = 0
+  for (const tag of tags) {
+    if (tag === '<button') {
+      depth++
+      if (depth > maxDepth) maxDepth = depth
+    } else if (tag === '</button') {
+      depth--
+    }
+  }
+  assert.strictEqual(depth, 0, '所有 <button> 必须正确闭合')
+  assert.strictEqual(maxDepth, 1, '侧栏操作按钮区严禁存在嵌套的 <button> 标签 (maxDepth 必须为 1)')
+  assert.ok(actionsHtml.includes('batch-mode-btn'), '必须包含 batch-mode-btn 批量管理按钮')
+})
+
 test('source group manager - groupInitial never renders undefined and handles emoji properly', () => {
   assert.equal(groupInitial('大灰狼聚合'), '大')
   assert.equal(groupInitial('  ab  '), 'A', '取首个非空白字符并大写')

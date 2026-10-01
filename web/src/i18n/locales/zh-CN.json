@@ -1068,19 +1068,18 @@
     "exporting": "导出中…",
     "exportSuccess": "已导出 {{name}}（书源 {{sources}} 个、书籍 {{books}} 本、书签 {{bookmarks}} 条、{{size}}）",
     "exportFailed": "备份导出失败",
-    "exportOnPageClose": "关闭网页时自动备份",
-    "exportOnBookClose": "关闭书籍时自动备份",
+    "exportOnPageClose": "关闭网页时自动导出",
+    "exportOnBookClose": "关闭书籍时自动导出",
     "autoExportHint": "同一天、同一设备名只保留最新一份（新备份直接覆盖旧备份）。开关勾选后立即生效。",
     "exportDirSaved": "导出路径已保存：{{dir}}",
     "exportDeviceSaved": "设备名后缀已保存：{{name}}",
     "autoExportMaster": "自动导出",
-    "autoExportMasterHint": "总开关，关掉后下面的定时与特定情况都不生效",
+    "autoExportMasterHint": "总开关，关掉后下面三个选项都不生效",
     "scheduledExport": "定时导出",
     "scheduledTimeLabel": "定时导出时间（24 小时制）",
     "scheduledTimeNote": "24 小时制，如 03:00 / 14:30",
     "scheduledTimeSaved": "定时导出时间已保存：每天 {{time}}",
-    "scheduledTimeInvalid": "定时时间格式应为 HH:mm（24 小时制），如 03:00",
-    "situationExport": "特定情况导出"
+    "scheduledTimeInvalid": "定时时间格式应为 HH:mm（24 小时制），如 03:00"
   },
   "errorBoundary": {
     "title": "页面渲染遇到异常",

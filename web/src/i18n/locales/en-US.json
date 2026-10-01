@@ -1068,19 +1068,18 @@
     "exporting": "Exporting…",
     "exportSuccess": "Exported {{name}} ({{sources}} sources, {{books}} books, {{bookmarks}} bookmarks, {{size}})",
     "exportFailed": "Backup export failed",
-    "exportOnPageClose": "Back up when the page closes",
-    "exportOnBookClose": "Back up when a book closes",
+    "exportOnPageClose": "Export when the page closes",
+    "exportOnBookClose": "Export when a book closes",
     "autoExportHint": "Only the newest file is kept per day and device name (a new backup overwrites the old one). Toggles take effect immediately.",
     "exportDirSaved": "Export path saved: {{dir}}",
     "exportDeviceSaved": "Device name suffix saved: {{name}}",
     "autoExportMaster": "Automatic export",
-    "autoExportMasterHint": "Master switch — turning it off disables both the schedule and the event triggers below",
+    "autoExportMasterHint": "Master switch — turning it off disables all three options below",
     "scheduledExport": "Scheduled export",
     "scheduledTimeLabel": "Scheduled export time (24-hour)",
     "scheduledTimeNote": "24-hour clock, e.g. 03:00 / 14:30",
     "scheduledTimeSaved": "Scheduled export time saved: daily at {{time}}",
-    "scheduledTimeInvalid": "Time must be HH:mm on a 24-hour clock, e.g. 03:00",
-    "situationExport": "Event-triggered export"
+    "scheduledTimeInvalid": "Time must be HH:mm on a 24-hour clock, e.g. 03:00"
   },
   "errorBoundary": {
     "title": "Application Error",

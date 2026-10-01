@@ -52,20 +52,24 @@ test('WebDavSettingsPage - backup export box and button are present', () => {
   assert.equal(html.includes('重新读取'), false, 'the useless refresh button should be removed')
 })
 
-test('WebDavSettingsPage - automatic export exposes a master switch plus scheduled and event triggers', () => {
+test('WebDavSettingsPage - automatic export is a flush-left master switch plus three indented options', () => {
   const html = renderToStaticMarkup(React.createElement(WebDavSettingsPage))
 
-  // 总开关 + 它统管的两类子项都必须出现
+  // 顶格的总开关
   assert.ok(html.includes('自动导出'), 'master switch should be rendered')
   assert.ok(html.includes('总开关'), 'master switch should be explained as the master switch')
+  // 它下面三个**缩进的**子选项
+  assert.ok(html.includes('export-auto-children'), 'the three sub-options should live in the indented container')
   assert.ok(html.includes('定时导出'), 'scheduled export option should be rendered')
-  assert.ok(html.includes('特定情况导出'), 'event-triggered group should be rendered')
-  assert.ok(html.includes('关闭网页时自动备份'), 'page-close trigger should be rendered')
-  assert.ok(html.includes('关闭书籍时自动备份'), 'book-close trigger should be rendered')
+  assert.ok(html.includes('关闭网页时自动导出'), 'page-close trigger should be rendered')
+  assert.ok(html.includes('关闭书籍时自动导出'), 'book-close trigger should be rendered')
+  // 术语统一成「自动导出」，「特定情况导出」这个分组标题已按要求删除
+  assert.equal(html.includes('自动备份'), false, 'wording should be 自动导出, not 自动备份')
+  assert.equal(html.includes('特定情况导出'), false, 'the group label should be removed')
   // 时间输入 24 小时制：占位为 03:00（真实默认值由服务端下发），并给出 HH:mm 提示
   assert.ok(html.includes('placeholder="03:00"'), 'scheduled time should hint the 03:00 default')
   assert.ok(html.includes('24 小时制'), 'the time field should say it is a 24-hour clock')
-  // 两个字段各自一个保存按钮 ⇒ 这一屏至少有三个保存（导出路径 / 设备名后缀 / 定时时间）
+  // 两个字段各自一个保存按钮 ⇒ 加上定时时间共三个保存
   const saveButtons = (html.match(/>保存</g) || []).length
   assert.ok(saveButtons >= 3, `expected at least 3 save buttons, got ${saveButtons}`)
 })

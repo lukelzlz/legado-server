@@ -1068,19 +1068,18 @@
     "exporting": "匯出中…",
     "exportSuccess": "已匯出 {{name}}（書源 {{sources}} 個、書籍 {{books}} 本、書籤 {{bookmarks}} 條、{{size}}）",
     "exportFailed": "備份匯出失敗",
-    "exportOnPageClose": "關閉網頁時自動備份",
-    "exportOnBookClose": "關閉書籍時自動備份",
+    "exportOnPageClose": "關閉網頁時自動匯出",
+    "exportOnBookClose": "關閉書籍時自動匯出",
     "autoExportHint": "同一天、同一裝置名只保留最新一份（新備份直接覆蓋舊備份）。開關勾選後立即生效。",
     "exportDirSaved": "匯出路徑已儲存：{{dir}}",
     "exportDeviceSaved": "裝置名後綴已儲存：{{name}}",
     "autoExportMaster": "自動匯出",
-    "autoExportMasterHint": "總開關，關掉後下面的定時與特定情況都不生效",
+    "autoExportMasterHint": "總開關，關掉後下面三個選項都不生效",
     "scheduledExport": "定時匯出",
     "scheduledTimeLabel": "定時匯出時間（24 小時制）",
     "scheduledTimeNote": "24 小時制，如 03:00 / 14:30",
     "scheduledTimeSaved": "定時匯出時間已儲存：每天 {{time}}",
-    "scheduledTimeInvalid": "定時時間格式應為 HH:mm（24 小時制），如 03:00",
-    "situationExport": "特定情況匯出"
+    "scheduledTimeInvalid": "定時時間格式應為 HH:mm（24 小時制），如 03:00"
   },
   "errorBoundary": {
     "title": "頁面渲染遇到異常",

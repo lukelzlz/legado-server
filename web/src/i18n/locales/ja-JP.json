@@ -1068,19 +1068,18 @@
     "exporting": "書き出し中…",
     "exportSuccess": "{{name}} を書き出しました（書源 {{sources}} 件、書籍 {{books}} 冊、ブックマーク {{bookmarks}} 件、{{size}}）",
     "exportFailed": "バックアップの書き出しに失敗しました",
-    "exportOnPageClose": "ページを閉じるときに自動バックアップ",
-    "exportOnBookClose": "書籍を閉じるときに自動バックアップ",
+    "exportOnPageClose": "ページを閉じるときに自動書き出し",
+    "exportOnBookClose": "書籍を閉じるときに自動書き出し",
     "autoExportHint": "同じ日・同じデバイ名では最新の 1 件のみ保持します（新しいバックアップが古いものを上書きします）。スイッチは即時反映されます。",
     "exportDirSaved": "書き出し先を保存しました：{{dir}}",
     "exportDeviceSaved": "デバイ名の接尾辞を保存しました：{{name}}",
     "autoExportMaster": "自動書き出し",
-    "autoExportMasterHint": "マスタースイッチ。オフにすると下の定時・特定条件は無効になります",
+    "autoExportMasterHint": "マスタースイッチ。オフにすると下の 3 つのオプションが無効になります",
     "scheduledExport": "定時書き出し",
     "scheduledTimeLabel": "定時書き出しの時刻（24 時間制）",
     "scheduledTimeNote": "24 時間制、例：03:00 / 14:30",
     "scheduledTimeSaved": "定時書き出しの時刻を保存しました：毎日 {{time}}",
-    "scheduledTimeInvalid": "時刻は 24 時間制の HH:mm（例：03:00）で入力してください",
-    "situationExport": "特定条件での書き出し"
+    "scheduledTimeInvalid": "時刻は 24 時間制の HH:mm（例：03:00）で入力してください"
   },
   "errorBoundary": {
     "title": "エラーが発生しました",

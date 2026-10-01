@@ -531,21 +531,8 @@ class WebViewProxy(private val database: Database) {
                 lower.startsWith("tel:") || lower.startsWith("blob:") || lower.startsWith("about:") ||
                 lower.startsWith("#") || lower.startsWith("sms:")
             ) return null
-            val resolved = runCatching { base.resolve(percentEncodeIllegal(value)) }.getOrNull() ?: return null
+            val resolved = runCatching { base.resolve(encodeIllegalUrlChars(value)) }.getOrNull() ?: return null
             return resolved.takeIf { it.scheme?.lowercase() in setOf("http", "https") }?.toString()
-        }
-
-        /** 对 URL 中的非法字符做百分号编码（中文、空格、模板花括号等），否则 URI 解析会直接失败。 */
-        private fun percentEncodeIllegal(value: String): String {
-            val builder = StringBuilder(value.length)
-            for (ch in value) {
-                when {
-                    ch == ' ' -> builder.append("%20")
-                    ch.code > 127 || ch in "\"<>{}|\\^`" -> builder.append(URLEncoder.encode(ch.toString(), Charsets.UTF_8))
-                    else -> builder.append(ch)
-                }
-            }
-            return builder.toString()
         }
 
         fun pageUrl(sourceId: String, token: String, target: String): String =

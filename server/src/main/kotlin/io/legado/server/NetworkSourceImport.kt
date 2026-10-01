@@ -260,7 +260,13 @@ class NetworkSourceImport(
                 if (response.statusCode() in 300..399) {
                     val location = response.headers().firstValue("location").orElse(null)
                         ?: throw NetworkImportException("import_upstream_failed", "上游重定向缺少地址")
-                    uri = parseTarget(uri.resolve(location).toString())
+                    // ⚠️ 非标第三方站点的 Location 可能含**未转义**的中文/空格/花括号，
+                    // 直接 `uri.resolve(location)` 会抛 IllegalArgumentException，
+                    // 若不拦就变成「一句莫名其妙的 import_upstream_failed」。
+                    // 这里复用全项目唯一的宽容编码实现（与 RuleRunner / WebViewProxy 同源）。
+                    val next = runCatching { uri.resolve(encodeIllegalUrlChars(location.trim())) }.getOrNull()
+                        ?: throw NetworkImportException("import_upstream_failed", "上游重定向地址无法解析")
+                    uri = parseTarget(next.toString())
                     return@repeat
                 }
                 if (response.statusCode() !in 200..299) {
@@ -276,7 +282,11 @@ class NetworkSourceImport(
 
     /** 解析并校验目标地址：非 HTTP(S) 直接拒；内网/环回/链路本地地址由 [NetworkSecurity] 拦下（防 SSRF）。 */
     private fun parseTarget(raw: String): URI {
-        val uri = runCatching { URI(raw.trim()) }.getOrNull()
+        val trimmed = raw.trim()
+        // 与 RuleRunner.parseUri 同源：先按原样解析，失败再对非法字符做宽容编码
+        // （用户粘贴的地址里带中文或空格是常事，不该直接判「地址格式无效」）。
+        val uri = runCatching { URI(trimmed) }.getOrNull()
+            ?: runCatching { URI(encodeIllegalUrlChars(trimmed)) }.getOrNull()
             ?: throw NetworkImportException("import_url_scheme", "地址格式无效")
         if (uri.scheme?.lowercase() !in setOf("http", "https")) {
             throw NetworkImportException("import_url_scheme", "仅支持 HTTP(S) 地址")

@@ -87,7 +87,15 @@ export const NetworkImportModal: React.FC<NetworkImportModalProps> = ({
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') onClose()
+      if (event.key !== 'Escape') return
+      // 本弹窗可能被挂在**外层弹窗的遮罩内部**（例如内置浏览器里点「更新书源」线路唤出），
+      // 因此必须把 Escape 就地吃掉，避免继续传播给外层监听。
+      //
+      // ⚠️ 注意 `stopImmediatePropagation()` 只能拦住**注册更晚**的监听器：同一个 target 上
+      // 的监听器按注册顺序触发，外层的 useEffect 先跑 ⇒ 它的监听器先注册。
+      // 真正防住连带关闭的是外层不注册 Escape（现状如此，实测已验证），这里只是兜底。
+      event.stopImmediatePropagation()
+      onClose()
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
@@ -141,7 +149,11 @@ export const NetworkImportModal: React.FC<NetworkImportModalProps> = ({
   const groupLabel = effectiveGroup || t('source.networkImportNoGroup', '不分组')
 
   return (
-    <div className="modal-backdrop" onClick={onClose}>
+    // ⚠️ `stopPropagation` 不是可选项：本弹窗被挂成**外层弹窗遮罩的 DOM 子节点**
+    // （SourceLoginModal 里 `<div className="modal-backdrop" onClick={onClose}>` → 本弹窗），
+    // 不阻止冒泡的话，点一下本弹窗的遮罩会连带把外层登录弹窗与内置浏览器**一起关掉**。
+    // 实测复现：点击前 login/webview/network 三层都在，点击后三层的遮罩数从 3 变 0。
+    <div className="modal-backdrop" onClick={event => { event.stopPropagation(); onClose() }}>
       <div className="network-import-modal" onClick={event => event.stopPropagation()}>
         <header className="network-import-header">
           <h3 className="network-import-title">{t('source.networkImportTitle', '导入书源')}</h3>

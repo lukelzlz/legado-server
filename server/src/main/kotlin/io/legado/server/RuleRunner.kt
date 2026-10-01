@@ -610,19 +610,6 @@ class RuleRunner(private val responseFetcher: ((String) -> String)? = null, inte
         }
     }
 
-    /** 对 URL 中 RFC 不允许的字面字符做百分号编码。 */
-    private fun encodeIllegalUrlChars(url: String): String {
-        val builder = StringBuilder(url.length + 16)
-        for (ch in url) {
-            when {
-                ch == ' ' -> builder.append("%20")
-                ch.code > 127 || ch in "\"<>{}|\\^`" -> builder.append(URLEncoder.encode(ch.toString(), Charsets.UTF_8))
-                else -> builder.append(ch)
-            }
-        }
-        return builder.toString()
-    }
-
     private fun fetchUrl(
         url: String,
         options: UrlOptions?,

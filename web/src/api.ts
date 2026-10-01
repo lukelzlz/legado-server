@@ -403,6 +403,14 @@ export const api = {
   import: (sources: string[]) => request<ImportResponse>('/api/sources/import', { method: 'POST', body: JSON.stringify({ sources }) }),
   /** 网络导入第一步：服务端代抓 + 逐条试解析，只回元数据与一次性票据（避开跨域与体积搬运）。 */
   previewNetworkImport: (url: string) => request<NetworkImportPreview>('/api/sources/import-url/preview', { method: 'POST', body: JSON.stringify({ url }) }),
+  /**
+   * 本地书源文件预览：把文件原文交给服务端解析，拿回与网络导入**同一结构**的预览。
+   *
+   * 复用同一个票据（[commitNetworkImport]），因此本地与网络两条导入路径的
+   * 判定口径与落库流程完全一致。
+   */
+  previewLocalSourceJson: (content: string, label: string) =>
+    request<NetworkImportPreview>('/api/sources/import-json/preview', { method: 'POST', body: JSON.stringify({ content, label }) }),
   /** 网络导入第二步：按票据与勾选下标落库；`group` 为空表示不改动分组。 */
   commitNetworkImport: (token: string, selected: number[], group?: string | null) => request<ImportResponse>('/api/sources/import-url/commit', { method: 'POST', body: JSON.stringify({ token, selected, group: group ?? null }) }),
   /** 书源分组列表（不含「未分组」，它由前端用 UNGROUPED_SOURCE_GROUP 单独提供） */

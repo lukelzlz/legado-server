@@ -105,7 +105,7 @@ object SourceCodec {
     fun parseSourceList(body: String): List<String> {
         val cleanBody = body.trim().removePrefix("\uFEFF")
         val element = try { json.parseToJsonElement(cleanBody) } catch (_: Exception) { null }
-            ?: throw IllegalArgumentException("内容不是有效 JSON")
+            ?: return parseLineDelimited(cleanBody)
         val values = when (element) {
             is JsonArray -> element
             is JsonObject -> when {
@@ -122,6 +122,30 @@ object SourceCodec {
             else -> throw IllegalArgumentException("内容不是有效的书源集合")
         }
         return values.map { json.encodeToString(JsonElement.serializer(), it) }
+    }
+
+    /**
+     * 兜底：**JSONL / NDJSON**（一行一条 JSON）。
+     *
+     * 书源集合在网上也常以「每行一条」的形式分发，而严格 JSON 解析必然失败。
+     * ⚠️ 这个容忍度原先**只存在于前端**（本地导入用的 `parseSourceJsonText`），
+     * 服务端没有 ⇒「本地导入能用的文件，走网络导入或走服务端预览就报无效」。
+     * 按仓库「同一口径必须同源」的约定，把它上移到本函数，两侧共用一份解析器。
+     *
+     * 只有**至少解析出一行书源对象**才认；否则仍按「不是有效 JSON」拒绝，避免把任意文本当成书源。
+     *
+     * ⚠️ 必须 `as? JsonObject` 过滤：本对象的 `json` 是 `isLenient = true`，它会把 `这不是 JSON`
+     * 这类**未加引号的文本当成字符串字面量解析成功**。若只做 `runCatching`，任意多行文本都会
+     * 变成「N 条书源」，垃圾文件也能出预览（实测踩到）。一条书源必然是一个 JSON 对象。
+     */
+    private fun parseLineDelimited(cleanBody: String): List<String> {
+        val items = cleanBody.lineSequence()
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+            .mapNotNull { line -> runCatching { json.parseToJsonElement(line) }.getOrNull() as? JsonObject }
+            .toList()
+        require(items.isNotEmpty()) { "内容不是有效 JSON" }
+        return items.map { json.encodeToString(JsonElement.serializer(), it) }
     }
 
     /** 对外复用：把书源标识（可带 `#` / `##` 注解）归一化为服务端使用的 sourceId（备份导入时对齐书架 origin）。 */

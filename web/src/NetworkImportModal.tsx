@@ -14,6 +14,16 @@ interface NetworkImportModalProps {
    * 书源页直接点「网络导入」时不传，由用户自己填。
    */
   initialUrl?: string
+  /**
+   * **已经拿到的预览**（本地文件导入用）。
+   *
+   * 本地 JSON 由前端读出文件原文、交给服务端同一套解析器算出预览后再打开本弹窗，
+   * 因此传了这个就**不再发起拉取**，地址行也退化为只读的文件名展示。
+   * 票据由预览接口签发，确认时走的仍是同一条 commit 路径。
+   */
+  initialPreview?: NetworkImportPreview | null
+  /** 本地模式下载体名称（文件名），仅用于展示。 */
+  localLabel?: string
   /** 可选的目标分组候选（书源页已有的分组）。 */
   groups?: string[]
   onClose: () => void
@@ -34,17 +44,24 @@ interface NetworkImportModalProps {
  */
 export const NetworkImportModal: React.FC<NetworkImportModalProps> = ({
   initialUrl,
+  initialPreview = null,
+  localLabel,
   groups = [],
   onClose,
   onImported,
   onToast,
 }) => {
   const { t } = useTranslation()
+  /** 本地文件模式：预览已经由预览接口算好，本弹窗只负责挑选与确认。 */
+  const localMode = initialPreview !== null
   const [url, setUrl] = useState(initialUrl ?? '')
   const [fetching, setFetching] = useState(false)
   const [committing, setCommitting] = useState(false)
-  const [preview, setPreview] = useState<NetworkImportPreview | null>(null)
-  const [selected, setSelected] = useState<Set<number>>(new Set())
+  const [preview, setPreview] = useState<NetworkImportPreview | null>(initialPreview)
+  const [selected, setSelected] = useState<Set<number>>(
+    // 默认全选「可导入」的条目（与手机端一致）；本地模式一进来就按同一规则选好
+    () => new Set((initialPreview?.sources ?? []).filter(item => item.status !== 'invalid').map(item => item.index)),
+  )
   const [detailIndex, setDetailIndex] = useState<number | null>(null)
   const [menuOpen, setMenuOpen] = useState(false)
   const [groupOpen, setGroupOpen] = useState(false)
@@ -77,13 +94,14 @@ export const NetworkImportModal: React.FC<NetworkImportModalProps> = ({
     }
   }, [onToast, t])
 
-  // 从内置浏览器线路进来时自动拉取一次
+  // 从内置浏览器线路进来时自动拉取一次（**本地文件模式不拉取**：预览已经给了）
   useEffect(() => {
+    if (localMode) return
     if (autoFetchedRef.current) return
     if (!initialUrl || !initialUrl.trim()) return
     autoFetchedRef.current = true
     void runPreview(initialUrl)
-  }, [initialUrl, runPreview])
+  }, [initialUrl, localMode, runPreview])
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -212,18 +230,32 @@ export const NetworkImportModal: React.FC<NetworkImportModalProps> = ({
         )}
 
         <div className="network-import-body">
-          <div className="network-import-url-row">
-            <input
-              className="network-import-url-input"
-              placeholder="https://example.com/book-sources.json"
-              value={url}
-              onChange={event => { setUrl(event.target.value); setPreview(null); setSelected(new Set()) }}
-              onKeyDown={event => { if (event.key === 'Enter') void runPreview(url) }}
-            />
-            <button type="button" className="network-import-fetch-btn" disabled={fetching} onClick={() => void runPreview(url)}>
-              {fetching ? t('source.networkImportFetching', '拉取中…') : t('source.networkImportFetch', '拉取')}
-            </button>
-          </div>
+          {localMode ? (
+            // 本地文件模式：没有地址可填，这一行退化为「来源文件名」的只读展示，
+            // 让用户一眼看出这批条目是从哪个文件读出来的。
+            <div className="network-import-url-row">
+              <input
+                className="network-import-url-input"
+                value={localLabel ?? t('source.localImportLabel', '本地文件')}
+                readOnly
+                disabled
+                aria-label={t('source.localImportLabel', '本地文件')}
+              />
+            </div>
+          ) : (
+            <div className="network-import-url-row">
+              <input
+                className="network-import-url-input"
+                placeholder="https://example.com/book-sources.json"
+                value={url}
+                onChange={event => { setUrl(event.target.value); setPreview(null); setSelected(new Set()) }}
+                onKeyDown={event => { if (event.key === 'Enter') void runPreview(url) }}
+              />
+              <button type="button" className="network-import-fetch-btn" disabled={fetching} onClick={() => void runPreview(url)}>
+                {fetching ? t('source.networkImportFetching', '拉取中…') : t('source.networkImportFetch', '拉取')}
+              </button>
+            </div>
+          )}
 
           {preview && (
             <>

@@ -238,6 +238,19 @@ data class SourceLoginStateRecord(
     val group: String? = null,
 )
 
+/**
+ * 本地书源文件预览请求。
+ *
+ * 只提交**原始文本**：解析、体积上限与最终落库 payload 全部由服务端产出
+ * （与 `POST /api/sources/import` 的信任边界相同）。
+ *
+ * @param label 文件名，仅用于日志与界面展示，不参与任何判定
+ */
+@Serializable data class LocalSourcePreviewRequest(
+    val content: String,
+    val label: String = "",
+)
+
 @Serializable data class SubscriptionWriteRequest(val url: String, val enabled: Boolean = true)
 @Serializable data class SourceSubscription(
     val id: Long,

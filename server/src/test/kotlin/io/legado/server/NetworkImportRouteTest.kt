@@ -129,4 +129,106 @@ class NetworkImportRouteTest {
             runCatching { tempDir.toFile().deleteRecursively() }
         }
     }
+
+    /**
+     * **本地文件**预览路由。
+     *
+     * 关键契约是「与网络导入**同一条**预览/票据/落库管线」——因此这里不仅验证错误码，
+     * 还要证明**本地预览签发的票据可以直接走 commit**（两条路共用一个落库实现）。
+     */
+    @Test
+    fun `local json preview shares the ticket pipeline with the network import`() = testApplication {
+        val dbPath = Files.createTempFile("legado-localimport-route", ".sqlite").toString()
+        val tempDir = Files.createTempDirectory("legado-localimport-route-covers")
+        val localPath = "/api/sources/import-json/preview"
+        try {
+            val config = ServerConfig(
+                host = "0.0.0.0", port = 8080, databasePath = dbPath,
+                coverCacheDirectory = tempDir, webDavDirectory = tempDir.resolve("webdav"),
+                initialAdminPassword = "test-password-1234", secureCookies = false,
+            )
+            application { legadoApplication(config) }
+            val client = createClient {
+                install(ContentNegotiation) { json(Json { ignoreUnknownKeys = true; explicitNulls = false }) }
+                install(HttpCookies)
+            }
+
+            val one = """{"bookSourceUrl":"https://local1.example.com","bookSourceName":"本地源1"}"""
+            val two = """{"bookSourceUrl":"https://local2.example.com","bookSourceName":"本地源2"}"""
+
+            // 1) 未登录一律拒绝
+            val anonymous = client.post(localPath) {
+                contentType(ContentType.Application.Json)
+                setBody(LocalSourcePreviewRequest("[$one]"))
+            }
+            assertTrue(
+                "未鉴权必须被拒",
+                anonymous.status == HttpStatusCode.Unauthorized || anonymous.status == HttpStatusCode.Forbidden,
+            )
+
+            val csrf = client.login("test-password-1234")
+
+            // 2) 有会话但缺 CSRF ⇒ 拒绝（预览会签发票据，属写操作）
+            val noCsrf = client.post(localPath) {
+                contentType(ContentType.Application.Json)
+                setBody(LocalSourcePreviewRequest("[$one]"))
+            }
+            assertTrue(
+                "缺 CSRF 必须被拒",
+                noCsrf.status == HttpStatusCode.Forbidden || noCsrf.status == HttpStatusCode.Unauthorized,
+            )
+
+            // 3) 正常内容 ⇒ 与网络导入同结构的预览
+            val previewResp = client.post(localPath) {
+                header(AuthService.CSRF_HEADER, csrf)
+                contentType(ContentType.Application.Json)
+                setBody(LocalSourcePreviewRequest("[$one,$two]", "我的书源.json"))
+            }
+            assertEquals(HttpStatusCode.OK, previewResp.status)
+            val preview = previewResp.body<NetworkImportPreviewResponse>()
+            assertEquals(2, preview.total)
+            assertEquals(2, preview.newCount)
+            assertEquals(0, preview.invalidCount)
+            // 本地模式的 label 会作为来源回显（前端用它替代地址栏展示）
+            assertEquals("我的书源.json", preview.url)
+
+            // 4) **同一票据可直接 commit** —— 证明本地与网络共用同一条落库管线
+            val commit = client.post(commitPath) {
+                header(AuthService.CSRF_HEADER, csrf)
+                contentType(ContentType.Application.Json)
+                setBody(NetworkImportCommitRequest(preview.token, listOf(0), null))
+            }
+            assertEquals(HttpStatusCode.OK, commit.status)
+            assertEquals(1, commit.body<ImportResponse>().imported)
+
+            // 5) 一行一条 JSON（NDJSON）在服务端同样支持（容忍度已从旧前端实现上移）
+            val ndjson = client.post(localPath) {
+                header(AuthService.CSRF_HEADER, csrf)
+                contentType(ContentType.Application.Json)
+                setBody(LocalSourcePreviewRequest("$one\n$two"))
+            }
+            assertEquals(HttpStatusCode.OK, ndjson.status)
+            assertEquals(2, ndjson.body<NetworkImportPreviewResponse>().total)
+
+            // 6) 空内容 / 非书源内容 ⇒ 各自明确的错误码，且不是 5xx
+            val empty = client.post(localPath) {
+                header(AuthService.CSRF_HEADER, csrf)
+                contentType(ContentType.Application.Json)
+                setBody(LocalSourcePreviewRequest("   "))
+            }
+            assertEquals(HttpStatusCode.BadRequest, empty.status)
+            assertEquals("import_content_empty", empty.body<ApiError>().code)
+
+            val garbage = client.post(localPath) {
+                header(AuthService.CSRF_HEADER, csrf)
+                contentType(ContentType.Application.Json)
+                setBody(LocalSourcePreviewRequest("这不是 JSON\n也不是"))
+            }
+            assertEquals(HttpStatusCode.BadRequest, garbage.status)
+            assertEquals("import_content_invalid", garbage.body<ApiError>().code)
+        } finally {
+            runCatching { Files.deleteIfExists(Path.of(dbPath)) }
+            runCatching { tempDir.toFile().deleteRecursively() }
+        }
+    }
 }

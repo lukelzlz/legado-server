@@ -161,4 +161,34 @@ class SourceCodecTest {
         }
         assertTrue(error.message!!.contains("不是有效 JSON"))
     }
+
+    /**
+     * 一行一条 JSON（JSONL / NDJSON）。
+     *
+     * ⚠️ 这份容忍度原先**只存在于前端**的 `parseSourceJsonText`，服务端没有 ⇒
+     * 「本地导入能用的文件、走网络导入或走服务端预览却报无效」。现已上移到本函数，两侧共用。
+     */
+    @Test
+    fun `parseSourceList accepts line delimited JSON`() {
+        val one = """{"bookSourceUrl":"https://nd1.example.com","bookSourceName":"ND1"}"""
+        val two = """{"bookSourceUrl":"https://nd2.example.com","bookSourceName":"ND2"}"""
+
+        val parsed = SourceCodec.parseSourceList("$one\n$two")
+        assertEquals(2, parsed.size)
+        assertEquals("https://nd1.example.com", SourceCodec.parse(parsed[0]).id)
+        assertEquals("https://nd2.example.com", SourceCodec.parse(parsed[1]).id)
+
+        // 空行、行首尾空白、BOM 都要容忍
+        assertEquals(2, SourceCodec.parseSourceList("\uFEFF$one\n\n   $two  \n").size)
+        // 夹杂非 JSON 行时跳过该行，其余照常解析
+        assertEquals(2, SourceCodec.parseSourceList("$one\n这不是 JSON\n$two").size)
+    }
+
+    @Test
+    fun `parseSourceList still rejects content with no JSON line at all`() {
+        val error = assertThrows(IllegalArgumentException::class.java) {
+            SourceCodec.parseSourceList("这不是 JSON\n也不是\n随便一段文本")
+        }
+        assertTrue(error.message!!.contains("不是有效 JSON"))
+    }
 }

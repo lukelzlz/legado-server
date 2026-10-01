@@ -1,7 +1,7 @@
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { useTranslation } from 'react-i18next'
-import { api, BookDetails, BookGroup, BookshelfItem, Chapter, SearchResult, SearchStreamEvent, setCsrfToken, SourceGroupSummary, SourceRecord, SourceSubscription, SourceSummary, streamSearch, UNGROUPED_SOURCE_GROUP } from './api'
+import { api, BookDetails, BookGroup, BookshelfItem, Chapter, NetworkImportPreview, SearchResult, SearchStreamEvent, setCsrfToken, SourceGroupSummary, SourceRecord, SourceSubscription, SourceSummary, streamSearch, UNGROUPED_SOURCE_GROUP } from './api'
 import { Icon } from './icons'
 import { Logo } from './Logo'
 import { Login } from './Login'
@@ -29,9 +29,9 @@ import './i18n'
 import { changeAppLanguage, normalizeLocale } from './i18n'
 
 import { clearStoredInspections, getInitialOrStoredInspections, inspectAllSourcesConcurrently, SourceHealthInspection } from './sourceInspector'
-import { parseSourceJsonText, extractSourcesFromRaw, sanitizeImageUrl } from './sourceImport'
+import { sanitizeImageUrl } from './sourceImport'
 
-export { extractSourcesFromRaw, parseSourceJsonText, sanitizeImageUrl }
+export { sanitizeImageUrl }
 export type { SourceChoice, SourceChoiceStatus }
 
 /**
@@ -551,6 +551,13 @@ function SourcesPage({ selected, onSelect, onSourcesChange }: { selected: Source
   const [loginModalSource, setLoginModalSource] = useState<SourceSummary | null>(null)
   /** 网络导入弹窗是否打开（与「导入 JSON」并列的另一种导入方式）。 */
   const [showNetworkImport, setShowNetworkImport] = useState(false)
+  /**
+   * 本地文件导入时，预览接口返回的结果与文件名。
+   *
+   * 有值时弹窗走「本地模式」：不再拉取，直接把这份预览列出来让用户挑。
+   */
+  const [localImportPreview, setLocalImportPreview] = useState<NetworkImportPreview | null>(null)
+  const [localImportLabel, setLocalImportLabel] = useState<string>('')
 
   const load = useCallback(async () => {
     try {
@@ -692,52 +699,25 @@ function SourcesPage({ selected, onSelect, onSourcesChange }: { selected: Source
     }
   }
 
+  /**
+   * 本地 JSON 导入：**先出预览列表，再由用户挑**（与网络导入同一个弹窗、同一套票据）。
+   *
+   * 解析与「新增 / 更新 / 不可导入」的判定都交给服务端的**同一个解析器**，
+   * 前端只负责把文件原文读出来 —— 这样本地与网络两条路的规则不会漂移。
+   */
   const importSources = async (file: File | undefined) => {
     if (!file) return
     setImporting(true)
     try {
       const rawText = await file.text()
-      const rawList = parseSourceJsonText(rawText)
-      if (rawList.length === 0) {
-        toast.error(t('source.noValidConfig', '未在文件中识别到有效的书源配置'))
-        setNotice(t('source.importFailedNoConfig', '导入失败：未在文件中识别到有效的书源配置'))
-        return
-      }
-      const serialized = rawList
-        .filter(item => item && typeof item === 'object')
-        .map(item => JSON.stringify(item))
-      if (serialized.length === 0) {
-        toast.error(t('source.invalidFormat', '书源格式无效'))
-        setNotice(t('source.importFailedInvalidFormat', '导入失败：书源格式无效'))
-        return
-      }
-      const result = await api.import(serialized)
-      const importedCount = result.imported || 0
-      const updatedCount = result.updated || 0
-      const skippedCount = result.skipped || 0
-      const parts = [
-        t('source.importPartNew', '新增 {{count}} 个', { count: importedCount }),
-        t('source.importPartUpdated', '更新 {{count}} 个', { count: updatedCount }),
-      ]
-      if (skippedCount > 0) parts.push(t('source.importPartSkipped', '跳过 {{count}} 个', { count: skippedCount }))
-      // 导入书源文件**不自动分组**（用户明确要求）：新源落在「未分组」，分组只能在「分组管理」里手动整理。
-      // 这句话必须露出来，否则用户会以为「导入时把分组弄丢了」。
-      let msg = t('source.importCompleteSummaryWithHint', '导入完成：{{parts}}（导入的书源默认未分组，可在「分组管理」里归类）', { parts: parts.join('，') })
-      if (result.errors && result.errors.length > 0) {
-        const errorSummary = result.errors.slice(0, 3).join('；') + (result.errors.length > 3 ? t('source.etcErrors', ' 等共 {{count}} 项错误', { count: result.errors.length }) : '')
-        msg += ` (${errorSummary})`
-      }
-      setNotice(msg)
-      if (importedCount > 0 || updatedCount > 0) {
-        toast.success(t('source.importedOrUpdatedCount', '已导入/更新 {{count}} 个书源', { count: importedCount + updatedCount }))
-      } else if (skippedCount > 0) {
-        toast.error(result.errors?.[0] || t('source.cannotImportCheckFormat', '书源未能导入，请检查格式'))
-      }
-      await load()
+      const result = await api.previewLocalSourceJson(rawText, file.name)
+      setLocalImportPreview(result)
+      setLocalImportLabel(file.name)
+      setShowNetworkImport(true)
     } catch (error) {
-      const errMsg = error instanceof Error ? error.message : t('common.failed', '导入失败')
-      toast.error(errMsg)
-      setNotice(t('source.importFailedWithMsg', '导入失败：{{msg}}', { msg: errMsg }))
+      const message = error instanceof Error ? error.message : t('source.invalidFormat', '书源格式无效')
+      toast.error(message)
+      setNotice(t('source.importFailedPrefix', '导入失败：{{reason}}', { reason: message }))
     } finally {
       setImporting(false)
     }
@@ -1031,11 +1011,14 @@ function SourcesPage({ selected, onSelect, onSourcesChange }: { selected: Source
         />
       )}
 
-      {/* 网络导入弹窗：与上面的弹窗**平级**挂载（严禁嵌套 backdrop，见仓库弹窗架构约定） */}
+      {/* 导入弹窗：与上面的弹窗**平级**挂载（严禁嵌套 backdrop，见仓库弹窗架构约定）。
+          网络导入与本地 JSON 导入共用它 —— 本地模式由 localImportPreview 提供已算好的预览。 */}
       {showNetworkImport && (
         <NetworkImportModal
           groups={allGroups}
-          onClose={() => setShowNetworkImport(false)}
+          initialPreview={localImportPreview}
+          localLabel={localImportLabel}
+          onClose={() => { setShowNetworkImport(false); setLocalImportPreview(null); setLocalImportLabel('') }}
           onImported={() => { void load() }}
           onToast={(msg, type) => {
             if (type === 'error') toast.error(msg)

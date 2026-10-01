@@ -327,6 +327,23 @@ fun Route.apiRoutes(
             }
         }
         /**
+         * 本地书源文件：**预览**。
+         *
+         * 与网络导入共用 [NetworkSourceImport.buildPreview] 的解析与判定，只是内容来自
+         * 浏览器读出的文件而不是服务端代抓 —— 两条路的「新增 / 更新 / 不可导入」口径、
+         * 名称兜底的 id 改写、以及凭票据落库的流程完全一致。
+         */
+        post("/sources/import-json/preview") {
+            if (auth.requireSession(call, true) == null) return@post
+            val request = runCatching { call.receive<LocalSourcePreviewRequest>() }.getOrNull()
+                ?: return@post call.respondApiError(HttpStatusCode.BadRequest, "invalid_request", "请求格式无效")
+            try {
+                call.respond(networkImport.previewLocal(request.content, request.label))
+            } catch (error: NetworkImportException) {
+                call.respondApiError(HttpStatusCode.BadRequest, error.code, error.message)
+            }
+        }
+        /**
          * 网络书源导入：**确认落库**。
          *
          * `selected` 是预览列表下标；`group` 为空表示不改动分组（新源落「未分组」）。

@@ -1,6 +1,10 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import fs from 'node:fs'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 import {
+  chapterTurnClassName,
   findFirstFullyVisibleParagraphIndex,
   calculatePaginationLayout,
   isAtBottomBoundary,
@@ -355,6 +359,45 @@ test('ReaderPagination - findFirstFullyVisibleParagraphIndex: finds first fully 
     { index: 3, rect: { top: -200, bottom: 1200, left: 100, right: 700 } }
   ]
   assert.equal(findFirstFullyVisibleParagraphIndex(giantParagraph, scrollViewport), 3, 'Falls back to visible paragraph if taller than screen')
+})
+
+/**
+ * 跨章翻页过渡（章末翻到下一章）。
+ *
+ * 旧实现的观感缺陷：内容替换后 `pageIndex` 由「本章最后一页」变 `0`，
+ * 轨道带着 CSS 过渡**倒退**回第一页 —— 方向与手势相反。现在改为沿手势方向滑入。
+ */
+test('ReaderPagination - Chapter Turn: class contract carries both phase and direction', () => {
+  assert.equal(chapterTurnClassName(null, 'next'), 'reader-chapter-turn', '静止时只有基类')
+  assert.equal(chapterTurnClassName('pending', 'next'), 'reader-chapter-turn is-pending is-next')
+  assert.equal(chapterTurnClassName('in', 'next'), 'reader-chapter-turn is-in is-next')
+  assert.equal(chapterTurnClassName('in', 'prev'), 'reader-chapter-turn is-in is-prev')
+})
+
+test('ReaderPagination - Chapter Turn: every class the contract emits is actually styled', () => {
+  const testDir = path.dirname(fileURLToPath(import.meta.url))
+  const css = fs.readFileSync(path.resolve(testDir, '../src/styles.css'), 'utf-8')
+
+  // 基类必须有布局声明，否则过渡层不占高度、动画不可见
+  assert.ok(/\.reader-chapter-turn\s*\{/.test(css), '缺少 .reader-chapter-turn 基类规则')
+
+  // 「沿手势方向滑入」：向后翻从右侧进、向前翻从左侧进
+  for (const [phase, direction] of [['in', 'next'], ['in', 'prev']] as const) {
+    const className = chapterTurnClassName(phase, direction)
+    const selector = className.split(' ').map(c => `.${c}`).join('')
+    assert.ok(css.includes(selector), `CSS 里找不到选择器 ${selector} —— 类名契约与样式已经漂移`)
+  }
+  assert.ok(/@keyframes\s+reader-turn-in-next/.test(css), '缺少 reader-turn-in-next 关键帧')
+  assert.ok(/@keyframes\s+reader-turn-in-prev/.test(css), '缺少 reader-turn-in-prev 关键帧')
+
+  // 向后翻必须从右侧进入（+100%），否则方向仍然是反的
+  const nextKeyframes = css.slice(css.indexOf('@keyframes reader-turn-in-next'))
+  assert.ok(/translateX\(100%\)/.test(nextKeyframes.slice(0, 200)), 'reader-turn-in-next 应从右侧（+100%）进入')
+  const prevKeyframes = css.slice(css.indexOf('@keyframes reader-turn-in-prev'))
+  assert.ok(/translateX\(-100%\)/.test(prevKeyframes.slice(0, 200)), 'reader-turn-in-prev 应从左侧（-100%）进入')
+
+  // 跨章期间必须抑制轨道自身的过渡，否则仍会倒退
+  assert.ok(/\.reader-paginated-track\.is-turning\s*\{[^}]*transition:\s*none/.test(css), '缺少 .reader-paginated-track.is-turning 的过渡抑制')
 })
 
 

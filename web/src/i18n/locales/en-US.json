@@ -575,6 +575,7 @@
     "selectHttpTts": "Select HTTP Voice",
     "addOrManagePrompt": "+ Add or Manage Rules",
     "manualConfigOption": "-- Manual URL Configuration --",
+    "selectHttpTtsPlaceholder": "-- Select HTTP TTS Source --",
     "noCustomEnginesConfigured": "No custom HTTP TTS voices added",
     "openManager": "Open Manager",
     "confirmDelete": "Are you sure you want to delete this engine?\n{{name}}",

@@ -403,9 +403,11 @@ svg { width: 18px; height: 18px; flex: none; }
   color: var(--muted);
   flex-shrink: 0;
 }
-.primary-button, .subtle-button, .danger-button { min-height: 34px; display: inline-flex; align-items: center; justify-content: center; gap: 7px; padding: 0 14px; border-radius: 5px; font-size: 13px; font-weight: 600; }
+.primary-button, .secondary-button, .subtle-button, .danger-button { min-height: 34px; display: inline-flex; align-items: center; justify-content: center; gap: 7px; padding: 0 14px; border-radius: 5px; font-size: 13px; font-weight: 600; }
 .primary-button { background: var(--accent); color: #fff; }
 .primary-button:hover { background: var(--accent-ink); }
+.secondary-button { background: var(--surface-muted); color: var(--ink); border: 1px solid var(--line); transition: all 0.15s ease; }
+.secondary-button:hover { background: var(--line); border-color: color-mix(in srgb, var(--line) 80%, var(--ink)); }
 .subtle-button { background: var(--surface-muted); color: var(--ink); border: 1px solid var(--line); }
 .danger-button { color: var(--danger); background: transparent; }
 .danger-button:hover { background: color-mix(in srgb, var(--danger) 10%, transparent); }
@@ -2366,8 +2368,14 @@ mark.search-highlight { background: var(--accent-soft); color: var(--accent); fo
 
 .tts-timer-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(76px, 1fr));
+  grid-template-columns: repeat(6, 1fr);
   gap: 6px;
+}
+
+@media (max-width: 480px) {
+  .tts-timer-grid {
+    grid-template-columns: repeat(3, 1fr);
+  }
 }
 
 .tts-timer-btn {

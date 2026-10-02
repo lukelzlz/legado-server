@@ -46,7 +46,7 @@ test('ReaderSettings - ensureValidTtsSettings preserves custom engine when ttsHt
   assert.equal(resultFallback.ttsEngine, 'edge')
 })
 
-test('TtsSettingsModal - renders TTS manage button and custom engine selection', () => {
+test('TtsSettingsModal - renders custom engine selection and manage entry', () => {
   const html = renderToStaticMarkup(
     React.createElement(TtsSettingsModal, {
       settings: {
@@ -62,8 +62,27 @@ test('TtsSettingsModal - renders TTS manage button and custom engine selection',
     })
   )
 
-  // Manage button
-  assert.ok(html.includes('TTS 管理'))
-  // Custom option label
+  // Redundant manage button next to Engine title should be removed
+  assert.ok(!html.includes('TTS 管理'))
+  // Contextual management prompt and custom option label are present
+  assert.ok(html.includes('+ 添加或管理规则'))
   assert.ok(html.includes('自定义 HTTP'))
+  // Redundant manual URL inputs in main dialog should be removed
+  assert.ok(!html.includes('自定义 HTTP 源参数'))
+  assert.ok(!html.includes('ttsCustomSection'))
+  assert.ok(!html.includes('ttsCustomUrl'))
+})
+
+test('CSS - secondary button and tts timer grid styles alignment', async () => {
+  const fs = await import('node:fs')
+  const path = await import('node:path')
+  const css = fs.readFileSync(path.resolve('web/src/styles.css'), 'utf-8')
+
+  // secondary-button should be formally declared with primary-button metrics
+  assert.ok(css.includes('.primary-button, .secondary-button'))
+  assert.ok(css.includes('.secondary-button {'))
+
+  // tts-timer-grid should have 6 columns in desktop and 3 columns on mobile
+  assert.ok(css.includes('grid-template-columns: repeat(6, 1fr)'))
+  assert.ok(css.includes('grid-template-columns: repeat(3, 1fr)'))
 })

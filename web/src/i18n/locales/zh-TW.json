@@ -575,6 +575,7 @@
     "selectHttpTts": "選擇 HTTP 音源",
     "addOrManagePrompt": "+ 新增或管理規則",
     "manualConfigOption": "-- 手動直接設定 URL --",
+    "selectHttpTtsPlaceholder": "-- 請選擇 HTTP 音源 --",
     "noCustomEnginesConfigured": "暫未新增任何 HTTP 朗讀源",
     "openManager": "開啟管理",
     "confirmDelete": "確定要刪除該朗讀引擎嗎？\n{{name}}",

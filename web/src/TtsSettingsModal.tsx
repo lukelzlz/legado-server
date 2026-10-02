@@ -132,17 +132,7 @@ export const TtsSettingsModal: React.FC<TtsSettingsModalProps> = ({
         <div className="source-login-body tts-modal-content">
           {/* Engine Selection */}
           <div className="tts-setting-section">
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <label className="tts-section-label">{t('tts.engine', '朗读引擎')}</label>
-              <button
-                type="button"
-                className="secondary-button"
-                style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', padding: '3px 8px', fontSize: '12px' }}
-                onClick={() => setManagerOpen(true)}
-              >
-                <Icon name="settings" /> {t('tts.manageHttpTts', 'TTS 管理')}
-              </button>
-            </div>
+            <label className="tts-section-label">{t('tts.engine', '朗读引擎')}</label>
             <div className="tts-engine-grid">
               <button
                 type="button"
@@ -204,7 +194,7 @@ export const TtsSettingsModal: React.FC<TtsSettingsModalProps> = ({
                       }
                     }}
                   >
-                    <option value="">{t('tts.manualConfigOption', '-- 手动直接配置 URL --')}</option>
+                    <option value="">{t('tts.selectHttpTtsPlaceholder', '-- 请选择 HTTP 音源 --')}</option>
                     {httpTtsList.map(tts => (
                       <option key={tts.id} value={tts.id}>
                         {tts.name} ({tts.contentType || 'audio/mpeg'})
@@ -398,49 +388,6 @@ export const TtsSettingsModal: React.FC<TtsSettingsModalProps> = ({
               </label>
             </div>
           </div>
-
-          {/* Custom HTTP TTS Settings (Manual mode when no specific httpTtsId chosen) */}
-          {settings.ttsEngine === 'custom' && !settings.ttsHttpTtsId && (
-            <div className="tts-setting-section tts-custom-section">
-              <label className="tts-section-label">{t('tts.customHttpParams', '自定义 HTTP 源参数')}</label>
-              <p className="tts-hint">
-                {t('tts.customHint', '可用占位符：')}<code>&#123;&#123;speakText&#125;&#125;</code>, <code>&#123;&#123;speakSpeed&#125;&#125;</code>, <code>&#123;&#123;speakVoice&#125;&#125;</code>
-              </p>
-              <div className="login-ui-item-field">
-                <label className="login-ui-field-label">{t('tts.apiUrl', '接口 URL')}</label>
-                <input
-                  type="text"
-                  className="login-ui-input"
-                  placeholder="https://api.example.com/tts?text={{speakText}}&speed={{speakSpeed}}"
-                  value={settings.ttsCustomUrl || ''}
-                  onChange={e => onChange({ ...settings, ttsCustomUrl: e.target.value })}
-                />
-              </div>
-              <div className="login-ui-item-field">
-                <label className="login-ui-field-label">{t('tts.httpMethod', '请求方式 (GET / POST)')}</label>
-                <select
-                  className="login-ui-select"
-                  value={settings.ttsCustomMethod || 'GET'}
-                  onChange={e => onChange({ ...settings, ttsCustomMethod: e.target.value })}
-                >
-                  <option value="GET">GET</option>
-                  <option value="POST">POST</option>
-                </select>
-              </div>
-              {settings.ttsCustomMethod === 'POST' && (
-                <div className="login-ui-item-field">
-                  <label className="login-ui-field-label">{t('tts.postBody', 'POST 请求体 (Body JSON)')}</label>
-                  <textarea
-                    className="source-login-textarea"
-                    rows={3}
-                    placeholder='{"text": "{{speakText}}", "voice": "{{speakVoice}}"}'
-                    value={settings.ttsCustomBody || ''}
-                    onChange={e => onChange({ ...settings, ttsCustomBody: e.target.value })}
-                  />
-                </div>
-              )}
-            </div>
-          )}
         </div>
 
         <div style={{ padding: '12px 18px', display: 'flex', justifyContent: 'flex-end', borderTop: '1px solid var(--line)' }}>

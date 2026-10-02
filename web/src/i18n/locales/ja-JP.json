@@ -575,6 +575,7 @@
     "selectHttpTts": "HTTP音声を選択",
     "addOrManagePrompt": "+ ルールの追加・管理",
     "manualConfigOption": "-- 手動URL設定 --",
+    "selectHttpTtsPlaceholder": "-- HTTP 音声ソースを選択 --",
     "noCustomEnginesConfigured": "HTTP音声がまだ追加されていません",
     "openManager": "管理を開く",
     "confirmDelete": "この音声エンジンを削除してもよろしいですか？\n{{name}}",

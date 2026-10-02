@@ -426,6 +426,8 @@
     "addToShelf": "本棚に追加",
     "firstChapter": "最初の章です",
     "lastChapter": "最後の章です",
+    "loadingNextChapter": "次の章を読み込み中...",
+    "lastChapterNotice": "— 完結 · 最後の章に到達しました —",
     "closeToc": "目次を閉じる",
     "closeSettings": "設定を閉じる",
     "pinSidebar": "目次をサイドバーに固定",

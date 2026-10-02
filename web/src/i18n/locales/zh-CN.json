@@ -426,6 +426,8 @@
     "addToShelf": "加书架",
     "firstChapter": "已是第一章",
     "lastChapter": "已是最后一章",
+    "loadingNextChapter": "正在加载下一章...",
+    "lastChapterNotice": "— 全书完 · 已读至最后一章 —",
     "closeToc": "关闭目录",
     "closeSettings": "关闭设置",
     "pinSidebar": "固定目录到侧边栏",

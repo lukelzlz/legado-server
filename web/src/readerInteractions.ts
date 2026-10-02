@@ -141,5 +141,87 @@ export function findFirstFullyVisibleParagraphIndex(
   return 0
 }
 
+export function parseParagraphsFromContent(rawContent: string): string[] {
+  if (!rawContent) return []
+  const rawLines = rawContent.split('\n')
+  const result: string[] = []
+  for (let i = 0; i < rawLines.length; i++) {
+    const trimmed = rawLines[i].trim()
+    if (trimmed) {
+      result.push(trimmed)
+    }
+  }
+  return result
+}
+
+export function shouldAppendNextChapter({
+  scrollY,
+  clientHeight,
+  scrollHeight,
+  threshold = 900,
+}: {
+  scrollY: number
+  clientHeight: number
+  scrollHeight: number
+  threshold?: number
+}): boolean {
+  return scrollY + clientHeight >= scrollHeight - threshold
+}
+
+export type ChapterViewportRect = {
+  index: number
+  top: number
+  bottom: number
+}
+
+export function findActiveChapterInViewport(chapters: ChapterViewportRect[], viewportHeight: number): number {
+  if (chapters.length === 0) return 0
+  const midPoint = viewportHeight * 0.4
+  for (const ch of chapters) {
+    if (ch.top <= midPoint && ch.bottom >= midPoint) {
+      return ch.index
+    }
+  }
+  if (chapters[0].top > midPoint) return chapters[0].index
+  return chapters[chapters.length - 1].index
+}
+
+export function isChapterVisibleInVirtualWindow(
+  chapterIndex: number,
+  activeChapterIndex: number,
+  keepWindow = 2
+): boolean {
+  return Math.abs(chapterIndex - activeChapterIndex) <= keepWindow
+}
+
+export function calculateChapterScrollPosition({
+  currentY,
+  clientHeight,
+  sectionTop,
+  sectionHeight,
+}: {
+  currentY: number
+  clientHeight: number
+  sectionTop: number
+  sectionHeight: number
+}): number {
+  if (!Number.isFinite(sectionHeight) || sectionHeight <= clientHeight) return 0
+  const offsetInChapter = Math.max(0, currentY - sectionTop)
+  const maxScrollInChapter = Math.max(1, sectionHeight - clientHeight)
+  const ratio = offsetInChapter / maxScrollInChapter
+  return Number.isFinite(ratio) ? Math.min(1, Math.max(0, ratio)) : 0
+}
+
+export function paragraphIndexToRatio(pIndex: number, totalParagraphs: number): number {
+  if (!Number.isFinite(totalParagraphs) || totalParagraphs <= 1 || pIndex <= 0) return 0
+  const ratio = pIndex / (totalParagraphs - 1)
+  return Number.isFinite(ratio) ? Math.min(1, Math.max(0, ratio)) : 0
+}
+
+export function ratioToParagraphIndex(ratio: number, totalParagraphs: number): number {
+  if (!Number.isFinite(totalParagraphs) || totalParagraphs <= 1 || !Number.isFinite(ratio) || ratio <= 0) return 0
+  return Math.min(totalParagraphs - 1, Math.max(0, Math.round(ratio * (totalParagraphs - 1))))
+}
+
 
 

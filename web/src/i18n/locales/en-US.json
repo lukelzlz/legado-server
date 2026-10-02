@@ -426,6 +426,8 @@
     "addToShelf": "Add to Shelf",
     "firstChapter": "This is the first chapter",
     "lastChapter": "This is the last chapter",
+    "loadingNextChapter": "Loading next chapter...",
+    "lastChapterNotice": "— End of book · You have reached the last chapter —",
     "closeToc": "Close TOC",
     "closeSettings": "Close Settings",
     "pinSidebar": "Pin TOC to sidebar",

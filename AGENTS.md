@@ -230,6 +230,7 @@ AI 与人类协作时必须明确当前达到的完成度阶梯，严禁混淆�
 - **[书源发现/规则兼容] `ruleExplore` 缺失自动回退 `ruleSearch` 与 CSS 取值必须带 `@` 取值模式**：Legado 生态中大量民间书源未单独编写 `ruleExplore`，而是直接依赖客户端底层回退至 `ruleSearch` 的隐性契约，解析管道必须在 `ruleExplore` 不存在或其 `bookList` 为空时透明回退为 `ruleSearch`；同时在 HTML CSS 规则中，选择器提取字段值必须带有 `@text`、`@href`、`@src` 等后缀，若未带 `@` 会被当成 HTML 属性名读取导致取值返回 null，进而整本书被过滤丢弃。详见 [`SESSION-039`](docs/sessions/SESSION-039-source-explore-page.md)。
 - **[CSS/按钮规范] 业务组件声明 `secondary-button` 必须在全局统一定义基类**：前端按钮全局仅有 `.primary-button`/`.subtle-button`/`.danger-button` 时，组件引用 `secondary-button` 会导致浏览器回退为原生无样式小直角按钮，表现为比绿色主按钮矮一圈且丢失圆角；必须将 `.secondary-button` 纳入与 `.primary-button` 共享高度（`34px`）、圆角（`5px`）与字体字重的全局通用基类。
 - **[CSS/网格布局] 确定数量的选项组严禁依赖 `auto-fit` 导致滚动条偶发折行**：固定选项网格（如 6 个睡眠定时器按钮）若使用 `repeat(auto-fit, minmax(76px, 1fr))`，在弹窗内容变长产生垂直滚动条时，可用宽度缩窄 15px 会导致最后一项被甩到第二行；应采用显式的 `repeat(N, 1fr)` 并在移动端媒体查询下对称折半。
+- **[阅读器/滚动] 唤起菜单误触发段落点击与 useLayoutEffect 滚动回零避坑**：读者在滚动阅读中途点击屏幕中央呼出工具栏时，点击事件会冒泡触发段落 `<p onClick>`；若未加 `!ttsActive` 守卫，会误触发 `setChapterIndex` 导致 `applyContent` 将 `initialPagePositionRef` 置 0，进而在 `useLayoutEffect` 中执行 `window.scrollTo({ top: 0 })`，表现为「唤起菜单时页面突然闪回章节开头」。三层防护：① 段落 `onClick` 必须加 `if (!ttsActive) return` 严格守卫；② `initialPagePositionRef` 仅在 `position > 0`（即开书恢复历史位置）时赋值，阅读过程中绝不赋 0；③ `useLayoutEffect` 中仅在 `targetMode === 'first' | 'last'` 或 `initialPos > 0` 时执行重定位，其他普通重新渲染绝对禁止修改 `window.scrollY`。
 
 ---
 
@@ -264,6 +265,7 @@ AI 与人类协作时必须明确当前达到的完成度阶梯，严禁混淆�
 | PROPOSAL-023 | 网络书源导入（URL 拉取 + 服务端内存票据两步预览 + 内置浏览器 `yuedu://` 线路导入 + 可选目标分组 + 新增/更新/不可导入标注） | [`docs/proposals/PROPOSAL-023-network-book-source-import.md`](docs/proposals/PROPOSAL-023-network-book-source-import.md) | Accepted |
 | PROPOSAL-024 | 自定义 HTTP 朗读引擎体系与 Legado 规范管理互通（Issue #25：httpTTS.json 导入导出 + SQLite 持久化 + TTS 管理中心 + 试听与模板求值） | [`docs/proposals/PROPOSAL-024-custom-http-tts-engine-and-management.md`](docs/proposals/PROPOSAL-024-custom-http-tts-engine-and-management.md) | Accepted |
 | PROPOSAL-025 | 书源发现页（Explore）与多维分类浏览体系（Issue #24：exploreUrl 全语法解析 + ruleExplore/ruleSearch 继承回退 + 发现选项卡与加架直读） | [`docs/proposals/PROPOSAL-025-source-explore-page.md`](docs/proposals/PROPOSAL-025-source-explore-page.md) | Accepted |
+| PROPOSAL-026 | 连续滚动模式升级为无限瀑布流与虚拟窗口阅读引擎（类似 Twitter 瀑布流：无缝向下追加 + 视口章节感知 + 远端虚拟卸载） | [`docs/proposals/PROPOSAL-026-reader-infinite-waterfall-stream-virtual-scroll.md`](docs/proposals/PROPOSAL-026-reader-infinite-waterfall-stream-virtual-scroll.md) | Accepted |
 
 ### 架构决策记录 (ADR)
 | 编号 | 决策标题 | 关联文档 | 状态 |
@@ -292,7 +294,8 @@ AI 与人类协作时必须明确当前达到的完成度阶梯，严禁混淆�
 | ADR-022 | 采用 react-i18next 与 Ktor Accept-Language 解析的全栈国际化架构（零破坏错误码、四语基准与 app_setting 键值漫游） | [`docs/decisions/ADR-022-react-i18next-and-ktor-accept-language-resolution.md`](docs/decisions/ADR-022-react-i18next-and-ktor-accept-language-resolution.md) | Accepted |
 | ADR-023 | 网络导入采用「服务端代抓 + 内存票据两步预览」与「代理层捕获阶段拦截 `yuedu://` 导入链接」（含预览期逐条试解析暴露不可导入项） | [`docs/decisions/ADR-023-network-import-preview-cache-and-yuedu-link-interception.md`](docs/decisions/ADR-023-network-import-preview-cache-and-yuedu-link-interception.md) | Accepted |
 | ADR-024 | 自定义 HTTP TTS 采用 Legado 规范兼容模型、服务端 SQLite 持久化与 Rhino 模板求值 | [`docs/decisions/ADR-024-http-tts-legado-compat-and-server-storage.md`](docs/decisions/ADR-024-http-tts-legado-compat-and-server-storage.md) | Accepted |
-| ADR-025 | 书源发现页（Explore）服务端解析管线与响应式 UI 架构 | [`docs/decisions/ADR-025-source-explore-parsing-and-ui.md`](docs/decisions/ADR-025-source-explore-parsing-and-ui.md) | Accepted |
+| ADR-025 | 书源发现页（Explore）服务端解析管线与响应式 UI架构 | [`docs/decisions/ADR-025-source-explore-parsing-and-ui.md`](docs/decisions/ADR-025-source-explore-parsing-and-ui.md) | Accepted |
+| ADR-026 | 连续滚动模式采用章节流追加与视口虚拟窗口架构（章节流水线 + 哨兵预载 + IntersectionObserver 视口锚定 + Spacer 卸载保护） | [`docs/decisions/ADR-026-reader-infinite-waterfall-stream-virtual-scroll.md`](docs/decisions/ADR-026-reader-infinite-waterfall-stream-virtual-scroll.md) | Accepted |
 
 ### 工作记忆与历史推演归档 (Sessions Chronicle)
 | 日期 / ID | 类型 | 标题 / 议题 | 关联文档 | 状态 |
@@ -380,6 +383,7 @@ AI 与人类协作时必须明确当前达到的完成度阶梯，严禁混淆�
 | 2026-10-01 | Feat | **书源发现页（Explore）与多维分类浏览体系 (Issue #24)**：① 顶栏新增「发现」一级导航（type Page = 'explore'），提供双栏响应式卡片流；② RuleRunner 激活书源发现能力，全语法兼容 exploreUrl（多行文本::/&&、JSON 数组/树结构、<js> 沙箱动态求值）；③ ruleExplore 规则继承与智能回退（缺失时自动回退 ruleSearch）；④ 前端支持书源筛选、分类切换、流式分页（加载更多）、一键加入书架（去重与已在书架状态指示）与秒开阅读，四语国际化全覆盖。新增前后端单测全绿，零回归 | [`docs/acceptance/ACCEPT-025-source-explore-page.md`](docs/acceptance/ACCEPT-025-source-explore-page.md) · [`docs/proposals/PROPOSAL-025-source-explore-page.md`](docs/proposals/PROPOSAL-025-source-explore-page.md) · [`docs/decisions/ADR-025-source-explore-parsing-and-ui.md`](docs/decisions/ADR-025-source-explore-parsing-and-ui.md) · [`docs/sessions/SESSION-039-source-explore-page.md`](docs/sessions/SESSION-039-source-explore-page.md) | Pushed (PR #27) |
 | 2026-10-02 | Quickfix | **听书设置与 HTTP TTS 按钮 UI 体系化优化 (Issue #29)**：① 移除听书设置顶栏重复的「TTS 管理」按钮并彻底移除底部冗长的手动输入表单，恢复清爽主界面；② 全局规范化 `.secondary-button`，使管理中心的「导入/导出」及编辑弹窗中的「测试发音/取消」次级按钮与绿色主按钮在高度（34px）、圆角（5px）与边框上严格对齐；③ 睡眠定时器网格固定为 6 列单行（小屏自适应 3 列），根治弹窗出现滚动条时第 6 个按钮偶发折行。新增前后端单测全绿，零回归 | - | Accepted & Pushed |
 | 2026-10-02 | Quickfix | **阅读器浮动底栏与快速切章工具栏优化 (Issue #30)**：① 解决平移翻页无切章按钮与连续滚动需翻到最底部痛点：新增 `.reader-floating-footer` 浮动底栏，与顶部 Header 同步随工具栏唤起/收起滑入滑出，适配桌面居中与移动端双层集成；② 浮动底栏内置「上一章 / 章节进度与交互滑块 / 下一章」，支持实时章节拖拽预览与快速跳转，兼容各端全面屏安全区；③ 补充四语国际化 `reader.chapterProgress` 严格对齐。新增 `ReaderChapterControlBar.test.ts`，前后端测试全绿 | - | Accepted & Pushed |
+| 2026-10-02 | Feat | **连续滚动模式升级为类似 Twitter 瀑布屏流式虚拟滚动 (PROPOSAL-026/ADR-026)**：① 彻底摒弃单章跳转模型，将连续滚动重构为章节流水线 `streamChapters`，向下滑动接近末尾（1000px）自动无缝追加下一章，滚动条平滑延伸；② 视口主激活章节算法动态感知当前阅读章节，顶栏标题、底栏章节进度与侧栏目录高亮随视口滚动实时同频切换；③ 远端虚拟窗口优化（卸载超过 2 章的远端段落为 `minHeight` 占位，防止长篇阅读 DOM 膨胀卡顿）；④ 章节交界处呈现优雅分割线与新章标题，平移分页模式严格解耦隔离；⑤ 彻底修复瀑布流下的相对段落进度定位与点击误判倒滚缺陷，退出重进精准还原当前可见首行。新增 `reader-infinite-stream.test.ts`，全量 194 项前端测试与服务端单测全绿 | [`docs/proposals/PROPOSAL-026-reader-infinite-waterfall-stream-virtual-scroll.md`](docs/proposals/PROPOSAL-026-reader-infinite-waterfall-stream-virtual-scroll.md) · [`docs/decisions/ADR-026-reader-infinite-waterfall-stream-virtual-scroll.md`](docs/decisions/ADR-026-reader-infinite-waterfall-stream-virtual-scroll.md) | Pushed |
 
 ---
 

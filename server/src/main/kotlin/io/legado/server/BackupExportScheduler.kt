@@ -11,6 +11,7 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import java.nio.file.Files
 import java.nio.file.Path
+import java.time.LocalDate
 import java.time.LocalDateTime
 import java.time.LocalTime
 
@@ -139,9 +140,10 @@ internal suspend fun performBackupExport(
     storage: WebDavStorage,
     exporter: BackupExporter,
     settings: BackupExportSettings,
+    today: LocalDate = LocalDate.now(),
 ): BackupExportOutcome {
     val directory = storage.resolve(settings.exportDir) ?: throw IllegalArgumentException("导出路径不合法")
-    val result = exporter.export(settings.deviceName)
+    val result = exporter.export(settings.deviceName, today)
     val target = directory.resolve(result.fileName)
     Files.createDirectories(directory)
     Files.write(target, result.bytes)
@@ -197,7 +199,7 @@ class BackupExportScheduler(
         val key = "${now.toLocalDate()} ${settings.scheduledTime}"
         if (lastRunKey == key) return@withLock false
         lastRunKey = key
-        val outcome = performBackupExport(storage, exporter, settings)
+        val outcome = performBackupExport(storage, exporter, settings, now.toLocalDate())
         log("scheduled backup exported: ${outcome.target.fileName} (${outcome.result.bytes.size} bytes)")
         true
     }

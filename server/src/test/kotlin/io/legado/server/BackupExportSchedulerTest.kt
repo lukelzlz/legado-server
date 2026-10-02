@@ -128,9 +128,13 @@ class BackupExportSchedulerTest {
             // 同一分钟内再 tick 不该重复导出（调度器 20 秒一跳，必然会重复 tick）
             assertFalse(scheduler.tick(LocalDateTime.of(2026, 10, 1, 14, 30)))
 
-            // 次日同一时刻会再跑一次，且仍是覆盖（同一天只有一份）
+            // 次日同一时刻会再跑一次，生成新一天的备份文件
             assertTrue(scheduler.tick(LocalDateTime.of(2026, 10, 2, 14, 30)))
-            assertEquals("同一天只该留一份", 1, zipCount(fixture))
+            assertEquals("每天留一份备份", 2, zipCount(fixture))
+
+            // 同一天内再次导出（如手动导出或重新触发）会覆盖同日文件，不会增加新文件
+            performBackupExport(fixture.storage, BackupExporter(fixture.database), readBackupExportSettings(fixture.database), LocalDate.of(2026, 10, 2))
+            assertEquals("同一天内再次导出仍覆盖为一份", 2, zipCount(fixture))
         }
     }
 

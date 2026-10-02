@@ -22,6 +22,7 @@ export type ReaderSettings = {
   ttsPitch: number
   ttsAutoNextChapter: boolean
   ttsFilterSymbols: boolean
+  ttsHttpTtsId?: number
   ttsCustomUrl?: string
   ttsCustomHeader?: string
   ttsCustomBody?: string
@@ -93,7 +94,7 @@ export function parseTtsEngine(engine: unknown): TtsEngineType {
  * 避免向服务端提交非法 chunk 触发 "customUrl 不能为空" 报错。
  */
 export function ensureValidTtsSettings(settings: ReaderSettings): ReaderSettings {
-  if (settings.ttsEngine === 'custom' && (!settings.ttsCustomUrl || !settings.ttsCustomUrl.trim())) {
+  if (settings.ttsEngine === 'custom' && !settings.ttsHttpTtsId && (!settings.ttsCustomUrl || !settings.ttsCustomUrl.trim())) {
     return {
       ...settings,
       ttsEngine: defaultReaderSettings.ttsEngine,
@@ -109,8 +110,9 @@ export function loadReaderSettings(): ReaderSettings {
     const saved = JSON.parse(raw ?? '{}') as Partial<ReaderSettings> & { font?: string }
     const loadedEngine = parseTtsEngine(saved.ttsEngine)
     const customUrl = typeof saved.ttsCustomUrl === 'string' ? saved.ttsCustomUrl : ''
-    // 若保存的引擎是 custom 但并未配置接口 URL，安全回退到默认引擎
-    const ttsEngine = loadedEngine === 'custom' && !customUrl.trim() ? defaultReaderSettings.ttsEngine : loadedEngine
+    const ttsHttpTtsId = typeof saved.ttsHttpTtsId === 'number' ? saved.ttsHttpTtsId : undefined
+    // 若保存的引擎是 custom 但并未配置接口 URL 或有效 ID，安全回退到默认引擎
+    const ttsEngine = loadedEngine === 'custom' && !ttsHttpTtsId && !customUrl.trim() ? defaultReaderSettings.ttsEngine : loadedEngine
     const ttsVoice = ttsEngine === 'edge' && (!saved.ttsVoice || saved.ttsVoice === 'zh-CN-XiaoxiaoNeural' || !saved.ttsVoice.trim())
       ? defaultReaderSettings.ttsVoice
       : (typeof saved.ttsVoice === 'string' && saved.ttsVoice.trim() ? saved.ttsVoice : defaultReaderSettings.ttsVoice)
@@ -132,6 +134,7 @@ export function loadReaderSettings(): ReaderSettings {
       ttsPitch: typeof saved.ttsPitch === 'number' && Number.isFinite(saved.ttsPitch) ? Math.min(1.5, Math.max(0.5, saved.ttsPitch)) : defaultReaderSettings.ttsPitch,
       ttsAutoNextChapter: typeof saved.ttsAutoNextChapter === 'boolean' ? saved.ttsAutoNextChapter : defaultReaderSettings.ttsAutoNextChapter,
       ttsFilterSymbols: typeof saved.ttsFilterSymbols === 'boolean' ? saved.ttsFilterSymbols : defaultReaderSettings.ttsFilterSymbols,
+      ttsHttpTtsId,
       ttsCustomUrl: customUrl,
       ttsCustomHeader: typeof saved.ttsCustomHeader === 'string' ? saved.ttsCustomHeader : '',
       ttsCustomBody: typeof saved.ttsCustomBody === 'string' ? saved.ttsCustomBody : '',

@@ -1,8 +1,9 @@
 import React, { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { api, TtsVoice } from './api'
+import { api, HttpTts, TtsVoice } from './api'
 import { Icon } from './icons'
 import { ReaderSettings, TtsEngineType } from './readerSettings'
+import { HttpTtsManagerModal } from './HttpTtsManagerModal'
 
 export type SleepTimerOption = 'off' | '15' | '30' | '45' | '60' | 'chapter' | 'paragraph'
 
@@ -44,6 +45,16 @@ export const TtsSettingsModal: React.FC<TtsSettingsModalProps> = ({
   const { t } = useTranslation()
   const [edgeVoices, setEdgeVoices] = useState<TtsVoice[]>(DEFAULT_EDGE_VOICES)
   const [localVoices, setLocalVoices] = useState<SpeechSynthesisVoice[]>([])
+  const [httpTtsList, setHttpTtsList] = useState<HttpTts[]>([])
+  const [managerOpen, setManagerOpen] = useState(false)
+
+  const reloadHttpTts = () => {
+    api.getHttpTtsList()
+      .then(list => {
+        if (list) setHttpTtsList(list)
+      })
+      .catch(() => undefined)
+  }
 
   useEffect(() => {
     // Fetch server voices
@@ -52,6 +63,8 @@ export const TtsSettingsModal: React.FC<TtsSettingsModalProps> = ({
         if (voices && voices.length > 0) setEdgeVoices(voices)
       })
       .catch(() => undefined)
+
+    reloadHttpTts()
 
     // Load local voices
     if ('speechSynthesis' in window) {
@@ -69,13 +82,34 @@ export const TtsSettingsModal: React.FC<TtsSettingsModalProps> = ({
 
   const handleEngineChange = (engine: TtsEngineType) => {
     let defaultVoice = settings.ttsVoice
+    let httpTtsId = settings.ttsHttpTtsId
     if (engine === 'edge') {
       defaultVoice = 'zh-CN-XiaoxiaoNeural'
-    } else if (engine === 'webSpeech' && localVoices.length > 0) {
-      const zh = localVoices.find(v => v.lang.startsWith('zh'))
-      defaultVoice = zh ? zh.voiceURI : localVoices[0].voiceURI
+      httpTtsId = undefined
+    } else if (engine === 'webSpeech') {
+      httpTtsId = undefined
+      if (localVoices.length > 0) {
+        const zh = localVoices.find(v => v.lang.startsWith('zh'))
+        defaultVoice = zh ? zh.voiceURI : localVoices[0].voiceURI
+      }
+    } else if (engine === 'custom') {
+      if (httpTtsList.length > 0 && !httpTtsId) {
+        httpTtsId = httpTtsList[0].id
+        defaultVoice = httpTtsList[0].name
+      }
     }
-    onChange({ ...settings, ttsEngine: engine, ttsVoice: defaultVoice })
+    onChange({ ...settings, ttsEngine: engine, ttsVoice: defaultVoice, ttsHttpTtsId: httpTtsId })
+  }
+
+  const handleSelectHttpTts = (tts: HttpTts) => {
+    onChange({
+      ...settings,
+      ttsEngine: 'custom',
+      ttsHttpTtsId: tts.id,
+      ttsVoice: tts.name,
+      ttsCustomUrl: tts.url,
+      ttsCustomHeader: tts.header || '',
+    })
   }
 
   const formatTimerRemaining = (seconds: number) => {
@@ -85,8 +119,9 @@ export const TtsSettingsModal: React.FC<TtsSettingsModalProps> = ({
   }
 
   return (
-    <div className="modal-backdrop" onClick={onClose}>
-      <div className="tts-settings-dialog" onClick={e => e.stopPropagation()} role="dialog" aria-modal="true">
+    <>
+      <div className="modal-backdrop" onClick={onClose}>
+        <div className="tts-settings-dialog" onClick={e => e.stopPropagation()} role="dialog" aria-modal="true">
         <header className="source-login-header">
           <div className="source-login-title-group">
             <h3 className="source-login-title"><Icon name="volume2" /> {t('tts.title', '听书朗读设置')}</h3>
@@ -97,7 +132,17 @@ export const TtsSettingsModal: React.FC<TtsSettingsModalProps> = ({
         <div className="source-login-body tts-modal-content">
           {/* Engine Selection */}
           <div className="tts-setting-section">
-            <label className="tts-section-label">{t('tts.engine', '朗读引擎')}</label>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <label className="tts-section-label">{t('tts.engine', '朗读引擎')}</label>
+              <button
+                type="button"
+                className="secondary-button"
+                style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', padding: '3px 8px', fontSize: '12px' }}
+                onClick={() => setManagerOpen(true)}
+              >
+                <Icon name="settings" /> {t('tts.manageHttpTts', 'TTS 管理')}
+              </button>
+            </div>
             <div className="tts-engine-grid">
               <button
                 type="button"
@@ -120,11 +165,80 @@ export const TtsSettingsModal: React.FC<TtsSettingsModalProps> = ({
                 className={`tts-engine-btn ${settings.ttsEngine === 'custom' ? 'active' : ''}`}
                 onClick={() => handleEngineChange('custom')}
               >
-                <strong>{t('tts.engineCustom', '自定义 HTTP 源')}</strong>
-                <span>{t('tts.engineCustomDesc', '自建 API 或第三方 TTS')}</span>
+                <strong>{t('tts.engineCustom', '自定义 HTTP 朗读')}</strong>
+                <span>
+                  {settings.ttsEngine === 'custom' && settings.ttsHttpTtsId
+                    ? (httpTtsList.find(i => i.id === settings.ttsHttpTtsId)?.name || t('tts.customSelected', '已选音源'))
+                    : t('tts.engineCustomDesc', '百度、阿里云或自建 TTS')}
+                </span>
               </button>
             </div>
           </div>
+
+          {/* HTTP TTS Selection List (when custom engine is active) */}
+          {settings.ttsEngine === 'custom' && (
+            <div className="tts-setting-section">
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <label className="tts-section-label">{t('tts.selectHttpTts', '选择 HTTP 音源')}</label>
+                <button
+                  type="button"
+                  style={{ background: 'none', border: 'none', color: 'var(--accent)', cursor: 'pointer', fontSize: '12px', padding: 0 }}
+                  onClick={() => setManagerOpen(true)}
+                >
+                  {t('tts.addOrManagePrompt', '+ 添加或管理规则')}
+                </button>
+              </div>
+
+              {httpTtsList.length > 0 ? (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                  <select
+                    className="login-ui-select"
+                    value={settings.ttsHttpTtsId ?? ''}
+                    onChange={e => {
+                      const selectedId = Number(e.target.value)
+                      const target = httpTtsList.find(i => i.id === selectedId)
+                      if (target) {
+                        handleSelectHttpTts(target)
+                      } else {
+                        onChange({ ...settings, ttsHttpTtsId: undefined })
+                      }
+                    }}
+                  >
+                    <option value="">{t('tts.manualConfigOption', '-- 手动直接配置 URL --')}</option>
+                    {httpTtsList.map(tts => (
+                      <option key={tts.id} value={tts.id}>
+                        {tts.name} ({tts.contentType || 'audio/mpeg'})
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              ) : (
+                <div
+                  style={{
+                    padding: '12px',
+                    borderRadius: '8px',
+                    border: '1px dashed var(--line)',
+                    backgroundColor: 'var(--surface-muted)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                  }}
+                >
+                  <span style={{ fontSize: '12px', color: 'var(--muted)' }}>
+                    {t('tts.noCustomEnginesConfigured', '暂未添加任何 HTTP 朗读源')}
+                  </span>
+                  <button
+                    type="button"
+                    className="secondary-button"
+                    style={{ padding: '4px 10px', fontSize: '12px' }}
+                    onClick={() => setManagerOpen(true)}
+                  >
+                    {t('tts.openManager', '打开管理')}
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
 
           {/* Voice Selection */}
           {settings.ttsEngine === 'edge' && (
@@ -285,8 +399,8 @@ export const TtsSettingsModal: React.FC<TtsSettingsModalProps> = ({
             </div>
           </div>
 
-          {/* Custom HTTP TTS Settings */}
-          {settings.ttsEngine === 'custom' && (
+          {/* Custom HTTP TTS Settings (Manual mode when no specific httpTtsId chosen) */}
+          {settings.ttsEngine === 'custom' && !settings.ttsHttpTtsId && (
             <div className="tts-setting-section tts-custom-section">
               <label className="tts-section-label">{t('tts.customHttpParams', '自定义 HTTP 源参数')}</label>
               <p className="tts-hint">
@@ -334,5 +448,21 @@ export const TtsSettingsModal: React.FC<TtsSettingsModalProps> = ({
         </div>
       </div>
     </div>
+
+    {managerOpen && (
+      <HttpTtsManagerModal
+        currentTtsId={settings.ttsHttpTtsId}
+        onSelectTts={tts => {
+          handleSelectHttpTts(tts)
+          setManagerOpen(false)
+          reloadHttpTts()
+        }}
+        onClose={() => {
+          setManagerOpen(false)
+          reloadHttpTts()
+        }}
+      />
+    )}
+  </>
   )
 }

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import os from 'node:os'
+import { fileURLToPath } from 'node:url'
 
 process.env.NO_PROXY = '127.0.0.1,localhost'
 process.env.no_proxy = '127.0.0.1,localhost'
@@ -81,7 +82,8 @@ async function run() {
   console.log('✅ Mock search book source registered')
 
   // 3. Upload test local book
-  const fixturePath = path.resolve('web/test/fixtures/变成魔女，但是她们都想跟我恋爱.txt')
+  const __dirname = path.dirname(fileURLToPath(import.meta.url))
+  const fixturePath = path.resolve(__dirname, 'fixtures/变成魔女，但是她们都想跟我恋爱.txt')
   const fileBytes = await fs.readFile(fixturePath)
   const formData = new FormData()
   formData.append('file', new Blob([fileBytes], { type: 'text/plain' }), '变成魔女，但是她们都想跟我恋爱.txt')

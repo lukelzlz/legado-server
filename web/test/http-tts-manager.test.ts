@@ -76,7 +76,9 @@ test('TtsSettingsModal - renders custom engine selection and manage entry', () =
 test('CSS - secondary button and tts timer grid styles alignment', async () => {
   const fs = await import('node:fs')
   const path = await import('node:path')
-  const css = fs.readFileSync(path.resolve('web/src/styles.css'), 'utf-8')
+  const { fileURLToPath } = await import('node:url')
+  const __dirname = path.dirname(fileURLToPath(import.meta.url))
+  const css = fs.readFileSync(path.resolve(__dirname, '../src/styles.css'), 'utf-8')
 
   // secondary-button should be formally declared with primary-button metrics
   assert.ok(css.includes('.primary-button, .secondary-button'))

@@ -352,6 +352,7 @@
     "listen": "朗読 (TTS)",
     "prevChapter": "前の章",
     "nextChapter": "次の章",
+    "chapterProgress": "章の進捗",
     "loadingChapter": "本文を読み込み中...",
     "chapterLoadFailed": "章の読み込みに失敗しました",
     "retry": "再試行",

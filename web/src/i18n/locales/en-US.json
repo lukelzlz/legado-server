@@ -352,6 +352,7 @@
     "listen": "Listen (TTS)",
     "prevChapter": "Previous Chapter",
     "nextChapter": "Next Chapter",
+    "chapterProgress": "Chapter Progress",
     "loadingChapter": "Loading chapter content...",
     "chapterLoadFailed": "Failed to load chapter content",
     "retry": "Retry",

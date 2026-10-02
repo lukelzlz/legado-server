@@ -352,6 +352,7 @@
     "listen": "朗读",
     "prevChapter": "上一章",
     "nextChapter": "下一章",
+    "chapterProgress": "章节进度",
     "loadingChapter": "正在加载正文...",
     "chapterLoadFailed": "章节正文加载失败",
     "retry": "重试",

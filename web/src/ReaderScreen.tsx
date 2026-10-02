@@ -246,6 +246,8 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
   const deferredQuery = useDeferredValue(chapterQuery)
   const [activeDrawer, setActiveDrawer] = useState<'toc' | 'settings' | null>(null)
   const [toolbarsVisible, setToolbarsVisible] = useState(false)
+  const [sliderChapterIndex, setSliderChapterIndex] = useState(chapterIndex)
+  const [isDraggingSlider, setIsDraggingSlider] = useState(false)
   const [boundaryMessage, setBoundaryMessage] = useState('')
   const [inShelf, setInShelf] = useState(true)
   const [ttsActive, setTtsActive] = useState(false)
@@ -1296,6 +1298,30 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
     else goPrevPage()
   }
 
+  useEffect(() => {
+    if (!isDraggingSlider) {
+      setSliderChapterIndex(chapterIndex)
+    }
+  }, [chapterIndex, isDraggingSlider])
+
+  const totalChapters = currentBook.chapters.length
+  const displayChapterIndex = isDraggingSlider ? sliderChapterIndex : chapterIndex
+  const displayChapterTitle = currentBook.chapters[displayChapterIndex]?.title || ''
+
+  const handleSliderChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const val = parseInt(e.target.value, 10)
+    if (!isNaN(val)) {
+      setSliderChapterIndex(val)
+    }
+  }
+
+  const handleSliderCommit = () => {
+    setIsDraggingSlider(false)
+    if (sliderChapterIndex !== chapterIndex && sliderChapterIndex >= 0 && sliderChapterIndex < totalChapters) {
+      changeChapter(sliderChapterIndex, 'first')
+    }
+  }
+
   const cachePercent = Math.min(100, Math.round((cacheStatus.cached / Math.max(1, cacheStatus.total || currentBook.chapters.length)) * 100))
 
   return <main className={`reader-workspace theme-${settings.theme} ${toolbarsVisible ? 'toolbars-open' : 'toolbars-hidden'} ${settings.sidebarPinned ? 'sidebar-pinned' : ''}`} style={readerStyle}>
@@ -1570,13 +1596,67 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
       {boundaryMessage && <p className="reader-boundary-message" role="status">{boundaryMessage}</p>}
     </section>
 
-    {/* Floating Mobile Bottom Nav */}
-    <nav className="mobile-reader-nav">
-      <button type="button" onClick={() => setActiveDrawer('toc')}><Icon name="list" /><span>{t('reader.catalog', '目录')}</span></button>
-      <button type="button" onClick={() => setShowSourceSwitch(true)}><Icon name="sliders" /><span>{t('reader.switchSource', '换源')}</span></button>
-      <button type="button" onClick={toggleTts}><Icon name={ttsActive && ttsPlayState === 'playing' ? 'pause' : 'volume2'} /><span>{ttsActive ? (ttsPlayState === 'playing' ? t('common.pause', '暂停') : t('common.continue', '继续')) : t('reader.listen', '朗读')}</span></button>
-      <button type="button" onClick={() => setActiveDrawer('settings')}><span className="aa">Aa</span><span>{t('reader.settings', '设置')}</span></button>
-    </nav>
+    {/* Floating Bottom Toolbar (Desktop Chapter Bar + Mobile Nav) */}
+    <footer className="reader-floating-footer" onClick={e => e.stopPropagation()} onPointerDown={e => e.stopPropagation()}>
+      <div className="reader-chapter-control-bar">
+        <button
+          type="button"
+          className="reader-chapter-btn prev"
+          disabled={chapterIndex === 0 || loading}
+          onClick={() => changeChapter(chapterIndex - 1, 'first')}
+          title={t('reader.prevChapter', '上一章')}
+        >
+          <Icon name="arrowLeft" />
+          <span>{t('reader.prevChapter', '上一章')}</span>
+        </button>
+
+        <div className="reader-chapter-slider-wrap">
+          <div className="reader-chapter-info">
+            <span className="chapter-num">{displayChapterIndex + 1} / {Math.max(1, totalChapters)}</span>
+            {displayChapterTitle && <span className="chapter-name" title={displayChapterTitle}>{displayChapterTitle}</span>}
+          </div>
+          <input
+            type="range"
+            className="reader-chapter-slider"
+            min={0}
+            max={Math.max(0, totalChapters - 1)}
+            value={displayChapterIndex}
+            disabled={totalChapters <= 1 || loading}
+            onPointerDown={() => setIsDraggingSlider(true)}
+            onChange={handleSliderChange}
+            onPointerUp={handleSliderCommit}
+            onTouchEnd={handleSliderCommit}
+            onKeyUp={e => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                handleSliderCommit()
+              }
+            }}
+            aria-label={t('reader.chapterProgress', '章节进度')}
+            style={{
+              '--slider-percent': `${totalChapters > 1 ? (displayChapterIndex / (totalChapters - 1)) * 100 : 100}%`
+            } as React.CSSProperties}
+          />
+        </div>
+
+        <button
+          type="button"
+          className="reader-chapter-btn next"
+          disabled={chapterIndex >= totalChapters - 1 || loading}
+          onClick={() => changeChapter(chapterIndex + 1, 'first')}
+          title={t('reader.nextChapter', '下一章')}
+        >
+          <span>{t('reader.nextChapter', '下一章')}</span>
+          <Icon name="arrowRight" />
+        </button>
+      </div>
+
+      <nav className="mobile-reader-nav">
+        <button type="button" onClick={() => setActiveDrawer('toc')}><Icon name="list" /><span>{t('reader.catalog', '目录')}</span></button>
+        <button type="button" onClick={() => setShowSourceSwitch(true)}><Icon name="sliders" /><span>{t('reader.switchSource', '换源')}</span></button>
+        <button type="button" onClick={toggleTts}><Icon name={ttsActive && ttsPlayState === 'playing' ? 'pause' : 'volume2'} /><span>{ttsActive ? (ttsPlayState === 'playing' ? t('common.pause', '暂停') : t('common.continue', '继续')) : t('reader.listen', '朗读')}</span></button>
+        <button type="button" onClick={() => setActiveDrawer('settings')}><span className="aa">Aa</span><span>{t('reader.settings', '设置')}</span></button>
+      </nav>
+    </footer>
 
     {/* In-reader Source Switch Modal */}
     {showSourceSwitch && (

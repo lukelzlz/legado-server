@@ -1026,7 +1026,13 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
     const scrollToTarget = () => {
       // 三章窗口下「整文档」包含了上下相邻章，不能再拿它的总高度当滚动范围；
       // 一律相对**当前章区块**定位（区块取不到时退回旧的整文档口径）。
+      // ⚠️ 区块查找不能只信 `scrollSectionRefs.get(chapterIndex)`：恢复位置那一刻
+      // ref 映射往往还没注册好，取不到就把目标算成 0（= 文档顶部，而顶部其实是插入上方的
+      // **上一章**）⇒「恢复位置」退化成停在上一章。实测 scrollTo 只被调用两次、参数都是 0，
+      // 视口停在上一章而进度记着当前章，用户一滚动就回退章（= 报障的「往回跳」）。
+      // 兜底按**结构**找「中间那一段」（非邻居段即当前章），与 ref 注册时机解耦。
       const sectionEl = scrollSectionRefs.current.get(chapterIndex)
+        ?? (document.querySelector('.reading-scroll-window > .reading-content:not(.is-scroll-neighbor)') as HTMLElement | null)
       const sectionTop = sectionEl ? sectionEl.getBoundingClientRect().top + window.scrollY : 0
       const sectionRange = sectionEl ? sectionEl.getBoundingClientRect().height - window.innerHeight : 0
       let targetScroll = 0
@@ -1041,14 +1047,32 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
           ? sectionTop + Math.round(sectionRange * initialPos)
           : Math.round(Math.max(0, document.documentElement.scrollHeight - window.innerHeight) * initialPos)
       } else {
-        return
+        return null
       }
       lastScrollYRef.current = targetScroll
       window.scrollTo({ top: targetScroll, behavior: 'auto' })
+      return targetScroll
     }
 
     scrollToTarget()
-    const rafId = window.requestAnimationFrame(scrollToTarget)
+    // 恢复位置必须**重试到真正到位**为止：恢复那一次相邻章正文往往还没进 DOM，
+    // 文档高度不够 ⇒ `scrollTo(目标)` 被浏览器**钳制**到 0（实测钩子：参数 0、scrollY 保持 0），
+    // 之后再没人纠正 ⇒ 视口停在文档顶部（= 插入上方的上一章），而进度记着当前章；
+    // 用户一滚动，视口中心落在上一章 ⇒ 窗口回退一章并保存 ⇒ 反复进出就是一路往回跳。
+    // 判据用「还没到目标就继续」：目标会随相邻章入 DOM 而变大，到位即停（上限约 10 秒）。
+    let frames = 0
+    let rafId = window.requestAnimationFrame(function retry() {
+      frames += 1
+      const desired = scrollToTarget()
+      // 只比「滚动量 == 目标」会被骗：相邻章还没进 DOM 时当前章就在文档顶部，
+      // 目标算出来正是 0，于是 `0+2 >= 0` 判定「已到位」立刻停手 —— 实测就卡在这里。
+      // 因此还要求**窗口已铺齐**（该有的相邻段都在 DOM 里）。
+      const expected = Math.min(3, currentBook.chapters.length)
+      const rendered = document.querySelectorAll('.reading-scroll-window > .reading-content').length
+      const complete = rendered >= expected
+      const reached = desired === null || (complete && window.scrollY + 2 >= desired)
+      if (!reached && frames < 600) rafId = window.requestAnimationFrame(retry)
+    })
     return () => window.cancelAnimationFrame(rafId)
     // chapterIndex 入依赖：从目录/滑块跳章后要按**新章区块**重新定位
   }, [chapterIndex, content, loading, settings.pageMode])

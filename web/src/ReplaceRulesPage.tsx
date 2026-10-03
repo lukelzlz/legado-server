@@ -1,8 +1,10 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react'
 import { useTranslation } from 'react-i18next'
-import { api, ReplaceRule, ReplaceRulePreviewResponse } from './api'
+import { api, ReplaceRule, ReplaceRuleGroupSummary, ReplaceRulePreviewResponse } from './api'
 import { toast } from './Toast'
 import { Icon } from './icons'
+import { ReplaceRuleGroupManagerModal } from './ReplaceRuleGroupManagerModal'
+import { ReplaceRuleBatchMoveModal } from './ReplaceRuleBatchMoveModal'
 
 export function ReplaceRulesPage() {
   const { t } = useTranslation()
@@ -12,6 +14,16 @@ export function ReplaceRulesPage() {
   const [selectedGroup, setSelectedGroup] = useState<string>('all')
   const [selectedRuleId, setSelectedRuleId] = useState<string | null>(null)
   const [notice, setNotice] = useState('')
+
+  // 批量管理模式
+  const [isBatchMode, setIsBatchMode] = useState(false)
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
+  const [busyBatch, setBusyBatch] = useState(false)
+  const [batchMoving, setBatchMoving] = useState(false)
+
+  // 分组管理弹窗
+  const [showGroupManager, setShowGroupManager] = useState(false)
+  const [groupSummaries, setGroupSummaries] = useState<ReplaceRuleGroupSummary[]>([])
 
   // 移动端折叠面板展开状态跟踪
   const [expandedMobileRuleId, setExpandedMobileRuleId] = useState<string | null>(null)
@@ -34,8 +46,12 @@ export function ReplaceRulesPage() {
   const loadRules = useCallback(async () => {
     setLoading(true)
     try {
-      const data = await api.getReplaceRules()
+      const [data, groupsData] = await Promise.all([
+        api.getReplaceRules(),
+        api.replaceRuleGroups(),
+      ])
       setRules(data)
+      setGroupSummaries(groupsData)
       if (data.length > 0 && !selectedRuleId) {
         setSelectedRuleId(data[0].id)
       }
@@ -96,6 +112,130 @@ export function ReplaceRulesPage() {
       await loadRules()
     } catch (e: any) {
       toast.error(e.message || t('rules.deleteRuleFailed', '删除规则失败'))
+    }
+  }
+
+  const toggleSelect = (id: string) => {
+    setSelectedIds(prev => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
+  const handleSelectAll = () => {
+    setSelectedIds(new Set(filteredRules.map(r => r.id)))
+  }
+
+  const handleClearAll = () => {
+    setSelectedIds(new Set())
+  }
+
+  const handleInvertSelection = () => {
+    const next = new Set<string>()
+    for (const r of filteredRules) {
+      if (!selectedIds.has(r.id)) next.add(r.id)
+    }
+    setSelectedIds(next)
+  }
+
+  const handleBatchEnable = async () => {
+    if (selectedIds.size === 0) return
+    setBusyBatch(true)
+    try {
+      const resp = await api.batchReplaceRules({
+        action: 'enable',
+        ids: Array.from(selectedIds),
+      })
+      toast.success(t('rules.batchEnableSuccess', '已批量启用 {{count}} 条规则', { count: resp.affected }))
+      await loadRules()
+    } catch (e: any) {
+      toast.error(e.message || t('rules.batchOperationFailed', '批量操作失败'))
+    } finally {
+      setBusyBatch(false)
+    }
+  }
+
+  const handleBatchDisable = async () => {
+    if (selectedIds.size === 0) return
+    setBusyBatch(true)
+    try {
+      const resp = await api.batchReplaceRules({
+        action: 'disable',
+        ids: Array.from(selectedIds),
+      })
+      toast.success(t('rules.batchDisableSuccess', '已批量停用 {{count}} 条规则', { count: resp.affected }))
+      await loadRules()
+    } catch (e: any) {
+      toast.error(e.message || t('rules.batchOperationFailed', '批量操作失败'))
+    } finally {
+      setBusyBatch(false)
+    }
+  }
+
+  const handleBatchExport = () => {
+    if (selectedIds.size === 0) return
+    const selectedRules = rules.filter(r => selectedIds.has(r.id))
+    try {
+      const jsonStr = JSON.stringify(selectedRules, null, 2)
+      const blob = new Blob([jsonStr], { type: 'application/json' })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `replace_rules_export_${new Date().toISOString().slice(0, 10)}.json`
+      a.click()
+      URL.revokeObjectURL(url)
+      toast.success(t('rules.exportSuccess', '已导出选中的 {{count}} 条规则', { count: selectedRules.length }))
+    } catch (e: any) {
+      toast.error(e.message || t('rules.exportFailed', '导出规则失败'))
+    }
+  }
+
+  const handleBatchDelete = async () => {
+    if (selectedIds.size === 0) return
+    const selectedRules = rules.filter(r => selectedIds.has(r.id))
+    const namesSummary = selectedRules.slice(0, 3).map(r => r.name || r.pattern).join('、') + (selectedRules.length > 3 ? ` 等共 ${selectedRules.length} 条` : '')
+    if (!window.confirm(t('rules.batchDeleteConfirm', '确定要彻底删除选中的 {{count}} 条规则吗？\n（{{names}}）\n删除后不可恢复！', { count: selectedIds.size, names: namesSummary }))) return
+
+    setBusyBatch(true)
+    try {
+      const resp = await api.batchReplaceRules({
+        action: 'delete',
+        ids: Array.from(selectedIds),
+      })
+      toast.success(t('rules.batchDeleteSuccess', '已删除 {{count}} 条规则', { count: resp.affected }))
+      setSelectedIds(new Set())
+      if (selectedRuleId && selectedIds.has(selectedRuleId)) {
+        setSelectedRuleId(null)
+      }
+      await loadRules()
+    } catch (e: any) {
+      toast.error(e.message || t('rules.batchOperationFailed', '批量操作失败'))
+    } finally {
+      setBusyBatch(false)
+    }
+  }
+
+  const handleBatchMoveGroup = async (groupName: string | null) => {
+    setBusyBatch(true)
+    try {
+      const resp = await api.batchReplaceRules({
+        action: 'set_group',
+        ids: Array.from(selectedIds),
+        group: groupName,
+      })
+      toast.success(
+        groupName
+          ? t('rules.rulesMovedToGroup', '已将 {{count}} 条规则加入分组「{{group}}」', { count: resp.affected, group: groupName })
+          : t('rules.rulesMovedToUngrouped', '已将 {{count}} 条规则移出分组', { count: resp.affected })
+      )
+      setSelectedIds(new Set())
+      await loadRules()
+    } catch (e: any) {
+      toast.error(e.message || t('rules.setGroupFailed', '批量设置分组失败'))
+    } finally {
+      setBusyBatch(false)
     }
   }
 
@@ -221,25 +361,47 @@ export function ReplaceRulesPage() {
   }
 
   return (
-    <main className="rules-page-container">
+    <main className={`rules-page-container ${isBatchMode ? 'batch-mode-active' : ''}`}>
       {/* 侧边栏（桌面端列表 / 移动端折叠卡片列表） */}
       <aside className="rules-sidebar">
-        <header className="rules-sidebar-header">
-          <div className="rules-sidebar-title">
-            <Icon name="sliders" />
+        <div className="source-sidebar-heading">
+          <div className="source-sidebar-title-row">
             <span>{t('rules.mainTitle', { defaultValue: '替换净化规则' })}</span>
-            <span className="rules-count-badge">{rules.length}</span>
+            <small>{rules.length}</small>
           </div>
-          <button
-            type="button"
-            className="primary-button"
-            style={{ padding: '4px 10px', height: '28px', fontSize: '12px' }}
-            onClick={openCreateModal}
-          >
-            <Icon name="plus" />
-            <span>{t('rules.newRule', { defaultValue: '新建规则' })}</span>
-          </button>
-        </header>
+          <div className="source-sidebar-top-actions">
+            <button
+              type="button"
+              className="subtle-button"
+              title={t('rules.newRule', { defaultValue: '新建规则' })}
+              onClick={openCreateModal}
+            >
+              <Icon name="plus" />
+              <span>{t('rules.newRule', { defaultValue: '新建' })}</span>
+            </button>
+            <button
+              type="button"
+              className={`subtle-button batch-mode-btn ${isBatchMode ? 'active-batch-btn' : ''}`}
+              title={t('rules.batchToolbarAria', { defaultValue: '批量启用 / 停用 / 导出 / 删除规则' })}
+              onClick={() => {
+                setIsBatchMode(prev => !prev)
+                setSelectedIds(new Set())
+              }}
+            >
+              <Icon name="list" />
+              <span>{isBatchMode ? t('common.ok', '退出批量') : t('rules.batchManage', '批量管理')}</span>
+            </button>
+            <button
+              type="button"
+              className="subtle-button group-manager-btn"
+              title={t('rules.groupManager', { defaultValue: '替换规则分组管理' })}
+              onClick={() => setShowGroupManager(true)}
+            >
+              <Icon name="folder" />
+              <span>{t('rules.groupManager', '分组管理')}</span>
+            </button>
+          </div>
+        </div>
 
         {/* 工具条：搜索与快捷按钮 */}
         <div className="rules-toolbar">
@@ -322,18 +484,32 @@ export function ReplaceRulesPage() {
           {filteredRules.map(rule => {
             const isSelected = selectedRuleId === rule.id
             const isMobileOpen = expandedMobileRuleId === rule.id
+            const isChecked = selectedIds.has(rule.id)
 
             return (
               <React.Fragment key={rule.id}>
                 {/* 桌面端卡片项 */}
                 <div
-                  className={`rule-list-card ${isSelected ? 'selected' : ''}`}
+                  className={`rule-list-card ${isBatchMode ? 'batch-item' : ''} ${isSelected ? 'selected' : ''} ${isChecked ? 'checked' : ''}`}
                   onClick={() => {
-                    setSelectedRuleId(rule.id)
-                    setExpandedMobileRuleId(isMobileOpen ? null : rule.id)
+                    if (isBatchMode) {
+                      toggleSelect(rule.id)
+                    } else {
+                      setSelectedRuleId(rule.id)
+                      setExpandedMobileRuleId(isMobileOpen ? null : rule.id)
+                    }
                   }}
                 >
                   <div className="rule-card-header">
+                    {isBatchMode && (
+                      <label className="batch-checkbox-wrap" onClick={e => e.stopPropagation()}>
+                        <input
+                          type="checkbox"
+                          checked={isChecked}
+                          onChange={() => toggleSelect(rule.id)}
+                        />
+                      </label>
+                    )}
                     <span className="rule-name-text" style={{ opacity: (rule.isEnabled ?? true) ? 1 : 0.5 }}>
                       {rule.name || rule.pattern || t('rules.unnamedRule', { defaultValue: '未命名规则' })}
                     </span>
@@ -492,7 +668,7 @@ export function ReplaceRulesPage() {
               <div className="rules-detail-actions">
                 <button
                   type="button"
-                  className="ghost-button"
+                  className={`secondary-button rule-toggle-btn ${(selectedRule.isEnabled ?? true) ? 'is-enabled' : 'is-disabled'}`}
                   onClick={() => handleToggle(selectedRule)}
                 >
                   {(selectedRule.isEnabled ?? true) ? t('common.disable', { defaultValue: '停用' }) : t('common.enable', { defaultValue: '启用' })}
@@ -783,6 +959,102 @@ export function ReplaceRulesPage() {
             </footer>
           </div>
         </div>
+      )}
+
+      {/* 固底批量操作工具栏 */}
+      {isBatchMode && (
+        <aside className="source-batch-bar" aria-label={t('rules.batchToolbarAria', '替换规则批量操作工具栏')}>
+          <div className="batch-bar-left">
+            <span className="batch-bar-count">
+              {t('common.selected', '已选')} <strong>{selectedIds.size}</strong> / {filteredRules.length}
+            </span>
+            <div className="batch-select-helpers">
+              <button type="button" className="subtle-button compact" onClick={handleSelectAll}>
+                {t('shelf.selectAll', '全选')}
+              </button>
+              <button type="button" className="subtle-button compact" onClick={handleClearAll}>
+                {t('source.deselectAll', '全不选')}
+              </button>
+              <button type="button" className="subtle-button compact" onClick={handleInvertSelection}>
+                {t('common.invertSelect', '反选')}
+              </button>
+            </div>
+          </div>
+          <div className="batch-bar-right">
+            <button
+              type="button"
+              className="subtle-button"
+              disabled={selectedIds.size === 0 || busyBatch}
+              onClick={() => setBatchMoving(true)}
+            >
+              {t('rules.batchMoveGroup', '移动分组')}
+            </button>
+            <button
+              type="button"
+              className="subtle-button"
+              disabled={selectedIds.size === 0 || busyBatch}
+              onClick={() => void handleBatchEnable()}
+            >
+              {t('rules.batchEnable', '批量启用')}
+            </button>
+            <button
+              type="button"
+              className="subtle-button"
+              disabled={selectedIds.size === 0 || busyBatch}
+              onClick={() => void handleBatchDisable()}
+            >
+              {t('rules.batchDisable', '批量停用')}
+            </button>
+            <button
+              type="button"
+              className="subtle-button"
+              disabled={selectedIds.size === 0 || busyBatch}
+              onClick={handleBatchExport}
+            >
+              {t('rules.batchExport', '导出选中')}
+            </button>
+            <button
+              type="button"
+              className="danger-button"
+              disabled={selectedIds.size === 0 || busyBatch}
+              onClick={() => void handleBatchDelete()}
+            >
+              {t('rules.batchDelete', '批量删除')}
+            </button>
+            <button
+              type="button"
+              className="secondary-button"
+              onClick={() => {
+                setIsBatchMode(false)
+                setSelectedIds(new Set())
+              }}
+            >
+              {t('common.ok', '完成')}
+            </button>
+          </div>
+        </aside>
+      )}
+
+      {/* 分组管理弹窗 */}
+      {showGroupManager && (
+        <ReplaceRuleGroupManagerModal
+          groups={groupSummaries}
+          onChanged={() => void loadRules()}
+          onClose={() => setShowGroupManager(false)}
+        />
+      )}
+
+      {/* 批量移动分组弹窗 */}
+      {batchMoving && (
+        <ReplaceRuleBatchMoveModal
+          groups={groupSummaries}
+          selectedCount={selectedIds.size}
+          onClose={() => setBatchMoving(false)}
+          onSelectGroup={async groupName => {
+            await handleBatchMoveGroup(groupName)
+            setBatchMoving(false)
+          }}
+        />
       )}
     </main>
   )

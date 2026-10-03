@@ -34,6 +34,32 @@
 
 ---
 
+## 📸 界面预览
+
+<div align="center">
+
+### 📖 沉浸式阅读器（双栏/单栏排版 · 无限瀑布流 · 深浅色模式自适应）
+
+| 深色模式 (Dark) | 浅色模式 (Light) |
+| :---: | :---: |
+| <img src="./docs/images/screenshots/reader-dark.png" alt="Reader Dark Mode" width="100%" /> | <img src="./docs/images/screenshots/reader-light.png" alt="Reader Light Mode" width="100%" /> |
+
+### 📚 现代化书架（本地书与网络小说同构 · 进度同步 · 分组管理）
+
+| 深色模式 (Dark) | 浅色模式 (Light) |
+| :---: | :---: |
+| <img src="./docs/images/screenshots/bookshelf-dark.png" alt="Bookshelf Dark Mode" width="100%" /> | <img src="./docs/images/screenshots/bookshelf-light.png" alt="Bookshelf Light Mode" width="100%" /> |
+
+### 🧹 替换净化规则中心（多维规则管理 · 正则 / @js 沙箱 · 实时效果预览）
+
+| 深色模式 (Dark) | 浅色模式 (Light) |
+| :---: | :---: |
+| <img src="./docs/images/screenshots/replace-rules-dark.png" alt="Replace Rules Dark Mode" width="100%" /> | <img src="./docs/images/screenshots/replace-rules-light.png" alt="Replace Rules Light Mode" width="100%" /> |
+
+</div>
+
+---
+
 ## ⚡ 极速启动（1 分钟部署）
 
 ### 🐳 方式一：Docker 一行命令（最推荐）

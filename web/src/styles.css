@@ -3477,6 +3477,34 @@ mark.search-highlight { background: var(--accent-soft); color: var(--accent); fo
   gap: 8px;
 }
 
+.rule-toggle-btn {
+  min-width: 64px;
+  justify-content: center;
+}
+
+.rule-toggle-btn.is-enabled {
+  background: color-mix(in srgb, var(--accent) 12%, var(--surface));
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 30%, var(--line));
+}
+
+.rule-toggle-btn.is-enabled:hover {
+  background: color-mix(in srgb, var(--accent) 20%, var(--surface));
+  border-color: var(--accent);
+}
+
+.rule-toggle-btn.is-disabled {
+  background: var(--surface-muted);
+  color: var(--muted);
+  border-color: var(--line);
+}
+
+.rule-toggle-btn.is-disabled:hover {
+  background: var(--surface);
+  color: var(--ink);
+  border-color: var(--accent);
+}
+
 .rules-code-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;

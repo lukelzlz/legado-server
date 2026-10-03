@@ -34,6 +34,32 @@ Completely decoupled from the Android framework, it provides a high-performance 
 
 ---
 
+## 📸 Screenshots & UI Preview
+
+<div align="center">
+
+### 📖 Immersive Reader (Multi-column / Infinite Waterfall Stream · Dark & Light Themes)
+
+| Dark Mode | Light Mode |
+| :---: | :---: |
+| <img src="./docs/images/screenshots/reader-dark.png" alt="Reader Dark Mode" width="100%" /> | <img src="./docs/images/screenshots/reader-light.png" alt="Reader Light Mode" width="100%" /> |
+
+### 📚 Modern Bookshelf (Unified Local Books & Web Novels · Progress Sync · Group Management)
+
+| Dark Mode | Light Mode |
+| :---: | :---: |
+| <img src="./docs/images/screenshots/bookshelf-dark.png" alt="Bookshelf Dark Mode" width="100%" /> | <img src="./docs/images/screenshots/bookshelf-light.png" alt="Bookshelf Light Mode" width="100%" /> |
+
+### 🧹 Content Purification Rules (Rule Engine · Regex / @js Sandbox · Real-Time Preview)
+
+| Dark Mode | Light Mode |
+| :---: | :---: |
+| <img src="./docs/images/screenshots/replace-rules-dark.png" alt="Replace Rules Dark Mode" width="100%" /> | <img src="./docs/images/screenshots/replace-rules-light.png" alt="Replace Rules Light Mode" width="100%" /> |
+
+</div>
+
+---
+
 ## ⚡ Quick Start (1-Minute Setup)
 
 ### 🐳 Option 1: Docker CLI (Recommended)

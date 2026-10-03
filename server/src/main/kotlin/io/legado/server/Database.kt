@@ -2234,6 +2234,69 @@ class Database(private val path: String) : Closeable, AutoCloseable {
         }
     }
 
+    fun batchSetReplaceRulesGroup(ids: List<String>, group: String?): Int = write { db ->
+        if (ids.isEmpty()) return@write 0
+        val placeholders = ids.joinToString(",") { "?" }
+        val targetGroup = group?.trim()?.takeIf { it.isNotBlank() && !it.equals(SourceGroupFilter.UNGROUPED, ignoreCase = true) }
+        val now = System.currentTimeMillis()
+        db.prepareStatement("update replace_rule set group_name = ?, updated_at = ? where id in ($placeholders)").use { stmt ->
+            stmt.setString(1, targetGroup)
+            stmt.setLong(2, now)
+            ids.forEachIndexed { idx, id -> stmt.setString(idx + 3, id) }
+            stmt.executeUpdate()
+        }
+    }
+
+    fun listReplaceRuleGroups(): List<ReplaceRuleGroupSummary> = connect { db ->
+        val sql = """
+            select trim(group_name) as gname,
+                   count(*) as total,
+                   sum(case when is_enabled = 1 then 1 else 0 end) as enabled
+            from replace_rule
+            where group_name is not null and trim(group_name) != ''
+            group by trim(group_name) collate nocase
+            order by trim(group_name) collate nocase asc
+        """.trimIndent()
+        db.prepareStatement(sql).use { stmt ->
+            stmt.executeQuery().use { rs ->
+                val list = mutableListOf<ReplaceRuleGroupSummary>()
+                while (rs.next()) {
+                    list.add(
+                        ReplaceRuleGroupSummary(
+                            name = rs.getString(1),
+                            ruleCount = rs.getInt(2),
+                            enabledCount = rs.getInt(3),
+                        )
+                    )
+                }
+                list
+            }
+        }
+    }
+
+    fun renameReplaceRuleGroup(from: String, to: String): Int {
+        val target = to.trim()
+        require(!target.equals(SourceGroupFilter.UNGROUPED, ignoreCase = true)) {
+            "不能使用系统保留字「$target」作为分组名称"
+        }
+        return write { db ->
+            db.prepareStatement("update replace_rule set group_name = ?, updated_at = ? where group_name = ? collate nocase").use { stmt ->
+                stmt.setString(1, target)
+                stmt.setLong(2, System.currentTimeMillis())
+                stmt.setString(3, from.trim())
+                stmt.executeUpdate()
+            }
+        }
+    }
+
+    fun clearReplaceRuleGroup(name: String): Int = write { db ->
+        db.prepareStatement("update replace_rule set group_name = null, updated_at = ? where group_name = ? collate nocase").use { stmt ->
+            stmt.setLong(1, System.currentTimeMillis())
+            stmt.setString(2, name.trim())
+            stmt.executeUpdate()
+        }
+    }
+
     fun getEnabledReplaceRules(): List<ReplaceRule> = connect { db ->
         db.prepareStatement("select id, name, group_name, pattern, replacement, is_regex, scope, exclude_scope, scope_title, scope_content, is_enabled, sort_order, timeout_ms, created_at, updated_at from replace_rule where is_enabled = 1 order by sort_order asc, created_at asc").use { stmt ->
             stmt.executeQuery().use { rs ->

@@ -202,6 +202,25 @@ export type ReplaceRule = {
   updatedAt?: number
 }
 
+export type ReplaceRuleGroupSummary = {
+  name: string
+  ruleCount: number
+  enabledCount: number
+}
+
+export type BatchReplaceRuleRequest = {
+  action: 'enable' | 'disable' | 'delete' | 'set_group'
+  ids: string[]
+  group?: string | null
+}
+
+export type BatchReplaceRuleResponse = {
+  ok: boolean
+  affected: number
+  action: string
+  message?: string | null
+}
+
 export type ReplaceRuleImportResponse = {
   imported: number
   updated: number
@@ -612,6 +631,10 @@ export const api = {
   deleteReplaceRule: (id: string) => request<void>(`/api/replace-rules/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   deleteReplaceRulesBatch: (ids: string[]) => request<{ deleted: number }>('/api/replace-rules/delete-batch', { method: 'POST', body: JSON.stringify(ids) }),
   toggleReplaceRules: (ids: string[], enabled: boolean) => request<{ updated: number }>('/api/replace-rules/toggle', { method: 'POST', body: JSON.stringify({ ids, enabled }) }),
+  batchReplaceRules: (data: BatchReplaceRuleRequest) => request<BatchReplaceRuleResponse>('/api/replace-rules/batch', { method: 'POST', body: JSON.stringify(data) }),
+  replaceRuleGroups: () => request<ReplaceRuleGroupSummary[]>('/api/replace-rule-groups'),
+  renameReplaceRuleGroup: (from: string, to: string) => request<{ ok: boolean; affected: number; message: string }>('/api/replace-rule-groups/rename', { method: 'PUT', body: JSON.stringify({ from, to }) }),
+  clearReplaceRuleGroup: (name: string) => request<{ ok: boolean; affected: number; message: string }>(`/api/replace-rule-groups?name=${encodeURIComponent(name)}`, { method: 'DELETE' }),
   importReplaceRulesText: (text: string) => request<ReplaceRuleImportResponse>('/api/replace-rules/import', { method: 'POST', body: text }),
   importReplaceRulesUrl: (url: string) => request<ReplaceRuleImportResponse>('/api/replace-rules/import', { method: 'POST', body: JSON.stringify({ url }) }),
   previewReplaceRule: (req: ReplaceRulePreviewRequest) => request<ReplaceRulePreviewResponse>('/api/replace-rules/preview', { method: 'POST', body: JSON.stringify(req) }),

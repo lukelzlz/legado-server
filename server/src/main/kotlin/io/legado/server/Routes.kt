@@ -904,6 +904,33 @@ fun Route.apiRoutes(
                 val count = database.toggleReplaceRules(req.ids, req.enabled)
                 call.respond(mapOf("updated" to count))
             }
+            post("/batch") {
+                if (auth.requireSession(call, true) == null) return@post
+                val req = call.receive<BatchReplaceRuleRequest>()
+                if (req.ids.isEmpty()) {
+                    call.respond(BatchReplaceRuleResponse(ok = true, affected = 0, action = req.action))
+                    return@post
+                }
+                when (req.action) {
+                    "enable" -> {
+                        val count = database.toggleReplaceRules(req.ids, true)
+                        call.respond(BatchReplaceRuleResponse(ok = true, affected = count, action = req.action))
+                    }
+                    "disable" -> {
+                        val count = database.toggleReplaceRules(req.ids, false)
+                        call.respond(BatchReplaceRuleResponse(ok = true, affected = count, action = req.action))
+                    }
+                    "delete" -> {
+                        val count = database.deleteReplaceRules(req.ids)
+                        call.respond(BatchReplaceRuleResponse(ok = true, affected = count, action = req.action))
+                    }
+                    "set_group" -> {
+                        val count = database.batchSetReplaceRulesGroup(req.ids, req.group)
+                        call.respond(BatchReplaceRuleResponse(ok = true, affected = count, action = req.action))
+                    }
+                    else -> call.respond(HttpStatusCode.BadRequest, ApiError("invalid_action", "未知的批量操作: ${req.action}"))
+                }
+            }
             get("/export") {
                 if (auth.requireSession(call) == null) return@get
                 val ids = call.request.queryParameters.getAll("id")
@@ -932,6 +959,42 @@ fun Route.apiRoutes(
                     changed = cleaned != req.text,
                     appliedRules = appliedNames,
                 ))
+            }
+        }
+        route("/replace-rule-groups") {
+            get {
+                if (auth.requireSession(call) == null) return@get
+                call.respond(database.listReplaceRuleGroups())
+            }
+            put("/rename") {
+                if (auth.requireSession(call, true) == null) return@put
+                val request = call.receive<ReplaceRuleGroupRenameRequest>()
+                val from = request.from.trim()
+                val to = request.to.trim()
+                if (from.isBlank() || to.isBlank()) {
+                    call.respond(HttpStatusCode.BadRequest, ApiError("invalid_name", "原分组名与新分组名均不能为空"))
+                    return@put
+                }
+                if (to.equals(SourceGroupFilter.UNGROUPED, ignoreCase = true)) {
+                    call.respond(HttpStatusCode.BadRequest, ApiError("reserved_name", "不能使用系统保留字「$to」作为分组名称"))
+                    return@put
+                }
+                if (from.equals(to, ignoreCase = true)) {
+                    call.respond(ReplaceRuleGroupMutationResponse(ok = true, affected = 0, message = "分组名未变化"))
+                    return@put
+                }
+                val affected = database.renameReplaceRuleGroup(from, to)
+                call.respond(ReplaceRuleGroupMutationResponse(ok = true, affected = affected, message = "已将 $affected 条规则从「$from」移到分组「$to」"))
+            }
+            delete {
+                if (auth.requireSession(call, true) == null) return@delete
+                val name = call.request.queryParameters["name"]?.trim().orEmpty()
+                if (name.isBlank()) {
+                    call.respond(HttpStatusCode.BadRequest, ApiError("missing_name", "缺少分组名称"))
+                    return@delete
+                }
+                val affected = database.clearReplaceRuleGroup(name)
+                call.respond(ReplaceRuleGroupMutationResponse(ok = true, affected = affected, message = "已删除分组「$name」，$affected 条规则变为未分组（规则未被删除）"))
             }
         }
         post("/books/content") {

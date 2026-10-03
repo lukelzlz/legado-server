@@ -704,6 +704,41 @@ data class ReplaceRulePreviewResponse(
 )
 
 @Serializable
+data class BatchReplaceRuleRequest(
+    val action: String, // "enable", "disable", "delete", "set_group"
+    val ids: List<String>,
+    val group: String? = null,
+)
+
+@Serializable
+data class BatchReplaceRuleResponse(
+    val ok: Boolean,
+    val affected: Int,
+    val action: String,
+    val message: String? = null,
+)
+
+@Serializable
+data class ReplaceRuleGroupSummary(
+    val name: String,
+    val ruleCount: Int,
+    val enabledCount: Int,
+)
+
+@Serializable
+data class ReplaceRuleGroupRenameRequest(
+    val from: String = "",
+    val to: String = "",
+)
+
+@Serializable
+data class ReplaceRuleGroupMutationResponse(
+    val ok: Boolean,
+    val affected: Int,
+    val message: String,
+)
+
+@Serializable
 data class BatchSourceRequest(
     val action: String, // "enable", "disable", "delete", "set_group"
     val ids: List<String>,

@@ -271,6 +271,7 @@ AI 与人类协作时必须明确当前达到的完成度阶梯，严禁混淆�
 | PROPOSAL-024 | 自定义 HTTP 朗读引擎体系与 Legado 规范管理互通（Issue #25：httpTTS.json 导入导出 + SQLite 持久化 + TTS 管理中心 + 试听与模板求值） | [`docs/proposals/PROPOSAL-024-custom-http-tts-engine-and-management.md`](docs/proposals/PROPOSAL-024-custom-http-tts-engine-and-management.md) | Accepted |
 | PROPOSAL-025 | 书源发现页（Explore）与多维分类浏览体系（Issue #24：exploreUrl 全语法解析 + ruleExplore/ruleSearch 继承回退 + 发现选项卡与加架直读） | [`docs/proposals/PROPOSAL-025-source-explore-page.md`](docs/proposals/PROPOSAL-025-source-explore-page.md) | Accepted |
 | PROPOSAL-026 | 连续滚动模式升级为无限瀑布流与虚拟窗口阅读引擎（类似 Twitter 瀑布流：无缝向下追加 + 视口章节感知 + 远端虚拟卸载） | [`docs/proposals/PROPOSAL-026-reader-infinite-waterfall-stream-virtual-scroll.md`](docs/proposals/PROPOSAL-026-reader-infinite-waterfall-stream-virtual-scroll.md) | Accepted |
+| PROPOSAL-027 | 替换净化规则批量管理、分组管理与操作按钮视觉体系化重构 (Issue #35) | [`docs/proposals/PROPOSAL-027-replace-rules-batch-and-group-management.md`](docs/proposals/PROPOSAL-027-replace-rules-batch-and-group-management.md) | Tested |
 
 ### 架构决策记录 (ADR)
 | 编号 | 决策标题 | 关联文档 | 状态 |
@@ -301,6 +302,7 @@ AI 与人类协作时必须明确当前达到的完成度阶梯，严禁混淆�
 | ADR-024 | 自定义 HTTP TTS 采用 Legado 规范兼容模型、服务端 SQLite 持久化与 Rhino 模板求值 | [`docs/decisions/ADR-024-http-tts-legado-compat-and-server-storage.md`](docs/decisions/ADR-024-http-tts-legado-compat-and-server-storage.md) | Accepted |
 | ADR-025 | 书源发现页（Explore）服务端解析管线与响应式 UI架构 | [`docs/decisions/ADR-025-source-explore-parsing-and-ui.md`](docs/decisions/ADR-025-source-explore-parsing-and-ui.md) | Accepted |
 | ADR-026 | 连续滚动模式采用章节流追加与视口虚拟窗口架构（章节流水线 + 哨兵预载 + IntersectionObserver 视口锚定 + Spacer 卸载保护） | [`docs/decisions/ADR-026-reader-infinite-waterfall-stream-virtual-scroll.md`](docs/decisions/ADR-026-reader-infinite-waterfall-stream-virtual-scroll.md) | Accepted |
+| ADR-027 | 替换净化规则批量事务契约与字符串列分组状态机架构 | [`docs/decisions/ADR-027-replace-rules-batch-and-group-management.md`](docs/decisions/ADR-027-replace-rules-batch-and-group-management.md) | Accepted |
 
 ### 工作记忆与历史推演归档 (Sessions Chronicle)
 | 日期 / ID | 类型 | 标题 / 议题 | 关联文档 | 状态 |
@@ -392,6 +394,7 @@ AI 与人类协作时必须明确当前达到的完成度阶梯，严禁混淆�
 | 2026-10-03 | Fix | **修复本地导入电子书被误判为缓存失败与数据库存量自愈**：① 本地图书（`loc_book` / `local://`）章节上传即全部在库，新增 `BookCacheService` 与 `Routes` 本地书免疫保护，严禁进入网络爬虫队列；② `Database.init()` 启动时自动执行 `healLocalBookCacheStatus`，将历史坏数据批量刷回 `ready`，`toShelf()` 兜底映射确保不显示“缓存中断”；③ 前端书籍管理弹窗隐藏本地书爬虫按钮，目录抽屉适配客户端离线下载。新增前后端单测，全量测试全绿 | - | Pushed |
 | 2026-10-03 | Quickfix | **全量排查并补齐缺失风格 CSS 的按钮与语义化类名规范**：① 全局补齐 `.ghost-button`、`.close-btn`、`.close-button`、`.icon-btn`、`.icon-only`、`.rules-setting-btn` 与 `.tts-link-btn` 等基础按钮样式规范；② 消除 `ReaderScreen`（字体步进器与移动端导航）、`NetworkImportModal`、`SourceLoginModal` 及 `TtsSettingsModal` 中 bare `<button>` 及内联样式按钮，全部挂接统一设计体系类名；③ 新增 `button-styles-audit.test.ts` 自动化审查防线测试。全量 202 项前端测试与服务端单测全绿 | - | Pushed |
 | 2026-10-03 | Fix | **审查、加固与合入 PR #33：修复阅读进度退出再进跳章、连续滚动恢复落点与备份完结判定**：① 锁死切章后进度章节与正在显示的章同步，解决正文加载网络延迟下退出写出「旧章+新位置」导致倒退好几章的严重缺陷；② 根治连续滚动恢复落点在首末章因硬编码 3 段导致 10 秒死锁抢锁（动态计算首末章段数 1/2/3），并追加手势/滚轮即时让路守卫；③ 修复备份导入错误拿作者连载状态推断读者「已读完」并覆盖用户标记问题；④ 新增期望段数回归单测并补全 e2e 跨平台路径。前端 199/199 全绿，服务端单测全绿 | [`docs/sessions/SESSION-041-reader-progress-jump-and-scroll-restore.md`](docs/sessions/SESSION-041-reader-progress-jump-and-scroll-restore.md) | Accepted & Pushed |
+| 2026-10-03 | Feat | **替换净化规则批量管理、分组管理与操作按钮视觉体系化重构 (Issue #35)**：① 侧栏顶部三宫格动作栏对齐（新建、批量管理、分组管理）；② 完整多选批量模式与固底批量操作栏（批量启用/停用/导出/移动分组/删除）；③ 新增可视化规则分组管理中心（概览数字块、已有分组行内改名与软解绑删除、全量规则归类工作台）；④ 规范详情卡片按钮为统一基类（高度34px、圆角5px，具备明确的启用柔和微绿与停用状态反馈）；⑤ 全量四语国际化对齐。真实 Chrome 浏览器无障碍全流程控制测试 100% 通过；新增 `ReplaceRuleBatchAndGroupTest` 与前端 4 项防线测试，206 项前端自动化测试与服务端单测全绿 | [`docs/acceptance/ACCEPT-027-replace-rules-batch-and-group-management.md`](docs/acceptance/ACCEPT-027-replace-rules-batch-and-group-management.md) · [`docs/proposals/PROPOSAL-027-replace-rules-batch-and-group-management.md`](docs/proposals/PROPOSAL-027-replace-rules-batch-and-group-management.md) · [`docs/decisions/ADR-027-replace-rules-batch-and-group-management.md`](docs/decisions/ADR-027-replace-rules-batch-and-group-management.md) · [`docs/sessions/SESSION-043-replace-rules-batch-and-group-management.md`](docs/sessions/SESSION-043-replace-rules-batch-and-group-management.md) | Tested |
 | 2026-10-03 | Feat | **审查与合入 PR #34：备份导入导出补齐 replaceRule.json 与 httpTTS.json（含 Zip 大小写静默匹配失败修复）**：① 备份导出清单由 4 项升级为 6 项（补齐替换规则与自定义 HTTP 朗读音源），字段名与真实 Legado 手机端逐字对齐，保留 jsLib 特有属性；② 根治 `readSection` 单侧转小写导致传入驼峰名时 `==` 恒假、静默丢弃整段数据的严重缺陷（双侧 lowercase 归一化）；③ 新增 `BackupHttpTtsImportTest` 真实格式断言，更新 `BackupExporterTest` 与 `WebDavRoutesTest` 6 项断言。全量测试全绿 | [`docs/sessions/SESSION-042-backup-import-export-rules-and-http-tts.md`](docs/sessions/SESSION-042-backup-import-export-rules-and-http-tts.md) | Accepted & Pushed |
 
 ---

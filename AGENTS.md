@@ -231,6 +231,7 @@ AI 与人类协作时必须明确当前达到的完成度阶梯，严禁混淆�
 - **[CSS/按钮规范] 业务组件声明 `secondary-button` 必须在全局统一定义基类**：前端按钮全局仅有 `.primary-button`/`.subtle-button`/`.danger-button` 时，组件引用 `secondary-button` 会导致浏览器回退为原生无样式小直角按钮，表现为比绿色主按钮矮一圈且丢失圆角；必须将 `.secondary-button` 纳入与 `.primary-button` 共享高度（`34px`）、圆角（`5px`）与字体字重的全局通用基类。
 - **[CSS/网格布局] 确定数量的选项组严禁依赖 `auto-fit` 导致滚动条偶发折行**：固定选项网格（如 6 个睡眠定时器按钮）若使用 `repeat(auto-fit, minmax(76px, 1fr))`，在弹窗内容变长产生垂直滚动条时，可用宽度缩窄 15px 会导致最后一项被甩到第二行；应采用显式的 `repeat(N, 1fr)` 并在移动端媒体查询下对称折半。
 - **[阅读器/滚动] 唤起菜单误触发段落点击与 useLayoutEffect 滚动回零避坑**：读者在滚动阅读中途点击屏幕中央呼出工具栏时，点击事件会冒泡触发段落 `<p onClick>`；若未加 `!ttsActive` 守卫，会误触发 `setChapterIndex` 导致 `applyContent` 将 `initialPagePositionRef` 置 0，进而在 `useLayoutEffect` 中执行 `window.scrollTo({ top: 0 })`，表现为「唤起菜单时页面突然闪回章节开头」。三层防护：① 段落 `onClick` 必须加 `if (!ttsActive) return` 严格守卫；② `initialPagePositionRef` 仅在 `position > 0`（即开书恢复历史位置）时赋值，阅读过程中绝不赋 0；③ `useLayoutEffect` 中仅在 `targetMode === 'first' | 'last'` 或 `initialPos > 0` 时执行重定位，其他普通重新渲染绝对禁止修改 `window.scrollY`。
+- **[本地书籍/缓存免疫] 本地图书严禁入队网络爬虫与自动自愈**：本地导入电子书（`sourceId = "loc_book"` 或 `bookUrl` 以 `local://` 开头）所有章节已在上传时 100% 入库（`book_content_cache`），绝不可被 `POST /bookshelf`（开书即触发）或 `BookCacheService` 推进网络抓取队列，否则因查无书源抛出 `IllegalArgumentException("书源不存在")` 并将状态误覆盖为 `failed`（“缓存中断”）。必须在 `BookCacheService.enqueue/cache/cancel`、路由层 `Routes.kt` 及数据库初始化（`healLocalBookCacheStatus` 自愈）三层构筑免疫防御，确保本地图书恒定保持 `ready`。
 
 ---
 
@@ -384,6 +385,7 @@ AI 与人类协作时必须明确当前达到的完成度阶梯，严禁混淆�
 | 2026-10-02 | Quickfix | **听书设置与 HTTP TTS 按钮 UI 体系化优化 (Issue #29)**：① 移除听书设置顶栏重复的「TTS 管理」按钮并彻底移除底部冗长的手动输入表单，恢复清爽主界面；② 全局规范化 `.secondary-button`，使管理中心的「导入/导出」及编辑弹窗中的「测试发音/取消」次级按钮与绿色主按钮在高度（34px）、圆角（5px）与边框上严格对齐；③ 睡眠定时器网格固定为 6 列单行（小屏自适应 3 列），根治弹窗出现滚动条时第 6 个按钮偶发折行。新增前后端单测全绿，零回归 | - | Accepted & Pushed |
 | 2026-10-02 | Quickfix | **阅读器浮动底栏与快速切章工具栏优化 (Issue #30)**：① 解决平移翻页无切章按钮与连续滚动需翻到最底部痛点：新增 `.reader-floating-footer` 浮动底栏，与顶部 Header 同步随工具栏唤起/收起滑入滑出，适配桌面居中与移动端双层集成；② 浮动底栏内置「上一章 / 章节进度与交互滑块 / 下一章」，支持实时章节拖拽预览与快速跳转，兼容各端全面屏安全区；③ 补充四语国际化 `reader.chapterProgress` 严格对齐。新增 `ReaderChapterControlBar.test.ts`，前后端测试全绿 | - | Accepted & Pushed |
 | 2026-10-02 | Feat | **连续滚动模式升级为类似 Twitter 瀑布屏流式虚拟滚动 (PROPOSAL-026/ADR-026)**：① 彻底摒弃单章跳转模型，将连续滚动重构为章节流水线 `streamChapters`，向下滑动接近末尾（1000px）自动无缝追加下一章，滚动条平滑延伸；② 视口主激活章节算法动态感知当前阅读章节，顶栏标题、底栏章节进度与侧栏目录高亮随视口滚动实时同频切换；③ 远端虚拟窗口优化（卸载超过 2 章的远端段落为 `minHeight` 占位，防止长篇阅读 DOM 膨胀卡顿）；④ 章节交界处呈现优雅分割线与新章标题，平移分页模式严格解耦隔离；⑤ 彻底修复瀑布流下的相对段落进度定位与点击误判倒滚缺陷，退出重进精准还原当前可见首行。新增 `reader-infinite-stream.test.ts`，全量 194 项前端测试与服务端单测全绿 | [`docs/proposals/PROPOSAL-026-reader-infinite-waterfall-stream-virtual-scroll.md`](docs/proposals/PROPOSAL-026-reader-infinite-waterfall-stream-virtual-scroll.md) · [`docs/decisions/ADR-026-reader-infinite-waterfall-stream-virtual-scroll.md`](docs/decisions/ADR-026-reader-infinite-waterfall-stream-virtual-scroll.md) | Pushed |
+| 2026-10-03 | Fix | **修复本地导入电子书被误判为缓存失败与数据库存量自愈**：① 本地图书（`loc_book` / `local://`）章节上传即全部在库，新增 `BookCacheService` 与 `Routes` 本地书免疫保护，严禁进入网络爬虫队列；② `Database.init()` 启动时自动执行 `healLocalBookCacheStatus`，将历史坏数据批量刷回 `ready`，`toShelf()` 兜底映射确保不显示“缓存中断”；③ 前端书籍管理弹窗隐藏本地书爬虫按钮，目录抽屉适配客户端离线下载。新增前后端单测，全量测试全绿 | - | Pushed |
 
 ---
 

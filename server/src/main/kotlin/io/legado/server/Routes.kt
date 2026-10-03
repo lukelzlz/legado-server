@@ -989,7 +989,11 @@ fun Route.apiRoutes(
             if (request.sourceId.isBlank() || request.bookUrl.isBlank() || request.name.isBlank() || request.tocUrl.isBlank()) { call.respond(HttpStatusCode.BadRequest, ApiError("invalid_bookshelf", "书架数据无效")); return@post }
             val immediateCover = tryFindCachedCover(coverCache, request.coverUrl, request.alternateSources)
             val item = database.saveBookshelf(request, immediateCover)
-            bookCache.enqueue(CachedBookRequest(request.sourceId, request.bookUrl, request.tocUrl))
+            if (request.sourceId != LocalBookParser.LOC_BOOK_SOURCE_ID && !request.bookUrl.startsWith("local://")) {
+                bookCache.enqueue(CachedBookRequest(request.sourceId, request.bookUrl, request.tocUrl))
+            } else {
+                database.ensureLocalBookStatusReady(request.sourceId, request.bookUrl)
+            }
             // 只在「这本书现在还没有本地副本」时才去补抓一次。
             //
             // 语义边界（用户明确要求）：封面只在**导入 / 加入书架 / 手动修改**这三种时机获取，
@@ -1118,6 +1122,11 @@ fun Route.apiRoutes(
             val request = call.receive<BookCacheRangeRequest>()
             val item = database.listBookshelf().firstOrNull { it.sourceId == request.sourceId && it.bookUrl == request.bookUrl }
                 ?: return@post call.respond(HttpStatusCode.NotFound, ApiError("not_found", "书籍不在书架中"))
+            if (item.sourceId == LocalBookParser.LOC_BOOK_SOURCE_ID || item.bookUrl.startsWith("local://")) {
+                database.ensureLocalBookStatusReady(item.sourceId, item.bookUrl)
+                call.respond(HttpStatusCode.Accepted, mapOf("status" to "ready"))
+                return@post
+            }
             bookCache.enqueue(CachedBookRequest(
                 item.sourceId,
                 item.bookUrl,

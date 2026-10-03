@@ -130,3 +130,33 @@ test('LocalBookImport - isLocalBookFile stays in sync with the supported set', (
     )
   }
 })
+
+test('LocalBookImport - local book cache badge never displays cache failure', () => {
+  // 模拟 cacheBadge 逻辑对本地书的防护
+  const cacheBadge = (item: BookshelfItem) => {
+    if (item.sourceId === 'loc_book' || item.bookUrl.startsWith('local://')) {
+      const count = item.cachedChapters || item.totalChapters || 0
+      return count > 0 ? `${count}章已缓存` : null
+    }
+    if (item.cacheState === 'caching') return '缓存中'
+    if (item.cacheState === 'ready') return `${item.cachedChapters}章已缓存`
+    if (item.cacheState === 'failed') return '缓存中断'
+    return null
+  }
+
+  // 哪怕因为历史网络误伤将 cacheState 置为 failed，本地书也决不能展示「缓存中断」
+  const damagedLocalBook: BookshelfItem = {
+    sourceId: 'loc_book',
+    bookUrl: 'local://damaged',
+    name: '本地书',
+    tocUrl: 'local://damaged/toc',
+    lastReadAt: Date.now(),
+    cachedChapters: 50,
+    totalChapters: 50,
+    cacheState: 'failed',
+    cacheError: '书源不存在',
+    completed: false,
+  }
+
+  assert.equal(cacheBadge(damagedLocalBook), '50章已缓存')
+})

@@ -803,6 +803,8 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
     setActiveDrawer(null)
   }, [chapterIndex, currentBook.chapters.length, persist, settings.ttsEngine, showBoundaryNotice, stopTts, stopAllEngines, t])
 
+  const isLocalBook = currentBook.details.sourceId === 'loc_book' || currentBook.bookUrl.startsWith('local://')
+
   const toggleShelf = async () => {
     if (inShelf) {
       if (!confirm(t('shelf.removeFromShelfConfirm', { name: bookName, defaultValue: `移出“${bookName}”将清除书架、阅读进度和缓存封面，确定继续吗？` }))) return
@@ -1676,73 +1678,77 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
             </div>
           ) : (
             <div className="drawer-cache-idle">
-              <div className="cache-range-btn-grid">
-                <button
-                  type="button"
-                  className="cache-range-btn"
-                  title={t('reader.cacheNext50Title', '缓存当前章节后续 50 章')}
-                  onClick={() => void handleCacheRange('next50')}
-                >
-                  {t('reader.cacheNext50', '后 50 章')}
-                </button>
-                <button
-                  type="button"
-                  className="cache-range-btn"
-                  title={t('reader.cacheNext100Title', '缓存当前章节后续 100 章')}
-                  onClick={() => void handleCacheRange('next100')}
-                >
-                  {t('reader.cacheNext100', '后 100 章')}
-                </button>
-                <button
-                  type="button"
-                  className="cache-range-btn"
-                  title={t('reader.cacheAllTitle', '缓存全本小说')}
-                  onClick={() => void handleCacheRange('all')}
-                >
-                  {t('reader.cacheAll', '全本缓存')}
-                </button>
-                <button
-                  type="button"
-                  className="cache-range-btn"
-                  title={t('reader.cacheCustomTitle', '自定义章节范围')}
-                  onClick={() => setCustomRangeOpen(prev => !prev)}
-                >
-                  {t('reader.cacheCustom', '自定义...')}
-                </button>
-              </div>
-
-              {customRangeOpen && (
-                <div className="cache-custom-range-box">
-                  <div className="range-inputs">
-                    <span>{t('reader.cacheCustomFrom', '第')}</span>
-                    <input
-                      type="number"
-                      min={1}
-                      max={currentBook.chapters.length}
-                      value={customRangeStart}
-                      onChange={e => setCustomRangeStart(Number(e.target.value))}
-                    />
-                    <span>{t('reader.cacheCustomTo', '至')}</span>
-                    <input
-                      type="number"
-                      min={customRangeStart}
-                      max={currentBook.chapters.length}
-                      value={customRangeEnd}
-                      onChange={e => setCustomRangeEnd(Number(e.target.value))}
-                    />
-                    <span>{t('reader.cacheCustomUnit', '章')}</span>
+              {!isLocalBook && (
+                <>
+                  <div className="cache-range-btn-grid">
+                    <button
+                      type="button"
+                      className="cache-range-btn"
+                      title={t('reader.cacheNext50Title', '缓存当前章节后续 50 章')}
+                      onClick={() => void handleCacheRange('next50')}
+                    >
+                      {t('reader.cacheNext50', '后 50 章')}
+                    </button>
+                    <button
+                      type="button"
+                      className="cache-range-btn"
+                      title={t('reader.cacheNext100Title', '缓存当前章节后续 100 章')}
+                      onClick={() => void handleCacheRange('next100')}
+                    >
+                      {t('reader.cacheNext100', '后 100 章')}
+                    </button>
+                    <button
+                      type="button"
+                      className="cache-range-btn"
+                      title={t('reader.cacheAllTitle', '缓存全本小说')}
+                      onClick={() => void handleCacheRange('all')}
+                    >
+                      {t('reader.cacheAll', '全本缓存')}
+                    </button>
+                    <button
+                      type="button"
+                      className="cache-range-btn"
+                      title={t('reader.cacheCustomTitle', '自定义章节范围')}
+                      onClick={() => setCustomRangeOpen(prev => !prev)}
+                    >
+                      {t('reader.cacheCustom', '自定义...')}
+                    </button>
                   </div>
-                  <button
-                    type="button"
-                    className="primary-button range-start-btn"
-                    onClick={() => {
-                      setCustomRangeOpen(false)
-                      void handleCacheRange('custom', customRangeStart, customRangeEnd)
-                    }}
-                  >
-                    {t('reader.startCache', '开始缓存')}
-                  </button>
-                </div>
+
+                  {customRangeOpen && (
+                    <div className="cache-custom-range-box">
+                      <div className="range-inputs">
+                        <span>{t('reader.cacheCustomFrom', '第')}</span>
+                        <input
+                          type="number"
+                          min={1}
+                          max={currentBook.chapters.length}
+                          value={customRangeStart}
+                          onChange={e => setCustomRangeStart(Number(e.target.value))}
+                        />
+                        <span>{t('reader.cacheCustomTo', '至')}</span>
+                        <input
+                          type="number"
+                          min={customRangeStart}
+                          max={currentBook.chapters.length}
+                          value={customRangeEnd}
+                          onChange={e => setCustomRangeEnd(Number(e.target.value))}
+                        />
+                        <span>{t('reader.cacheCustomUnit', '章')}</span>
+                      </div>
+                      <button
+                        type="button"
+                        className="primary-button range-start-btn"
+                        onClick={() => {
+                          setCustomRangeOpen(false)
+                          void handleCacheRange('custom', customRangeStart, customRangeEnd)
+                        }}
+                      >
+                        {t('reader.startCache', '开始缓存')}
+                      </button>
+                    </div>
+                  )}
+                </>
               )}
 
               <div className="cache-local-sync-row">

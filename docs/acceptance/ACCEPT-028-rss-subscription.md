@@ -175,7 +175,7 @@ Compare-Object (Get-Content .recon\fail-baseline.txt) (Get-Content .recon\fail-r
 
 **实测结论（2026-10-03）**：
 
-| | 基线 `397a208` | 本分支 `c81a010` |
+| | 基线 `397a208` | 本分支（rebase 到已合并的 `main` 之后） |
 | :--- | ---: | ---: |
 | 用例总数 | 451 | 458（+7 全部通过） |
 | 失败数 | 57 | 57 |

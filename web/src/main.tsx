@@ -1386,13 +1386,21 @@ function BookInfoEditModal({
       // 不要把本服务自己的封面接口地址当"外部封面地址"回写。
       // 之前 coverUrl 为空时会回退到 api.cover(coverKey)，于是存回 `/api/covers/<自己的 key>`，
       // 形成自引用（SESSION-027）。封面本来就由 coverKey 表达，这里只提交真实外部 URL。
+      // 三种情形必须区分开（服务端语义：缺省=保留，空串=清除）：
+      //   ① 用户没动过封面（coverUrl === null）⇒ 提交 undefined，服务端保留原值。
+      //      原实现这里区分不开，于是「只改书名点保存」会把 cover_url 抹成 NULL。
+      //   ② 用户点了「清除封面」（coverUrl === ''）⇒ 必须显式提交空串，否则清除不掉
+      //      （空串会被下面的 externalCover 折成 undefined，看起来像「没动过」）。
+      //   ③ 用户填了外部地址 ⇒ 提交该地址；若它是本服务自己的 /api/covers/<key>（自引用），
+      //      则不提交 —— 封面本来就由 coverKey 表达（SESSION-027）。
       const externalCover = coverUrl && !coverUrl.startsWith('/api/covers/') ? coverUrl : undefined
+      const coverUrlField = coverUrl === null ? undefined : coverUrl === '' ? '' : externalCover
       const updated = await api.updateBookshelfInfo({
         sourceId: item.sourceId,
         bookUrl: item.bookUrl,
         name: trimmedName,
         author: author.trim() || undefined,
-        coverUrl: coverUrl === null ? undefined : externalCover,
+        coverUrl: coverUrlField,
         groupName: groupName || undefined,
         alternateSources,
       })
@@ -2883,16 +2891,13 @@ function App() {
   }
 
   const openReader = (book: OpenBook, index: number, origin: Page = 'library') => {
-    const fallbackCover = book.details.coverUrl || book.details.alternateSources?.find(s => s.coverUrl?.trim())?.coverUrl?.trim()
-    void api.addToBookshelf({
-      sourceId: book.details.sourceId,
-      bookUrl: book.bookUrl,
-      name: book.details.name,
-      author: book.details.author,
-      tocUrl: book.details.tocUrl,
-      coverUrl: fallbackCover || undefined,
-      alternateSources: book.details.alternateSources,
-    }).catch(() => undefined)
+    // 这里**刻意不再调 api.addToBookshelf**。
+    //
+    // 原实现每次开书都往书架写一行（借「加入书架」接口做 upsert），而它携带的封面地址
+    // 对「只靠外链、没有本地副本」的书是 undefined ⇒ 服务端把 cover_url 覆盖成 NULL
+    // ⇒ 返回书架后该书的封面永久消失（实测 2026-10-03 已因此丢掉 2 本书的封面）。
+    // 开书 ≠ 加入书架；封面只在「导入 / 加入书架 / 手动修改」三种时机获取，
+    // 读者想加书架请用阅读器里的「加书架」按钮或书库/搜索页的加入动作。
     const value = { book, index }
     setReader(value)
     setReaderReturnPage(origin)
@@ -2902,7 +2907,13 @@ function App() {
   }
 
   const openShelfItem = async (item: BookshelfItem) => {
-    const fallbackCover = item.coverKey ? api.cover(item.coverKey) : (item.alternateSources?.find(s => s.coverUrl?.trim())?.coverUrl?.trim() || undefined)
+    // 阅读器里显示封面用的地址（不再回写书架）。三级回退：
+    // 本地副本 → 兄弟书源的封面 → **本条自己的 coverUrl**。
+    // 最后一级曾经漏掉：只靠外链、没有本地副本的书会传 undefined 上去，
+    // 而开书路径当时会写书架，于是把 cover_url 抹成 NULL（详见 openReader 的注释）。
+    const fallbackCover = item.coverKey
+      ? api.cover(item.coverKey)
+      : (item.alternateSources?.find(s => s.coverUrl?.trim())?.coverUrl?.trim() || item.coverUrl || undefined)
     const safeDetails: BookDetails = {
       sourceId: item.sourceId,
       name: cleanTitle(item.name) || item.name,

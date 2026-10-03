@@ -581,9 +581,19 @@ class Database(private val path: String) : Closeable, AutoCloseable {
             // 书名入库前统一清洗：去掉换行（目录页规则常把「最新章节标题」带进书名，
             // 实测会出现 `"书名\n第八十章 …"` 这种脏数据，见 SESSION-027）。
             val cleanName = sanitizeBookName(request.name).ifBlank { request.name.trim() }
+            // cover_url 与 cover_key 的「缺省」语义必须对齐成**保留**。
+            //
+            // 原先 cover_url 是 `excluded.cover_url` 无条件覆盖，而 cover_key 有 coalesce 保护 ——
+            // 这个不对称会造成不可逆的数据损失：前端每次开书都会调一次「加入书架」
+            // （main.tsx 的 openReader），而它传的 coverUrl 对「只靠外链、没有本地副本」的书是 undefined
+            // ⇒ cover_url 被抹成 NULL ⇒ 该书的封面引用彻底消失，返回书架就再也看不到封面。
+            // 实测（2026-10-03）已因此弄丢 2 本书的封面。缺省一律视为「保留」。
+            //
+            // cover_key 反过来改成「已有副本优先」：重复加入书架（例如再次从书源页打开）不该顶掉
+            // 已经物化好的封面，手动选好的封面同理。
             db.prepareStatement("""insert into book_shelf(source_id,book_url,name,author,toc_url,cover_url,cover_key,last_read_at,alternate_sources,group_name) values(?,?,?,?,?,?,?,?,?,?)
-                on conflict(source_id,book_url) do update set name=excluded.name,author=excluded.author,toc_url=excluded.toc_url,cover_url=excluded.cover_url,cover_key=coalesce(excluded.cover_key,book_shelf.cover_key),last_read_at=excluded.last_read_at,alternate_sources=coalesce(excluded.alternate_sources,book_shelf.alternate_sources),group_name=coalesce(excluded.group_name,book_shelf.group_name)""").use {
-                it.setString(1, request.sourceId); it.setString(2, request.bookUrl); it.setString(3, cleanName); it.setString(4, request.author); it.setString(5, request.tocUrl); it.setString(6, request.coverUrl?.takeIf { u -> !isSelfCoverReference(u, cover?.key) }); it.setString(7, cover?.key); it.setLong(8, now); it.setString(9, altJson); it.setString(10, cleanGroup); it.executeUpdate()
+                on conflict(source_id,book_url) do update set name=excluded.name,author=excluded.author,toc_url=excluded.toc_url,cover_url=coalesce(excluded.cover_url,book_shelf.cover_url),cover_key=coalesce(book_shelf.cover_key,excluded.cover_key),last_read_at=excluded.last_read_at,alternate_sources=coalesce(excluded.alternate_sources,book_shelf.alternate_sources),group_name=coalesce(excluded.group_name,book_shelf.group_name)""").use {
+                it.setString(1, request.sourceId); it.setString(2, request.bookUrl); it.setString(3, cleanName); it.setString(4, request.author); it.setString(5, request.tocUrl); it.setString(6, request.coverUrl?.trim()?.takeIf { u -> u.isNotEmpty() && !isSelfCoverReference(u, cover?.key) }); it.setString(7, cover?.key); it.setLong(8, now); it.setString(9, altJson); it.setString(10, cleanGroup); it.executeUpdate()
             }
             db.commit(); getBookshelf(db, request.sourceId, request.bookUrl)!!
         } catch (error: Throwable) { db.rollback(); throw error } finally { db.autoCommit = true }
@@ -623,14 +633,18 @@ class Database(private val path: String) : Closeable, AutoCloseable {
             var oldCover: String? = null
             var oldGroup: String? = null
             var oldAlts: String? = null
-            db.prepareStatement("select cover_key, group_name, alternate_sources from book_shelf where source_id=? and book_url=?").use {
+            var oldCoverUrl: String? = null
+            // 必须把 cover_url 一起查出来 —— 「表里有」不等于「读得到」，
+            // 缺了它就无从判断「字段缺省时该保留什么」（同类教训见备份导入封面那条）。
+            db.prepareStatement("select cover_key, cover_url, group_name, alternate_sources from book_shelf where source_id=? and book_url=?").use {
                 it.setString(1, request.sourceId); it.setString(2, request.bookUrl)
                 it.executeQuery().use { rs ->
                     if (rs.next()) {
                         found = true
                         oldCover = rs.getString(1)
-                        oldGroup = rs.getString(2)
-                        oldAlts = rs.getString(3)
+                        oldCoverUrl = rs.getString(2)
+                        oldGroup = rs.getString(3)
+                        oldAlts = rs.getString(4)
                     }
                 }
             }
@@ -650,13 +664,24 @@ class Database(private val path: String) : Closeable, AutoCloseable {
             // 实测（SESSION-027）：编辑弹窗在没有外部 URL 时会回退调用 api.cover(coverKey)，
             // 于是把 `/api/covers/<自己的 key>` 当成"外部封面地址"存了回来，形成自引用。
             // 危害：一旦 coverKey 被清空，前端回退到 coverUrl 就指向自身，形成无意义的循环。
-            // 这里以 coverKey 为准，剥离该自引用（保留真实外部 URL）。
-            val sanitizedCoverUrl = request.coverUrl?.takeIf { !isSelfCoverReference(it, newCoverKey) }
+            //
+            // cover_url 的三种情形必须区分开，不能再拿「缺省」兼职「清空」：
+            //   ① 字段缺失（null）⇒ **保留**原值 —— 编辑弹窗只改书名/作者时不该顺手抹掉封面地址。
+            //      原实现直接写 null，实测「不改封面点保存」会把 cover_url 抹成 NULL（不可逆）。
+            //   ② 显式空串（""）  ⇒ 清除（编辑弹窗的「清除封面」按钮走这条）。
+            //   ③ 有值            ⇒ 采用该值。
+            // 传入自引用时退回原值而不是写 null —— 写 null 同样会毁掉外链兜底。
+            val fallbackCoverUrl = oldCoverUrl?.takeIf { url -> !isSelfCoverReference(url, newCoverKey) }
+            val newCoverUrl = when {
+                request.coverUrl == null -> fallbackCoverUrl
+                request.coverUrl.isBlank() -> null
+                else -> request.coverUrl.takeIf { url -> !isSelfCoverReference(url, newCoverKey) } ?: fallbackCoverUrl
+            }
 
             db.prepareStatement("update book_shelf set name=?, author=?, cover_url=?, cover_key=?, group_name=?, alternate_sources=? where source_id=? and book_url=?").use {
                 it.setString(1, sanitizeBookName(request.name).ifBlank { request.name.trim() })
                 it.setString(2, request.author)
-                it.setString(3, sanitizedCoverUrl)
+                it.setString(3, newCoverUrl)
                 it.setString(4, newCoverKey)
                 it.setString(5, newGroup)
                 it.setString(6, newAlts)

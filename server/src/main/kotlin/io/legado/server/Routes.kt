@@ -990,7 +990,14 @@ fun Route.apiRoutes(
             val immediateCover = tryFindCachedCover(coverCache, request.coverUrl, request.alternateSources)
             val item = database.saveBookshelf(request, immediateCover)
             bookCache.enqueue(CachedBookRequest(request.sourceId, request.bookUrl, request.tocUrl))
-            if (immediateCover == null && (!request.coverUrl.isNullOrBlank() || !request.alternateSources.isNullOrEmpty())) {
+            // 只在「这本书现在还没有本地副本」时才去补抓一次。
+            //
+            // 语义边界（用户明确要求）：封面只在**导入 / 加入书架 / 手动修改**这三种时机获取，
+            // 重复添加或打开阅读都不许刷新。原判断只看 `immediateCover == null`，
+            // 于是给一本**已有封面**的书重新「加入书架」时，后台下载会绕过 saveBookshelf 的
+            // 「已有 cover_key 优先」保护、直接把封面顶掉（手动选好的封面也会被顶掉）。
+            // item 是 upsert 之后的结果，coverKey 非空即代表这本书已经有封面可用 ⇒ 不必再抓。
+            if (item.coverKey == null && (!request.coverUrl.isNullOrBlank() || !request.alternateSources.isNullOrEmpty())) {
                 application.launch(Dispatchers.IO) {
                     val cached = tryCacheCover(coverCache, request.coverUrl, request.alternateSources)
                     if (cached != null) {

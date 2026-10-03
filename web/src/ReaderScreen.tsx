@@ -1319,6 +1319,25 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
     }
   }, [persist, preloadNextChapter, preloadPrevChapter, settings.pageMode, shiftScrollWindow])
 
+  // 进度里的「当前章」必须与**正在显示的章**锁死同步，不能等正文加载完再更新。
+  //
+  // 事故（实测 2026-10-03）：切章时 `changeChapter` 先保存旧章、再 `setChapterIndex`，
+  // 而 `currentRef.current.chapter` 只在正文到达后才在 `applyContent` 里更新；
+  // 与此同时翻页/滚动效果是按「正在显示的章」在改 `current.position`。
+  // 于是正文还在路上时一旦触发保存（防抖 1.2s、退出阅读器、页面隐藏），
+  // 写进库里的就是「**旧章节 + 新位置**」的错配 ⇒ 退出再进入会往前跳好几章。
+  // 实测：滑块跳到第 100 章后退出，服务端记的是第 2 章。
+  //
+  // 位置语义：切到新章时位置归 0（新章从头开始）；正文到达后 `applyContent` 再按需
+  // 覆盖成恢复进度。窗口平移那颗路径不受影响 —— 它已经把 current 设成目标章，
+  // 这里判断 index 相同即跳过，保留平移要用的位置。
+  useEffect(() => {
+    if (!chapter) return
+    const current = currentRef.current
+    if (current?.chapter.index === chapter.index) return
+    currentRef.current = { chapter, position: 0 }
+  }, [chapter])
+
   useEffect(() => {
     if (settings.pageMode !== 'paginate') return
     const position = pageCount > 1 ? pageIndex / (pageCount - 1) : 0

@@ -56,8 +56,9 @@ class JsSandbox(private val runner: RuleRunner? = null) {
     /**
      * `cache.putMemory`/`cache.getFromMemory` 的进程内后端（key 形如 `sourceId\u0000key`）。
      * 只在本沙箱实例内有效，不落库 —— 与 Legado `CacheManager` 的内存缓存语义一致。
+     * 存的是**原始 JS 值**（见 [createCacheBridge] 的说明）。
      */
-    private val memoryCache = ConcurrentHashMap<String, String>()
+    private val memoryCache = ConcurrentHashMap<String, Any?>()
 
     /**
      * 当前线程正在求值的书源上下文。
@@ -175,6 +176,32 @@ class JsSandbox(private val runner: RuleRunner? = null) {
         private set
 
     companion object {
+        /**
+         * 把任意文本安全地嵌进 JS 字符串字面量。
+         *
+         * 只用于把 JSON 文本喂给沙箱内的 `JSON.parse`（见 [storageToJs]），
+         * 因此必须处理引号/反斜杠/控制字符，以及 JS 特有的行终止符 U+2028/U+2029。
+         */
+        internal fun quoteForJavaScript(text: String): String {
+            val out = StringBuilder(text.length + 2)
+            out.append('"')
+            for (ch in text) {
+                when {
+                    ch == '"' -> out.append("\\\"")
+                    ch == '\\' -> out.append("\\\\")
+                    ch == '\n' -> out.append("\\n")
+                    ch == '\r' -> out.append("\\r")
+                    ch == '\t' -> out.append("\\t")
+                    ch == '\u2028' -> out.append("\\u2028")
+                    ch == '\u2029' -> out.append("\\u2029")
+                    ch < ' ' -> out.append("\\u%04x".format(ch.code))
+                    else -> out.append(ch)
+                }
+            }
+            out.append('"')
+            return out.toString()
+        }
+
         /**
          * 判断脚本是否存在**顶层** `return`。
          *
@@ -1092,12 +1119,13 @@ class JsSandbox(private val runner: RuleRunner? = null) {
      * 用 `cache.putMemory('yckdm', …)` 预热它 —— 缺这一层桥会让这类源**静默**失效。
      *
      * 分层语义（对齐 Legado）：
-     * - `getFromMemory`/`putMemory` 走本沙箱实例的进程内缓存，不落库；
+     * - `getFromMemory`/`putMemory` 走本沙箱实例的进程内缓存，**存原始 JS 值**（不落库）；
      * - `get`/`put` 落到书源级 KV（`source_kv`），表达式求值间可跨进程存活。
      *
-     * 读写都做「原生 JS 值优先、字符串回退」处理：Legado 的 `putMemory` 可存对象，
-     * 调用侧常写 `eval(String(cache.getFromMemory('x')))` 或 `JSON.parse(...)`，
-     * 因此取到字符串时尝试按 JSON 还原，还原不了就原样返回字符串。
+     * ⚠️ 内存层刻意**不做字符串往返**：把对象 `JSON.stringify` 再 `NativeJSON.parse` 回来后，
+     * 拿到的 Rhino 映射在**属性访问**上不可靠（实测 `cache.getFromMemory('k').a` 得到
+     * `undefined`，而 `String(...)` 却是 `{"a":1}`）。存原始值即可完全避免这个问题，
+     * 也天然保留 `typeof` 语义。落库层（`get`/`put`）只能存文本，故按 JSON 还原并做兜底。
      */
     private fun createCacheBridge(
         scope: Scriptable,
@@ -1111,7 +1139,7 @@ class JsSandbox(private val runner: RuleRunner? = null) {
             override fun call(cx: Context, scope: Scriptable, thisObj: Scriptable, args: Array<out Any?>): Any {
                 val k = args.getOrNull(0)?.toString() ?: return Context.getUndefinedValue()
                 val raw = args.getOrNull(1) ?: return Context.getUndefinedValue()
-                memoryCache["$sourceId\u0000$k"] = jsValueToStorage(scope, raw)
+                memoryCache["$sourceId\u0000$k"] = raw
                 return raw
             }
         })
@@ -1120,8 +1148,8 @@ class JsSandbox(private val runner: RuleRunner? = null) {
         ScriptableObject.putProperty(api, "getFromMemory", object : BaseFunction() {
             override fun call(cx: Context, scope: Scriptable, thisObj: Scriptable, args: Array<out Any?>): Any {
                 val k = args.firstOrNull()?.toString() ?: return Context.getUndefinedValue()
-                val stored = memoryCache["$sourceId\u0000$k"] ?: return Context.getUndefinedValue()
-                return storageToJs(cx, scope, stored)
+                if (!memoryCache.containsKey("$sourceId\u0000$k")) return Context.getUndefinedValue()
+                return memoryCache["$sourceId\u0000$k"] ?: Context.getUndefinedValue()
             }
         })
 
@@ -1145,7 +1173,7 @@ class JsSandbox(private val runner: RuleRunner? = null) {
         })
     }
 
-    /** 把 JS 值序列化成可持久化/可回读的字符串（Rhino 原生值走 JSON，其余走 toString）。 */
+    /** 把 JS 值序列化成可持久化的字符串（Rhino 原生对象走 JSON，其余走 toString）。 */
     private fun jsValueToStorage(scope: Scriptable, value: Any?): String = when (value) {
         null -> ""
         is String -> value
@@ -1156,17 +1184,30 @@ class JsSandbox(private val runner: RuleRunner? = null) {
     }
 
     /**
-     * 回读：只有**结构化**字符串（对象/数组字面量）才尝试还原成 JS 原生值。
+     * 落库值回读：只有**结构化**文本（`{`/`[` 开头）才还原成 JS 原生值。
      *
-     * 刻意**不**把 `"42"` / `"true"` / `"null"` 这类标量文本还原：Legado 的
-     * `cache.putMemory('k','42')` 期望取回字符串 `'42'`，若被转成数字，调用侧
-     * `String(cache.getFromMemory('k'))` 结果一样、但 `typeof` 与严格比较会变，
-     * 属于「看起来能用、语义漂了」的隐患。还原失败一律原样返回字符串。
+     * 刻意**不**还原 `"42"` / `"true"` 这类标量：Legado 的 `cache.put('k','42')` 期望取回
+     * 字符串 `'42'`，转成数字会让 `typeof` 与严格比较悄悄变味。还原失败一律原样返回字符串。
+     *
+     * 实现上刻意走「Java 容器 → [toJsValue] → `JSON.stringify` → 沙箱内 `JSON.parse`」
+     * 这一圈，而不是直接返回 [toJsValue] 的产物，原因是实测踩到的两个坑：
+     * 1. `NativeJSON.parse` 在当前 Rhino（1.8.0）+ 该调用形态下**直接返回原字符串**，
+     *    于是「还原」静默失效，表现为 `cache.get('obj').a` 恒为 undefined；
+     * 2. `toJsValue` 造出的 `NativeObject` 是**无原型**的壳：属性读写与 `JSON.stringify` 都正常，
+     *    但 `String(obj)` 会抛 `TypeError: 未找到对象默认值`（真实源里 `String(cache.get(...))`
+     *    与 `eval(String(...))` 都是常见写法）。
+     * 在沙箱内用 `JSON.parse` 生成才是**真正的** JS 对象，上述两种语义都正确。
      */
     private fun storageToJs(cx: Context, scope: Scriptable, stored: String): Any {
         val trimmed = stored.trim()
         if (!trimmed.startsWith("{") && !trimmed.startsWith("[")) return stored
-        return runCatching { NativeJSON.parse(cx, scope, stored, null) }.getOrDefault(stored)
+        val parsed = runCatching { com.jayway.jsonpath.JsonPath.parse(stored).json<Any>() }.getOrNull() ?: return stored
+        val shell = runCatching { toJsValue(parsed, scope) }.getOrNull() ?: return stored
+        val jsonText = runCatching { NativeJSON.stringify(cx, scope, shell, null, null)?.toString() }.getOrNull()
+            ?: return stored
+        // 沙箱内 JSON.parse 一定是原生对象；失败则退回文本，绝不抛错打断规则
+        return runCatching { cx.evaluateString(scope, "JSON.parse(${quoteForJavaScript(jsonText)})", "cache.js", 1, null) }
+            .getOrDefault(stored)
     }
 }
 

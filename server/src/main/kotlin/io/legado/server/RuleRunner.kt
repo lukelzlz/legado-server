@@ -388,6 +388,40 @@ class RuleRunner(private val responseFetcher: ((String) -> String)? = null, inte
         return trimmed.startsWith("@js:") || trimmed.startsWith("js:") || (rule.contains("<js>") && rule.contains("</js>"))
     }
 
+    // ------------------------------------------------------------------ RSS 复用接缝
+    //
+    // RSS 订阅源的规则形态与书源**同源**（`<js>` 列表、JsonPath、`路径@js:` 后置、`##` 替换），
+    // 因此求值必须复用下面这几个既有原语，而不是另写一套（AGENTS.md「工程复杂度惩罚」）。
+    // 这几个成员原本都是 private，RSS 求值放在独立文件 `RssRuleRunner.kt` 里，
+    // 故收敛为 internal 薄封装 —— 只改可见性，不碰任何一行既有逻辑。
+
+    /** 列表规则求值：与 [chapters] 的列表分支同源，`<js>` 规则自动走 [jsListNodes]。 */
+    internal fun evalNodeList(body: String, listRule: String, baseUrl: String): List<NodeValue> =
+        if (isJsRule(listRule)) jsListNodes(NodeValue.document(body), listRule, body, baseUrl) else nodes(body, listRule)
+
+    /** 对单个节点求一条取值规则（Html/Json 两条路径、`<js>`、`@js:`、`##` 都由 [NodeValue.value] 内部分派）。 */
+    internal fun evalNodeValue(node: NodeValue, rule: String?, body: String, baseUrl: String): String? =
+        node.value(rule, jsSandbox, body, baseUrl)
+
+    /**
+     * RSS 列表请求取数：解析 URL 内联选项 → 叠加源自带的 `header` → 取回 body。
+     *
+     * 刻意把整段收敛在 `RuleRunner` 内部（而不是把 `UrlOptions` 暴露出去）：
+     * `UrlOptions` 是 private 数据类，暴露它就得连带改可见性，反而扩大改动面。
+     *
+     * 合并顺序与书源 [mergeOptions] 一致：**URL 内联选项优先于源 `header`**。
+     */
+    internal fun evalFetchRssList(
+        url: String,
+        sourceHeader: String?,
+        sourceId: String?,
+        database: Database?,
+    ): String {
+        val (cleanUrl, options) = splitUrlOptions(url)
+        val headers = sourceHeader?.takeIf { it.isNotBlank() }?.let { parseHeaderMap(it) } ?: emptyMap()
+        return fetchUrl(cleanUrl, mergeOptions(headers, options), null, sourceId, database)
+    }
+
     /** `<js>` 形式的列表规则：求值得到 JSON 数组后逐项包装成可继续取值的节点。 */
     private fun jsListNodes(base: NodeValue, listRule: String, body: String, baseUrl: String): List<NodeValue> {
         val json = base.value(listRule, jsSandbox, body, baseUrl) ?: return emptyList()

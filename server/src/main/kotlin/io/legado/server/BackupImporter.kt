@@ -300,10 +300,12 @@ class BackupImporter(
      * 解析 `rssSources.json`（RSS 订阅源）。
      *
      * 字段名与手机端 `RssSource` 实体逐字对应，实测参照包 8 条 / 31 字段并集。
+     * 逐字段判据统一交给 [RssSourceCodec.fromObject] —— 「备份导入」与「前端粘贴 JSON」
+     * 两条入口必须同源，否则同一份数据在两条路径上会有不同结果（本项目吃过这类亏）。
+     *
      * 只管**备份里真实出现的 31 个字段**；手机端实体另有十余个字段
      * （`ruleNextPage` / `ruleContent` / `ruleDescription` / `concurrentRate` / `coverDecodeJs` /
-     * `startHtml` 等）在本服务的 31 列方案里没有落点，**如实忽略**而不假装支持
-     * （本轮已确认的功能边界，见 PROPOSAL-028 的非目标）。
+     * `startHtml` 等）在本服务的 31 列方案里没有落点，**如实忽略**而不假装支持。
      *
      * 两处与直觉不同、已核对手机端源码的细节：
      * 1. `redirectPolicy` 是**字符串枚举**（`RedirectPolicy.kt`），默认 `ASK_CROSS_ORIGIN`；
@@ -314,39 +316,7 @@ class BackupImporter(
         array(text, "rssSources.json").mapNotNull { element ->
             val source = element as? JsonObject ?: return@mapNotNull null
             val sourceUrl = source.text("sourceUrl")?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
-            RssSource(
-                sourceUrl = sourceUrl,
-                sourceName = source.text("sourceName")?.takeIf { it.isNotBlank() } ?: sourceUrl,
-                sourceGroup = source.text("sourceGroup")?.takeIf { it.isNotBlank() },
-                sourceIcon = source.text("sourceIcon")?.takeIf { it.isNotBlank() },
-                sourceComment = source.text("sourceComment")?.takeIf { it.isNotBlank() },
-                enabled = source.flag("enabled") ?: true,
-                customOrder = source.number("customOrder")?.toInt() ?: 0,
-                type = source.number("type")?.toInt() ?: 0,
-                articleStyle = source.number("articleStyle")?.toInt() ?: 0,
-                lastUpdateTime = source.number("lastUpdateTime") ?: 0L,
-                singleUrl = source.flag("singleUrl") ?: false,
-                cacheFirst = source.flag("cacheFirst") ?: false,
-                preload = source.flag("preload") ?: false,
-                enableJs = source.flag("enableJs") ?: false,
-                showWebLog = source.flag("showWebLog") ?: false,
-                enabledCookieJar = source.flag("enabledCookieJar") ?: false,
-                loadWithBaseUrl = source.flag("loadWithBaseUrl") ?: false,
-                header = source.text("header")?.takeIf { it.isNotBlank() },
-                sortUrl = source.text("sortUrl")?.takeIf { it.isNotBlank() },
-                ruleArticles = source.text("ruleArticles")?.takeIf { it.isNotBlank() },
-                ruleLink = source.text("ruleLink")?.takeIf { it.isNotBlank() },
-                ruleTitle = source.text("ruleTitle")?.takeIf { it.isNotBlank() },
-                ruleImage = source.text("ruleImage")?.takeIf { it.isNotBlank() },
-                rulePubDate = source.text("rulePubDate")?.takeIf { it.isNotBlank() },
-                loginUrl = source.text("loginUrl")?.takeIf { it.isNotBlank() },
-                loginUi = source.text("loginUi")?.takeIf { it.isNotBlank() },
-                injectJs = source.text("injectJs")?.takeIf { it.isNotBlank() },
-                shouldOverrideUrlLoading = source.text("shouldOverrideUrlLoading")?.takeIf { it.isNotBlank() },
-                jsLib = source.text("jsLib")?.takeIf { it.isNotBlank() },
-                contentBlacklist = source.text("contentBlacklist")?.takeIf { it.isNotBlank() },
-                redirectPolicy = source.text("redirectPolicy")?.takeIf { it.isNotBlank() } ?: "ASK_CROSS_ORIGIN",
-            )
+            RssSourceCodec.fromObject(source, sourceUrl)
         }
 
     private fun array(text: String, fileName: String): List<JsonElement> =

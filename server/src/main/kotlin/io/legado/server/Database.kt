@@ -234,6 +234,7 @@ class Database(private val path: String) : Closeable, AutoCloseable {
         migrateBookshelf(db)
         migrateSourceTable(db)
         migrateBookContentCache(db)
+        healLocalBookCacheStatus(db)
         val userExists = db.prepareStatement("select 1 from app_user where id = 1").use { it.executeQuery().next() }
         if (!userExists) {
             require(!initialPassword.isNullOrBlank()) { "首次启动必须提供 ADMIN_PASSWORD" }
@@ -1315,6 +1316,49 @@ class Database(private val path: String) : Closeable, AutoCloseable {
     }
 
     /**
+     * 保证本地导入书籍的缓存状态为 ready。
+     *
+     * 本地图书在导入时已由 [LocalBookParser] 解析完毕并全部入库（写入 [book_content_cache]），
+     * 严禁被网络爬虫队列覆盖为 failed。
+     */
+    fun ensureLocalBookStatusReady(sourceId: String, bookUrl: String) = write { db ->
+        val cachedCount = db.prepareStatement("select count(*) from book_content_cache where source_id=? and book_url=?").use {
+            it.setString(1, sourceId); it.setString(2, bookUrl); it.executeQuery().use { rs -> rs.next(); rs.getInt(1) }
+        }
+        val existingTotal = db.prepareStatement("select total_chapters from book_cache_status where source_id=? and book_url=?").use {
+            it.setString(1, sourceId); it.setString(2, bookUrl); it.executeQuery().use { rs -> if (rs.next()) rs.getInt(1) else 0 }
+        }
+        val total = if (existingTotal > 0) existingTotal else if (cachedCount > 0) cachedCount else 1
+        db.prepareStatement("""
+            insert into book_cache_status(source_id, book_url, total_chapters, cached_chapters, state, last_error, updated_at)
+            values(?, ?, ?, ?, 'ready', null, ?)
+            on conflict(source_id, book_url) do update set
+                total_chapters = case when excluded.cached_chapters > 0 then excluded.cached_chapters else book_cache_status.total_chapters end,
+                cached_chapters = case when excluded.cached_chapters > 0 then excluded.cached_chapters else book_cache_status.cached_chapters end,
+                state = 'ready',
+                last_error = null,
+                updated_at = excluded.updated_at
+        """.trimIndent()).use {
+            it.setString(1, sourceId)
+            it.setString(2, bookUrl)
+            it.setInt(3, total)
+            it.setInt(4, cachedCount)
+            it.setLong(5, System.currentTimeMillis())
+            it.executeUpdate()
+        }
+    }
+
+    private fun healLocalBookCacheStatus(db: Connection) {
+        // 自愈被历史网络缓存误判为失败的本地图书
+        db.prepareStatement("""
+            update book_cache_status
+            set state = 'ready', last_error = null
+            where (source_id = 'loc_book' or book_url like 'local://%')
+              and state = 'failed'
+        """.trimIndent()).use { it.executeUpdate() }
+    }
+
+    /**
      * 启动时需要**续做**的缓存任务。
      *
      * 只返回上次未跑完的书（`state` 为 `pending`/`caching`），而不是整张书架。
@@ -2009,9 +2053,16 @@ class Database(private val path: String) : Closeable, AutoCloseable {
         val altSources = if (!altJson.isNullOrBlank()) {
             runCatching { Json.decodeFromString<List<SearchResult>>(altJson) }.getOrDefault(emptyList())
         } else emptyList()
+        val sourceId = getString(1)
+        val bookUrl = getString(2)
+        val rawState = getString(12)
+        val rawError = getString(13)
+        val isLocal = sourceId == LocalBookParser.LOC_BOOK_SOURCE_ID || bookUrl.startsWith("local://")
+        val state = if (isLocal && rawState == "failed") "ready" else rawState
+        val error = if (isLocal && rawState == "failed") null else rawError
         return BookshelfItem(
-            sourceId = getString(1),
-            bookUrl = getString(2),
+            sourceId = sourceId,
+            bookUrl = bookUrl,
             name = getString(3),
             author = getString(4),
             tocUrl = getString(5),
@@ -2021,8 +2072,8 @@ class Database(private val path: String) : Closeable, AutoCloseable {
             lastReadAt = getLong(9),
             cachedChapters = getInt(10),
             totalChapters = getInt(11),
-            cacheState = getString(12),
-            cacheError = getString(13),
+            cacheState = state,
+            cacheError = error,
             completed = getInt(14) != 0,
             alternateSources = altSources,
             groupName = runCatching { getString(16) }.getOrNull()?.trim()?.takeIf { it.isNotEmpty() },

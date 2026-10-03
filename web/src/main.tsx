@@ -1819,29 +1819,31 @@ function BookManageModal({
             </button>
           )}
 
-          {isCaching ? (
-            <div className="manage-cache-box">
-              <div className="manage-cache-info-row">
+          {item.sourceId !== 'loc_book' && (
+            isCaching ? (
+              <div className="manage-cache-box">
+                <div className="manage-cache-info-row">
+                  <div className="action-icon"><Icon name="download" /></div>
+                  <div className="action-text">
+                    <strong>{t('shelf.cachingAll', '正在离线缓存全本')}</strong>
+                    <small>{percent}% ({item.cachedChapters} / {item.totalChapters || '?'}) {t('reader.cacheCustomUnit', '章')}</small>
+                  </div>
+                  <button className="subtle-button cancel-cache-link" onClick={onCancelCache}>{t('shelf.cancelCacheLink', '取消缓存')}</button>
+                </div>
+                <div className="manage-cache-bar-track">
+                  <div className="manage-cache-bar-fill" style={{ width: `${percent}%` }} />
+                </div>
+              </div>
+            ) : (
+              <button className="manage-action-row" onClick={() => onCache()}>
                 <div className="action-icon"><Icon name="download" /></div>
                 <div className="action-text">
-                  <strong>{t('shelf.cachingAll', '正在离线缓存全本')}</strong>
-                  <small>{percent}% ({item.cachedChapters} / {item.totalChapters || '?'}) {t('reader.cacheCustomUnit', '章')}</small>
+                  <strong>{isReady ? t('shelf.recacheOrVerify', '重新缓存 / 校验全本') : isFailed ? t('shelf.retryCache', '重试离线缓存') : t('shelf.cacheAllTitle', '离线缓存全本')}</strong>
+                  <small>{isReady ? t('shelf.cacheAllDescReady', '已离线缓存 {{count}} 章 ✓', { count: item.cachedChapters }) : isFailed ? (item.cacheError || t('shelf.cacheAllDescFailed', '部分章节未缓存，点击重试')) : t('shelf.cacheAllDescIdle', '预先下载全书正文以供离线阅读')}</small>
                 </div>
-                <button className="subtle-button cancel-cache-link" onClick={onCancelCache}>{t('shelf.cancelCacheLink', '取消缓存')}</button>
-              </div>
-              <div className="manage-cache-bar-track">
-                <div className="manage-cache-bar-fill" style={{ width: `${percent}%` }} />
-              </div>
-            </div>
-          ) : (
-            <button className="manage-action-row" onClick={() => onCache()}>
-              <div className="action-icon"><Icon name="download" /></div>
-              <div className="action-text">
-                <strong>{isReady ? t('shelf.recacheOrVerify', '重新缓存 / 校验全本') : isFailed ? t('shelf.retryCache', '重试离线缓存') : t('shelf.cacheAllTitle', '离线缓存全本')}</strong>
-                <small>{isReady ? t('shelf.cacheAllDescReady', '已离线缓存 {{count}} 章 ✓', { count: item.cachedChapters }) : isFailed ? (item.cacheError || t('shelf.cacheAllDescFailed', '部分章节未缓存，点击重试')) : t('shelf.cacheAllDescIdle', '预先下载全书正文以供离线阅读')}</small>
-              </div>
-              <Icon name="arrowRight" />
-            </button>
+                <Icon name="arrowRight" />
+              </button>
+            )
           )}
 
           <button
@@ -2303,6 +2305,10 @@ function ShelfPage({ onOpen }: { onOpen: (item: BookshelfItem) => void }) {
   }
 
   const cacheBadge = (item: BookshelfItem) => {
+    if (item.sourceId === 'loc_book' || item.bookUrl.startsWith('local://')) {
+      const count = item.cachedChapters || item.totalChapters || 0
+      return count > 0 ? t('shelf.chaptersCached', '{{count}}章已缓存', { count }) : null
+    }
     if (item.cacheState === 'caching') return `${Math.min(100, Math.round((item.cachedChapters / Math.max(1, item.totalChapters || 1)) * 100))}% ${t('shelf.caching', '缓存中')}`
     if (item.cacheState === 'ready') return t('shelf.chaptersCached', '{{count}}章已缓存', { count: item.cachedChapters })
     if (item.cacheState === 'failed') return t('shelf.cacheFailed', '缓存中断')

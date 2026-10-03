@@ -1026,7 +1026,13 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
     const scrollToTarget = () => {
       // 三章窗口下「整文档」包含了上下相邻章，不能再拿它的总高度当滚动范围；
       // 一律相对**当前章区块**定位（区块取不到时退回旧的整文档口径）。
+      // ⚠️ 区块查找不能只信 `scrollSectionRefs.get(chapterIndex)`：恢复位置那一刻
+      // ref 映射往往还没注册好，取不到就把目标算成 0（= 文档顶部，而顶部其实是插入上方的
+      // **上一章**）⇒「恢复位置」退化成停在上一章。实测 scrollTo 只被调用两次、参数都是 0，
+      // 视口停在上一章而进度记着当前章，用户一滚动就回退章（= 报障的「往回跳」）。
+      // 兜底按**结构**找「中间那一段」（非邻居段即当前章），与 ref 注册时机解耦。
       const sectionEl = scrollSectionRefs.current.get(chapterIndex)
+        ?? (document.querySelector('.reading-scroll-window > .reading-content:not(.is-scroll-neighbor)') as HTMLElement | null)
       const sectionTop = sectionEl ? sectionEl.getBoundingClientRect().top + window.scrollY : 0
       const sectionRange = sectionEl ? sectionEl.getBoundingClientRect().height - window.innerHeight : 0
       let targetScroll = 0
@@ -1041,15 +1047,61 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
           ? sectionTop + Math.round(sectionRange * initialPos)
           : Math.round(Math.max(0, document.documentElement.scrollHeight - window.innerHeight) * initialPos)
       } else {
-        return
+        return null
       }
       lastScrollYRef.current = targetScroll
       window.scrollTo({ top: targetScroll, behavior: 'auto' })
+      return targetScroll
     }
 
     scrollToTarget()
-    const rafId = window.requestAnimationFrame(scrollToTarget)
-    return () => window.cancelAnimationFrame(rafId)
+    // 恢复位置必须**重试到真正到位**为止：恢复那一次相邻章正文往往还没进 DOM，
+    // 文档高度不够 ⇒ `scrollTo(目标)` 被浏览器**钳制**到 0（实测钩子：参数 0、scrollY 保持 0），
+    // 之后再没人纠正 ⇒ 视口停在文档顶部（= 插入上方的上一章），而进度记着当前章；
+    // 用户一滚动，视口中心落在上一章 ⇒ 窗口回退一章并保存 ⇒ 反复进出就是一路往回跳。
+    // 判据用「还没到目标就继续」：目标会随相邻章入 DOM 而变大，到位即停（上限约 10 秒）。
+    //
+    // 两个边界（维护者评审指出）：
+    // ① 期望段数必须**按首/末章动态算**：首章没有上一章、末章没有下一章，
+    //    写死 3 会让这两种情况永远判为「没铺齐」而空转满 10 秒。
+    // ② 重试期间读者一旦主动操作（滚轮/触摸/按下指针）必须**立刻让路**，
+    //    否则会和用户手势抢夺滚动条。
+    let frames = 0
+    let rafId: number | null = null
+    const cancelRetry = () => {
+      if (rafId !== null) {
+        window.cancelAnimationFrame(rafId)
+        rafId = null
+      }
+    }
+    window.addEventListener('wheel', cancelRetry, { passive: true, once: true })
+    window.addEventListener('touchstart', cancelRetry, { passive: true, once: true })
+    window.addEventListener('pointerdown', cancelRetry, { passive: true, once: true })
+
+    rafId = window.requestAnimationFrame(function retry() {
+      frames += 1
+      const desired = scrollToTarget()
+      // 只比「滚动量 == 目标」会被骗：相邻章还没进 DOM 时当前章就在文档顶部，
+      // 目标算出来正是 0，于是 `0+2 >= 0` 判定「已到位」立刻停手 —— 实测就卡在这里。
+      // 因此还要求**窗口已铺齐**（该有的相邻段都在 DOM 里），且段数按首/末章动态判定。
+      const hasPrev = chapterIndex > 0
+      const hasNext = chapterIndex < currentBook.chapters.length - 1
+      const expected = 1 + (hasPrev ? 1 : 0) + (hasNext ? 1 : 0)
+      const rendered = document.querySelectorAll('.reading-scroll-window > .reading-content').length
+      const complete = rendered >= expected
+      const reached = desired === null || (complete && window.scrollY + 2 >= desired)
+      if (!reached && frames < 600) {
+        rafId = window.requestAnimationFrame(retry)
+      } else {
+        rafId = null
+      }
+    })
+    return () => {
+      cancelRetry()
+      window.removeEventListener('wheel', cancelRetry)
+      window.removeEventListener('touchstart', cancelRetry)
+      window.removeEventListener('pointerdown', cancelRetry)
+    }
     // chapterIndex 入依赖：从目录/滑块跳章后要按**新章区块**重新定位
   }, [chapterIndex, content, loading, settings.pageMode])
 
@@ -1318,6 +1370,25 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
       persist()
     }
   }, [persist, preloadNextChapter, preloadPrevChapter, settings.pageMode, shiftScrollWindow])
+
+  // 进度里的「当前章」必须与**正在显示的章**锁死同步，不能等正文加载完再更新。
+  //
+  // 事故（实测 2026-10-03）：切章时 `changeChapter` 先保存旧章、再 `setChapterIndex`，
+  // 而 `currentRef.current.chapter` 只在正文到达后才在 `applyContent` 里更新；
+  // 与此同时翻页/滚动效果是按「正在显示的章」在改 `current.position`。
+  // 于是正文还在路上时一旦触发保存（防抖 1.2s、退出阅读器、页面隐藏），
+  // 写进库里的就是「**旧章节 + 新位置**」的错配 ⇒ 退出再进入会往前跳好几章。
+  // 实测：滑块跳到第 100 章后退出，服务端记的是第 2 章。
+  //
+  // 位置语义：切到新章时位置归 0（新章从头开始）；正文到达后 `applyContent` 再按需
+  // 覆盖成恢复进度。窗口平移那颗路径不受影响 —— 它已经把 current 设成目标章，
+  // 这里判断 index 相同即跳过，保留平移要用的位置。
+  useEffect(() => {
+    if (!chapter) return
+    const current = currentRef.current
+    if (current?.chapter.index === chapter.index) return
+    currentRef.current = { chapter, position: 0 }
+  }, [chapter])
 
   useEffect(() => {
     if (settings.pageMode !== 'paginate') return

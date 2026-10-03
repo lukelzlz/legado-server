@@ -237,7 +237,12 @@ class BackupImporter(
                 author = book.text("author")?.takeIf { it.isNotBlank() },
                 tocUrl = book.text("tocUrl")?.takeIf { it.isNotBlank() } ?: bookUrl,
                 coverUrl = (book.text("coverUrl") ?: book.text("customCoverUrl"))?.takeIf { it.isNotBlank() },
-                completed = book.text("kind")?.contains("完结") == true,
+                // 「已读完」不由导入判定：导入只负责**书籍与阅读进度**，完结与否照导入。
+                // 备份里表示连载状态的字段形态极不统一（实测 378 条真实数据里同时存在
+                // "都市脑洞,6.2,连载中,番茄" / "连载中,9.3分,都市高武,…" / "已完结,,," / 字段缺失），
+                // 书源自己的状态也常常滞后。拿它推「已读完」既不可靠，又会覆盖用户手动标的已读完，
+                // 因此这里恒为 false，并且入库时对已有记录**保留原值**（见 Database.importLibrary）。
+                completed = false,
                 chapterIndex = book.number("durChapterIndex")?.toInt() ?: 0,
                 readAt = book.number("durChapterTime") ?: 0L,
                 kind = ShelfKind.of(book.text("bookUrl"), book.text("origin"), book.text("type"), book.text("kind")),

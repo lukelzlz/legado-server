@@ -1495,7 +1495,7 @@ class Database(private val path: String) : Closeable, AutoCloseable {
                         on conflict(source_id,book_url) do update set
                           name=excluded.name, author=excluded.author, toc_url=excluded.toc_url,
                           cover_url=coalesce(excluded.cover_url,book_shelf.cover_url),
-                          last_read_at=excluded.last_read_at, completed=excluded.completed
+                          last_read_at=excluded.last_read_at, completed=book_shelf.completed
                     """.trimIndent()).use { save ->
                         entries.forEach { entry ->
                             existing.setString(1, entry.sourceId); existing.setString(2, entry.bookUrl)

@@ -1090,6 +1090,14 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
     //    否则会和用户手势抢夺滚动条。
     let frames = 0
     let rafId: number | null = null
+    // 只在**布局还在变**（相邻章正文还在铺、文档高度在变）时重试。
+    //
+    // 为什么要这条：重试窗口原本最长约 10 秒，而读者在章末安静等下一章加载时**不会触碰屏幕**
+    // （wheel/touchstart/pointerdown 三个让路守卫都不会触发），循环便会一直按最新布局重算目标
+    // 并把视口拉回去 —— 表现正是「到章末、下一章加载出来时往上跳一截」。
+    // 布局一旦稳定就说明「恢复该落的位已经落了」，此后不再纠正；真卡住（例如读者自己滚走了）
+    // 也应当在此时收手，而不是继续和读者抢。
+    let lastLayoutKey = ''
     const cancelRetry = () => {
       if (rafId !== null) {
         window.cancelAnimationFrame(rafId)
@@ -1112,7 +1120,10 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
       const rendered = document.querySelectorAll('.reading-scroll-window > .reading-content').length
       const complete = rendered >= expected
       const reached = desired === null || (complete && window.scrollY + 2 >= desired)
-      if (!reached && frames < 600) {
+      const layoutKey = `${rendered}:${document.documentElement.scrollHeight}`
+      const layoutSettled = layoutKey === lastLayoutKey
+      lastLayoutKey = layoutKey
+      if (!reached && !layoutSettled && frames < 600) {
         rafId = window.requestAnimationFrame(retry)
       } else {
         rafId = null

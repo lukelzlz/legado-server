@@ -5858,4 +5858,106 @@ mark.search-highlight { background: var(--accent-soft); color: var(--accent); fo
   }
 }
 
+/* ---------------------------------------------------------------- 订阅源（RSS） */
+
+/* 「只看未读」等切换按钮的选中态：复用既有 subtle-button，只补一个激活态 */
+.subtle-button.active {
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+  border-color: var(--accent);
+}
+
+.rss-article-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.rss-article-item {
+  border-bottom: 1px solid var(--line);
+}
+
+.rss-article-item:last-child {
+  border-bottom: none;
+}
+
+.rss-article-link {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 12px 4px;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  text-align: left;
+  color: var(--ink);
+  font-size: 14px;
+}
+
+.rss-article-link:hover {
+  background: var(--surface-muted);
+}
+
+.rss-article-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex: 1;
+}
+
+/* 未读圆点：与手机版一致的语义，但用 Web 版强调色 */
+.rss-unread-dot {
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+.rss-article-item.read .rss-article-title {
+  color: var(--muted);
+}
+
+.rss-article-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.rss-article-meta svg {
+  width: 13px;
+  height: 13px;
+  vertical-align: -2px;
+  margin-right: 3px;
+}
+
+@media (max-width: 900px) {
+  /* 移动端：侧栏不再吸顶，改为上下堆叠；保留 safe-area 计算式，不硬编码 padding */
+  .rss-page {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .rss-page .rules-sidebar {
+    height: auto;
+    position: static;
+    border-right: none;
+    border-bottom: 1px solid var(--line);
+    padding-bottom: var(--safe-bottom);
+  }
+
+  .rss-article-link {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 6px;
+  }
+}
+
 

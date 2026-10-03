@@ -15,6 +15,7 @@ import { SourceLoginModal } from './SourceLoginModal'
 import { NetworkImportModal } from './NetworkImportModal'
 import { ReplaceRulesModal } from './ReplaceRulesModal'
 import { ReplaceRulesPage } from './ReplaceRulesPage'
+import { RssPage } from './RssPage'
 import { WebDavSettingsPage } from './WebDavSettingsPage'
 import { ExplorePage } from './ExplorePage'
 import { OfflineCacheModal } from './OfflineCacheModal'
@@ -49,9 +50,9 @@ function resolveShelfCover(item: { coverKey?: string; coverUrl?: string }): stri
   return sanitizeImageUrl(item.coverUrl)
 }
 
-type Page = 'sources' | 'subscriptions' | 'library' | 'shelf' | 'reader' | 'rules' | 'webdav' | 'explore'
+type Page = 'sources' | 'subscriptions' | 'rss' | 'library' | 'shelf' | 'reader' | 'rules' | 'webdav' | 'explore'
 const readerStorageKey = 'legado-open-book-v1'
-const pageFromHash = (): Page => location.hash === '#sources' ? 'sources' : location.hash === '#subscriptions' ? 'subscriptions' : location.hash === '#rules' ? 'rules' : location.hash === '#webdav' ? 'webdav' : location.hash === '#shelf' ? 'shelf' : location.hash === '#reader' ? 'reader' : location.hash === '#explore' ? 'explore' : 'library'
+const pageFromHash = (): Page => location.hash === '#sources' ? 'sources' : location.hash === '#subscriptions' ? 'subscriptions' : location.hash === '#rss' ? 'rss' : location.hash === '#rules' ? 'rules' : location.hash === '#webdav' ? 'webdav' : location.hash === '#shelf' ? 'shelf' : location.hash === '#reader' ? 'reader' : location.hash === '#explore' ? 'explore' : 'library'
 
 function SourceChoiceList({
   choices,
@@ -3057,6 +3058,8 @@ function App() {
           <SourcesPage selected={selected} onSelect={setSelected} onSourcesChange={setSources} />
         ) : page === 'subscriptions' ? (
           <SubscriptionPage onSourcesChange={refreshSources} />
+        ) : page === 'rss' ? (
+          <RssPage />
         ) : page === 'rules' ? (
           <ReplaceRulesPage />
         ) : page === 'webdav' ? (

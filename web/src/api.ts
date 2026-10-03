@@ -235,6 +235,82 @@ export type BatchBookRecleanResponse = {
   results: BookRecleanResponse[]
 }
 
+/**
+ * RSS 订阅源（对齐 Legado 手机版 `rssSources.json`）。
+ *
+ * ⚠️ 服务端 `explicitNulls = false`：为 null 的可选字段**不会出现在 JSON 里**，
+ * 因此读取时必须容忍 `undefined`（`source.sourceGroup ?? ''`）。
+ */
+export type RssSource = {
+  sourceUrl: string
+  sourceName: string
+  sourceGroup?: string | null
+  sourceIcon?: string | null
+  sourceComment?: string | null
+  enabled?: boolean
+  customOrder?: number
+  type?: number
+  articleStyle?: number
+  lastUpdateTime?: number
+  singleUrl?: boolean
+  cacheFirst?: boolean
+  preload?: boolean
+  enableJs?: boolean
+  showWebLog?: boolean
+  enabledCookieJar?: boolean
+  loadWithBaseUrl?: boolean
+  header?: string | null
+  sortUrl?: string | null
+  ruleArticles?: string | null
+  ruleLink?: string | null
+  ruleTitle?: string | null
+  ruleImage?: string | null
+  rulePubDate?: string | null
+  loginUrl?: string | null
+  loginUi?: string | null
+  injectJs?: string | null
+  shouldOverrideUrlLoading?: string | null
+  jsLib?: string | null
+  contentBlacklist?: string | null
+  redirectPolicy?: string
+  /** 最近一次成功刷新的时间（毫秒）。 */
+  lastSuccessAt?: number | null
+  lastAttemptAt?: number | null
+  /** 最近一次失败原因；成功刷新后会被清空。 */
+  lastError?: string | null
+  updatedAt?: number
+  unreadCount?: number
+  articleCount?: number
+}
+
+/** 抓到的一篇文章。 */
+export type RssArticle = {
+  id: number
+  sourceUrl: string
+  link: string
+  title: string
+  image?: string | null
+  pubDate?: string | null
+  description?: string | null
+  origin?: string | null
+  sortName?: string | null
+  read?: boolean
+  createdAt?: number
+}
+
+/** 单次刷新结果。**失败时带 message**，不会伪装成「0 篇文章」。 */
+export type RssRefreshResponse = {
+  sourceUrl: string
+  articles: number
+  newArticles: number
+  failed?: boolean
+  message?: string | null
+}
+
+export type RssBulkReadResponse = {
+  updated: number
+}
+
 export type FlexChildStyle = {
   layout_flexGrow?: number
   layout_flexShrink?: number
@@ -615,6 +691,33 @@ export const api = {
   importReplaceRulesText: (text: string) => request<ReplaceRuleImportResponse>('/api/replace-rules/import', { method: 'POST', body: text }),
   importReplaceRulesUrl: (url: string) => request<ReplaceRuleImportResponse>('/api/replace-rules/import', { method: 'POST', body: JSON.stringify({ url }) }),
   previewReplaceRule: (req: ReplaceRulePreviewRequest) => request<ReplaceRulePreviewResponse>('/api/replace-rules/preview', { method: 'POST', body: JSON.stringify(req) }),
+  // ------------------------------------------------------------------
+  // RSS 订阅源（「订阅源」，与上面的书源订阅 `subscriptions` 是两件不同的事）
+  //
+  // ⚠️ 订阅源标识一律走 **query 的 sourceId**，不要拼进路径：真实 sourceUrl 含 `/`
+  // （`https://feed.example.com/rss`），也有 `snssdk1128://…` 与中文自定义串，
+  // 塞进路径段会因 `/` 被当分隔符而对不上。文章 id 是自增整数，拼路径是安全的。
+  // ------------------------------------------------------------------
+  getRssSources: () => request<RssSource[]>('/api/rss/sources'),
+  getRssSource: (sourceId: string) => request<RssSource>(`/api/rss/sources?${new URLSearchParams({ sourceId }).toString()}`),
+  importRssSourceText: (text: string) => request<RssSource>('/api/rss/sources', { method: 'POST', body: text }),
+  updateRssSource: (sourceId: string, source: Partial<RssSource>) =>
+    request<RssSource>(`/api/rss/sources?${new URLSearchParams({ sourceId }).toString()}`, { method: 'PUT', body: JSON.stringify(source) }),
+  deleteRssSource: (sourceId: string) =>
+    request<void>(`/api/rss/sources?${new URLSearchParams({ sourceId }).toString()}`, { method: 'DELETE' }),
+  refreshRssSource: (sourceId: string) =>
+    request<RssRefreshResponse>(`/api/rss/sources/refresh?${new URLSearchParams({ sourceId }).toString()}`, { method: 'POST' }),
+  refreshAllRssSources: (sourceIds?: string[]) =>
+    request<RssRefreshResponse[]>('/api/rss/refresh', { method: 'POST', body: JSON.stringify(sourceIds ?? []) }),
+  getRssArticles: (sourceId: string, unreadOnly = false) => {
+    const sp = new URLSearchParams({ sourceId })
+    if (unreadOnly) sp.set('unreadOnly', 'true')
+    return request<RssArticle[]>(`/api/rss/articles?${sp.toString()}`)
+  },
+  markRssArticleRead: (id: number, read = true) =>
+    request<void>(`/api/rss/articles/${id}/read`, { method: 'POST', body: JSON.stringify({ read }) }),
+  markRssSourceRead: (sourceId: string) =>
+    request<RssBulkReadResponse>(`/api/rss/sources/read-all?${new URLSearchParams({ sourceId }).toString()}`, { method: 'POST' }),
   getTtsVoices: () => request<TtsVoice[]>('/api/tts/voices'),
   createTtsSession: (signal?: AbortSignal) => request<TtsSessionInfo>('/api/tts/session', { method: 'POST', body: '{}', signal }),
   appendTtsSessionChunk: (sessionId: string, chunk: TtsSessionChunkRequest) => request<{ accepted: boolean }>(`/api/tts/session/${encodeURIComponent(sessionId)}/chunks`, { method: 'POST', body: JSON.stringify(chunk) }),

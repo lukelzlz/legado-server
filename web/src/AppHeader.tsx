@@ -9,7 +9,7 @@ import type { ReaderSettings } from './readerSettings'
 import { SUPPORTED_LOCALES, type SupportedLocale, changeAppLanguage, getCurrentLocale } from './i18n'
 import { api } from './api'
 
-export type AppPage = 'sources' | 'subscriptions' | 'library' | 'shelf' | 'reader' | 'rules' | 'webdav' | 'explore'
+export type AppPage = 'sources' | 'subscriptions' | 'rss' | 'library' | 'shelf' | 'reader' | 'rules' | 'webdav' | 'explore'
 
 export interface AppHeaderProps {
   page: AppPage
@@ -306,6 +306,13 @@ export function AppHeader({
           onClick={() => onNavigate('subscriptions')}
         >
           {t('header.subscriptions')}
+        </button>
+        <button
+          type="button"
+          className={page === 'rss' ? 'active' : ''}
+          onClick={() => onNavigate('rss')}
+        >
+          {t('header.rss', '订阅源')}
         </button>
         <button
           type="button"

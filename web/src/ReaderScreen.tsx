@@ -1876,6 +1876,18 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
               else scrollSectionRefs.current.delete(chapterIndex)
             }}
           >
+            {/*
+              两章之间的隔断：线 —— 章节名 —— 线（沿用上游同款外观）。
+              只在「本段不是窗口里第一段」时渲染，所以它恰好落在章节交界处：
+              有上一章时出现在 上一章|当前章 之间，下一章存在时出现在 当前章|下一章 之间。
+            */}
+            {scrollPrev && (
+              <div className="reader-chapter-stream-divider" aria-hidden="true">
+                <span className="divider-line" />
+                <span className="divider-badge">{chapter?.title}</span>
+                <span className="divider-line" />
+              </div>
+            )}
             <h1>{chapter?.title}</h1>
             {loading && !content && <ReaderContentSkeleton />}
             {message && <p className="reader-error">{message}</p>}
@@ -1900,11 +1912,35 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
               }}
               aria-hidden="true"
             >
+              <div className="reader-chapter-stream-divider" aria-hidden="true">
+                <span className="divider-line" />
+                <span className="divider-badge">{scrollNext.title}</span>
+                <span className="divider-line" />
+              </div>
               <h1>{scrollNext.title}</h1>
               {scrollNext.paragraphs.map((line, index) => (
                 <p key={index} className="reader-paragraph">{line}</p>
               ))}
             </article>
+          )}
+          {/*
+            窗口末尾两态（按「窗口里最后一段是第几章」判断）：
+            ① 最后一段已经是全书最后一章 ⇒ 「全书完」收尾提示 —— 不论它是中间段还是下一段。
+            ② 后面还有章、但下一章正文还没到 ⇒ 「正在加载下一章…」；否则冷缓存时往下滚
+               会撞到空白且毫无反馈。
+            下一章已经躺在窗口里且不是末章 ⇒ 什么都不显示，继续往下读即可
+            （这里曾经写成「只要不是末章就显示加载提示」，结果下一章已渲染时还挂着
+             「正在加载下一章…」，属于误导 —— 端到端实测抓到的）。
+          */}
+          {(scrollNext?.index ?? chapterIndex) >= currentBook.chapters.length - 1 ? (
+            <div className="reader-stream-end-notice" role="status">
+              <span>{t('reader.lastChapterNotice', '— 全书完 · 已读至最后一章 —')}</span>
+            </div>
+          ) : scrollNext ? null : (
+            <div className="reader-stream-bottom-loader" role="status">
+              <span className="reader-loading-spinner-ring" />
+              <span>{t('reader.loadingNextChapter', '正在加载下一章...')}</span>
+            </div>
           )}
         </div>
       )}

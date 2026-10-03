@@ -1231,6 +1231,61 @@ mark.search-highlight { background: var(--accent-soft); color: var(--accent); fo
  * 等窗口平移、它们成为当前章时才具备交互。
  */
 .reading-scroll-window { display: block; }
+/*
+ * 章节之间的隔断：一条线 —— 章节名徽标 —— 一条线。
+ * 沿用上游流式版同款外观（「像先前一样」）。只在「不是窗口里第一段」的章节前渲染，
+ * 因此视觉上恰好落在两章交界处。
+ */
+.reader-chapter-stream-divider {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  margin: 64px 0 40px;
+  user-select: none;
+}
+.reader-chapter-stream-divider .divider-line {
+  flex: 1;
+  height: 1px;
+  background: var(--line);
+  opacity: 0.8;
+}
+.reader-chapter-stream-divider .divider-badge {
+  font-size: 13px;
+  color: var(--muted);
+  padding: 4px 14px;
+  border-radius: 14px;
+  background: var(--surface-muted);
+  border: 1px solid var(--line);
+  max-width: 70%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/*
+ * 窗口末尾的两态：
+ * ① 后面还有章、但相邻章正文还没到 ⇒ 「正在加载下一章…」
+ *    刻意**不加 `cursor: pointer` / onClick**：相邻章是自动加载的，做成可点就是个死点击。
+ * ② 已经是全书最后一章 ⇒ 「全书完」收尾提示。
+ */
+.reader-stream-bottom-loader {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 24px 0 40px;
+  color: var(--muted);
+  font-size: 13px;
+  user-select: none;
+}
+.reader-stream-end-notice {
+  text-align: center;
+  padding: 40px 0 60px;
+  color: var(--muted);
+  font-size: 13px;
+  letter-spacing: 0.1em;
+  user-select: none;
+}
 
 /* Paginated Mode Styles (Zero Squeeze) */
 .reader-paginated-wrap { position: relative; width: 100%; height: 100vh; overflow: hidden; display: flex; flex-direction: column; justify-content: space-between; }

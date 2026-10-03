@@ -1224,7 +1224,7 @@
     "loadArticlesFailed": "載入文章失敗",
     "selectSourceHint": "在左側選擇一個訂閱源，或先匯入一份訂閱源 JSON。",
     "webOnlyTitle": "此訂閱源沒有文章規則",
-    "webOnlyDesc": "它在手機版裡是「開啟網頁」的訂閱：沒有 ruleArticles 規則，因此服務端無法產生文章列表。點「開啟網頁」瀏覽，或編輯該源補上規則。",
+    "webOnlyDesc": "它在手機版裡是「開啟網頁」的訂閱：沒有 ruleArticles 規則，因此服務端只能嘗試依標準 RSS/Atom 解析它的位址。若它其實是個 feed，點「立即重新整理」就能抓到文章；否則請點「開啟網頁」瀏覽。",
     "openWebPage": "開啟網頁",
     "cannotOpenSource": "該訂閱源位址無法在瀏覽器中開啟：{{url}}",
     "importSource": "匯入",
@@ -1235,6 +1235,7 @@
     "startImport": "開始匯入",
     "importing": "匯入中...",
     "importedOne": "已匯入訂閱源「{{name}}」",
-    "importFailed": "匯入失敗，請檢查 JSON 格式"
+    "importFailed": "匯入失敗，請檢查 JSON 格式",
+    "emptyArticlesNoRule": "沒有解析出文章。這個源沒有 ruleArticles 規則，服務端已依標準 RSS/Atom 嘗試解析；若它的位址不是 feed，請點上面的「開啟網頁」瀏覽。"
   }
 }

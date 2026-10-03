@@ -1224,7 +1224,7 @@
     "loadArticlesFailed": "Failed to load articles",
     "selectSourceHint": "Pick a feed on the left, or import a feed JSON first.",
     "webOnlyTitle": "This feed has no article rules",
-    "webOnlyDesc": "In the mobile app this is an \"open web page\" subscription: it has no ruleArticles rule, so the server cannot build an article list. Use Open web page to browse, or edit the feed to add rules.",
+    "webOnlyDesc": "In the mobile app this is an \"open web page\" subscription: it has no ruleArticles rule, so the server can only try standard RSS/Atom parsing on its address. If it really is a feed, Refresh now will fetch its articles; otherwise use Open web page.",
     "openWebPage": "Open web page",
     "cannotOpenSource": "This feed address cannot be opened in a browser: {{url}}",
     "importSource": "Import",
@@ -1235,6 +1235,7 @@
     "startImport": "Start import",
     "importing": "Importing...",
     "importedOne": "Imported feed \"{{name}}\"",
-    "importFailed": "Import failed, please check the JSON format"
+    "importFailed": "Import failed, please check the JSON format",
+    "emptyArticlesNoRule": "No articles parsed. This feed has no ruleArticles rule, so the server tried standard RSS/Atom parsing. If its address is not a feed, use Open web page above."
   }
 }

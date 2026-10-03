@@ -380,7 +380,7 @@ export function RssPage() {
             <button
               type="button"
               className="primary-button"
-              disabled={!selectedUrl || refreshing || !hasArticleRule(selected ?? ({} as RssSource))}
+              disabled={!selectedUrl || refreshing}
               onClick={() => void handleRefresh()}
             >
               <Icon name="refresh" />
@@ -396,29 +396,29 @@ export function RssPage() {
           </div>
         )}
 
-        {selected && !hasArticleRule(selected) && (
+        {selected && (
           <div className="rules-detail-card">
-            <header className="rules-detail-header">
-              <div className="rules-detail-title-group">
-                <h2>{t('rss.webOnlyTitle', { defaultValue: '此订阅源没有文章规则' })}</h2>
-              </div>
-              <div className="rules-detail-actions">
-                <button type="button" className="primary-button" onClick={() => handleOpenSourcePage(selected)}>
-                  {t('rss.openWebPage', { defaultValue: '打开网页' })}
-                </button>
-              </div>
-            </header>
-            {/* 如实说明，而不是给一个永远空的文章列表 */}
-            <p className="sidebar-notice" style={{ margin: 0 }}>
-              {t('rss.webOnlyDesc', {
-                defaultValue: '它在手机版里是「打开网页」的订阅：没有 ruleArticles 规则，因此服务端无法生成文章列表。点「打开网页」浏览，或编辑该源补上规则。',
-              })}
-            </p>
-          </div>
-        )}
-
-        {selected && hasArticleRule(selected) && (
-          <div className="rules-detail-card">
+            {/* 无规则的源如实说明：它在手机版里是「打开网页」的订阅，服务端只能靠默认 feed 解析碰运气。
+                但**仍然提供刷新** —— 若它其实是个标准 RSS/Atom 地址（很常见），默认解析就能抓到文章。 */}
+            {!hasArticleRule(selected) && (
+              <header className="rules-detail-header">
+                <div className="rules-detail-title-group">
+                  <h2>{t('rss.webOnlyTitle', { defaultValue: '此订阅源没有文章规则' })}</h2>
+                </div>
+                <div className="rules-detail-actions">
+                  <button type="button" className="primary-button" onClick={() => handleOpenSourcePage(selected)}>
+                    {t('rss.openWebPage', { defaultValue: '打开网页' })}
+                  </button>
+                </div>
+              </header>
+            )}
+            {!hasArticleRule(selected) && (
+              <p className="sidebar-notice" style={{ margin: '0 0 12px' }}>
+                {t('rss.webOnlyDesc', {
+                  defaultValue: '它在手机版里是「打开网页」的订阅：没有 ruleArticles 规则，因此服务端只能尝试按标准 RSS/Atom 解析它的地址。若它其实是个 feed，点「立即刷新」就能抓到文章；否则请点「打开网页」浏览。',
+                })}
+              </p>
+            )}
             <header className="rules-detail-header">
               <div className="rules-detail-title-group">
                 <h2>{t('rss.articleListTitle', { defaultValue: '文章列表' })}</h2>
@@ -430,7 +430,11 @@ export function RssPage() {
               <p className="sidebar-notice" style={{ margin: 0 }}>
                 {unreadOnly
                   ? t('rss.emptyUnread', { defaultValue: '没有未读文章。' })
-                  : t('rss.emptyArticles', { defaultValue: '还没有文章，点右上角「立即刷新」抓取。' })}
+                  : hasArticleRule(selected)
+                    ? t('rss.emptyArticles', { defaultValue: '还没有文章，点右上角「立即刷新」抓取。' })
+                    : t('rss.emptyArticlesNoRule', {
+                        defaultValue: '没有解析出文章。这个源没有 ruleArticles 规则，服务端已按标准 RSS/Atom 尝试解析；若它的地址不是 feed，请点上面的「打开网页」浏览。',
+                      })}
               </p>
             )}
             {articles.length > 0 && (

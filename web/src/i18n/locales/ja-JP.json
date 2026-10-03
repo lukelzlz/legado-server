@@ -1224,7 +1224,7 @@
     "loadArticlesFailed": "記事の読み込みに失敗しました",
     "selectSourceHint": "左側でフィードを選ぶか、先にフィード JSON を取り込んでください。",
     "webOnlyTitle": "このフィードには記事ルールがありません",
-    "webOnlyDesc": "モバイル版では「Web ページを開く」タイプの購読です。ruleArticles ルールが無いため、サーバー側で記事一覧を生成できません。「Web ページを開く」で閲覧するか、フィードを編集してルールを追加してください。",
+    "webOnlyDesc": "モバイル版では「Web ページを開く」タイプの購読です。ruleArticles ルールが無いため、サーバー側はアドレスを標準の RSS/Atom として解析するしかありません。実際に feed であれば「今すぐ更新」で記事を取得できます。そうでなければ「Web ページを開く」をご利用ください。",
     "openWebPage": "Web ページを開く",
     "cannotOpenSource": "このフィードのアドレスはブラウザで開けません：{{url}}",
     "importSource": "インポート",
@@ -1235,6 +1235,7 @@
     "startImport": "インポート開始",
     "importing": "インポート中...",
     "importedOne": "フィード「{{name}}」を取り込みました",
-    "importFailed": "インポートに失敗しました。JSON 形式を確認してください"
+    "importFailed": "インポートに失敗しました。JSON 形式を確認してください",
+    "emptyArticlesNoRule": "記事を解析できませんでした。このフィードには ruleArticles ルールが無いため、標準の RSS/Atom として解析を試みました。アドレスが feed でない場合は上の「Web ページを開く」をご利用ください。"
   }
 }

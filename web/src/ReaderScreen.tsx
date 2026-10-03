@@ -1271,13 +1271,18 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
     const target = currentBook.chapters[nextIndex]
     if (!target) return
 
-    // 锚点：目标章区块当前的视口 top，平移后补回同一位置
+    // 锚点：目标章区块当前的视口 top，平移后补回同一位置。
     const anchorEl = scrollSectionRefs.current.get(nextIndex)
-    scrollShiftAnchorRef.current = anchorEl
-      ? { index: nextIndex, top: anchorEl.getBoundingClientRect().top }
-      : null
+      ?? document.querySelector<HTMLElement>(`.reading-scroll-window > .reading-content[data-chapter-index="${nextIndex}"]`)
+    // React commit 尚未完成或 iOS Safari 短暂清理 callback ref 时，不能无锚点平移。
+    // 否则章节高度变化会交给 Safari 的 scroll anchoring 处理，视口可能回跳整章。
+    if (!anchorEl) return
+    // 一次窗口平移尚未完成时不要覆盖旧锚点。快速惯性滚动在 iOS 上可能
+    // 连续触发多个 scroll 回调，覆盖锚点会让一次补偿变成跨多章的错误补偿。
+    if (scrollShiftAnchorRef.current) return
+    scrollShiftAnchorRef.current = { index: nextIndex, top: anchorEl.getBoundingClientRect().top }
     scrollShiftNoJumpRef.current = true
-    if (anchorEl) currentRef.current = { chapter: target, position: currentRef.current?.position ?? 0 }
+    currentRef.current = { chapter: target, position: currentRef.current?.position ?? 0 }
 
     // ⚠️ 必须**同步**把窗口补齐，否则中途会渲染出「空区块 / 同一章出现两次」的中间态：
     // 那一帧的高度是错的，滚动补偿会按错误高度计算，用户就会看到跳动。
@@ -1318,11 +1323,18 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
     if (settings.pageMode !== 'scroll') return
     const anchor = scrollShiftAnchorRef.current
     if (!anchor) return
-    scrollShiftAnchorRef.current = null
     const el = scrollSectionRefs.current.get(anchor.index)
+      ?? document.querySelector<HTMLElement>(`.reading-scroll-window > .reading-content[data-chapter-index="${anchor.index}"]`)
+    // 不要提前清除锚点。iOS Safari 在惯性滚动期间可能延迟完成布局，
+    // 下一次 layout effect 仍需要使用同一个锚点完成补偿。
     if (!el) return
+    scrollShiftAnchorRef.current = null
     const delta = scrollCompensation(anchor.top, el.getBoundingClientRect().top)
-    if (Math.abs(delta) > 0.5) window.scrollBy(0, delta)
+    if (Math.abs(delta) > 0.5) {
+      // 使用绝对目标位置，避免 Safari 对 scrollBy 的相对滚动与自身 anchoring
+      // 叠加，导致补偿方向或幅度被放大。
+      window.scrollTo({ top: Math.max(0, window.scrollY + delta), behavior: 'auto' })
+    }
     // 平移后立刻按新区块校正一次进度，避免 persist 用加载逻辑写入的「章首 0」把进度带偏
     const current = currentRef.current
     if (current) {
@@ -1952,7 +1964,8 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
         <div className="reading-scroll-window">
           {scrollPrev && (
             <article
-              key={`prev-${scrollPrev.index}`}
+              data-chapter-index={scrollPrev.index}
+              key={`chapter-${scrollPrev.index}`}
               className={`reading-content is-scroll-neighbor font-${settings.font}`}
               ref={el => {
                 if (el) scrollSectionRefs.current.set(scrollPrev.index, el)
@@ -1967,6 +1980,8 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
             </article>
           )}
           <article
+            data-chapter-index={chapterIndex}
+            key={`chapter-${chapterIndex}`}
             className={`reading-content font-${settings.font}`}
             onPointerDown={onPointerDown}
             onPointerUp={onPointerUp}
@@ -2003,7 +2018,8 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
           </article>
           {scrollNext && (
             <article
-              key={`next-${scrollNext.index}`}
+              data-chapter-index={scrollNext.index}
+              key={`chapter-${scrollNext.index}`}
               className={`reading-content is-scroll-neighbor font-${settings.font}`}
               ref={el => {
                 if (el) scrollSectionRefs.current.set(scrollNext.index, el)

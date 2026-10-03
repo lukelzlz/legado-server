@@ -453,6 +453,22 @@ test('ReaderScroll - scroll compensation keeps the anchor visually still', () =>
   assert.equal(scrollCompensation(120, 120), 0)
 })
 
+test('ReaderScroll - chapter sections keep stable DOM identity and disable native scroll anchoring', () => {
+  const testDir = path.dirname(fileURLToPath(import.meta.url))
+  const reader = fs.readFileSync(path.resolve(testDir, '../src/ReaderScreen.tsx'), 'utf-8')
+  const css = fs.readFileSync(path.resolve(testDir, '../src/styles.css'), 'utf-8')
+
+  // The same chapter must keep the same React key when moving from neighbor to current.
+  assert.match(reader, /key=\{`chapter-\$\{scrollPrev\.index\}`\}/)
+  assert.match(reader, /key=\{`chapter-\$\{chapterIndex\}`\}/)
+  assert.match(reader, /key=\{`chapter-\$\{scrollNext\.index\}`\}/)
+  assert.doesNotMatch(reader, /key=\{`(?:prev|next)-\$\{(?:scrollPrev|scrollNext)\.index\}`\}/)
+
+  // iOS Safari must not apply a second scroll correction while the app is compensating.
+  assert.match(css, /\.reading-scroll-window\s*\{[^}]*overflow-anchor:\s*none/s)
+  assert.match(reader, /if \(scrollShiftAnchorRef\.current\) return/)
+  assert.match(reader, /window\.scrollTo\(\{ top: Math\.max\(0, window\.scrollY \+ delta\), behavior: 'auto' \}\)/)
+})
 test('ReaderScroll - expected neighbor section count handles first, last, and single chapters', () => {
   const getExpected = (chapterIndex: number, totalChapters: number) => {
     const hasPrev = chapterIndex > 0

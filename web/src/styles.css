@@ -1276,7 +1276,10 @@ mark.search-highlight { background: var(--accent-soft); color: var(--accent); fo
  * 相邻章不挂 `data-paragraph-index` 也不绑点击：它们不参与 TTS 与段落点选，
  * 等窗口平移、它们成为当前章时才具备交互。
  */
-.reading-scroll-window { display: block; }
+.reading-scroll-window {
+  display: block;
+  overflow-anchor: none;
+}
 /*
  * 章节之间的隔断：一条线 —— 章节名徽标 —— 一条线。
  * 沿用上游流式版同款外观（「像先前一样」）。只在「不是窗口里第一段」的章节前渲染，

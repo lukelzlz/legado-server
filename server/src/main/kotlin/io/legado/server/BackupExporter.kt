@@ -107,6 +107,10 @@ class BackupExporter(private val database: Database) {
             "bookshelf.json" to JsonArray(shelf.mapIndexed { index, item -> shelfEntry(item, index, groupIdByName, sourceNameById) }),
             // 书源**原样回放**：payload 就是当初导入的那份 JSON，逐字忠实（分组已由 exportSources 合并进去）
             "bookSource.json" to JsonArray(sourcePayloads.map { json.parseToJsonElement(it) }),
+            // 替换规则与 HTTP TTS：字段名逐字照抄真实备份（replaceRule.json / httpTTS.json），
+            // 保证与 Legado 手机端互相可读。
+            "replaceRule.json" to JsonArray(database.listReplaceRules().map { replaceRuleEntry(it) }),
+            "httpTTS.json" to JsonArray(database.listHttpTts().map { httpTtsEntry(it) }),
         )
 
         val bytes = ByteArrayOutputStream().use { buffer ->
@@ -139,6 +143,53 @@ class BackupExporter(private val database: Database) {
     }
 
     // ------------------------------------------------------------------ 各条目
+
+    /**
+     * 替换规则条目：字段名与真实备份 `replaceRule.json` **逐字一致**
+     * （实测 `backup2026-09-30-PEPM00.zip`：excludeScope/group/id/isEnabled/isRegex/name/order/
+     * pattern/replacement/scope/scopeContent/scopeTitle/timeoutMillisecond）。
+     *
+     * 注意 `id`：备份里是**数字**（1767407348980），而本服务的规则 id 是字符串，
+     * 能转成数字就写数字（与手机端一致），否则原样写字符串（Legado 侧按字符串解析也不会崩）。
+     */
+    private fun replaceRuleEntry(rule: ReplaceRule): JsonObject = buildJsonObject {
+        put("id", rule.id.toLongOrNull()?.let { JsonPrimitive(it) } ?: JsonPrimitive(rule.id))
+        put("name", JsonPrimitive(rule.name))
+        put("group", JsonPrimitive(rule.group ?: ""))
+        put("pattern", JsonPrimitive(rule.pattern))
+        put("replacement", JsonPrimitive(rule.replacement))
+        put("isRegex", JsonPrimitive(rule.isRegex))
+        put("isEnabled", JsonPrimitive(rule.isEnabled))
+        put("scope", JsonPrimitive(rule.scope ?: ""))
+        put("excludeScope", JsonPrimitive(rule.excludeScope ?: ""))
+        put("scopeTitle", JsonPrimitive(rule.scopeTitle))
+        put("scopeContent", JsonPrimitive(rule.scopeContent))
+        put("order", JsonPrimitive(rule.order))
+        put("timeoutMillisecond", JsonPrimitive(rule.timeoutMillisecond))
+    }
+
+    /**
+     * HTTP TTS 条目：字段名与真实备份 `httpTTS.json` **逐字一致**
+     * （实测 `backup2026-09-30-PEPM00.zip`：concurrentRate/contentType/enabledCookieJar/header/
+     * id/lastUpdateTime/loginCheckJs/loginUi/loginUrl/name/url）。
+     *
+     * 额外写出 `jsLib`：参照包里没有这个字段（手机端该字段可为空），但本服务的 HttpTts 有，
+     * 不写就会在「导出→再导入」时丢掉，故一并保留；Legado 侧读不认识的字段不影响。
+     */
+    private fun httpTtsEntry(tts: HttpTts): JsonObject = buildJsonObject {
+        put("id", JsonPrimitive(tts.id))
+        put("name", JsonPrimitive(tts.name))
+        put("url", JsonPrimitive(tts.url))
+        put("header", JsonPrimitive(tts.header ?: ""))
+        put("contentType", JsonPrimitive(tts.contentType ?: ""))
+        put("concurrentRate", JsonPrimitive(tts.concurrentRate ?: ""))
+        put("loginUrl", JsonPrimitive(tts.loginUrl ?: ""))
+        put("loginCheckJs", JsonPrimitive(tts.loginCheckJs ?: ""))
+        put("loginUi", JsonPrimitive(tts.loginUi ?: ""))
+        put("jsLib", JsonPrimitive(tts.jsLib ?: ""))
+        put("enabledCookieJar", JsonPrimitive(tts.enabledCookieJar))
+        put("lastUpdateTime", JsonPrimitive(tts.lastUpdateTime))
+    }
 
     private fun groupEntry(group: BookGroup): JsonObject = buildJsonObject {
         put("bookSort", JsonPrimitive(-1))

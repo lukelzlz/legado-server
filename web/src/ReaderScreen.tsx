@@ -2,38 +2,8 @@ import { CSSProperties, PointerEvent as ReactPointerEvent, useCallback, useDefer
 import { useTranslation } from 'react-i18next'
 import { api, BookDetails, Chapter, ReadingProgress, SearchResult } from './api'
 import { Icon } from './icons'
-import {
-  calculateChapterScrollPosition,
-  calculatePaginationLayout,
-  chapterTurnClassName,
-  ChapterViewportRect,
-  findActiveChapterInViewport,
-  findFirstFullyVisibleParagraphIndex,
-  isAtBottomBoundary,
-  isAtTopBoundary,
-  isChapterVisibleInVirtualWindow,
-  isInteractiveReaderTarget,
-  isTapGesture,
-  paginateTapZone,
-  paragraphIndexToRatio,
-  parseParagraphsFromContent,
-  ratioToParagraphIndex,
-  scrollTapZone,
-  shouldAppendNextChapter,
-  swipeDirection,
-  ViewportBounds,
-} from './readerInteractions'
+import { calculatePaginationLayout, chapterTurnClassName, dominantScrollSection, findFirstFullyVisibleParagraphIndex, isAtBottomBoundary, isAtTopBoundary, isInteractiveReaderTarget, isTapGesture, paginateTapZone, scrollCompensation, scrollTapZone, splitParagraphs, swipeDirection, ViewportBounds } from './readerInteractions'
 import type { ChapterTurnDirection, ChapterTurnPhase } from './readerInteractions'
-
-export type StreamChapterItem = {
-  index: number
-  chapter: Chapter
-  content: string
-  paragraphs: string[]
-  loading: boolean
-  error?: string
-  height?: number
-}
 import { clampScrollPosition, defaultReaderSettings, getReaderFontFamily, ReaderSettings, scrollPosition, TtsEngineType } from './readerSettings'
 import { SourceSwitchModal } from './SourceSwitchModal'
 import { cleanAuthor, cleanTitle } from './searchFilters'
@@ -51,6 +21,15 @@ import {
 } from './offlineStorage'
 
 export type OpenBook = { details: BookDetails; bookUrl: string; chapters: Chapter[]; progress?: ReadingProgress }
+
+/**
+ * 滚动模式三章窗口里的**相邻章**区块（当前章不在此列，它由 `content`/`paragraphs` 提供）。
+ */
+type ScrollNeighborSection = {
+  index: number
+  title: string
+  paragraphs: string[]
+}
 
 type ReaderScreenProps = {
   openBook: OpenBook
@@ -340,31 +319,44 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
   const httpAudioEngineRef = useRef<HttpAudioTtsEngine | null>(null)
   const wakeLockRef = useRef<WakeLockSentinel | null>(null)
   const preloadedContentRef = useRef(new Map<string, string>())
-  const preloadingRef = useRef(new Set<string>())
+  /** 正在回源的章节正文（url → Promise），用于让并发请求共用同一次加载。 */
+  const contentLoadsRef = useRef(new Map<string, Promise<string | null>>())
   const lastScrollYRef = useRef(0)
   const pointerStartRef = useRef<{ x: number; y: number; target: EventTarget | null } | null>(null)
   const boundaryTimerRef = useRef<number | null>(null)
   const targetInitialPageRef = useRef<'first' | 'last' | null>(null)
   const initialPagePositionRef = useRef<number | null>(null)
   const wheelTimerRef = useRef<number | null>(null)
+  /**
+   * 滚动模式的连续滚动窗口：除当前章外，额外渲染上一章与下一章，
+   * 使「读完本章继续往下滚」直接接上下一章（不再有章末换章栏），往上同理。
+   * 当前章仍由 `content`/`paragraphs` 提供（TTS、进度、标题都以它为准），
+   * 这两个 state 只承载**相邻章**的预渲染内容。
+   */
+  const [scrollPrev, setScrollPrev] = useState<ScrollNeighborSection | null>(null)
+  const [scrollNext, setScrollNext] = useState<ScrollNeighborSection | null>(null)
+  /** 各章节区块的 DOM 节点，用于判定「当前读的是哪一章」与位置补偿。 */
+  const scrollSectionRefs = useRef(new Map<number, HTMLElement>())
+  /**
+   * 窗口平移的滚动锚点。
+   *
+   * 平移会从文档顶部移除/插入区块，文档高度随之变化 ⇒ 内容整体位移。
+   * 平移前记下**目标章**区块的视口 top，平移后的 layout effect 里再量一次，
+   * 差值补回 `scrollBy`，读者就察觉不到窗口换了。
+   */
+  const scrollShiftAnchorRef = useRef<{ index: number; top: number } | null>(null)
+  /** 标记「本次换章是滚动窗口平移」，让加载逻辑不要把滚动位置重置到章首。 */
+  const scrollShiftNoJumpRef = useRef(false)
   // Ref to the latest playTtsChunk so that async onEnd callbacks always invoke the freshest version,
   // avoiding stale closure issues when cross-chapter auto-play triggers after chapter content reloads.
   const playTtsChunkRef = useRef<(idx: number, mode?: TtsSpeakMode) => void>(() => undefined)
 
-  // Stream Waterfall states
-  const [streamChapters, setStreamChapters] = useState<StreamChapterItem[]>([])
-  const [activeStreamIndex, setActiveStreamIndex] = useState(chapterIndex)
-  const activeStreamIndexRef = useRef(chapterIndex)
-  const appendLockRef = useRef(false)
-  const streamSectionRefs = useRef<Map<number, HTMLElement>>(new Map())
-
   const viewportRef = useRef<HTMLDivElement | null>(null)
   const bodyRef = useRef<HTMLDivElement | null>(null)
 
+  // 章节下标先做越界钳制：目录可能被换源/刷新缩水，直接用 chapterIndex 会取到 undefined
   const safeChapterIndex = Math.max(0, Math.min(Math.max(0, currentBook.chapters.length - 1), chapterIndex))
   const chapter = currentBook.chapters[safeChapterIndex]
-  const activeDisplayIndex = settings.pageMode === 'scroll' ? activeStreamIndex : safeChapterIndex
-  const activeDisplayChapter = currentBook.chapters[activeDisplayIndex] || chapter
   const bookName = currentBook.details.name || t('reader.defaultBookName', '书籍正文')
 
   // 当章节数过少时（如历史旧缓存残留），自动从服务端对齐最新全量目录
@@ -433,13 +425,12 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
   }, [cacheStatus.state, syncCacheStatus])
 
   useEffect(() => {
-    const curTitle = activeDisplayChapter?.title
-    const title = curTitle ? `${bookName} - ${curTitle} | ${t('reader.serverTitle', '阅读服务器')}` : `${bookName} | ${t('reader.serverTitle', '阅读服务器')}`
+    const title = chapter?.title ? `${bookName} - ${chapter.title} | ${t('reader.serverTitle', '阅读服务器')}` : `${bookName} | ${t('reader.serverTitle', '阅读服务器')}`
     document.title = title
     return () => {
       document.title = t('reader.serverTitle', '阅读服务器')
     }
-  }, [activeDisplayChapter?.title, bookName, t])
+  }, [bookName, chapter?.title, t])
 
   const filteredChapters = useMemo(() => {
     const query = deferredQuery.trim().toLowerCase()
@@ -452,21 +443,12 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
     })
   }, [deferredQuery, currentBook.chapters])
 
-  const chapterProgress = currentBook.chapters.length > 1 ? (chapterIndex / (currentBook.chapters.length - 1)) * 100 : 0
-
   const isCurrentChapterLoaded = loadedChapterUrl === chapter?.url && !loading
 
   const paragraphs = useMemo(() => {
     if (!content || !isCurrentChapterLoaded) return []
-    const rawLines = content.split('\n')
-    const result: string[] = []
-    for (let i = 0; i < rawLines.length; i++) {
-      const trimmed = rawLines[i].trim()
-      if (trimmed) {
-        result.push(trimmed)
-      }
-    }
-    return result
+    // 与相邻章共用同一个切分实现：两边口径必须同源，否则窗口平移时段落会跳
+    return splitParagraphs(content)
   }, [content, isCurrentChapterLoaded])
 
   const persist = useCallback(() => {
@@ -528,25 +510,63 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
     setTtsPlayState('playing')
   }, [getTtsEngine, settings.ttsEngine])
 
-  const preloadNextChapter = useCallback((index: number) => {
-    const next = currentBook.chapters[index + 1]
-    if (!next || preloadedContentRef.current.has(next.url) || preloadingRef.current.has(next.url)) return
-    preloadingRef.current.add(next.url)
-    void api.content(currentBook.details.sourceId, next.url, currentBook.bookUrl)
-      .then(result => preloadedContentRef.current.set(next.url, result.content))
-      .catch(() => undefined)
-      .finally(() => preloadingRef.current.delete(next.url))
+  /**
+   * 取一章的正文：优先用预加载缓存，未命中才回源。
+   *
+   * 同一章的并发加载**共用一个 Promise**：快速来回滚动时窗口会反复重建，
+   * 若每次都独立回源就会对同一章发多份重复请求（参考实现的 `isLoading` + `loadedChapters` 也是这个用意）。
+   */
+  const loadChapterText = useCallback((index: number): Promise<string | null> => {
+    const target = currentBook.chapters[index]
+    if (!target) return Promise.resolve(null)
+    const cached = preloadedContentRef.current.get(target.url)
+    if (cached !== undefined) return Promise.resolve(cached)
+    const inflight = contentLoadsRef.current.get(target.url)
+    if (inflight) return inflight
+    const task = api.content(currentBook.details.sourceId, target.url, currentBook.bookUrl)
+      .then(result => {
+        preloadedContentRef.current.set(target.url, result.content)
+        return result.content
+      })
+      .catch(() => null)
+      .finally(() => { contentLoadsRef.current.delete(target.url) })
+    contentLoadsRef.current.set(target.url, task)
+    return task
   }, [currentBook.bookUrl, currentBook.chapters, currentBook.details.sourceId])
 
+  const preloadNextChapter = useCallback((index: number) => {
+    if (!currentBook.chapters[index + 1]) return
+    void loadChapterText(index + 1)
+  }, [currentBook.chapters, loadChapterText])
+
   const preloadPrevChapter = useCallback((index: number) => {
-    const prev = currentBook.chapters[index - 1]
-    if (!prev || preloadedContentRef.current.has(prev.url) || preloadingRef.current.has(prev.url)) return
-    preloadingRef.current.add(prev.url)
-    void api.content(currentBook.details.sourceId, prev.url, currentBook.bookUrl)
-      .then(result => preloadedContentRef.current.set(prev.url, result.content))
-      .catch(() => undefined)
-      .finally(() => preloadingRef.current.delete(prev.url))
-  }, [currentBook.bookUrl, currentBook.chapters, currentBook.details.sourceId])
+    if (!currentBook.chapters[index - 1]) return
+    void loadChapterText(index - 1)
+  }, [currentBook.chapters, loadChapterText])
+
+  /**
+   * 滚动模式：把**上一章 / 下一章**的内容准备好并渲染到当前章上下两侧。
+   *
+   * 只维护相邻两章（加上当前章正好三段），保证「当前阅读的是中间那章」。
+   * 相邻章取不到内容时置 null，该侧不渲染 —— 首章没有上一章、末章没有下一章也走这条。
+   */
+  useEffect(() => {
+    if (settings.pageMode !== 'scroll' || !isCurrentChapterLoaded) return
+    let cancelled = false
+    const build = async (index: number): Promise<ScrollNeighborSection | null> => {
+      const target = currentBook.chapters[index]
+      if (!target) return null
+      const text = await loadChapterText(index)
+      if (text === null) return null
+      return { index, title: target.title, paragraphs: splitParagraphs(text) }
+    }
+    void Promise.all([build(chapterIndex - 1), build(chapterIndex + 1)]).then(([prev, next]) => {
+      if (cancelled) return
+      setScrollPrev(prev)
+      setScrollNext(next)
+    })
+    return () => { cancelled = true }
+  }, [chapterIndex, currentBook.chapters, isCurrentChapterLoaded, loadChapterText, settings.pageMode])
 
   const playTtsChunk = useCallback((idx: number, mode: TtsSpeakMode = 'replace') => {
     if (!ttsData.chunks || ttsData.chunks.length === 0) return
@@ -780,21 +800,6 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
     setContent('')
     setLoading(true)
     setChapterIndex(nextIndex)
-    if (settings.pageMode === 'scroll') {
-      appendLockRef.current = false
-      streamSectionRefs.current.clear()
-      const nextCh = currentBook.chapters[nextIndex]
-      const preloaded = preloadedContentRef.current.get(nextCh?.url || '')
-      setStreamChapters([{
-        index: nextIndex,
-        chapter: nextCh,
-        content: preloaded || '',
-        paragraphs: preloaded ? parseParagraphsFromContent(preloaded) : [],
-        loading: !preloaded,
-      }])
-      activeStreamIndexRef.current = nextIndex
-      setActiveStreamIndex(nextIndex)
-    }
     setActiveDrawer(null)
   }, [chapterIndex, currentBook.chapters.length, persist, settings.ttsEngine, showBoundaryNotice, stopTts, stopAllEngines, t])
 
@@ -965,14 +970,20 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
 
   // Load chapter content
   useEffect(() => {
-    if (!chapter) {
-      setLoading(false)
-      return
-    }
     let cancelled = false
-    setLoading(true)
+    /**
+     * 本次换章是否来自「滚动窗口平移」。
+     *
+     * 平移时必须**保留**现有正文（清空会让中间区块塌成空白 ⇒ 闪白 + 高度突变 + 滚动跳），
+     * 也不能把滚动位置重置回章首。标志在此消费一次。
+     */
+    const seamlessShift = scrollShiftNoJumpRef.current
+    scrollShiftNoJumpRef.current = false
+    if (!seamlessShift) {
+      setLoading(true)
+      setContent('')
+    }
     setMessage('')
-    setContent('')
     const applyContent = (nextContent: string) => {
       if (cancelled) return
       setContent(nextContent)
@@ -980,27 +991,9 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
       const position = !restoredRef.current && chapter.index === startIndex ? currentBook.progress?.scrollPosition ?? 0 : 0
       restoredRef.current = true
       currentRef.current = { chapter, position }
-      if (position > 0) {
-        initialPagePositionRef.current = position
-      }
+      // 平移时不设滚动目标：位置由窗口补偿与「当前章」判定接管，设了会被拉回章首
+      initialPagePositionRef.current = seamlessShift ? null : position
       setLoading(false)
-      if (settings.pageMode === 'scroll') {
-        setStreamChapters(prev => {
-          if (prev.length > 0 && prev[0].index === chapter.index && prev[0].content === nextContent) {
-            return prev
-          }
-          return [{
-            index: chapter.index,
-            chapter,
-            content: nextContent,
-            paragraphs: parseParagraphsFromContent(nextContent),
-            loading: false,
-          }]
-        })
-        activeStreamIndexRef.current = chapter.index
-        setActiveStreamIndex(chapter.index)
-        appendLockRef.current = false
-      }
     }
     const preloaded = preloadedContentRef.current.get(chapter.url)
     if (preloaded) {
@@ -1029,49 +1022,34 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
     initialPagePositionRef.current = null
 
     const scrollToTarget = () => {
+      // 三章窗口下「整文档」包含了上下相邻章，不能再拿它的总高度当滚动范围；
+      // 一律相对**当前章区块**定位（区块取不到时退回旧的整文档口径）。
+      const sectionEl = scrollSectionRefs.current.get(chapterIndex)
+      const sectionTop = sectionEl ? sectionEl.getBoundingClientRect().top + window.scrollY : 0
+      const sectionRange = sectionEl ? sectionEl.getBoundingClientRect().height - window.innerHeight : 0
+      let targetScroll = 0
       if (targetMode === 'last') {
-        const maxScroll = Math.max(0, document.documentElement.scrollHeight - window.innerHeight)
-        lastScrollYRef.current = maxScroll
-        window.scrollTo({ top: maxScroll, behavior: 'auto' })
+        targetScroll = sectionEl && sectionRange > 0
+          ? sectionTop + sectionRange
+          : Math.max(0, document.documentElement.scrollHeight - window.innerHeight)
+      } else if (targetMode === 'first') {
+        targetScroll = sectionTop
+      } else if (initialPos !== null) {
+        targetScroll = sectionEl && sectionRange > 0
+          ? sectionTop + Math.round(sectionRange * initialPos)
+          : Math.round(Math.max(0, document.documentElement.scrollHeight - window.innerHeight) * initialPos)
+      } else {
         return
       }
-      if (targetMode === 'first') {
-        lastScrollYRef.current = 0
-        window.scrollTo({ top: 0, behavior: 'auto' })
-        return
-      }
-      if (initialPos !== null && initialPos > 0) {
-        // 核心优化：段落级视口精确锚定
-        const section = (streamSectionRefs.current.get(chapter.index) || document.querySelector('.reader-stream-chapter-section')) as HTMLElement | null
-        if (section) {
-          const pEls = section.querySelectorAll<HTMLElement>('.reader-paragraph')
-          if (pEls.length > 0) {
-            const targetPIdx = ratioToParagraphIndex(initialPos, pEls.length)
-            const targetPEl = pEls[targetPIdx]
-            if (targetPEl) {
-              const r = targetPEl.getBoundingClientRect()
-              const targetY = Math.max(0, window.scrollY + r.top - 20)
-              lastScrollYRef.current = targetY
-              window.scrollTo({ top: targetY, behavior: 'auto' })
-              return
-            }
-          }
-        }
-        const maxScroll = Math.max(0, document.documentElement.scrollHeight - window.innerHeight)
-        const targetScroll = Math.round(maxScroll * initialPos)
-        lastScrollYRef.current = targetScroll
-        window.scrollTo({ top: targetScroll, behavior: 'auto' })
-      }
+      lastScrollYRef.current = targetScroll
+      window.scrollTo({ top: targetScroll, behavior: 'auto' })
     }
 
     scrollToTarget()
     const rafId = window.requestAnimationFrame(scrollToTarget)
-    const timerId = window.setTimeout(scrollToTarget, 80)
-    return () => {
-      window.cancelAnimationFrame(rafId)
-      window.clearTimeout(timerId)
-    }
-  }, [content, loading, settings.pageMode])
+    return () => window.cancelAnimationFrame(rafId)
+    // chapterIndex 入依赖：从目录/滑块跳章后要按**新章区块**重新定位
+  }, [chapterIndex, content, loading, settings.pageMode])
 
   // Pagination measurement
   const measurePagination = useCallback(() => {
@@ -1201,55 +1179,84 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
     }
   }, [beginChapterTurn, chapterIndex, changeChapter, pageIndex])
 
-  const appendNextChapter = useCallback(() => {
-    if (settings.pageMode !== 'scroll' || appendLockRef.current) return
-    setStreamChapters(prev => {
-      if (prev.length === 0) return prev
-      const last = prev[prev.length - 1]
-      const nextIdx = last.index + 1
-      if (nextIdx >= currentBook.chapters.length) return prev
-      appendLockRef.current = true
-
-      const nextChapter = currentBook.chapters[nextIdx]
-      const preloaded = preloadedContentRef.current.get(nextChapter.url)
-      const newItem: StreamChapterItem = {
-        index: nextIdx,
-        chapter: nextChapter,
-        content: preloaded || '',
-        paragraphs: preloaded ? parseParagraphsFromContent(preloaded) : [],
-        loading: !preloaded,
-      }
-
-      if (!preloaded) {
-        void api.content(currentBook.details.sourceId, nextChapter.url, currentBook.bookUrl)
-          .then(res => {
-            setStreamChapters(cur => cur.map(it => it.index === nextIdx ? {
-              ...it,
-              content: res.content,
-              paragraphs: parseParagraphsFromContent(res.content),
-              loading: false,
-            } : it))
-          })
-          .catch(err => {
-            setStreamChapters(cur => cur.map(it => it.index === nextIdx ? {
-              ...it,
-              loading: false,
-              error: err instanceof Error ? err.message : t('reader.cannotReadContent', '无法读取正文'),
-            } : it))
-          })
-          .finally(() => {
-            appendLockRef.current = false
-          })
-      } else {
-        appendLockRef.current = false
-      }
-
-      preloadNextChapter(nextIdx)
-      return [...prev, newItem]
-    })
-  }, [currentBook.bookUrl, currentBook.chapters, currentBook.details.sourceId, preloadNextChapter, settings.pageMode, t])
-
   // Sync scroll / page progress
+  /**
+   * 滚动模式的窗口平移：把「当前章」换成 `nextIndex`。
+   *
+   * ⚠️ 刻意**不走 `changeChapter`**：那条路会 `setContent('')` + `setLoading(true)`，
+   * 在连续滚动里表现为「内容闪白 + 滚动位置跳回章首」。
+   * 这里只改 `chapterIndex`，让内容加载 effect 把新章填进来（相邻章通常已在预加载缓存里），
+   * 同时记下锚点，由下面的 layout effect 补偿窗口高度变化造成的位移。
+   */
+  const shiftScrollWindow = useCallback((nextIndex: number) => {
+    if (nextIndex < 0 || nextIndex >= currentBook.chapters.length) return
+    const previousChapter = currentRef.current?.chapter
+    if (!previousChapter || nextIndex === previousChapter.index) return
+    const target = currentBook.chapters[nextIndex]
+    if (!target) return
+
+    // 锚点：目标章区块当前的视口 top，平移后补回同一位置
+    const anchorEl = scrollSectionRefs.current.get(nextIndex)
+    scrollShiftAnchorRef.current = anchorEl
+      ? { index: nextIndex, top: anchorEl.getBoundingClientRect().top }
+      : null
+    scrollShiftNoJumpRef.current = true
+    if (anchorEl) currentRef.current = { chapter: target, position: currentRef.current?.position ?? 0 }
+
+    // ⚠️ 必须**同步**把窗口补齐，否则中途会渲染出「空区块 / 同一章出现两次」的中间态：
+    // 那一帧的高度是错的，滚动补偿会按错误高度计算，用户就会看到跳动。
+    // 旧「当前章」顺势降级为新的「上一章」。
+    if (nextIndex === previousChapter.index + 1) {
+      setScrollPrev({ index: previousChapter.index, title: previousChapter.title, paragraphs: splitParagraphs(content) })
+      setScrollNext(null)
+    } else {
+      setScrollNext({ index: previousChapter.index, title: previousChapter.title, paragraphs: splitParagraphs(content) })
+      setScrollPrev(null)
+    }
+
+    // 与 changeChapter 的手动换章保持**同一语义**：朗读中换章必须停掉朗读。
+    // 否则 ttsData 会重算成新章的 chunk 列表，而正在播的仍是旧章音频 ⇒ 高亮与文本错位。
+    // （TTS 自动续章走 autoPlayNextChapterRef，不受影响。）
+    if (!autoPlayNextChapterRef.current) {
+      stopTts()
+    } else if (settings.ttsEngine === 'webSpeech') {
+      stopAllEngines()
+    }
+
+    // 相邻章若已预加载，同帧把正文填好（多一次空区块渲染都会让补偿量测错）
+    const cached = preloadedContentRef.current.get(target.url)
+    if (cached !== undefined) {
+      setContent(cached)
+      setLoadedChapterUrl(target.url)
+    }
+    setChapterIndex(nextIndex)
+  }, [content, currentBook.chapters, settings.ttsEngine, stopAllEngines, stopTts])
+
+  /**
+   * 窗口平移后的滚动补偿 + 进度校正（在 DOM 更新后、绘制前执行）。
+   *
+   * 平移会从文档里增删区块 ⇒ 内容整体位移；把锚点区块的视口 top 补回原值即可「视觉不动」。
+   * 补偿量与区块高度无关，因此不等新章加载完也能算准。
+   */
+  useLayoutEffect(() => {
+    if (settings.pageMode !== 'scroll') return
+    const anchor = scrollShiftAnchorRef.current
+    if (!anchor) return
+    scrollShiftAnchorRef.current = null
+    const el = scrollSectionRefs.current.get(anchor.index)
+    if (!el) return
+    const delta = scrollCompensation(anchor.top, el.getBoundingClientRect().top)
+    if (Math.abs(delta) > 0.5) window.scrollBy(0, delta)
+    // 平移后立刻按新区块校正一次进度，避免 persist 用加载逻辑写入的「章首 0」把进度带偏
+    const current = currentRef.current
+    if (current) {
+      const rect = el.getBoundingClientRect()
+      const range = rect.height - window.innerHeight
+      current.position = range > 0 ? Math.min(1, Math.max(0, -rect.top / range)) : 0
+    }
+    lastScrollYRef.current = window.scrollY
+  }, [chapterIndex, content, scrollPrev, scrollNext, settings.pageMode])
+
   useEffect(() => {
     if (settings.pageMode !== 'scroll') return
     let rafId: number | null = null
@@ -1267,72 +1274,27 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
           setToolbarsVisible(true)
         }
         lastScrollYRef.current = currentY
-        const scrollHeight = document.documentElement.scrollHeight
         const clientHeight = window.innerHeight
-        // 瀑布流：接近底部 1000px 时静默流式追加下一章
-        if (shouldAppendNextChapter({ scrollY: currentY, clientHeight, scrollHeight, threshold: 1000 })) {
-          appendNextChapter()
-        }
-
-        // 视口动态定位当前阅读章节，同步顶栏标题、底栏滑块与目录
-        const rects: ChapterViewportRect[] = []
-        streamSectionRefs.current.forEach((el, idx) => {
-          if (el) {
-            const r = el.getBoundingClientRect()
-            rects.push({ index: idx, top: r.top, bottom: r.bottom })
-          }
-        })
-        if (rects.length > 0) {
-          const activeIdx = findActiveChapterInViewport(rects, clientHeight)
-          if (activeIdx !== activeStreamIndexRef.current && activeIdx >= 0 && activeIdx < currentBook.chapters.length) {
-            activeStreamIndexRef.current = activeIdx
-            setActiveStreamIndex(activeIdx)
-          }
-
-          // 核心修复：基于真实视口坐标 getBoundingClientRect 定位当前视口最上方的段落，杜绝 DOM 结构偏移
-          const activeCh = currentBook.chapters[activeStreamIndexRef.current]
-          const activeEl = streamSectionRefs.current.get(activeStreamIndexRef.current)
-          if (activeCh) {
-            let chapterRelativePos = 0
-            if (activeEl) {
-              const pEls = activeEl.querySelectorAll<HTMLElement>('.reader-paragraph')
-              if (pEls.length > 0) {
-                let currentPIdx = 0
-                for (let i = 0; i < pEls.length; i++) {
-                  const r = pEls[i].getBoundingClientRect()
-                  if (r.bottom > 20 && r.top <= 140) {
-                    currentPIdx = i
-                    break
-                  }
-                  if (r.top <= 20) {
-                    currentPIdx = i
-                  }
-                }
-                chapterRelativePos = paragraphIndexToRatio(currentPIdx, pEls.length)
-              } else {
-                chapterRelativePos = calculateChapterScrollPosition({
-                  currentY,
-                  clientHeight,
-                  sectionTop: activeEl.offsetTop,
-                  sectionHeight: activeEl.offsetHeight,
-                })
-              }
-            } else {
-              chapterRelativePos = scrollPosition(currentY, scrollHeight, clientHeight)
-            }
-            currentRef.current = { chapter: activeCh, position: chapterRelativePos }
-          }
+        // 三章窗口下不能用整文档的 scrollHeight：进度必须相对**当前章区块**计算
+        const sectionEl = scrollSectionRefs.current.get(current.chapter.index)
+        if (sectionEl) {
+          const rect = sectionEl.getBoundingClientRect()
+          const range = rect.height - clientHeight
+          current.position = range > 0 ? Math.min(1, Math.max(0, -rect.top / range)) : 0
+          // 读到本章头部/尾部附近时，把更远的章节也拉进预加载缓存
+          if (current.position >= 0.7) preloadNextChapter(current.chapter.index)
+          else if (current.position <= 0.3) preloadPrevChapter(current.chapter.index)
+          // 视口中心越过了相邻章开头 ⇒ 窗口平移，实现「一直往下滚就接着读下一章」
+          const center = clientHeight / 2
+          const rects = [...scrollSectionRefs.current.entries()].map(([index, node]) => ({
+            index,
+            top: node.getBoundingClientRect().top,
+          }))
+          const dominant = dominantScrollSection(rects, center)
+          if (dominant !== null && dominant !== current.chapter.index) shiftScrollWindow(dominant)
         } else {
-          current.position = scrollPosition(currentY, scrollHeight, clientHeight)
+          current.position = scrollPosition(currentY, document.documentElement.scrollHeight, clientHeight)
         }
-
-        const activePos = currentRef.current?.position ?? current.position
-        if (activePos >= 0.7) {
-          preloadNextChapter(currentRef.current?.chapter.index ?? current.chapter.index)
-        } else if (activePos <= 0.3) {
-          preloadPrevChapter(currentRef.current?.chapter.index ?? current.chapter.index)
-        }
-
         if (timerRef.current === null) {
           timerRef.current = window.setTimeout(() => {
             timerRef.current = null
@@ -1344,21 +1306,16 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
     const onVisibilityChange = () => {
       if (document.visibilityState === 'hidden') persist()
     }
-    const onPageHide = () => persist()
     window.addEventListener('scroll', onScroll, { passive: true })
     document.addEventListener('visibilitychange', onVisibilityChange)
-    window.addEventListener('pagehide', onPageHide)
-    window.addEventListener('beforeunload', onPageHide)
     return () => {
       window.removeEventListener('scroll', onScroll)
       document.removeEventListener('visibilitychange', onVisibilityChange)
-      window.removeEventListener('pagehide', onPageHide)
-      window.removeEventListener('beforeunload', onPageHide)
       if (rafId !== null) window.cancelAnimationFrame(rafId)
       if (timerRef.current !== null) window.clearTimeout(timerRef.current)
       persist()
     }
-  }, [appendNextChapter, persist, preloadNextChapter, preloadPrevChapter, settings.pageMode])
+  }, [persist, preloadNextChapter, preloadPrevChapter, settings.pageMode, shiftScrollWindow])
 
   useEffect(() => {
     if (settings.pageMode !== 'paginate') return
@@ -1563,9 +1520,22 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
       }
     } else {
       if (isTapGesture(start.x, start.y, event.clientX, event.clientY)) {
-        // 瀑布流连续滚动模式下，点击屏幕任何阅读空白/文本区域，均明确用于呼出/隐藏工具栏菜单
-        // 杜绝旧版顶部30%误判为“上一屏滚动(scrollBy -85%)”导致的严重错位闪回
-        setToolbarsVisible(visible => !visible)
+        const zone = scrollTapZone(event.clientY, window.innerHeight)
+        if (zone === 'previous') {
+          if (isAtTopBoundary(window.scrollY)) {
+            changeChapter(chapterIndex - 1, 'last')
+          } else {
+            window.scrollBy({ top: -window.innerHeight * 0.85, behavior: 'smooth' })
+          }
+        } else if (zone === 'next') {
+          if (isAtBottomBoundary(window.scrollY, document.documentElement.scrollHeight, window.innerHeight)) {
+            changeChapter(chapterIndex + 1, 'first')
+          } else {
+            window.scrollBy({ top: window.innerHeight * 0.85, behavior: 'smooth' })
+          }
+        } else {
+          setToolbarsVisible(visible => !visible)
+        }
       }
     }
   }
@@ -1581,12 +1551,12 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
 
   useEffect(() => {
     if (!isDraggingSlider) {
-      setSliderChapterIndex(activeDisplayIndex)
+      setSliderChapterIndex(chapterIndex)
     }
-  }, [activeDisplayIndex, isDraggingSlider])
+  }, [chapterIndex, isDraggingSlider])
 
   const totalChapters = currentBook.chapters.length
-  const displayChapterIndex = isDraggingSlider ? sliderChapterIndex : activeDisplayIndex
+  const displayChapterIndex = isDraggingSlider ? sliderChapterIndex : chapterIndex
   const displayChapterTitle = currentBook.chapters[displayChapterIndex]?.title || ''
 
   const handleSliderChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -1664,7 +1634,7 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
       </div>
       <VirtualChapterList
         chapters={filteredChapters}
-        activeChapterIndex={activeDisplayIndex}
+        activeChapterIndex={chapterIndex}
         cachedUrlsSet={cachedChapterUrls}
         onSelect={index => {
           changeChapter(index)
@@ -1872,102 +1842,71 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
           </footer>
         </div>
       ) : (
-        <article className={`reading-content stream-reading-content font-${settings.font}`} onPointerDown={onPointerDown} onPointerUp={onPointerUp}>
-          {streamChapters.length === 0 ? (
-            <section className="reader-stream-chapter-section">
-              <h1>{chapter?.title}</h1>
-              {loading && <ReaderContentSkeleton />}
-              {message && <p className="reader-error">{message}</p>}
-              {paragraphs.map((line, index) => (
-                <p
-                  key={index}
-                  data-paragraph-index={index}
-                  className={`reader-paragraph ${ttsActive && activeParagraphIndex === index ? 'tts-active-paragraph' : ''}`}
-                  onClick={() => { if (ttsActive) handleParagraphClick(index) }}
-                >
-                  {renderParagraphContent(line, index)}
-                </p>
+        /*
+         * 滚动模式：连续滚动。
+         *
+         * 渲染 [上一章, 当前章, 下一章] 三段叠放，读完本章继续往下滚会直接接上下一章
+         * （章末**不再有**换章栏），往上同理。窗口平移由 scroll 处理里的
+         * `dominantScrollSection` 触发、`scrollShiftAnchorRef` 做滚动补偿，
+         * 因此换章在视觉上不可察觉，且「当前阅读的」始终是中间那章。
+         */
+        <div className="reading-scroll-window">
+          {scrollPrev && (
+            <article
+              key={`prev-${scrollPrev.index}`}
+              className={`reading-content is-scroll-neighbor font-${settings.font}`}
+              ref={el => {
+                if (el) scrollSectionRefs.current.set(scrollPrev.index, el)
+                else scrollSectionRefs.current.delete(scrollPrev.index)
+              }}
+              aria-hidden="true"
+            >
+              <h1>{scrollPrev.title}</h1>
+              {scrollPrev.paragraphs.map((line, index) => (
+                <p key={index} className="reader-paragraph">{line}</p>
               ))}
-            </section>
-          ) : (
-            streamChapters.map(item => {
-              const isVirtual = !isChapterVisibleInVirtualWindow(item.index, activeStreamIndex, 2) && (item.height ?? 0) > 200
-              return (
-                <section
-                  key={item.index}
-                  data-chapter-index={item.index}
-                  className="reader-stream-chapter-section"
-                  ref={el => {
-                    if (el) {
-                      streamSectionRefs.current.set(item.index, el)
-                      if (el.offsetHeight > 0 && item.height !== el.offsetHeight) {
-                        item.height = el.offsetHeight
-                      }
-                    } else {
-                      streamSectionRefs.current.delete(item.index)
-                    }
-                  }}
-                >
-                  {item.index > (streamChapters[0]?.index ?? 0) && (
-                    <div className="reader-chapter-stream-divider">
-                      <span className="divider-line" />
-                      <span className="divider-badge">{item.chapter.title}</span>
-                      <span className="divider-line" />
-                    </div>
-                  )}
-                  <h1>{item.chapter.title}</h1>
-                  {item.loading && <ReaderContentSkeleton />}
-                  {item.error && <p className="reader-error">{item.error}</p>}
-                  {isVirtual ? (
-                    <div style={{ height: `${item.height}px` }} className="reader-stream-virtual-spacer" aria-hidden="true" />
-                  ) : (
-                    item.paragraphs.map((line, pIdx) => (
-                      <p
-                        key={pIdx}
-                        data-paragraph-index={pIdx}
-                        className={`reader-paragraph ${ttsActive && activeParagraphIndex === pIdx && chapterIndex === item.index ? 'tts-active-paragraph' : ''}`}
-                        onClick={() => {
-                          if (!ttsActive) return
-                          if (chapterIndex !== item.index) setChapterIndex(item.index)
-                          handleParagraphClick(pIdx)
-                        }}
-                      >
-                        {renderParagraphContent(line, pIdx)}
-                      </p>
-                    ))
-                  )}
-                </section>
-              )
-            })
+            </article>
           )}
-
-          {/* 流式底部加载与完结提示 */}
-          {streamChapters.length > 0 && streamChapters[streamChapters.length - 1].index < currentBook.chapters.length - 1 ? (
-            <div className="reader-stream-bottom-loader" onClick={appendNextChapter}>
-              <span className="reader-loading-spinner-ring" />
-              <span>{t('reader.loadingNextChapter', '正在加载下一章...')}</span>
-            </div>
-          ) : (
-            <div className="reader-stream-end-notice">
-              <span>{t('reader.lastChapterNotice', '— 全书完 · 已读至最后一章 —')}</span>
-            </div>
+          <article
+            className={`reading-content font-${settings.font}`}
+            onPointerDown={onPointerDown}
+            onPointerUp={onPointerUp}
+            ref={el => {
+              if (el) scrollSectionRefs.current.set(chapterIndex, el)
+              else scrollSectionRefs.current.delete(chapterIndex)
+            }}
+          >
+            <h1>{chapter?.title}</h1>
+            {loading && !content && <ReaderContentSkeleton />}
+            {message && <p className="reader-error">{message}</p>}
+            {paragraphs.map((line, index) => (
+              <p
+                key={index}
+                data-paragraph-index={index}
+                className={`reader-paragraph ${ttsActive && activeParagraphIndex === index ? 'tts-active-paragraph' : ''}`}
+                onClick={() => { if (ttsActive) handleParagraphClick(index) }}
+              >
+                {renderParagraphContent(line, index)}
+              </p>
+            ))}
+          </article>
+          {scrollNext && (
+            <article
+              key={`next-${scrollNext.index}`}
+              className={`reading-content is-scroll-neighbor font-${settings.font}`}
+              ref={el => {
+                if (el) scrollSectionRefs.current.set(scrollNext.index, el)
+                else scrollSectionRefs.current.delete(scrollNext.index)
+              }}
+              aria-hidden="true"
+            >
+              <h1>{scrollNext.title}</h1>
+              {scrollNext.paragraphs.map((line, index) => (
+                <p key={index} className="reader-paragraph">{line}</p>
+              ))}
+            </article>
           )}
-
-          {content && (
-            <footer className="reader-navigation">
-              <button disabled={activeDisplayIndex === 0 || loading} onClick={() => changeChapter(activeDisplayIndex - 1)}>
-                <Icon name="arrowLeft" />{t('reader.prevChapter', '上一章')}
-              </button>
-              <div className="chapter-progress">
-                <i style={{ width: `${currentBook.chapters.length > 1 ? (activeDisplayIndex / (currentBook.chapters.length - 1)) * 100 : 100}%` }} />
-                <span>{activeDisplayIndex + 1} / {currentBook.chapters.length}</span>
-              </div>
-              <button disabled={activeDisplayIndex >= currentBook.chapters.length - 1 || loading} onClick={() => changeChapter(activeDisplayIndex + 1)}>
-                {t('reader.nextChapter', '下一章')}<Icon name="arrowRight" />
-              </button>
-            </footer>
-          )}
-        </article>
+        </div>
       )}
       {boundaryMessage && <p className="reader-boundary-message" role="status">{boundaryMessage}</p>}
     </section>

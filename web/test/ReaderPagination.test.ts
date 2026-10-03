@@ -5,6 +5,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
   chapterTurnClassName,
+  dominantScrollSection,
   findFirstFullyVisibleParagraphIndex,
   calculatePaginationLayout,
   isAtBottomBoundary,
@@ -12,7 +13,9 @@ import {
   isDoubleColumnActive,
   isTapGesture,
   paginateTapZone,
+  scrollCompensation,
   scrollTapZone,
+  splitParagraphs,
   swipeDirection,
 } from '../src/readerInteractions'
 import {
@@ -398,6 +401,56 @@ test('ReaderPagination - Chapter Turn: every class the contract emits is actuall
 
   // 跨章期间必须抑制轨道自身的过渡，否则仍会倒退
   assert.ok(/\.reader-paginated-track\.is-turning\s*\{[^}]*transition:\s*none/.test(css), '缺少 .reader-paginated-track.is-turning 的过渡抑制')
+})
+
+/**
+ * 滚动模式的「三章连续滚动」：窗口平移判定与位置补偿。
+ *
+ * 目标：读完本章继续往下滚 ⇒ 直接进入下一章（不再有章末换章栏），
+ * 且窗口换掉的瞬间**视觉位置不能跳**。
+ */
+test('ReaderScroll - splitParagraphs matches the single-chapter pipeline', () => {
+  assert.deepEqual(splitParagraphs(''), [])
+  assert.deepEqual(splitParagraphs('\n\n  \n'), [], '空行与纯空白行都要丢掉')
+  assert.deepEqual(splitParagraphs('第一段\n第二段'), ['第一段', '第二段'])
+  // 前后空白要去掉，与当前章的 paragraphs 派生口径一致
+  assert.deepEqual(splitParagraphs('  缩进段  \n\n\t制表段\t'), ['缩进段', '制表段'])
+})
+
+test('ReaderScroll - dominant section switches at the viewport centre, symmetrically', () => {
+  // 三章堆叠：上一章 top=-1200、当前章 top=0、下一章 top=800；视口高 800 ⇒ 中心相对页面 top 为 400
+  const rects = [
+    { index: 4, top: -1200 },
+    { index: 5, top: 0 },
+    { index: 6, top: 800 },
+  ]
+  // 中心在 400（当前章内部）⇒ 仍是第 5 章
+  assert.equal(dominantScrollSection(rects, 400), 5)
+  // 中心刚好压在下一章顶部 ⇒ 视为进入第 6 章（避免"露头就换"）
+  assert.equal(dominantScrollSection(rects, 800), 6)
+  // 中心还在下一章顶部之上一点 ⇒ 仍是第 5 章
+  assert.equal(dominantScrollSection(rects, 799), 5)
+  // 向上滚到当前章顶部之上（中心 -1）⇒ 回到第 4 章
+  assert.equal(dominantScrollSection(rects, -1), 4)
+  // 对称性：向下需越过 800，向上需越过 0，各约半屏
+  assert.equal(dominantScrollSection(rects, 0), 5, '中心正好在当前章顶部仍算当前章')
+})
+
+test('ReaderScroll - dominant section tolerates empty or single-section windows', () => {
+  assert.equal(dominantScrollSection([], 400), null, '没有区块时返回 null，调用方跳过平移')
+  assert.equal(dominantScrollSection([{ index: 0, top: 0 }], 400), 0)
+  // 首章没有上一章、末章没有下一章：窗口只有两段也要正确判定
+  const firstChapter = [{ index: 0, top: 0 }, { index: 1, top: 900 }]
+  assert.equal(dominantScrollSection(firstChapter, 100), 0)
+  assert.equal(dominantScrollSection(firstChapter, 950), 1)
+})
+
+test('ReaderScroll - scroll compensation keeps the anchor visually still', () => {
+  // 下移窗口时从顶部丢掉上一章：若锚点区块在平移后上移了 500px，就往下补 500
+  assert.equal(scrollCompensation(300, -200), -500, '锚点上移 500 ⇒ 补偿 -500')
+  assert.equal(scrollCompensation(-200, 300), 500, '上移窗口插入上一章 ⇒ 反向补偿')
+  // 没有位移时不补偿（避免产生无谓的 scrollBy 抖动）
+  assert.equal(scrollCompensation(120, 120), 0)
 })
 
 

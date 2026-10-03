@@ -163,86 +163,65 @@ export function findFirstFullyVisibleParagraphIndex(
   return 0
 }
 
-export function parseParagraphsFromContent(rawContent: string): string[] {
-  if (!rawContent) return []
-  const rawLines = rawContent.split('\n')
+/**
+ * 把章节正文切成段落。
+ *
+ * 滚动模式的「三章窗口」要对相邻章做与当前章**完全相同**的切分，
+ * 因此抽成一个函数，避免两处各写一份而漂移。
+ */
+export function splitParagraphs(raw: string): string[] {
+  if (!raw) return []
   const result: string[] = []
-  for (let i = 0; i < rawLines.length; i++) {
-    const trimmed = rawLines[i].trim()
-    if (trimmed) {
-      result.push(trimmed)
-    }
+  for (const line of raw.split('\n')) {
+    const trimmed = line.trim()
+    if (trimmed) result.push(trimmed)
   }
   return result
 }
 
-export function shouldAppendNextChapter({
-  scrollY,
-  clientHeight,
-  scrollHeight,
-  threshold = 900,
-}: {
-  scrollY: number
-  clientHeight: number
-  scrollHeight: number
-  threshold?: number
-}): boolean {
-  return scrollY + clientHeight >= scrollHeight - threshold
-}
-
-export type ChapterViewportRect = {
+/** 滚动窗口里一个章节区块在视口中的位置。 */
+export type ScrollSectionRect = {
+  /** 章节下标（书内全局下标） */
   index: number
+  /** 区块顶部相对视口顶部的偏移（即可为负） */
   top: number
-  bottom: number
 }
 
-export function findActiveChapterInViewport(chapters: ChapterViewportRect[], viewportHeight: number): number {
-  if (chapters.length === 0) return 0
-  const midPoint = viewportHeight * 0.4
-  for (const ch of chapters) {
-    if (ch.top <= midPoint && ch.bottom >= midPoint) {
-      return ch.index
-    }
+/**
+ * 三章窗口里判定「当前正在阅读的是哪一章」。
+ *
+ * 规则：取**最后一个顶部不晚于视口中心**的区块。
+ *
+ * | 场景 | 视口中心落在 | 判定 |
+ * | :--- | :--- | :--- |
+ * | 正在读中间章 | 中间章顶部之下、下一章顶部之上 | 中间章 |
+ * | 向下滚过下一章开头 | 下一章顶部之下 | **下一章** ⇒ 窗口下移 |
+ * | 向上滚过当前章开头 | 当前章顶部之上 | **上一章** ⇒ 窗口上移 |
+ *
+ * 用「视口中心」而不是「视口顶部」是为了**对称**：向下与向上各需滚过约半屏才换章，
+ * 不会出现「刚露头就换章」的抖动。
+ *
+ * @returns 命中的章节下标；区块为空时返回 null（调用方据此跳过本次平移）
+ */
+export function dominantScrollSection(rects: ScrollSectionRect[], viewportCenter: number): number | null {
+  let found: number | null = null
+  for (const rect of rects) {
+    if (rect.top <= viewportCenter) found = rect.index
   }
-  if (chapters[0].top > midPoint) return chapters[0].index
-  return chapters[chapters.length - 1].index
+  return found
 }
 
-export function isChapterVisibleInVirtualWindow(
-  chapterIndex: number,
-  activeChapterIndex: number,
-  keepWindow = 2
-): boolean {
-  return Math.abs(chapterIndex - activeChapterIndex) <= keepWindow
-}
-
-export function calculateChapterScrollPosition({
-  currentY,
-  clientHeight,
-  sectionTop,
-  sectionHeight,
-}: {
-  currentY: number
-  clientHeight: number
-  sectionTop: number
-  sectionHeight: number
-}): number {
-  if (!Number.isFinite(sectionHeight) || sectionHeight <= clientHeight) return 0
-  const offsetInChapter = Math.max(0, currentY - sectionTop)
-  const maxScrollInChapter = Math.max(1, sectionHeight - clientHeight)
-  const ratio = offsetInChapter / maxScrollInChapter
-  return Number.isFinite(ratio) ? Math.min(1, Math.max(0, ratio)) : 0
-}
-
-export function paragraphIndexToRatio(pIndex: number, totalParagraphs: number): number {
-  if (!Number.isFinite(totalParagraphs) || totalParagraphs <= 1 || pIndex <= 0) return 0
-  const ratio = pIndex / (totalParagraphs - 1)
-  return Number.isFinite(ratio) ? Math.min(1, Math.max(0, ratio)) : 0
-}
-
-export function ratioToParagraphIndex(ratio: number, totalParagraphs: number): number {
-  if (!Number.isFinite(totalParagraphs) || totalParagraphs <= 1 || !Number.isFinite(ratio) || ratio <= 0) return 0
-  return Math.min(totalParagraphs - 1, Math.max(0, Math.round(ratio * (totalParagraphs - 1))))
+/**
+ * 三章窗口平移后，为保持**视觉位置不动**需要补偿的滚动量。
+ *
+ * 平移会从文档顶部移除/插入区块（例如下移时丢掉「上一章」），
+ * 文档高度随之变化、内容会整体位移。补偿量 = 平移后锚点区块的视口 top − 平移前记录的 top，
+ * 把它 `window.scrollBy(0, delta)` 回去即可让读者察觉不到窗口换了。
+ *
+ * 这与区块高度无关，因此无需等新章节加载完再量。
+ */
+export function scrollCompensation(anchorTopBefore: number, anchorTopAfter: number): number {
+  return anchorTopAfter - anchorTopBefore
 }
 
 

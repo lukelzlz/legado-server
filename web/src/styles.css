@@ -1222,63 +1222,15 @@ mark.search-highlight { background: var(--accent-soft); color: var(--accent); fo
   0% { background-position: 200% 0; }
   100% { background-position: -200% 0; }
 }
-/* Infinite Stream Waterfall Styles */
-.stream-reading-content { padding-bottom: 90px; }
-.reader-stream-chapter-section { position: relative; }
-.reader-chapter-stream-divider {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 16px;
-  margin: 64px 0 40px;
-  user-select: none;
-}
-.reader-chapter-stream-divider .divider-line {
-  flex: 1;
-  height: 1px;
-  background: var(--line);
-  opacity: 0.8;
-}
-.reader-chapter-stream-divider .divider-badge {
-  font-size: 13px;
-  color: var(--muted);
-  padding: 4px 14px;
-  border-radius: 14px;
-  background: var(--surface-muted);
-  border: 1px solid var(--line);
-  max-width: 70%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.reader-stream-virtual-spacer { width: 100%; background: transparent; }
-.reader-stream-bottom-loader {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 10px;
-  padding: 24px 0 40px;
-  color: var(--muted);
-  font-size: 13px;
-  cursor: pointer;
-  user-select: none;
-}
-.reader-stream-end-notice {
-  text-align: center;
-  padding: 40px 0 60px;
-  color: var(--muted);
-  font-size: 13px;
-  letter-spacing: 0.1em;
-  user-select: none;
-}
-
-.reader-navigation { display: grid; grid-template-columns: auto minmax(140px, 1fr) auto; align-items: center; gap: 22px; margin-top: 70px; padding-top: 26px; border-top: 1px solid var(--line); font-family: Inter, "PingFang SC", sans-serif; }
-.reader-navigation button { min-height: 36px; display: inline-flex; align-items: center; gap: 6px; padding: 0 12px; border: 1px solid var(--line); border-radius: 6px; color: var(--ink); background: var(--surface); font-size: 13px; cursor: pointer; }
-.reader-navigation button:last-child { justify-self: end; }
-.reader-navigation svg { width: 15px; }
-.chapter-progress { position: relative; height: 4px; background: var(--line); border-radius: 2px; }
-.chapter-progress i { position: absolute; inset: 0 auto 0 0; border-radius: 2px; background: var(--accent); }
-.chapter-progress span { position: absolute; top: 10px; left: 50%; transform: translateX(-50%); color: var(--muted); white-space: nowrap; font-size: 11px; }
+/*
+ * 滚动模式的「三章连续滚动窗口」。
+ *
+ * 结构是 [上一章, 当前章, 下一章] 三段叠放，读起来是无缝的一整篇 ⇒ 相邻章**与当前章同样式**，
+ * 不做变暗/缩小（那不是"接着往下读"，而是"预览"）。
+ * 相邻章不挂 `data-paragraph-index` 也不绑点击：它们不参与 TTS 与段落点选，
+ * 等窗口平移、它们成为当前章时才具备交互。
+ */
+.reading-scroll-window { display: block; }
 
 /* Paginated Mode Styles (Zero Squeeze) */
 .reader-paginated-wrap { position: relative; width: 100%; height: 100vh; overflow: hidden; display: flex; flex-direction: column; justify-content: space-between; }
@@ -1476,9 +1428,6 @@ mark.search-highlight { background: var(--accent-soft); color: var(--accent); fo
     padding-bottom: calc(64px + var(--safe-bottom));
   }
   .reading-content h1 { font-size: 1.1em; margin-bottom: 1.4em; }
-  .reader-navigation { grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 54px; }
-  .reader-navigation button { justify-content: center; }
-  .reader-navigation .chapter-progress { grid-row: 2; grid-column: 1 / -1; margin: 6px 17px 11px; }
   .reader-paginated-wrap {
     height: 100vh;
     height: 100dvh;

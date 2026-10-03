@@ -5,6 +5,7 @@ import { Icon } from './icons'
 import {
   calculateChapterScrollPosition,
   calculatePaginationLayout,
+  chapterTurnClassName,
   ChapterViewportRect,
   findActiveChapterInViewport,
   findFirstFullyVisibleParagraphIndex,
@@ -22,6 +23,7 @@ import {
   swipeDirection,
   ViewportBounds,
 } from './readerInteractions'
+import type { ChapterTurnDirection, ChapterTurnPhase } from './readerInteractions'
 
 export type StreamChapterItem = {
   index: number
@@ -310,6 +312,25 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
   const [stride, setStride] = useState(640)
   const [isDoubleColumn, setIsDoubleColumn] = useState(false)
   const columnGap = 40
+
+  /**
+   * 跨章翻页的过渡阶段（`null` = 静止）。
+   *
+   * ⚠️ 旧实现的观感缺陷：章末翻页时 `changeChapter` 先把内容换掉、`pageIndex` 再由
+   * 「本章最后一页」直接变成 `0`，而轨道带着 `.reader-paginated-track` 的 CSS 过渡，
+   * 于是从 `-N*stride` **动画退回 `0`** —— 方向与手势相反，用户看到的是「弹回第一页」。
+   *
+   * 现在改为：跨章时**抑制轨道过渡**（瞬时归位，见 `.is-turning`），
+   * 由外层 `.reader-chapter-turn` 播一段**沿手势方向**的滑入（向后翻从右进、向前翻从左进），
+   * 观感就是「接着往下翻」。
+   *
+   * `pending` 表示已决定跨章、但新章内容还未就位（预加载命中时几乎同帧），
+   * 此时不能开始动画 —— 否则滑入的会是**旧章**那一屏。
+   */
+  const [chapterTurn, setChapterTurn] = useState<ChapterTurnPhase | null>(null)
+  const [chapterTurnDirection, setChapterTurnDirection] = useState<ChapterTurnDirection>('next')
+  /** 用 ref 让 `measurePagination` 不必依赖 `chapterTurn` state（避免回调重建引发排版重跑）。 */
+  const chapterTurnPendingRef = useRef(false)
 
   const currentRef = useRef<{ chapter: Chapter; position: number } | null>(null)
   const timerRef = useRef<number | null>(null)
@@ -1074,14 +1095,28 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
     setIsDoubleColumn(layout.isDoubleColumn)
     setPageCount(layout.pageCount)
 
+    /**
+     * 新章的分页已经量好 ⇒ 内容真的就位了，可以开始「滑入」。
+     *
+     * 刻意用 ref 而不是读 `chapterTurn` state：那样会把 `chapterTurn` 塞进本回调的依赖，
+     * 每次过渡都重建 `measurePagination`，进而让上层 layout effect 重跑一遍排版。
+     */
+    const startChapterTurnIn = () => {
+      if (!chapterTurnPendingRef.current) return
+      chapterTurnPendingRef.current = false
+      setChapterTurn('in')
+    }
+
     if (targetInitialPageRef.current === 'last') {
       targetInitialPageRef.current = null
       initialPagePositionRef.current = null
       setPageIndex(layout.pageCount - 1)
+      startChapterTurnIn()
     } else if (targetInitialPageRef.current === 'first') {
       targetInitialPageRef.current = null
       initialPagePositionRef.current = null
       setPageIndex(0)
+      startChapterTurnIn()
     } else if (initialPagePositionRef.current !== null) {
       const pos = initialPagePositionRef.current
       initialPagePositionRef.current = null
@@ -1117,21 +1152,54 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
     measurePagination,
   ])
 
+  /**
+   * 跨章过渡的兜底解除。
+   *
+   * 正常情况下由 `measurePagination` 推进到「滑入」、再由动画 `animationend` 收尾。
+   * 但**新章内容取失败**（报错、超时）时排版永远不会发生，过渡会一直停在 `pending`，
+   * 而 `pending` 期间轨道是「不带动画」的 —— 结果是从此每次翻页都不再有过渡。
+   * 因此必须有一条不依赖内容成功的退路。
+   */
+  useEffect(() => {
+    if (chapterTurn !== 'pending') return
+    const timer = window.setTimeout(() => {
+      chapterTurnPendingRef.current = false
+      setChapterTurn(null)
+    }, 4000)
+    return () => window.clearTimeout(timer)
+  }, [chapterTurn])
+
+  /**
+   * 章末翻页时开启方向性过渡。
+   *
+   * 只置 `pending`：真正的滑入要等新章内容测量完成（见 [measurePagination]），
+   * 否则动画滑进来的还是旧章那一屏。
+   */
+  const beginChapterTurn = useCallback((direction: ChapterTurnDirection) => {
+    chapterTurnPendingRef.current = true
+    setChapterTurnDirection(direction)
+    setChapterTurn('pending')
+  }, [])
+
   const goNextPage = useCallback(() => {
     if (pageIndex < pageCount - 1) {
       setPageIndex(p => p + 1)
     } else {
+      // 章末向后翻：新章从右侧滑入（接着往下翻），而不是让轨道倒退回第一页
+      if (chapterIndex < currentBook.chapters.length - 1) beginChapterTurn('next')
       changeChapter(chapterIndex + 1, 'first')
     }
-  }, [chapterIndex, changeChapter, pageCount, pageIndex])
+  }, [beginChapterTurn, chapterIndex, changeChapter, currentBook.chapters.length, pageCount, pageIndex])
 
   const goPrevPage = useCallback(() => {
     if (pageIndex > 0) {
       setPageIndex(p => p - 1)
     } else {
+      // 章首向前翻：新章从左侧滑入（与手势同向）
+      if (chapterIndex > 0) beginChapterTurn('prev')
       changeChapter(chapterIndex - 1, 'last')
     }
-  }, [chapterIndex, changeChapter, pageIndex])
+  }, [beginChapterTurn, chapterIndex, changeChapter, pageIndex])
 
   const appendNextChapter = useCallback(() => {
     if (settings.pageMode !== 'scroll' || appendLockRef.current) return
@@ -1765,22 +1833,37 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
       {settings.pageMode === 'paginate' ? (
         <div className="reader-paginated-wrap" onPointerDown={onPointerDown} onPointerUp={onPointerUp} onWheel={onWheelPaginate}>
           <div ref={viewportRef} className={`reader-paginated-viewport ${isDoubleColumn ? 'is-double-column' : ''}`}>
-            <div className="reader-paginated-track" style={{ transform: `translateX(-${pageIndex * stride}px)` }}>
-              <article ref={bodyRef} className={`reader-paginated-column-body font-${settings.font}`} style={{ columnWidth: `${columnWidth}px`, columnGap: `${columnGap}px` }}>
-                <h1>{chapter?.title}</h1>
-                {loading && <ReaderContentSkeleton />}
-                {message && <p className="reader-error">{message}</p>}
-                {paragraphs.map((line, index) => (
-                  <p
-                    key={index}
-                    data-paragraph-index={index}
-                    className={`reader-paragraph ${ttsActive && activeParagraphIndex === index ? 'tts-active-paragraph' : ''}`}
-                    onClick={() => { if (ttsActive) handleParagraphClick(index) }}
-                  >
-                    {renderParagraphContent(line, index)}
-                  </p>
-                ))}
-              </article>
+            {/*
+              跨章过渡层：分页位移仍由内层 track 负责，本层只播「沿手势方向滑入」。
+              `chapterTurn` 非空期间内层 track 抑制过渡（`.is-turning`），
+              否则跨章时 `pageIndex` 由「本章最后一页」变 `0` 会动画**倒退**（弹回第一页）。
+            */}
+            <div
+              className={chapterTurnClassName(chapterTurn, chapterTurnDirection)}
+              onAnimationEnd={event => {
+                // 只认「滑入」动画；`animationName` 用来避开子元素动画冒泡上来的事件
+                if (event.animationName === 'reader-turn-in-next' || event.animationName === 'reader-turn-in-prev') {
+                  setChapterTurn(null)
+                }
+              }}
+            >
+              <div className={`reader-paginated-track ${chapterTurn ? 'is-turning' : ''}`} style={{ transform: `translateX(-${pageIndex * stride}px)` }}>
+                <article ref={bodyRef} className={`reader-paginated-column-body font-${settings.font}`} style={{ columnWidth: `${columnWidth}px`, columnGap: `${columnGap}px` }}>
+                  <h1>{chapter?.title}</h1>
+                  {loading && <ReaderContentSkeleton />}
+                  {message && <p className="reader-error">{message}</p>}
+                  {paragraphs.map((line, index) => (
+                    <p
+                      key={index}
+                      data-paragraph-index={index}
+                      className={`reader-paragraph ${ttsActive && activeParagraphIndex === index ? 'tts-active-paragraph' : ''}`}
+                      onClick={() => { if (ttsActive) handleParagraphClick(index) }}
+                    >
+                      {renderParagraphContent(line, index)}
+                    </p>
+                  ))}
+                </article>
+              </div>
             </div>
           </div>
           <footer className="reader-paginated-footer">

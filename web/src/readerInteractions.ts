@@ -47,6 +47,28 @@ export function isDoubleColumnActive(columnMode: 'auto' | 'single' | 'double', v
   return columnMode === 'double' || (columnMode === 'auto' && viewportWidth >= 800)
 }
 
+/**
+ * 跨章翻页的方向。
+ *
+ * `next` = 向下一章翻（内容向左走）；`prev` = 向上一章翻（内容向右走）。
+ */
+export type ChapterTurnDirection = 'next' | 'prev'
+
+/** 跨章过渡的阶段：`pending` = 已决定跨章、等新章内容就位；`in` = 新章沿手势方向滑入。 */
+export type ChapterTurnPhase = 'pending' | 'in'
+
+/**
+ * 跨章翻页过渡层的类名。
+ *
+ * ⚠️ 这里是**类名契约的唯一出处**：`styles.css` 里的关键帧选择器必须与它逐字对齐，
+ * 否则就是「永不命中的死配置」（仓库既有教训：PWA 缓存规则写了一个根本不存在的路由）。
+ * 单测会拿它去比对真实 CSS，防止两边各写一份而漂移。
+ */
+export function chapterTurnClassName(phase: ChapterTurnPhase | null, direction: ChapterTurnDirection): string {
+  const base = 'reader-chapter-turn'
+  return phase ? `${base} is-${phase} is-${direction}` : base
+}
+
 export type PaginationLayout = {
   isDoubleColumn: boolean
   columnWidth: number

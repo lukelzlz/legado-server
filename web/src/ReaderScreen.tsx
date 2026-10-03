@@ -1060,20 +1060,48 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
     // 之后再没人纠正 ⇒ 视口停在文档顶部（= 插入上方的上一章），而进度记着当前章；
     // 用户一滚动，视口中心落在上一章 ⇒ 窗口回退一章并保存 ⇒ 反复进出就是一路往回跳。
     // 判据用「还没到目标就继续」：目标会随相邻章入 DOM 而变大，到位即停（上限约 10 秒）。
+    //
+    // 两个边界（维护者评审指出）：
+    // ① 期望段数必须**按首/末章动态算**：首章没有上一章、末章没有下一章，
+    //    写死 3 会让这两种情况永远判为「没铺齐」而空转满 10 秒。
+    // ② 重试期间读者一旦主动操作（滚轮/触摸/按下指针）必须**立刻让路**，
+    //    否则会和用户手势抢夺滚动条。
     let frames = 0
-    let rafId = window.requestAnimationFrame(function retry() {
+    let rafId: number | null = null
+    const cancelRetry = () => {
+      if (rafId !== null) {
+        window.cancelAnimationFrame(rafId)
+        rafId = null
+      }
+    }
+    window.addEventListener('wheel', cancelRetry, { passive: true, once: true })
+    window.addEventListener('touchstart', cancelRetry, { passive: true, once: true })
+    window.addEventListener('pointerdown', cancelRetry, { passive: true, once: true })
+
+    rafId = window.requestAnimationFrame(function retry() {
       frames += 1
       const desired = scrollToTarget()
       // 只比「滚动量 == 目标」会被骗：相邻章还没进 DOM 时当前章就在文档顶部，
       // 目标算出来正是 0，于是 `0+2 >= 0` 判定「已到位」立刻停手 —— 实测就卡在这里。
-      // 因此还要求**窗口已铺齐**（该有的相邻段都在 DOM 里）。
-      const expected = Math.min(3, currentBook.chapters.length)
+      // 因此还要求**窗口已铺齐**（该有的相邻段都在 DOM 里），且段数按首/末章动态判定。
+      const hasPrev = chapterIndex > 0
+      const hasNext = chapterIndex < currentBook.chapters.length - 1
+      const expected = 1 + (hasPrev ? 1 : 0) + (hasNext ? 1 : 0)
       const rendered = document.querySelectorAll('.reading-scroll-window > .reading-content').length
       const complete = rendered >= expected
       const reached = desired === null || (complete && window.scrollY + 2 >= desired)
-      if (!reached && frames < 600) rafId = window.requestAnimationFrame(retry)
+      if (!reached && frames < 600) {
+        rafId = window.requestAnimationFrame(retry)
+      } else {
+        rafId = null
+      }
     })
-    return () => window.cancelAnimationFrame(rafId)
+    return () => {
+      cancelRetry()
+      window.removeEventListener('wheel', cancelRetry)
+      window.removeEventListener('touchstart', cancelRetry)
+      window.removeEventListener('pointerdown', cancelRetry)
+    }
     // chapterIndex 入依赖：从目录/滑块跳章后要按**新章区块**重新定位
   }, [chapterIndex, content, loading, settings.pageMode])
 

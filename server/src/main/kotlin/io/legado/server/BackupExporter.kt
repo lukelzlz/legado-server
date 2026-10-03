@@ -15,7 +15,7 @@ import java.util.zip.ZipOutputStream
 /**
  * Legado App 备份包（`backup<日期>-<设备名>.zip`）**导出器**。
  *
- * ## 导出范围：**固定 4 个文件**（与 `backup2026-09-28-CD_Watch_A.zip` 完全一致）
+ * ## 导出范围：**固定 7 个文件**
  *
  * | 条目 | 承载内容 |
  * | :--- | :--- |
@@ -23,17 +23,24 @@ import java.util.zip.ZipOutputStream
  * | `bookGroup.json` | **书籍分组**（书架分组） |
  * | `bookshelf.json` | **书架 + 阅读进度**（`durChapterIndex` / `durChapterTime` 等就在条目里） |
  * | `bookmark.json` | **书签 / 阅读记录** |
+ * | `replaceRule.json` | **替换净化规则** |
+ * | `httpTTS.json` | **自定义 HTTP TTS** |
+ * | `rssSources.json` | **RSS 订阅源**（字段名逐字对齐，见 [rssSourceEntry]） |
  *
- * 这 4 个文件是**必须**的：少任何一个，导入端（Legado App 或本服务的 [BackupImporter]）
+ * 这 7 个文件是**必须**的：少任何一个，导入端（Legado App 或本服务的 [BackupImporter]）
  * 都会缺一块数据。因此即使某一项为空，也会写出**空数组 `[]`**，而不是省略条目 ——
- * 「4 个文件齐备」是格式契约的一部分。
+ * 「文件齐备」是格式契约的一部分。
  *
  * 真实 Legado 备份其实有 **19 个条目**（`backup2026-09-30-PEPM00.zip` 实测：bookshelf / bookmark /
  * bookGroup / bookSource / rssSources / replaceRule / readRecord / readRecordDetail /
  * readRecordSession / searchHistory / txtTocRule / httpTTS / keyboardAssists / dictRule /
- * servers / readConfig / shareReadConfig / themeConfig / config.xml）。其余 15 项
- * （替换净化规则、RSS、TTS、字典、主题、阅读统计…）**刻意不导出**：本服务要么没有该能力，
+ * servers / readConfig / shareReadConfig / themeConfig / config.xml）。其余 12 项
+ * （阅读统计、字典、主题、键盘辅助…）**刻意不导出**：本服务要么没有该能力，
  * 要么本次需求不需要。字段与排版仍与真实备份逐字对齐，因此导出包可被正常导入。
+ *
+ * 导出条目随功能增加而增长（最初 4 个 → 补替换规则/TTS 后 6 个 → 补 RSS 后 7 个）。
+ * **改动条目清单时务必全仓搜索「恰好 N 个文件」一类断言**：
+ * `BackupExporterTest` 与 `WebDavRoutesTest` 各有一份（CI 红过一次，见交接文档第六节）。
  *
  * ## 格式契约（两个真实备份实测一致）
  *
@@ -77,6 +84,7 @@ class BackupExporter(private val database: Database) {
         val sources: Int,
         val bookmarks: Int,
         val groups: Int,
+        val rssSources: Int = 0,
     )
 
     /**
@@ -90,6 +98,7 @@ class BackupExporter(private val database: Database) {
         val groups = database.listBookGroups()
         val bookmarks = database.listAllBookmarks()
         val sourcePayloads = database.exportSources(null)
+        val rssSources = database.exportRssSources()
 
         // 分组名 → groupId：bookshelf 的 `group` 写的是**数字 id**，
         // 而本服务按「名字」关联（见 ADR-021），因此这里建反查表。
@@ -111,6 +120,8 @@ class BackupExporter(private val database: Database) {
             // 保证与 Legado 手机端互相可读。
             "replaceRule.json" to JsonArray(database.listReplaceRules().map { replaceRuleEntry(it) }),
             "httpTTS.json" to JsonArray(database.listHttpTts().map { httpTtsEntry(it) }),
+            // RSS 订阅源。字段名与真实备份 `rssSources.json` 逐字一致（见 [rssSourceEntry]）。
+            "rssSources.json" to JsonArray(rssSources.map { rssSourceEntry(it) }),
         )
 
         val bytes = ByteArrayOutputStream().use { buffer ->
@@ -133,6 +144,7 @@ class BackupExporter(private val database: Database) {
             sources = sourcePayloads.size,
             bookmarks = bookmarks.size,
             groups = groups.size,
+            rssSources = rssSources.size,
         )
     }
 
@@ -189,6 +201,51 @@ class BackupExporter(private val database: Database) {
         put("jsLib", JsonPrimitive(tts.jsLib ?: ""))
         put("enabledCookieJar", JsonPrimitive(tts.enabledCookieJar))
         put("lastUpdateTime", JsonPrimitive(tts.lastUpdateTime))
+    }
+
+    /**
+     * RSS 订阅源条目：字段名与真实备份 `rssSources.json` **逐字一致**。
+     *
+     * 实测参照包（`backup2026-09-30-PEPM00.zip`，8 条）的键数分布是 17~28 ——
+     * 其中 **17 个字段 8/8 条全部出现**，其余 14 个按需出现。因此这里照抄同样策略：
+     * **必写字段恒写**（含 `redirectPolicy`，真实数据 8/8 都有值），**可选字段只在有值时写**，
+     * 与 Gson 省略空值的行为一致（与 [shelfEntry] 同一套约定）。
+     *
+     * 注意 `redirectPolicy` 是**字符串枚举**（实测值 `"ASK_CROSS_ORIGIN"`），不是整数。
+     */
+    private fun rssSourceEntry(source: RssSource): JsonObject = buildJsonObject {
+        put("sourceUrl", JsonPrimitive(source.sourceUrl))
+        put("sourceName", JsonPrimitive(source.sourceName))
+        put("sourceIcon", JsonPrimitive(source.sourceIcon ?: ""))
+        put("enabled", JsonPrimitive(source.enabled))
+        put("customOrder", JsonPrimitive(source.customOrder))
+        put("type", JsonPrimitive(source.type))
+        put("articleStyle", JsonPrimitive(source.articleStyle))
+        put("lastUpdateTime", JsonPrimitive(source.lastUpdateTime))
+        put("singleUrl", JsonPrimitive(source.singleUrl))
+        put("cacheFirst", JsonPrimitive(source.cacheFirst))
+        put("preload", JsonPrimitive(source.preload))
+        put("enableJs", JsonPrimitive(source.enableJs))
+        put("showWebLog", JsonPrimitive(source.showWebLog))
+        put("enabledCookieJar", JsonPrimitive(source.enabledCookieJar))
+        put("loadWithBaseUrl", JsonPrimitive(source.loadWithBaseUrl))
+        put("redirectPolicy", JsonPrimitive(source.redirectPolicy.ifBlank { "ASK_CROSS_ORIGIN" }))
+        // ---- 可选字段：只在有值时写 ----
+        source.sourceGroup?.takeIf { it.isNotBlank() }?.let { put("sourceGroup", JsonPrimitive(it)) }
+        source.sourceComment?.takeIf { it.isNotBlank() }?.let { put("sourceComment", JsonPrimitive(it)) }
+        source.header?.takeIf { it.isNotBlank() }?.let { put("header", JsonPrimitive(it)) }
+        source.sortUrl?.takeIf { it.isNotBlank() }?.let { put("sortUrl", JsonPrimitive(it)) }
+        source.ruleArticles?.takeIf { it.isNotBlank() }?.let { put("ruleArticles", JsonPrimitive(it)) }
+        source.ruleLink?.takeIf { it.isNotBlank() }?.let { put("ruleLink", JsonPrimitive(it)) }
+        source.ruleTitle?.takeIf { it.isNotBlank() }?.let { put("ruleTitle", JsonPrimitive(it)) }
+        source.ruleImage?.takeIf { it.isNotBlank() }?.let { put("ruleImage", JsonPrimitive(it)) }
+        source.rulePubDate?.takeIf { it.isNotBlank() }?.let { put("rulePubDate", JsonPrimitive(it)) }
+        source.loginUrl?.takeIf { it.isNotBlank() }?.let { put("loginUrl", JsonPrimitive(it)) }
+        source.loginUi?.takeIf { it.isNotBlank() }?.let { put("loginUi", JsonPrimitive(it)) }
+        source.injectJs?.takeIf { it.isNotBlank() }?.let { put("injectJs", JsonPrimitive(it)) }
+        source.shouldOverrideUrlLoading?.takeIf { it.isNotBlank() }?.let { put("shouldOverrideUrlLoading", JsonPrimitive(it)) }
+        source.jsLib?.takeIf { it.isNotBlank() }?.let { put("jsLib", JsonPrimitive(it)) }
+        source.contentBlacklist?.takeIf { it.isNotBlank() }?.let { put("contentBlacklist", JsonPrimitive(it)) }
     }
 
     private fun groupEntry(group: BookGroup): JsonObject = buildJsonObject {

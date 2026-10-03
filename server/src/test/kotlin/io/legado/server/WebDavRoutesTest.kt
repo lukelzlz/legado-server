@@ -557,11 +557,11 @@ class WebDavRoutesTest {
             val zips = Files.list(dir).use { it.toList() }.filter { it.fileName.toString().endsWith(".zip") }
             assertEquals("同一天多次导出只该留一份", 1, zips.size)
             assertTrue(Files.size(zips.single()) > 0)
-            // 导出包里必须齐备 4 个文件（bookmark 是阅读进度的载体）
+            // 导出包里必须齐备 7 个文件（bookmark 是阅读进度的载体，rssSources 是订阅源）
             val names = java.util.zip.ZipFile(zips.single().toFile()).use { zip ->
                 zip.entries().asSequence().map { it.name }.toList()
             }
-            assertEquals(listOf("bookGroup.json", "bookmark.json", "bookshelf.json", "bookSource.json", "httpTTS.json", "replaceRule.json"), names)
+            assertEquals(listOf("bookGroup.json", "bookmark.json", "bookshelf.json", "bookSource.json", "httpTTS.json", "replaceRule.json", "rssSources.json"), names)
         } finally {
             cleanup(fixture)
         }

@@ -228,6 +228,73 @@ class Database(private val path: String) : Closeable, AutoCloseable {
                   last_update_time integer not null
                 );
                 create index if not exists idx_http_tts_name on http_tts(name);
+                -- RSS 订阅源（对齐 Legado 手机版 rssSources.json 的 31 个字段，逐字同名同义）。
+                -- 主键用 source_url：Legado 允许「自定义中文唯一串」，与书源同规矩，
+                -- 因此这里绝不做 URL 校验（见 AGENTS.md 书源侧同款部落知识）。
+                -- 名称刻意避开既有的 source_subscription（那是「书源订阅」，语义完全不同）。
+                create table if not exists rss_source (
+                  source_url text primary key,
+                  source_name text not null,
+                  source_group text,
+                  source_icon text,
+                  source_comment text,
+                  enabled integer not null default 1,
+                  custom_order integer not null default 0,
+                  type integer not null default 0,
+                  article_style integer not null default 0,
+                  last_update_time integer not null default 0,
+                  single_url integer not null default 0,
+                  cache_first integer not null default 0,
+                  preload integer not null default 0,
+                  enable_js integer not null default 0,
+                  show_web_log integer not null default 0,
+                  enabled_cookie_jar integer not null default 0,
+                  load_with_base_url integer not null default 0,
+                  header text,
+                  sort_url text,
+                  rule_articles text,
+                  rule_link text,
+                  rule_title text,
+                  rule_image text,
+                  rule_pub_date text,
+                  login_url text,
+                  login_ui text,
+                  inject_js text,
+                  should_override_url_loading text,
+                  js_lib text,
+                  content_blacklist text,
+                  -- ⚠️ 是**字符串枚举**而非整数：手机版 `RedirectPolicy` 取值
+                  -- ALLOW_ALL / ASK_ALWAYS / ASK_CROSS_ORIGIN / BLOCK_CROSS_ORIGIN / BLOCK_ALL /
+                  -- ASK_SAME_DOMAIN_BLOCK_CROSS，Room 默认值即 'ASK_CROSS_ORIGIN'
+                  -- （实体 `RssSource.kt:116-117`）。参照备份里实测值正是 "ASK_CROSS_ORIGIN"。
+                  redirect_policy text not null default 'ASK_CROSS_ORIGIN',
+                  -- 刷新运行态（与 source_subscription 同构）：失败必须如实落库，
+                  -- 否则「没抓到」会退化成静默 0 条，用户无从判断。
+                  last_success_at integer,
+                  last_attempt_at integer,
+                  last_error text,
+                  updated_at integer not null default 0
+                );
+                create index if not exists idx_rss_source_enabled on rss_source(enabled);
+                create index if not exists idx_rss_source_group on rss_source(source_group);
+                -- 抓到的文章。(source_url, link) 唯一 —— 同一源里同一链接只保留一条，
+                -- 重复刷新靠 upsert 幂等，且**必须保留已读标记**。
+                create table if not exists rss_article (
+                  id integer primary key autoincrement,
+                  source_url text not null,
+                  link text not null,
+                  title text,
+                  image text,
+                  pub_date text,
+                  description text,
+                  origin text,
+                  sort_name text,
+                  read integer not null default 0,
+                  created_at integer not null,
+                  unique(source_url, link)
+                );
+                create index if not exists idx_rss_article_source on rss_article(source_url, id desc);
+                create index if not exists idx_rss_article_unread on rss_article(source_url, read);
             """.trimIndent())
         }
         migrateReadingProgress(db)
@@ -2475,6 +2542,337 @@ class Database(private val path: String) : Closeable, AutoCloseable {
         return HttpTtsImportResponse(total = list.size, imported = imported, failed = failed)
     }
 
+    // =====================================================================================
+    // RSS 订阅源（Legado 手机版 `rssSources.json` 对齐）
+    //
+    // ⚠️ 与 [listSubscriptions]/[saveSubscription]（`source_subscription`，书源订阅）**毫无关系**。
+    // =====================================================================================
+
+    /**
+     * 订阅源列表（附未读/总文章数）。
+     *
+     * 计数刻意用**两条 group by 查询**一次性取回，而不是每个源查一次 —— 后者在
+     * 「N 个源 × 2 条 SQL」下会随源数量线性放大（与 SESSION-025 的限流教训同源）。
+     */
+    fun listRssSources(enabledOnly: Boolean = false): List<RssSource> {
+        val sources = connect { db ->
+            val sql = "select $RSS_SOURCE_COLUMNS from rss_source" +
+                (if (enabledOnly) " where enabled = 1" else "") +
+                " order by custom_order asc, source_name asc"
+            db.prepareStatement(sql).use { stmt ->
+                stmt.executeQuery().use { rs -> buildList { while (rs.next()) add(rs.toRssSource()) } }
+            }
+        }
+        val counts = rssArticleCounts()
+        return sources.map { source ->
+            val stat = counts[source.sourceUrl]
+            source.copy(
+                articleCount = stat?.first ?: 0,
+                unreadCount = stat?.second ?: 0,
+            )
+        }
+    }
+
+    fun getRssSource(sourceUrl: String): RssSource? = connect { db ->
+        db.prepareStatement("select $RSS_SOURCE_COLUMNS from rss_source where source_url = ?").use { stmt ->
+            stmt.setString(1, sourceUrl)
+            stmt.executeQuery().use { rs -> if (rs.next()) rs.toRssSource() else null }
+        }
+    }
+
+    /** `sourceUrl → (总数, 未读数)`。 */
+    private fun rssArticleCounts(): Map<String, Pair<Int, Int>> = connect { db ->
+        db.prepareStatement(
+            "select source_url, count(*) as total, sum(case when read = 0 then 1 else 0 end) as unread " +
+                "from rss_article group by source_url",
+        ).use { stmt ->
+            stmt.executeQuery().use { rs ->
+                buildMap {
+                    while (rs.next()) {
+                        put(rs.getString("source_url"), rs.getInt("total") to rs.getInt("unread"))
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * 保存订阅源（按 `source_url` upsert）。
+     *
+     * ⚠️ **不清空运行态**（`last_success_at/last_attempt_at/last_error`）：那些列由
+     * [recordRssRefreshSuccess]/[recordRssRefreshFailure] 维护，编辑源名/规则不该把它抹掉。
+     */
+    fun saveRssSource(source: RssSource): RssSource = write { db ->
+        require(source.sourceUrl.isNotBlank()) { "订阅源地址不能为空" }
+        val now = System.currentTimeMillis()
+        db.prepareStatement(
+            """
+            insert into rss_source(
+              source_url, source_name, source_group, source_icon, source_comment, enabled, custom_order,
+              type, article_style, last_update_time, single_url, cache_first, preload, enable_js,
+              show_web_log, enabled_cookie_jar, load_with_base_url, header, sort_url, rule_articles,
+              rule_link, rule_title, rule_image, rule_pub_date, login_url, login_ui, inject_js,
+              should_override_url_loading, js_lib, content_blacklist, redirect_policy, updated_at
+            ) values(
+              ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+            )
+            on conflict(source_url) do update set
+              source_name = excluded.source_name,
+              source_group = excluded.source_group,
+              source_icon = excluded.source_icon,
+              source_comment = excluded.source_comment,
+              enabled = excluded.enabled,
+              custom_order = excluded.custom_order,
+              type = excluded.type,
+              article_style = excluded.article_style,
+              last_update_time = excluded.last_update_time,
+              single_url = excluded.single_url,
+              cache_first = excluded.cache_first,
+              preload = excluded.preload,
+              enable_js = excluded.enable_js,
+              show_web_log = excluded.show_web_log,
+              enabled_cookie_jar = excluded.enabled_cookie_jar,
+              load_with_base_url = excluded.load_with_base_url,
+              header = excluded.header,
+              sort_url = excluded.sort_url,
+              rule_articles = excluded.rule_articles,
+              rule_link = excluded.rule_link,
+              rule_title = excluded.rule_title,
+              rule_image = excluded.rule_image,
+              rule_pub_date = excluded.rule_pub_date,
+              login_url = excluded.login_url,
+              login_ui = excluded.login_ui,
+              inject_js = excluded.inject_js,
+              should_override_url_loading = excluded.should_override_url_loading,
+              js_lib = excluded.js_lib,
+              content_blacklist = excluded.content_blacklist,
+              redirect_policy = excluded.redirect_policy,
+              updated_at = excluded.updated_at
+            """.trimIndent(),
+        ).use { stmt ->
+            stmt.setString(1, source.sourceUrl)
+            stmt.setString(2, source.sourceName.ifBlank { source.sourceUrl })
+            stmt.setString(3, source.sourceGroup)
+            stmt.setString(4, source.sourceIcon)
+            stmt.setString(5, source.sourceComment)
+            stmt.setInt(6, if (source.enabled) 1 else 0)
+            stmt.setInt(7, source.customOrder)
+            stmt.setInt(8, source.type)
+            stmt.setInt(9, source.articleStyle)
+            stmt.setLong(10, source.lastUpdateTime)
+            stmt.setInt(11, if (source.singleUrl) 1 else 0)
+            stmt.setInt(12, if (source.cacheFirst) 1 else 0)
+            stmt.setInt(13, if (source.preload) 1 else 0)
+            stmt.setInt(14, if (source.enableJs) 1 else 0)
+            stmt.setInt(15, if (source.showWebLog) 1 else 0)
+            stmt.setInt(16, if (source.enabledCookieJar) 1 else 0)
+            stmt.setInt(17, if (source.loadWithBaseUrl) 1 else 0)
+            stmt.setString(18, source.header)
+            stmt.setString(19, source.sortUrl)
+            stmt.setString(20, source.ruleArticles)
+            stmt.setString(21, source.ruleLink)
+            stmt.setString(22, source.ruleTitle)
+            stmt.setString(23, source.ruleImage)
+            stmt.setString(24, source.rulePubDate)
+            stmt.setString(25, source.loginUrl)
+            stmt.setString(26, source.loginUi)
+            stmt.setString(27, source.injectJs)
+            stmt.setString(28, source.shouldOverrideUrlLoading)
+            stmt.setString(29, source.jsLib)
+            stmt.setString(30, source.contentBlacklist)
+            stmt.setString(31, source.redirectPolicy.ifBlank { "ASK_CROSS_ORIGIN" })
+            stmt.setLong(32, now)
+            stmt.executeUpdate()
+        }
+        // 回读以带上运行态列（那几列不参与上面的 upsert，必须从库里取真值）。
+        getRssSource(source.sourceUrl) ?: source
+    }
+
+    fun deleteRssSource(sourceUrl: String): Boolean = write { db ->
+        db.autoCommit = false
+        try {
+            // 文章随源一起删：源没了，它的文章列表没有任何展示位置。
+            db.prepareStatement("delete from rss_article where source_url = ?").use { stmt ->
+                stmt.setString(1, sourceUrl)
+                stmt.executeUpdate()
+            }
+            val removed = db.prepareStatement("delete from rss_source where source_url = ?").use { stmt ->
+                stmt.setString(1, sourceUrl)
+                stmt.executeUpdate()
+            }
+            db.commit()
+            removed > 0
+        } catch (error: Throwable) {
+            db.rollback()
+            throw error
+        } finally {
+            db.autoCommit = true
+        }
+    }
+
+    /**
+     * 导入订阅源（备份包 / 粘贴 JSON 共用）。
+     *
+     * 幂等：按 `source_url` upsert。**不覆盖运行态**，因此「备份导入」不会把
+     * 一个正在正常刷新的源标成「从未成功」。
+     *
+     * ⚠️ 返回值里的 `imported`/`updated` 靠**先查是否存在**判定，不能靠 `changes()`：
+     * SQLite 的 `insert ... on conflict do update` 在走 update 分支时**同样报告 1 行受影响**
+     * （见 AGENTS.md「upsert 的 changes() 不能判是否新增」）。
+     */
+    fun importRssSources(list: List<RssSource>): RssSourceImportResponse {
+        var imported = 0
+        var updated = 0
+        var skipped = 0
+        for (item in list) {
+            if (item.sourceUrl.isBlank()) {
+                skipped++
+                continue
+            }
+            val existed = getRssSource(item.sourceUrl) != null
+            saveRssSource(item)
+            if (existed) updated++ else imported++
+        }
+        return RssSourceImportResponse(total = list.size, imported = imported, updated = updated, skipped = skipped)
+    }
+
+    /** 导出用：与备份格式逐字对齐的纯数据（不含运行态）。 */
+    fun exportRssSources(): List<RssSource> =
+        listRssSources().map { it.copy(lastSuccessAt = null, lastAttemptAt = null, lastError = null) }
+
+    /** 刷新成功：记时间并清掉上一次的错误。 */
+    fun recordRssRefreshSuccess(sourceUrl: String, articleCount: Int): Boolean = write { db ->
+        val now = System.currentTimeMillis()
+        db.prepareStatement(
+            "update rss_source set last_success_at = ?, last_attempt_at = ?, last_error = null, " +
+                "last_update_time = ?, updated_at = ? where source_url = ?",
+        ).use { stmt ->
+            stmt.setLong(1, now)
+            stmt.setLong(2, now)
+            stmt.setLong(3, now)
+            stmt.setLong(4, now)
+            stmt.setString(5, sourceUrl)
+            stmt.executeUpdate() > 0
+        }
+    }
+
+    /**
+     * 刷新失败：**必须落库**。抓不到时如果只回一个 0 条，用户无法区分
+     * 「源确实没内容」与「上游挂了/规则报错」—— 这是本项目反复踩过的「静默丢数据」陷阱。
+     */
+    fun recordRssRefreshFailure(sourceUrl: String, message: String): Boolean = write { db ->
+        val now = System.currentTimeMillis()
+        db.prepareStatement(
+            "update rss_source set last_attempt_at = ?, last_error = ?, updated_at = ? where source_url = ?",
+        ).use { stmt ->
+            stmt.setLong(1, now)
+            stmt.setString(2, message.take(500))
+            stmt.setLong(3, now)
+            stmt.setString(4, sourceUrl)
+            stmt.executeUpdate() > 0
+        }
+    }
+
+    // ------------------------------------------------------------------ 文章
+
+    fun listRssArticles(sourceUrl: String, unreadOnly: Boolean = false, limit: Int = 200): List<RssArticle> =
+        connect { db ->
+            val sql = "select $RSS_ARTICLE_COLUMNS from rss_article where source_url = ?" +
+                (if (unreadOnly) " and read = 0" else "") +
+                " order by id desc limit ?"
+            db.prepareStatement(sql).use { stmt ->
+                stmt.setString(1, sourceUrl)
+                stmt.setInt(2, limit.coerceIn(1, 1000))
+                stmt.executeQuery().use { rs -> buildList { while (rs.next()) add(rs.toRssArticle()) } }
+            }
+        }
+
+    fun markRssArticleRead(id: Long, read: Boolean = true): Boolean = write { db ->
+        db.prepareStatement("update rss_article set read = ? where id = ?").use { stmt ->
+            stmt.setInt(1, if (read) 1 else 0)
+            stmt.setLong(2, id)
+            stmt.executeUpdate() > 0
+        }
+    }
+
+    fun markRssSourceRead(sourceUrl: String): Int = write { db ->
+        db.prepareStatement("update rss_article set read = 1 where source_url = ? and read = 0").use { stmt ->
+            stmt.setString(1, sourceUrl)
+            stmt.executeUpdate()
+        }
+    }
+
+    fun countRssArticles(sourceUrl: String, unreadOnly: Boolean = false): Int = connect { db ->
+        val sql = "select count(*) from rss_article where source_url = ?" + (if (unreadOnly) " and read = 0" else "")
+        db.prepareStatement(sql).use { stmt ->
+            stmt.setString(1, sourceUrl)
+            stmt.executeQuery().use { rs -> if (rs.next()) rs.getInt(1) else 0 }
+        }
+    }
+
+    /**
+     * 批量写入抓到的文章，返回**新增**条数。
+     *
+     * 三条关键语义：
+     * 1. `(source_url, link)` 冲突时**保留已有 `read` 标记** —— 刷新一次就把用户读过的
+     *    文章重新标成未读，是最不可接受的回归。
+     * 2. `description` 等可空字段用 `coalesce(excluded.x, rss_article.x)`：本次没取到就保留旧值，
+     *    不要用 null 把已有内容冲掉。
+     * 3. 新增数**先查后写**（`changes()` 在 update 分支也报 1，不能用来判新增）。
+     */
+    fun saveRssArticles(sourceUrl: String, articles: List<RssArticle>): Int {
+        if (articles.isEmpty()) return 0
+        val existing = connect { db ->
+            db.prepareStatement("select link from rss_article where source_url = ?").use { stmt ->
+                stmt.setString(1, sourceUrl)
+                stmt.executeQuery().use { rs -> buildSet { while (rs.next()) add(rs.getString("link")) } }
+            }
+        }
+        val fresh = articles.filter { it.link.isNotBlank() && it.link !in existing }
+        if (articles.none { it.link.isNotBlank() }) return 0
+        write { db ->
+            db.autoCommit = false
+            try {
+                db.prepareStatement(
+                    """
+                    insert into rss_article(source_url, link, title, image, pub_date, description, origin, sort_name, read, created_at)
+                    values(?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
+                    on conflict(source_url, link) do update set
+                      title = coalesce(excluded.title, rss_article.title),
+                      image = coalesce(excluded.image, rss_article.image),
+                      pub_date = coalesce(excluded.pub_date, rss_article.pub_date),
+                      description = coalesce(excluded.description, rss_article.description),
+                      origin = coalesce(excluded.origin, rss_article.origin),
+                      sort_name = coalesce(excluded.sort_name, rss_article.sort_name)
+                    """.trimIndent(),
+                ).use { stmt ->
+                    val now = System.currentTimeMillis()
+                    for (item in articles) {
+                        if (item.link.isBlank()) continue
+                        stmt.setString(1, sourceUrl)
+                        stmt.setString(2, item.link)
+                        stmt.setString(3, item.title.takeIf { it.isNotBlank() })
+                        stmt.setString(4, item.image)
+                        stmt.setString(5, item.pubDate)
+                        stmt.setString(6, item.description)
+                        stmt.setString(7, item.origin ?: sourceUrl)
+                        stmt.setString(8, item.sortName)
+                        stmt.setLong(9, now)
+                        stmt.addBatch()
+                    }
+                    stmt.executeBatch()
+                }
+                db.commit()
+            } catch (error: Throwable) {
+                db.rollback()
+                throw error
+            } finally {
+                db.autoCommit = true
+            }
+        }
+        return fresh.size
+    }
+
     private fun secret(): String = ByteArray(32).also(random::nextBytes).let { Base64.getUrlEncoder().withoutPadding().encodeToString(it) }
     private fun passwordHash(password: String): String {
         val salt = ByteArray(SALT_BYTES).also(random::nextBytes)
@@ -2491,11 +2889,25 @@ class Database(private val path: String) : Closeable, AutoCloseable {
         val spec = PBEKeySpec(password.toCharArray(), salt, iterations, HASH_BITS)
         return try { SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256").generateSecret(spec).encoded } finally { spec.clearPassword() }
     }
-    companion object {
-        private const val SESSION_TTL = 30L * 24 * 60 * 60 * 1000
-        private const val PBKDF2_ITERATIONS = 600_000
-        private const val SALT_BYTES = 16
-        private const val HASH_BITS = 256
+    private companion object {
+        const val SESSION_TTL = 30L * 24 * 60 * 60 * 1000
+        const val PBKDF2_ITERATIONS = 600_000
+        const val SALT_BYTES = 16
+        const val HASH_BITS = 256
+
+        /**
+         * RSS 订阅源查询列：显式列出而不用 `select *` —— 加列后 `select *` 会与按下标取值的
+         * 映射错位，且本项目其它查询一律显式列列名。
+         */
+        const val RSS_SOURCE_COLUMNS = "source_url, source_name, source_group, source_icon, source_comment, " +
+            "enabled, custom_order, type, article_style, last_update_time, single_url, cache_first, " +
+            "preload, enable_js, show_web_log, enabled_cookie_jar, load_with_base_url, header, sort_url, " +
+            "rule_articles, rule_link, rule_title, rule_image, rule_pub_date, login_url, login_ui, " +
+            "inject_js, should_override_url_loading, js_lib, content_blacklist, redirect_policy, " +
+            "last_success_at, last_attempt_at, last_error, updated_at"
+
+        const val RSS_ARTICLE_COLUMNS =
+            "id, source_url, link, title, image, pub_date, description, origin, sort_name, read, created_at"
     }
 }
 
@@ -2514,5 +2926,63 @@ private fun ResultSet.toHttpTts(): HttpTts = HttpTts(
     jsLib = getString("js_lib"),
     enabledCookieJar = getInt("enabled_cookie_jar") == 1,
     lastUpdateTime = getLong("last_update_time"),
+)
+
+/**
+ * 行 → [RssSource]。
+ *
+ * 可空时间戳必须用 `getLong(...).takeIf { !wasNull() }`：`wasNull()` 只能紧贴 getter 调用，
+ * 写成先取变量再判会把「列为 NULL」误判成 0（AGENTS.md「严禁用可空列做存在性判断」同源）。
+ */
+private fun ResultSet.toRssSource(): RssSource = RssSource(
+    sourceUrl = getString("source_url"),
+    sourceName = getString("source_name"),
+    sourceGroup = getString("source_group"),
+    sourceIcon = getString("source_icon"),
+    sourceComment = getString("source_comment"),
+    enabled = getInt("enabled") == 1,
+    customOrder = getInt("custom_order"),
+    type = getInt("type"),
+    articleStyle = getInt("article_style"),
+    lastUpdateTime = getLong("last_update_time"),
+    singleUrl = getInt("single_url") == 1,
+    cacheFirst = getInt("cache_first") == 1,
+    preload = getInt("preload") == 1,
+    enableJs = getInt("enable_js") == 1,
+    showWebLog = getInt("show_web_log") == 1,
+    enabledCookieJar = getInt("enabled_cookie_jar") == 1,
+    loadWithBaseUrl = getInt("load_with_base_url") == 1,
+    header = getString("header"),
+    sortUrl = getString("sort_url"),
+    ruleArticles = getString("rule_articles"),
+    ruleLink = getString("rule_link"),
+    ruleTitle = getString("rule_title"),
+    ruleImage = getString("rule_image"),
+    rulePubDate = getString("rule_pub_date"),
+    loginUrl = getString("login_url"),
+    loginUi = getString("login_ui"),
+    injectJs = getString("inject_js"),
+    shouldOverrideUrlLoading = getString("should_override_url_loading"),
+    jsLib = getString("js_lib"),
+    contentBlacklist = getString("content_blacklist"),
+    redirectPolicy = getString("redirect_policy") ?: "ASK_CROSS_ORIGIN",
+    lastSuccessAt = getLong("last_success_at").takeIf { !wasNull() },
+    lastAttemptAt = getLong("last_attempt_at").takeIf { !wasNull() },
+    lastError = getString("last_error"),
+    updatedAt = getLong("updated_at"),
+)
+
+private fun ResultSet.toRssArticle(): RssArticle = RssArticle(
+    id = getLong("id"),
+    sourceUrl = getString("source_url"),
+    link = getString("link"),
+    title = getString("title") ?: "",
+    image = getString("image"),
+    pubDate = getString("pub_date"),
+    description = getString("description"),
+    origin = getString("origin"),
+    sortName = getString("sort_name"),
+    read = getInt("read") == 1,
+    createdAt = getLong("created_at"),
 )
 

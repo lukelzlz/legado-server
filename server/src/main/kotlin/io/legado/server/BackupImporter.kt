@@ -49,6 +49,9 @@ class BackupImporter(
         // HTTP TTS（`httpTTS.json`）：字段与备份格式逐字对齐，见 [parseHttpTts]
         // （文件名统一传小写，与 readSection 的匹配口径一致）
         val parsedTts = readSection(zip, entries, "httptts.json")?.let(::parseHttpTts).orEmpty()
+        // RSS 订阅源（`rssSources.json`）。⚠️ 文件名统一传小写，与 readSection 的两侧 lowercase 口径一致
+        // —— 传 `"rssSources.json"` 一样能匹配上（内部会转小写），但保持全仓一致便于排查。
+        val parsedRss = readSection(zip, entries, "rsssources.json")?.let(::parseRssSources).orEmpty()
         require(sources.isNotEmpty() || rules.isNotEmpty() || parsedShelf.isNotEmpty()) {
             "不是 Legado 备份包：未找到 bookSource.json / replaceRule.json / bookshelf.json"
         }
@@ -86,6 +89,9 @@ class BackupImporter(
         val ruleResult = database.importReplaceRules(rules)
         // HTTP TTS 复用既有导入实现（天然幂等：同 id 覆盖）
         val ttsResult = database.importHttpTts(parsedTts)
+        // RSS 订阅源：按 source_url upsert，**不动运行态**（last_success/last_error），
+        // 因此重复导入备份不会把正在正常刷新的源标成「从未成功」。
+        val rssResult = database.importRssSources(parsedRss)
         val library = database.importLibrary(shelf)
         // 分组必须在书架导入**之后**执行：它要把 book_shelf.group_name 补上对应分组名。
         database.importBookGroups(groups, shelf)
@@ -109,6 +115,8 @@ class BackupImporter(
             // 书源分组没有独立条目：它是书源自带的 `bookSourceGroup`，随书源一起落库，
             // 这里只回报「带进来几个分组」（见 Database.importSources）。
             sourceGroups = sourceResult.sourceGroups,
+            rssSources = rssResult.imported,
+            rssSourcesUpdated = rssResult.updated,
         )
     }
 
@@ -287,6 +295,59 @@ class BackupImporter(
             lastUpdateTime = tts.number("lastUpdateTime") ?: 0L,
         )
     }
+
+    /**
+     * 解析 `rssSources.json`（RSS 订阅源）。
+     *
+     * 字段名与手机端 `RssSource` 实体逐字对应，实测参照包 8 条 / 31 字段并集。
+     * 只管**备份里真实出现的 31 个字段**；手机端实体另有十余个字段
+     * （`ruleNextPage` / `ruleContent` / `ruleDescription` / `concurrentRate` / `coverDecodeJs` /
+     * `startHtml` 等）在本服务的 31 列方案里没有落点，**如实忽略**而不假装支持
+     * （本轮已确认的功能边界，见 PROPOSAL-028 的非目标）。
+     *
+     * 两处与直觉不同、已核对手机端源码的细节：
+     * 1. `redirectPolicy` 是**字符串枚举**（`RedirectPolicy.kt`），默认 `ASK_CROSS_ORIGIN`；
+     * 2. `sourceUrl` 允许**任意非空唯一串**（真实数据里有 `https://www.baidu.com/大灰狼番茄书荒广场`
+     *    与 `snssdk1128://user/profile/…`），因此只判空、不做 URL 校验 —— 与书源同规矩。
+     */
+    private fun parseRssSources(text: String): List<RssSource> =
+        array(text, "rssSources.json").mapNotNull { element ->
+            val source = element as? JsonObject ?: return@mapNotNull null
+            val sourceUrl = source.text("sourceUrl")?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
+            RssSource(
+                sourceUrl = sourceUrl,
+                sourceName = source.text("sourceName")?.takeIf { it.isNotBlank() } ?: sourceUrl,
+                sourceGroup = source.text("sourceGroup")?.takeIf { it.isNotBlank() },
+                sourceIcon = source.text("sourceIcon")?.takeIf { it.isNotBlank() },
+                sourceComment = source.text("sourceComment")?.takeIf { it.isNotBlank() },
+                enabled = source.flag("enabled") ?: true,
+                customOrder = source.number("customOrder")?.toInt() ?: 0,
+                type = source.number("type")?.toInt() ?: 0,
+                articleStyle = source.number("articleStyle")?.toInt() ?: 0,
+                lastUpdateTime = source.number("lastUpdateTime") ?: 0L,
+                singleUrl = source.flag("singleUrl") ?: false,
+                cacheFirst = source.flag("cacheFirst") ?: false,
+                preload = source.flag("preload") ?: false,
+                enableJs = source.flag("enableJs") ?: false,
+                showWebLog = source.flag("showWebLog") ?: false,
+                enabledCookieJar = source.flag("enabledCookieJar") ?: false,
+                loadWithBaseUrl = source.flag("loadWithBaseUrl") ?: false,
+                header = source.text("header")?.takeIf { it.isNotBlank() },
+                sortUrl = source.text("sortUrl")?.takeIf { it.isNotBlank() },
+                ruleArticles = source.text("ruleArticles")?.takeIf { it.isNotBlank() },
+                ruleLink = source.text("ruleLink")?.takeIf { it.isNotBlank() },
+                ruleTitle = source.text("ruleTitle")?.takeIf { it.isNotBlank() },
+                ruleImage = source.text("ruleImage")?.takeIf { it.isNotBlank() },
+                rulePubDate = source.text("rulePubDate")?.takeIf { it.isNotBlank() },
+                loginUrl = source.text("loginUrl")?.takeIf { it.isNotBlank() },
+                loginUi = source.text("loginUi")?.takeIf { it.isNotBlank() },
+                injectJs = source.text("injectJs")?.takeIf { it.isNotBlank() },
+                shouldOverrideUrlLoading = source.text("shouldOverrideUrlLoading")?.takeIf { it.isNotBlank() },
+                jsLib = source.text("jsLib")?.takeIf { it.isNotBlank() },
+                contentBlacklist = source.text("contentBlacklist")?.takeIf { it.isNotBlank() },
+                redirectPolicy = source.text("redirectPolicy")?.takeIf { it.isNotBlank() } ?: "ASK_CROSS_ORIGIN",
+            )
+        }
 
     private fun array(text: String, fileName: String): List<JsonElement> =
         json.parseToJsonElement(text.removePrefix("\uFEFF")).let { element ->

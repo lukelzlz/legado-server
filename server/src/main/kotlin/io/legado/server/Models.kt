@@ -835,6 +835,10 @@ data class BackupImportSummary(
      * 这里只把个数如实报出来，便于用户确认分组确实进来了。
      */
     val sourceGroups: Int = 0,
+    /** 从 `rssSources.json` 新增的订阅源数。 */
+    val rssSources: Int = 0,
+    /** 从 `rssSources.json` 覆盖更新的订阅源数。 */
+    val rssSourcesUpdated: Int = 0,
 )
 
 /** 备份包 `bookshelf.json` 中的一条书架记录（含阅读进度），仅用于导入。 */
@@ -985,6 +989,124 @@ data class ExploreCategory(
     val title: String,
     val url: String? = null,
     val subCategories: List<ExploreCategory> = emptyList(),
+)
+
+// =====================================================================================
+// RSS 订阅源（对齐 Legado 手机版 `rssSources.json`）
+//
+// ⚠️ 与既有的 [SourceSubscription] **完全不同**：
+//   - [SourceSubscription] = 「书源订阅」：订阅一个**书源 JSON** 的 URL，定期拉取刷新书源表；
+//   - [RssSource] = 「订阅源」：一个能抓**文章列表**的源（规则 + 抓到的文章）。
+// 两者表、路由、前端页面都各自独立，严禁复用。
+// =====================================================================================
+
+/**
+ * RSS 订阅源。字段名与 `rssSources.json`（实测 `backup2026-09-30-PEPM00.zip` 的 31 字段并集）
+ * **逐字一致**，便于与 Legado 手机端互相导入导出。
+ *
+ * 规则字段（`ruleArticles` / `ruleLink` / `ruleTitle` / `ruleImage` / `rulePubDate`）
+ * 是 Legado 规则串，**原样存字符串**（实测大量 `<js>`），不做任何改写。
+ *
+ * 注意 `sourceUrl` **允许任意非空唯一字符串**（真实数据里就有
+ * `https://www.baidu.com/大灰狼番茄书荒广场` 与 `snssdk1128://user/profile/…`），
+ * 因此它是主键但不做 URL 校验 —— 与书源 `bookSourceUrl` 同规矩。
+ *
+ * 运行态字段（`lastSuccessAt` / `lastAttemptAt` / `lastError`）不属于备份格式，
+ * 用于**如实回报刷新失败**：抓不到时绝不能表现成「0 篇文章」静默通过。
+ */
+@Serializable
+data class RssSource(
+    val sourceUrl: String = "",
+    val sourceName: String = "",
+    val sourceGroup: String? = null,
+    val sourceIcon: String? = null,
+    val sourceComment: String? = null,
+    val enabled: Boolean = true,
+    val customOrder: Int = 0,
+    val type: Int = 0,
+    val articleStyle: Int = 0,
+    val lastUpdateTime: Long = 0L,
+    val singleUrl: Boolean = false,
+    val cacheFirst: Boolean = false,
+    val preload: Boolean = false,
+    val enableJs: Boolean = false,
+    val showWebLog: Boolean = false,
+    val enabledCookieJar: Boolean = false,
+    val loadWithBaseUrl: Boolean = false,
+    val header: String? = null,
+    val sortUrl: String? = null,
+    val ruleArticles: String? = null,
+    val ruleLink: String? = null,
+    val ruleTitle: String? = null,
+    val ruleImage: String? = null,
+    val rulePubDate: String? = null,
+    val loginUrl: String? = null,
+    val loginUi: String? = null,
+    val injectJs: String? = null,
+    val shouldOverrideUrlLoading: String? = null,
+    val jsLib: String? = null,
+    val contentBlacklist: String? = null,
+    /**
+     * 网页跳转策略。**字符串枚举**（不是整数）：手机版 `RedirectPolicy` 取
+     * `ALLOW_ALL / ASK_ALWAYS / ASK_CROSS_ORIGIN / BLOCK_CROSS_ORIGIN / BLOCK_ALL /
+     * ASK_SAME_DOMAIN_BLOCK_CROSS`，默认 `ASK_CROSS_ORIGIN`。
+     */
+    val redirectPolicy: String = "ASK_CROSS_ORIGIN",
+    // ---- 运行态（不参与备份导出）----
+    val lastSuccessAt: Long? = null,
+    val lastAttemptAt: Long? = null,
+    val lastError: String? = null,
+    val updatedAt: Long = 0L,
+    /** 未读文章数（列表接口顺带算出，避免前端再算一遍）。 */
+    val unreadCount: Int = 0,
+    /** 文章总数。 */
+    val articleCount: Int = 0,
+)
+
+/** 抓到的一篇文章。`(sourceUrl, link)` 唯一。 */
+@Serializable
+data class RssArticle(
+    val id: Long = 0L,
+    val sourceUrl: String = "",
+    val link: String = "",
+    val title: String = "",
+    val image: String? = null,
+    val pubDate: String? = null,
+    val description: String? = null,
+    /** 来源源地址（手机版 `origin` 语义）。 */
+    val origin: String? = null,
+    /** 分类名（手机版 `sortName` 语义）。 */
+    val sortName: String? = null,
+    val read: Boolean = false,
+    val createdAt: Long = 0L,
+)
+
+/** RSS 订阅源导入结果。 */
+@Serializable
+data class RssSourceImportResponse(
+    val total: Int,
+    val imported: Int,
+    val updated: Int,
+    val skipped: Int = 0,
+    val failed: Int = 0,
+)
+
+/** 单次刷新结果：**失败必须如实带出 message**，不能表现为 0 条。 */
+@Serializable
+data class RssRefreshResponse(
+    val sourceUrl: String,
+    val articles: Int,
+    val newArticles: Int,
+    val failed: Boolean = false,
+    val message: String? = null,
+)
+
+/** 订阅源写入/更新请求。 */
+@Serializable
+data class RssSourceWriteRequest(
+    val sourceUrl: String,
+    val sourceName: String = "",
+    val enabled: Boolean = true,
 )
 
 /** 带有发现页的书源摘要 */

@@ -54,6 +54,12 @@ class JsSandbox(private val runner: RuleRunner? = null) {
     private val sessionStore = ConcurrentHashMap<String, Any>()
 
     /**
+     * `cache.putMemory`/`cache.getFromMemory` 的进程内后端（key 形如 `sourceId\u0000key`）。
+     * 只在本沙箱实例内有效，不落库 —— 与 Legado `CacheManager` 的内存缓存语义一致。
+     */
+    private val memoryCache = ConcurrentHashMap<String, String>()
+
+    /**
      * 当前线程正在求值的书源上下文。
      *
      * 规则的 `<js>` 片段（NodeValue）无法方便地把执行上下文逐层透传，但书源 JS 普遍依赖
@@ -122,6 +128,9 @@ class JsSandbox(private val runner: RuleRunner? = null) {
                 val db = context?.database ?: runner?.database
                 ScriptableObject.putProperty(scope, "source", createSourceBridge(scope, sourceId, db, context))
                 ScriptableObject.putProperty(scope, "cookie", createCookieBridge(scope, sourceId, db))
+                // cache：Legado CacheManager 语义（getFromMemory/putMemory 走内存，get/put 落库）。
+                // 真实 RSS 源的 sourceUrl 与 header 规则都依赖它，缺了会静默失效。
+                ScriptableObject.putProperty(scope, "cache", createCacheBridge(scope, sourceId, db))
             }
 
             // Legado 的 book 对象：书源 JS 会用 book.getVariable('custom') 读取书籍级变量
@@ -580,10 +589,18 @@ class JsSandbox(private val runner: RuleRunner? = null) {
         ScriptableObject.putProperty(api, "toast", toastFn)
         ScriptableObject.putProperty(api, "longToast", toastFn)
 
-        // java.log(msg)
+        // java.log(msg) / java.log(tag, msg)
+        //
+        // ⚠️ 必须**回显入参**（与 Legado `help/JsExtensions.kt` 的 `fun log(msg: Any?): Any? { …; return msg }` 一致），
+        // 不能返回 undefined：Legado 生态高频惯用法是 `java.ajax(java.log(url))` ——
+        // 把 log 当成「打印并透传」的管道用。返回 undefined 会让 `java.ajax("undefined")` 走到
+        // parseUri 抛异常，而该异常被 eval 的 catch 吞掉 ⇒ 规则求值整体返回 null ⇒ **静默 0 条**。
+        // 真实 RSS 源「大灰狼书荒广场」的 ruleArticles 正是这样写的（实测定位）。
         ScriptableObject.putProperty(api, "log", object : BaseFunction() {
             override fun call(cx: Context, scope: Scriptable, thisObj: Scriptable, args: Array<out Any?>): Any {
-                return Context.getUndefinedValue()
+                val first = args.firstOrNull() ?: return Context.getUndefinedValue()
+                // 双参形态 log(tag, msg)：Legado 记录 "tag: msg" 后回显第二个参数
+                return if (args.size >= 2) args[1] ?: Context.getUndefinedValue() else first
             }
         })
 
@@ -1063,6 +1080,93 @@ class JsSandbox(private val runner: RuleRunner? = null) {
         }
         is List<*> -> Context.getCurrentContext().newArray(scope, value.map { toJsValue(it, scope) }.toTypedArray())
         else -> Context.javaToJS(value, scope)
+    }
+
+    /**
+     * `cache` 桥接对象（Legado `CacheManager` 语义）。
+     *
+     * 真实 RSS 源与书源都会用到：`cache.getFromMemory(key)` / `cache.putMemory(key, value)` /
+     * `cache.get(key)` / `cache.put(key, value)`。
+     * 实测参照数据里「大灰狼书荒广场」的 `sourceUrl` 就是
+     * `http@js:eval(String(cache.getFromMemory('yckdm')))`，而「源仓库」的 `header` 规则
+     * 用 `cache.putMemory('yckdm', …)` 预热它 —— 缺这一层桥会让这类源**静默**失效。
+     *
+     * 分层语义（对齐 Legado）：
+     * - `getFromMemory`/`putMemory` 走本沙箱实例的进程内缓存，不落库；
+     * - `get`/`put` 落到书源级 KV（`source_kv`），表达式求值间可跨进程存活。
+     *
+     * 读写都做「原生 JS 值优先、字符串回退」处理：Legado 的 `putMemory` 可存对象，
+     * 调用侧常写 `eval(String(cache.getFromMemory('x')))` 或 `JSON.parse(...)`，
+     * 因此取到字符串时尝试按 JSON 还原，还原不了就原样返回字符串。
+     */
+    private fun createCacheBridge(
+        scope: Scriptable,
+        sourceId: String,
+        db: Database?,
+    ): NativeObject = NativeObject().also { api ->
+        api.parentScope = scope
+
+        // cache.putMemory(key, value)
+        ScriptableObject.putProperty(api, "putMemory", object : BaseFunction() {
+            override fun call(cx: Context, scope: Scriptable, thisObj: Scriptable, args: Array<out Any?>): Any {
+                val k = args.getOrNull(0)?.toString() ?: return Context.getUndefinedValue()
+                val raw = args.getOrNull(1) ?: return Context.getUndefinedValue()
+                memoryCache["$sourceId\u0000$k"] = jsValueToStorage(scope, raw)
+                return raw
+            }
+        })
+
+        // cache.getFromMemory(key)
+        ScriptableObject.putProperty(api, "getFromMemory", object : BaseFunction() {
+            override fun call(cx: Context, scope: Scriptable, thisObj: Scriptable, args: Array<out Any?>): Any {
+                val k = args.firstOrNull()?.toString() ?: return Context.getUndefinedValue()
+                val stored = memoryCache["$sourceId\u0000$k"] ?: return Context.getUndefinedValue()
+                return storageToJs(cx, scope, stored)
+            }
+        })
+
+        // cache.get(key)
+        ScriptableObject.putProperty(api, "get", object : BaseFunction() {
+            override fun call(cx: Context, scope: Scriptable, thisObj: Scriptable, args: Array<out Any?>): Any {
+                val k = args.firstOrNull()?.toString() ?: return Context.getUndefinedValue()
+                val stored = db?.getSourceKv(sourceId, "cache:$k") ?: return Context.getUndefinedValue()
+                return storageToJs(cx, scope, stored)
+            }
+        })
+
+        // cache.put(key, value)
+        ScriptableObject.putProperty(api, "put", object : BaseFunction() {
+            override fun call(cx: Context, scope: Scriptable, thisObj: Scriptable, args: Array<out Any?>): Any {
+                val k = args.getOrNull(0)?.toString() ?: return Context.getUndefinedValue()
+                val raw = args.getOrNull(1) ?: return Context.getUndefinedValue()
+                db?.saveSourceKv(sourceId, "cache:$k", jsValueToStorage(scope, raw))
+                return raw
+            }
+        })
+    }
+
+    /** 把 JS 值序列化成可持久化/可回读的字符串（Rhino 原生值走 JSON，其余走 toString）。 */
+    private fun jsValueToStorage(scope: Scriptable, value: Any?): String = when (value) {
+        null -> ""
+        is String -> value
+        is Number, is Boolean -> value.toString()
+        else -> runCatching {
+            Context.getCurrentContext()?.let { cx -> NativeJSON.stringify(cx, scope, value, null, null)?.toString() }
+        }.getOrNull() ?: value.toString()
+    }
+
+    /**
+     * 回读：只有**结构化**字符串（对象/数组字面量）才尝试还原成 JS 原生值。
+     *
+     * 刻意**不**把 `"42"` / `"true"` / `"null"` 这类标量文本还原：Legado 的
+     * `cache.putMemory('k','42')` 期望取回字符串 `'42'`，若被转成数字，调用侧
+     * `String(cache.getFromMemory('k'))` 结果一样、但 `typeof` 与严格比较会变，
+     * 属于「看起来能用、语义漂了」的隐患。还原失败一律原样返回字符串。
+     */
+    private fun storageToJs(cx: Context, scope: Scriptable, stored: String): Any {
+        val trimmed = stored.trim()
+        if (!trimmed.startsWith("{") && !trimmed.startsWith("[")) return stored
+        return runCatching { NativeJSON.parse(cx, scope, stored, null) }.getOrDefault(stored)
     }
 }
 

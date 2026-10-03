@@ -70,6 +70,19 @@ class BackupExporterTest {
                 ),
             ),
         )
+        // 订阅源：必写字段 + 一个可选字段（分组），用于锁定「必写恒写、可选省略」的契约。
+        db.importRssSources(
+            listOf(
+                RssSource(
+                    sourceUrl = "https://rss.example.com",
+                    sourceName = "示例订阅源",
+                    sourceGroup = "legado",
+                    customOrder = -7,
+                    ruleArticles = "<js>java.ajax('https://rss.example.com/api')</js>$.data[*]",
+                    ruleTitle = "$.title",
+                ),
+            ),
+        )
     }
 
     private fun entriesOf(bytes: ByteArray): LinkedHashMap<String, String> {
@@ -84,28 +97,28 @@ class BackupExporterTest {
     }
 
     @Test
-    fun `export always writes the six required entries in name order`() = withDatabase { db ->
+    fun `export always writes the seven required entries in name order`() = withDatabase { db ->
         seed(db)
         val result = BackupExporter(db).export("CD_Watch_A", LocalDate.of(2026, 9, 30))
 
-        // 4 个文件一个都不能少，且顺序按名称升序（与真实备份一致）
+        // 7 个文件一个都不能少，且顺序按名称升序（与真实备份一致）
         assertEquals(
-            listOf("bookGroup.json", "bookmark.json", "bookshelf.json", "bookSource.json", "httpTTS.json", "replaceRule.json"),
+            listOf("bookGroup.json", "bookmark.json", "bookshelf.json", "bookSource.json", "httpTTS.json", "replaceRule.json", "rssSources.json"),
             entriesOf(result.bytes).keys.toList(),
         )
         assertEquals("backup2026-09-30-CD_Watch_A.zip", result.fileName)
     }
 
     /**
-     * 空库也必须产出 4 个文件 —— 这是「文件齐备」契约的关键：
+     * 空库也必须产出 7 个文件 —— 这是「文件齐备」契约的关键：
      * 文件可以在数据为空时是 `[]`，但不能消失。
      */
     @Test
-    fun `empty database still produces all six files with empty arrays`() = withDatabase { db ->
+    fun `empty database still produces all seven files with empty arrays`() = withDatabase { db ->
         val entries = entriesOf(BackupExporter(db).export("", LocalDate.of(2026, 9, 30)).bytes)
 
         assertEquals(
-            listOf("bookGroup.json", "bookmark.json", "bookshelf.json", "bookSource.json", "httpTTS.json", "replaceRule.json"),
+            listOf("bookGroup.json", "bookmark.json", "bookshelf.json", "bookSource.json", "httpTTS.json", "replaceRule.json", "rssSources.json"),
             entries.keys.toList(),
         )
         entries.forEach { (name, text) -> assertEquals("$name 应为空数组", "[]", text) }
@@ -242,9 +255,49 @@ class BackupExporterTest {
     }
 
     /**
+     * RSS 订阅源条目：**必写字段恒写、可选字段只在有值时写**，且 `redirectPolicy` 是
+     * **字符串枚举**（真实备份实测 `"ASK_CROSS_ORIGIN"`，不是整数）。
+     *
+     * 这条断言的价值在于：真实参照包 8 条的键数是 17~28（17 个字段 8/8 全有），
+     * 一旦把必写字段改成「有值才写」，导出包与手机端就不一致了，而**肉眼看不出来**。
+     */
+    @Test
+    fun `rss source entry always writes mandatory fields and omits empty optionals`() = withDatabase { db ->
+        seed(db)
+        val rss = entriesOf(BackupExporter(db).export("", LocalDate.of(2026, 9, 30)).bytes).getValue("rssSources.json")
+
+        // 必写字段（真实数据 8/8 出现）
+        listOf(
+            "\"sourceUrl\": \"https://rss.example.com\"",
+            "\"sourceName\": \"示例订阅源\"",
+            "\"enabled\": true",
+            "\"customOrder\": -7",
+            "\"type\": 0",
+            "\"articleStyle\": 0",
+            "\"lastUpdateTime\": 0",
+            "\"singleUrl\": false",
+            "\"cacheFirst\": false",
+            "\"preload\": false",
+            "\"enableJs\": false",
+            "\"showWebLog\": false",
+            "\"enabledCookieJar\": false",
+            "\"loadWithBaseUrl\": false",
+            "\"redirectPolicy\": \"ASK_CROSS_ORIGIN\"",
+        ).forEach { assertTrue("应包含 $it", rss.contains(it)) }
+
+        // 有值的可选字段照写
+        assertTrue("分组应写出", rss.contains("\"sourceGroup\": \"legado\""))
+        assertTrue("规则应原样写出（含 <js> 尖括号不转义）", rss.contains("\"ruleArticles\": \"<js>java.ajax("))
+        // 没值的可选字段必须**省略**（而不是写空串）
+        assertTrue("空的 loginUrl 应省略", !rss.contains("\"loginUrl\""))
+        assertTrue("空的 jsLib 应省略", !rss.contains("\"jsLib\""))
+        assertTrue("空的 header 应省略", !rss.contains("\"header\""))
+    }
+
+    /**
      * 往返：导出的包必须能被 [BackupImporter] 读回去，且各部分条数一致。
      *
-     * 这是最强的一条断言 —— 它同时保证「4 个文件都在」「字段名对得上」「解析器能解析」。
+     * 这是最强的一条断言 —— 它同时保证「文件都在」「字段名对得上」「解析器能解析」。
      */
     @Test
     fun `exported package round trips through the importer`() = withDatabase { source ->
@@ -266,6 +319,15 @@ class BackupExporterTest {
             assertEquals(1, summary.bookmarks)
             assertEquals("测试书", db.listBookshelf().single().name)
             assertEquals(12, db.listBookshelf().single().chapterIndex)
+            // RSS 订阅源必须往返成功，且**规则原样保留**（规则丢了源就没用了）
+            assertEquals(1, summary.rssSources + summary.rssSourcesUpdated)
+            val roundTripped = db.listRssSources().single()
+            assertEquals("示例订阅源", roundTripped.sourceName)
+            assertEquals("legado", roundTripped.sourceGroup)
+            assertEquals(-7, roundTripped.customOrder)
+            assertEquals("<js>java.ajax('https://rss.example.com/api')</js>$.data[*]", roundTripped.ruleArticles)
+            assertEquals("$.title", roundTripped.ruleTitle)
+            assertEquals("ASK_CROSS_ORIGIN", roundTripped.redirectPolicy)
         } finally {
             db?.close()
             listOf(zipPath, Path.of(target), Path.of("$target-wal"), Path.of("$target-shm"))

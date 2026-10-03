@@ -84,13 +84,13 @@ class BackupExporterTest {
     }
 
     @Test
-    fun `export always writes the four required entries in name order`() = withDatabase { db ->
+    fun `export always writes the six required entries in name order`() = withDatabase { db ->
         seed(db)
         val result = BackupExporter(db).export("CD_Watch_A", LocalDate.of(2026, 9, 30))
 
         // 4 个文件一个都不能少，且顺序按名称升序（与真实备份一致）
         assertEquals(
-            listOf("bookGroup.json", "bookmark.json", "bookshelf.json", "bookSource.json"),
+            listOf("bookGroup.json", "bookmark.json", "bookshelf.json", "bookSource.json", "httpTTS.json", "replaceRule.json"),
             entriesOf(result.bytes).keys.toList(),
         )
         assertEquals("backup2026-09-30-CD_Watch_A.zip", result.fileName)
@@ -101,11 +101,11 @@ class BackupExporterTest {
      * 文件可以在数据为空时是 `[]`，但不能消失。
      */
     @Test
-    fun `empty database still produces all four files with empty arrays`() = withDatabase { db ->
+    fun `empty database still produces all six files with empty arrays`() = withDatabase { db ->
         val entries = entriesOf(BackupExporter(db).export("", LocalDate.of(2026, 9, 30)).bytes)
 
         assertEquals(
-            listOf("bookGroup.json", "bookmark.json", "bookshelf.json", "bookSource.json"),
+            listOf("bookGroup.json", "bookmark.json", "bookshelf.json", "bookSource.json", "httpTTS.json", "replaceRule.json"),
             entries.keys.toList(),
         )
         entries.forEach { (name, text) -> assertEquals("$name 应为空数组", "[]", text) }

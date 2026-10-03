@@ -561,7 +561,7 @@ class WebDavRoutesTest {
             val names = java.util.zip.ZipFile(zips.single().toFile()).use { zip ->
                 zip.entries().asSequence().map { it.name }.toList()
             }
-            assertEquals(listOf("bookGroup.json", "bookmark.json", "bookshelf.json", "bookSource.json"), names)
+            assertEquals(listOf("bookGroup.json", "bookmark.json", "bookshelf.json", "bookSource.json", "httpTTS.json", "replaceRule.json"), names)
         } finally {
             cleanup(fixture)
         }

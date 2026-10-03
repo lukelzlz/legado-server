@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url'
 import {
   chapterTurnClassName,
   dominantScrollSection,
+  isScrollSectionTransitionAllowed,
   findFirstFullyVisibleParagraphIndex,
   calculatePaginationLayout,
   isAtBottomBoundary,
@@ -424,16 +425,28 @@ test('ReaderScroll - dominant section switches at the viewport centre, symmetric
     { index: 5, top: 0 },
     { index: 6, top: 800 },
   ]
-  // 中心在 400（当前章内部）⇒ 仍是第 5 章
-  assert.equal(dominantScrollSection(rects, 400), 5)
-  // 中心刚好压在下一章顶部 ⇒ 视为进入第 6 章（避免"露头就换"）
-  assert.equal(dominantScrollSection(rects, 800), 6)
-  // 中心还在下一章顶部之上一点 ⇒ 仍是第 5 章
-  assert.equal(dominantScrollSection(rects, 799), 5)
-  // 向上滚到当前章顶部之上（中心 -1）⇒ 回到第 4 章
-  assert.equal(dominantScrollSection(rects, -1), 4)
-  // 对称性：向下需越过 800，向上需越过 0，各约半屏
-  assert.equal(dominantScrollSection(rects, 0), 5, '中心正好在当前章顶部仍算当前章')
+  // Ref Map 的插入顺序不等于 DOM 顺序，判定必须按章节顶部的实际位置选择。
+  assert.equal(dominantScrollSection([
+    { index: 6, top: 800 },
+    { index: 4, top: -1200 },
+    { index: 5, top: 0 },
+  ], 400), 5)
+  assert.equal(dominantScrollSection([
+    { index: 6, top: 800 },
+    { index: 4, top: -1200 },
+    { index: 5, top: 0 },
+  ], 800), 6)
+  assert.equal(dominantScrollSection([{ index: 1, top: Number.NaN }], 400), null)
+})
+
+test('ReaderScroll - chapter transition follows the actual scroll direction', () => {
+  const source = fs.readFileSync(path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../src/ReaderScreen.tsx'), 'utf-8')
+  assert.match(source, /isScrollSectionTransitionAllowed\(current\.chapter\.index, dominant, scrollDelta\)/)
+  assert.equal(isScrollSectionTransitionAllowed(5, 6, 120), true)
+  assert.equal(isScrollSectionTransitionAllowed(5, 4, -120), true)
+  assert.equal(isScrollSectionTransitionAllowed(5, 4, 120), false)
+  assert.equal(isScrollSectionTransitionAllowed(5, 6, -120), false)
+  assert.equal(isScrollSectionTransitionAllowed(5, 6, 0), false)
 })
 
 test('ReaderScroll - dominant section tolerates empty or single-section windows', () => {

@@ -205,10 +205,23 @@ export type ScrollSectionRect = {
  */
 export function dominantScrollSection(rects: ScrollSectionRect[], viewportCenter: number): number | null {
   let found: number | null = null
+  let foundTop = Number.NEGATIVE_INFINITY
   for (const rect of rects) {
-    if (rect.top <= viewportCenter) found = rect.index
+    // Ref Map 的插入顺序不等于 DOM 顺序：React 重绑 callback ref 后，
+    // Safari 可能让相邻区块以任意顺序重新登记。必须按视口位置找最靠后的区块。
+    if (Number.isFinite(rect.top) && rect.top <= viewportCenter && rect.top > foundTop) {
+      found = rect.index
+      foundTop = rect.top
+    }
   }
   return found
+}
+
+export function isScrollSectionTransitionAllowed(currentIndex: number, nextIndex: number, scrollDelta: number): boolean {
+  if (nextIndex === currentIndex) return false
+  if (scrollDelta > 0) return nextIndex > currentIndex
+  if (scrollDelta < 0) return nextIndex < currentIndex
+  return false
 }
 
 /**

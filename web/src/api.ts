@@ -68,6 +68,10 @@ export type BackupExportResult = {
 export type ProgressMergeResponse = { source: 'file' | 'database'; progress?: ReadingProgress; fileFound: boolean; alignedIndex?: number }
 export type BookshelfItem = { sourceId: string; bookUrl: string; name: string; author?: string; tocUrl: string; coverKey?: string; coverUrl?: string; chapterIndex?: number; scrollPosition?: number; lastReadAt: number; cachedChapters: number; totalChapters: number; cacheState: 'idle' | 'caching' | 'ready' | 'failed'; cacheError?: string; completed: boolean; alternateSources?: SearchResult[]; groupName?: string }
 export type BookshelfWrite = { sourceId: string; bookUrl: string; name: string; author?: string; tocUrl: string; coverUrl?: string; alternateSources?: SearchResult[]; groupName?: string }
+
+// Safari momentum scrolling can schedule several saves while a production request is still in flight.
+// Serialize saves per book so an older response cannot arrive after a newer position and overwrite it.
+const progressSaveQueues = new Map<string, Promise<void>>()
 export type BookshelfSourceSwitch = { oldSourceId: string; oldBookUrl: string; book: BookshelfWrite; alternateSources?: SearchResult[] }
 export type BookGroup = { id: number; name: string; sortOrder: number; bookCount: number }
 export type BookshelfBatchRequest = {
@@ -509,16 +513,27 @@ export const api = {
   progress: (sourceId: string, bookUrl: string, signal?: AbortSignal) => request<ReadingProgress | undefined>(`/api/reading-progress?sourceId=${encodeURIComponent(sourceId)}&bookUrl=${encodeURIComponent(bookUrl)}`, { signal }),
   saveProgress: async (sourceId: string, bookUrl: string, chapterUrl: string, chapterIndex: number, scrollPosition: number, chapterTitle?: string) => {
     const progressItem = { sourceId, bookUrl, chapterUrl, chapterIndex, scrollPosition, updatedAt: Date.now() }
-    enqueueOfflineProgress(progressItem)
+    const queueKey = `${sourceId}\u0000${bookUrl}`
+    const previous = progressSaveQueues.get(queueKey) ?? Promise.resolve()
+    const operation = previous.catch(() => undefined).then(async () => {
+      enqueueOfflineProgress(progressItem)
+      try {
+        // chapterTitle 一并提交，服务端写 bookProgress 进度文件时直接用，免去回查目录缓存
+        const res = await request<ReadingProgress>('/api/reading-progress', { method: 'PUT', body: JSON.stringify({ sourceId, bookUrl, chapterUrl, chapterIndex, scrollPosition, chapterTitle }) })
+        void flushOfflineProgress(async (item) => {
+          await request<ReadingProgress>('/api/reading-progress', { method: 'PUT', body: JSON.stringify(item) })
+        })
+        return res
+      } catch {
+        return { sourceId, bookUrl, chapterUrl, chapterIndex, scrollPosition, updatedAt: progressItem.updatedAt }
+      }
+    })
+    const marker = operation.then(() => undefined, () => undefined)
+    progressSaveQueues.set(queueKey, marker)
     try {
-      // chapterTitle 一并提交，服务端写 bookProgress 进度文件时直接用，免去回查目录缓存
-      const res = await request<ReadingProgress>('/api/reading-progress', { method: 'PUT', body: JSON.stringify({ sourceId, bookUrl, chapterUrl, chapterIndex, scrollPosition, chapterTitle }) })
-      void flushOfflineProgress(async (item) => {
-        await request<ReadingProgress>('/api/reading-progress', { method: 'PUT', body: JSON.stringify(item) })
-      })
-      return res
-    } catch {
-      return { sourceId, bookUrl, chapterUrl, chapterIndex, scrollPosition, updatedAt: progressItem.updatedAt }
+      return await operation
+    } finally {
+      if (progressSaveQueues.get(queueKey) === marker) progressSaveQueues.delete(queueKey)
     }
   },
   bookshelf: async () => {

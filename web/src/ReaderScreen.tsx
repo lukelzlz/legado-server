@@ -2,7 +2,7 @@ import { CSSProperties, PointerEvent as ReactPointerEvent, useCallback, useDefer
 import { useTranslation } from 'react-i18next'
 import { api, BookDetails, Chapter, ReadingProgress, SearchResult } from './api'
 import { Icon } from './icons'
-import { calculatePaginationLayout, chapterTurnClassName, dominantScrollSection, findFirstFullyVisibleParagraphIndex, isAtBottomBoundary, isAtTopBoundary, isInteractiveReaderTarget, isTapGesture, paginateTapZone, scrollCompensation, scrollTapZone, splitParagraphs, swipeDirection, ViewportBounds } from './readerInteractions'
+import { calculatePaginationLayout, chapterTurnClassName, dominantScrollSection, findFirstFullyVisibleParagraphIndex, isAtBottomBoundary, isAtTopBoundary, isInteractiveReaderTarget, isScrollSectionTransitionAllowed, isTapGesture, paginateTapZone, scrollCompensation, scrollTapZone, splitParagraphs, swipeDirection, ViewportBounds } from './readerInteractions'
 import type { ChapterTurnDirection, ChapterTurnPhase } from './readerInteractions'
 import { clampScrollPosition, defaultReaderSettings, getReaderFontFamily, ReaderSettings, scrollPosition, TtsEngineType } from './readerSettings'
 import { SourceSwitchModal } from './SourceSwitchModal'
@@ -359,6 +359,28 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
   const [scrollNext, setScrollNext] = useState<ScrollNeighborSection | null>(null)
   /** 各章节区块的 DOM 节点，用于判定「当前读的是哪一章」与位置补偿。 */
   const scrollSectionRefs = useRef(new Map<number, HTMLElement>())
+  /**
+   * React callback ref 在章节窗口平移时会先以 null 清理旧节点，再登记新节点。
+   * 回调若直接 delete(index)，旧回调的清理可能误删刚登记的新节点。
+   */
+  const scrollSectionRefCallbacks = useRef(new Map<number, (el: HTMLElement | null) => void>())
+  const getScrollSectionRef = useCallback((index: number) => {
+    const existing = scrollSectionRefCallbacks.current.get(index)
+    if (existing) return existing
+    let lastNode: HTMLElement | null = null
+    let callback: (el: HTMLElement | null) => void
+    callback = el => {
+      if (el) {
+        lastNode = el
+        scrollSectionRefs.current.set(index, el)
+      } else {
+        if (scrollSectionRefs.current.get(index) === lastNode) scrollSectionRefs.current.delete(index)
+        if (scrollSectionRefCallbacks.current.get(index) === callback) scrollSectionRefCallbacks.current.delete(index)
+      }
+    }
+    scrollSectionRefCallbacks.current.set(index, callback)
+    return callback
+  }, [])
   /**
    * 窗口平移的滚动锚点。
    *
@@ -1268,15 +1290,18 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
     if (nextIndex < 0 || nextIndex >= currentBook.chapters.length) return
     const previousChapter = currentRef.current?.chapter
     if (!previousChapter || nextIndex === previousChapter.index) return
+    // 三章窗口只能逐章平移。若旧的 ref/滚动回调在 Safari 中滞后，
+    // 禁止一次把当前章直接替换成相隔多章的过期区块。
+    if (Math.abs(nextIndex - previousChapter.index) !== 1) return
     const target = currentBook.chapters[nextIndex]
     if (!target) return
 
     // 锚点：目标章区块当前的视口 top，平移后补回同一位置。
-    const anchorEl = scrollSectionRefs.current.get(nextIndex)
-      ?? document.querySelector<HTMLElement>(`.reading-scroll-window > .reading-content[data-chapter-index="${nextIndex}"]`)
+    const anchorEl = document.querySelector<HTMLElement>(`.reading-scroll-window > .reading-content[data-chapter-index="${nextIndex}"]`)
+      ?? scrollSectionRefs.current.get(nextIndex)
     // React commit 尚未完成或 iOS Safari 短暂清理 callback ref 时，不能无锚点平移。
     // 否则章节高度变化会交给 Safari 的 scroll anchoring 处理，视口可能回跳整章。
-    if (!anchorEl) return
+    if (!anchorEl?.isConnected) return
     // 一次窗口平移尚未完成时不要覆盖旧锚点。快速惯性滚动在 iOS 上可能
     // 连续触发多个 scroll 回调，覆盖锚点会让一次补偿变成跨多章的错误补偿。
     if (scrollShiftAnchorRef.current) return
@@ -1321,28 +1346,34 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
    */
   useLayoutEffect(() => {
     if (settings.pageMode !== 'scroll') return
-    const anchor = scrollShiftAnchorRef.current
-    if (!anchor) return
-    const el = scrollSectionRefs.current.get(anchor.index)
-      ?? document.querySelector<HTMLElement>(`.reading-scroll-window > .reading-content[data-chapter-index="${anchor.index}"]`)
-    // 不要提前清除锚点。iOS Safari 在惯性滚动期间可能延迟完成布局，
-    // 下一次 layout effect 仍需要使用同一个锚点完成补偿。
-    if (!el) return
-    scrollShiftAnchorRef.current = null
-    const delta = scrollCompensation(anchor.top, el.getBoundingClientRect().top)
-    if (Math.abs(delta) > 0.5) {
-      // 使用绝对目标位置，避免 Safari 对 scrollBy 的相对滚动与自身 anchoring
-      // 叠加，导致补偿方向或幅度被放大。
-      window.scrollTo({ top: Math.max(0, window.scrollY + delta), behavior: 'auto' })
+    if (!scrollShiftAnchorRef.current) return
+
+    // Safari 的原生 scroll anchoring 可能在 React commit 后、layout effect 之后才完成。
+    // 延迟到下一绘制帧再测量，只补偿浏览器实际留下的残差，避免同一平移被校正两次。
+    let rafId: number | null = window.requestAnimationFrame(() => {
+      rafId = null
+      const anchor = scrollShiftAnchorRef.current
+      if (!anchor) return
+      const el = scrollSectionRefs.current.get(anchor.index)
+        ?? document.querySelector<HTMLElement>(`.reading-scroll-window > .reading-content[data-chapter-index="${anchor.index}"]`)
+      if (!el || !el.isConnected) return
+      scrollShiftAnchorRef.current = null
+      const delta = scrollCompensation(anchor.top, el.getBoundingClientRect().top)
+      if (Math.abs(delta) > 0.5) {
+        window.scrollTo({ top: Math.max(0, window.scrollY + delta), behavior: 'auto' })
+      }
+      // 平移后立刻按新区块校正一次进度，避免 persist 用加载逻辑写入的「章首 0」把进度带偏
+      const current = currentRef.current
+      if (current) {
+        const rect = el.getBoundingClientRect()
+        const range = rect.height - window.innerHeight
+        current.position = range > 0 ? Math.min(1, Math.max(0, -rect.top / range)) : 0
+      }
+      lastScrollYRef.current = window.scrollY
+    })
+    return () => {
+      if (rafId !== null) window.cancelAnimationFrame(rafId)
     }
-    // 平移后立刻按新区块校正一次进度，避免 persist 用加载逻辑写入的「章首 0」把进度带偏
-    const current = currentRef.current
-    if (current) {
-      const rect = el.getBoundingClientRect()
-      const range = rect.height - window.innerHeight
-      current.position = range > 0 ? Math.min(1, Math.max(0, -rect.top / range)) : 0
-    }
-    lastScrollYRef.current = window.scrollY
   }, [chapterIndex, content, scrollPrev, scrollNext, settings.pageMode])
 
   useEffect(() => {
@@ -1364,8 +1395,9 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
         lastScrollYRef.current = currentY
         const clientHeight = window.innerHeight
         // 三章窗口下不能用整文档的 scrollHeight：进度必须相对**当前章区块**计算
-        const sectionEl = scrollSectionRefs.current.get(current.chapter.index)
-        if (sectionEl) {
+          const sectionEl = document.querySelector<HTMLElement>(`.reading-scroll-window > .reading-content[data-chapter-index="${current.chapter.index}"]`)
+            ?? scrollSectionRefs.current.get(current.chapter.index)
+          if (sectionEl?.isConnected) {
           const rect = sectionEl.getBoundingClientRect()
           const range = rect.height - clientHeight
           current.position = range > 0 ? Math.min(1, Math.max(0, -rect.top / range)) : 0
@@ -1374,12 +1406,17 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
           else if (current.position <= 0.3) preloadPrevChapter(current.chapter.index)
           // 视口中心越过了相邻章开头 ⇒ 窗口平移，实现「一直往下滚就接着读下一章」
           const center = clientHeight / 2
-          const rects = [...scrollSectionRefs.current.entries()].map(([index, node]) => ({
-            index,
-            top: node.getBoundingClientRect().top,
-          }))
+          const rects = [...document.querySelectorAll<HTMLElement>('.reading-scroll-window > .reading-content[data-chapter-index]')]
+            .filter(node => node.isConnected)
+            .map(node => ({
+              index: Number(node.dataset.chapterIndex),
+              top: node.getBoundingClientRect().top,
+            }))
+            .filter(rect => Number.isInteger(rect.index))
           const dominant = dominantScrollSection(rects, center)
-          if (dominant !== null && dominant !== current.chapter.index) shiftScrollWindow(dominant)
+          if (dominant !== null && isScrollSectionTransitionAllowed(current.chapter.index, dominant, scrollDelta)) {
+            shiftScrollWindow(dominant)
+          }
         } else {
           current.position = scrollPosition(currentY, document.documentElement.scrollHeight, clientHeight)
         }
@@ -1967,10 +2004,7 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
               data-chapter-index={scrollPrev.index}
               key={`chapter-${scrollPrev.index}`}
               className={`reading-content is-scroll-neighbor font-${settings.font}`}
-              ref={el => {
-                if (el) scrollSectionRefs.current.set(scrollPrev.index, el)
-                else scrollSectionRefs.current.delete(scrollPrev.index)
-              }}
+              ref={getScrollSectionRef(scrollPrev.index)}
               aria-hidden="true"
             >
               <h1>{scrollPrev.title}</h1>
@@ -1985,10 +2019,7 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
             className={`reading-content font-${settings.font}`}
             onPointerDown={onPointerDown}
             onPointerUp={onPointerUp}
-            ref={el => {
-              if (el) scrollSectionRefs.current.set(chapterIndex, el)
-              else scrollSectionRefs.current.delete(chapterIndex)
-            }}
+            ref={getScrollSectionRef(chapterIndex)}
           >
             {/*
               两章之间的隔断：线 —— 章节名 —— 线（沿用上游同款外观）。
@@ -2021,10 +2052,7 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
               data-chapter-index={scrollNext.index}
               key={`chapter-${scrollNext.index}`}
               className={`reading-content is-scroll-neighbor font-${settings.font}`}
-              ref={el => {
-                if (el) scrollSectionRefs.current.set(scrollNext.index, el)
-                else scrollSectionRefs.current.delete(scrollNext.index)
-              }}
+              ref={getScrollSectionRef(scrollNext.index)}
               aria-hidden="true"
             >
               <div className="reader-chapter-stream-divider" aria-hidden="true">

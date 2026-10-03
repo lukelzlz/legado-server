@@ -27,6 +27,9 @@ object RssSourceCodec {
 
     private val json = Json { ignoreUnknownKeys = true; isLenient = true }
 
+    /** [RssSource] → JSON 对象文本（[decode] 的逆向，供内部把模型回喂给求值器）。 */
+    fun encode(source: RssSource): String = json.encodeToString(source)
+
     /** 解析单个订阅源对象；不是对象或缺少 `sourceUrl` 时抛 [RuleExecutionException]。 */
     fun decode(sourceJson: String): RssSource {
         val raw = sourceJson.trim().removePrefix("\uFEFF")

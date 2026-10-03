@@ -62,6 +62,13 @@ fun Route.apiRoutes(
      */
     webDavStorage: WebDavStorage = WebDavStorage(Path.of(".data/webdav")),
     httpTtsService: HttpTtsService = HttpTtsService(database),
+    /**
+     * RSS 订阅源刷新服务。
+     *
+     * 默认用与本路由同一个 [runner]：订阅源规则与书源规则共用同一套求值机制，
+     * 因此也应该共用同一份沙箱/连接配置，避免两套行为不一致。
+     */
+    rssService: RssService = RssService(database, runner),
 ) {
     val webView = WebViewProxy(database)
 
@@ -1687,6 +1694,132 @@ fun Route.apiRoutes(
                     call.application.log.warn("HTTP TTS test failed: {}", e.message)
                     call.respond(HttpStatusCode.BadRequest, ApiError("tts_test_failed", e.message ?: "合成失败"))
                 }
+            }
+        }
+
+        // ------------------------------------------------------------------
+        // RSS 订阅源（「订阅源」，与上面的 /subscriptions「书源订阅」是两件不同的事）
+        //
+        // 路由前缀刻意用 `/rss` 而不是复用 `/subscriptions`：两者的表、语义、前端页面
+        // 都互不相干（详见 Models.kt 里 RssSource 的说明）。
+        //
+        // ⚠️ 订阅源的标识一律走**查询参数 `sourceId`，绝不放进路径段**：
+        // `sourceUrl` 的真实形态是 `https://feed.example.com/rss`（含 `/`），
+        // 也会是 `snssdk1128://user/profile/…` 或中文自定义串 —— 放进 `{id}` 路径段
+        // 会因 `/` 被当作路径分隔符而永远匹配不上（实测表现为「明明存在却 404」）。
+        // 这与本项目其它「按 sourceId 取数」的接口（搜索/目录/正文）保持同一口径。
+        // `sourceId` 用 `call.request.queryParameters` 读取，Ktor 已自动做百分号解码。
+        // ------------------------------------------------------------------
+        route("/rss") {
+            get("/sources") {
+                if (auth.requireSession(call) == null) return@get
+                val sourceId = call.request.queryParameters["sourceId"]
+                // 带 sourceId 时返回单条（不存在则 404），不带则返回列表
+                if (sourceId.isNullOrBlank()) {
+                    call.respond(database.listRssSources())
+                } else {
+                    val source = database.getRssSource(sourceId)
+                        ?: return@get call.respond(HttpStatusCode.NotFound, ApiError("not_found", "未找到该订阅源"))
+                    call.respond(source)
+                }
+            }
+            post("/sources") {
+                if (auth.requireSession(call, true) == null) return@post
+                // 新建/导入单条：接受原始 JSON（与备份、粘贴导入同一套宽容解析），
+                // 而不是强类型 DTO —— 订阅源字段多且大量是 JS 规则，宽容解析才不会丢字段。
+                val body = call.receiveText()
+                val source = try {
+                    RssSourceCodec.decode(body)
+                } catch (error: Throwable) {
+                    return@post call.respond(
+                        HttpStatusCode.BadRequest,
+                        ApiError("invalid_rss_source", error.message ?: "订阅源格式无效"),
+                    )
+                }
+                call.respond(database.saveRssSource(source))
+            }
+            put("/sources") {
+                if (auth.requireSession(call, true) == null) return@put
+                val id = call.request.queryParameters["sourceId"].orEmpty()
+                if (id.isBlank()) {
+                    return@put call.respond(HttpStatusCode.BadRequest, ApiError("missing_source", "必须提供 sourceId"))
+                }
+                if (database.getRssSource(id) == null) {
+                    return@put call.respond(HttpStatusCode.NotFound, ApiError("not_found", "未找到该订阅源"))
+                }
+                val body = call.receiveText()
+                val source = try {
+                    RssSourceCodec.decode(body)
+                } catch (error: Throwable) {
+                    return@put call.respond(
+                        HttpStatusCode.BadRequest,
+                        ApiError("invalid_rss_source", error.message ?: "订阅源格式无效"),
+                    )
+                }
+                // sourceUrl 是主键，不允许通过请求体改主键
+                // （否则等于「删一个建一个」，旧文章会全部悬空）
+                if (source.sourceUrl != id) {
+                    return@put call.respond(
+                        HttpStatusCode.BadRequest,
+                        ApiError("source_url_mismatch", "请求体里的 sourceUrl 必须与 sourceId 一致"),
+                    )
+                }
+                call.respond(database.saveRssSource(source))
+            }
+            delete("/sources") {
+                if (auth.requireSession(call, true) == null) return@delete
+                val id = call.request.queryParameters["sourceId"].orEmpty()
+                if (id.isBlank()) {
+                    return@delete call.respond(HttpStatusCode.BadRequest, ApiError("missing_source", "必须提供 sourceId"))
+                }
+                if (database.deleteRssSource(id)) {
+                    call.respond(HttpStatusCode.NoContent)
+                } else {
+                    call.respond(HttpStatusCode.NotFound, ApiError("not_found", "未找到该订阅源"))
+                }
+            }
+            post("/sources/refresh") {
+                if (auth.requireSession(call, true) == null) return@post
+                val id = call.request.queryParameters["sourceId"].orEmpty()
+                if (id.isBlank()) {
+                    return@post call.respond(HttpStatusCode.BadRequest, ApiError("missing_source", "必须提供 sourceId"))
+                }
+                call.respond(rssService.refresh(id))
+            }
+            post("/refresh") {
+                if (auth.requireSession(call, true) == null) return@post
+                // 请求体可选：给 [] 或不给则刷新全部启用的源
+                val requested = runCatching { call.receive<List<String>>() }.getOrNull()
+                call.respond(rssService.refreshAll(requested?.takeIf { it.isNotEmpty() }))
+            }
+            get("/articles") {
+                if (auth.requireSession(call) == null) return@get
+                val sourceUrl = call.request.queryParameters["sourceId"].orEmpty()
+                if (sourceUrl.isBlank()) {
+                    return@get call.respond(HttpStatusCode.BadRequest, ApiError("missing_source", "必须提供 sourceId"))
+                }
+                val unreadOnly = call.request.queryParameters["unreadOnly"]?.toBooleanStrictOrNull() ?: false
+                call.respond(database.listRssArticles(sourceUrl, unreadOnly = unreadOnly))
+            }
+            post("/articles/{id}/read") {
+                if (auth.requireSession(call, true) == null) return@post
+                // 文章 id 是自增整数，放进路径段是安全的
+                val id = call.parameters["id"]?.toLongOrNull()
+                    ?: return@post call.respond(HttpStatusCode.BadRequest, ApiError("invalid_id", "文章标识无效"))
+                val read = runCatching { call.receive<RssArticleReadRequest>() }.getOrNull()?.read ?: true
+                if (database.markRssArticleRead(id, read)) {
+                    call.respond(HttpStatusCode.NoContent)
+                } else {
+                    call.respond(HttpStatusCode.NotFound, ApiError("not_found", "未找到该文章"))
+                }
+            }
+            post("/sources/read-all") {
+                if (auth.requireSession(call, true) == null) return@post
+                val id = call.request.queryParameters["sourceId"].orEmpty()
+                if (id.isBlank()) {
+                    return@post call.respond(HttpStatusCode.BadRequest, ApiError("missing_source", "必须提供 sourceId"))
+                }
+                call.respond(RssBulkReadResponse(database.markRssSourceRead(id)))
             }
         }
     }

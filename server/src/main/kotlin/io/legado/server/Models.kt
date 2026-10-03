@@ -1109,6 +1109,18 @@ data class RssSourceWriteRequest(
     val enabled: Boolean = true,
 )
 
+/** 标记单篇文章已读/未读。缺省视为「已读」。 */
+@Serializable
+data class RssArticleReadRequest(
+    val read: Boolean = true,
+)
+
+/** 「全部标为已读」的结果。 */
+@Serializable
+data class RssBulkReadResponse(
+    val updated: Int,
+)
+
 /** 带有发现页的书源摘要 */
 @Serializable
 data class ExploreSourceItem(

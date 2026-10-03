@@ -24,12 +24,21 @@ fun main(args: Array<String>) {
     }.start(wait = true)
 }
 
-fun Application.legadoApplication(config: ServerConfig = ServerConfig.fromEnvironment()) {
+/**
+ * 组装整个应用。
+ *
+ * @param responseFetcher 仅用于**测试**：非空时 [RuleRunner] 完全绕过网络，改用它取数
+ *   （与书源侧既有的测试接缝同源）。生产环境传 null，走真实 HTTP。
+ */
+fun Application.legadoApplication(
+    config: ServerConfig = ServerConfig.fromEnvironment(),
+    responseFetcher: ((String) -> String)? = null,
+) {
     val database = Database(config.databasePath)
     database.initialize(config.initialAdminPassword)
     val auth = AuthService(database, config.secureCookies)
     val subscriptions = SubscriptionService(database) { message -> log.info(message) }
-    val runner = RuleRunner(database = database)
+    val runner = if (responseFetcher != null) RuleRunner(responseFetcher, database) else RuleRunner(database = database)
     val bookCache = BookCacheService(database, runner) { message -> log.info(message) }
     val edgeTts = EdgeTtsService()
     val httpTtsService = HttpTtsService(database)

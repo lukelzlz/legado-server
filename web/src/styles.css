@@ -403,14 +403,41 @@ svg { width: 18px; height: 18px; flex: none; }
   color: var(--muted);
   flex-shrink: 0;
 }
-.primary-button, .secondary-button, .subtle-button, .danger-button { min-height: 34px; display: inline-flex; align-items: center; justify-content: center; gap: 7px; padding: 0 14px; border-radius: 5px; font-size: 13px; font-weight: 600; }
+.primary-button, .secondary-button, .subtle-button, .danger-button, .ghost-button { min-height: 34px; display: inline-flex; align-items: center; justify-content: center; gap: 7px; padding: 0 14px; border-radius: 5px; font-size: 13px; font-weight: 600; }
 .primary-button { background: var(--accent); color: #fff; }
 .primary-button:hover { background: var(--accent-ink); }
 .secondary-button { background: var(--surface-muted); color: var(--ink); border: 1px solid var(--line); transition: all 0.15s ease; }
 .secondary-button:hover { background: var(--line); border-color: color-mix(in srgb, var(--line) 80%, var(--ink)); }
 .subtle-button { background: var(--surface-muted); color: var(--ink); border: 1px solid var(--line); }
+.ghost-button { background: transparent; color: var(--muted); border: 1px solid transparent; transition: all 0.15s ease; }
+.ghost-button:hover { background: var(--surface-muted); color: var(--ink); border-color: var(--line); }
 .danger-button { color: var(--danger); background: transparent; }
 .danger-button:hover { background: color-mix(in srgb, var(--danger) 10%, transparent); }
+
+/* 通用图标/关闭按钮基类 */
+.close-btn, .close-button, .icon-btn, .icon-only {
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.close-btn:hover, .close-button:hover, .icon-btn:hover, .icon-only:hover {
+  background: var(--surface-muted);
+  color: var(--ink);
+  border-color: var(--line);
+}
+.close-btn svg, .close-button svg, .icon-btn svg, .icon-only svg {
+  width: 16px;
+  height: 16px;
+}
 .section-kicker { display: block; color: var(--accent); font-size: 12px; font-weight: 650; line-height: 1; margin-bottom: 8px; }
 .form-error { color: var(--danger); font-size: 13px; }
 
@@ -1141,6 +1168,25 @@ mark.search-highlight { background: var(--accent-soft); color: var(--accent); fo
 .theme-choice.theme-dark i { background: #292d2b; }
 .theme-choice.selected i { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); background: var(--surface); }
 .theme-choice.selected svg { position: absolute; right: 3px; bottom: 3px; width: 13px; height: 13px; padding: 2px; border-radius: 50%; background: var(--accent); }
+.rules-setting-btn {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  padding: 10px 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-muted);
+  color: var(--ink);
+  cursor: pointer;
+  font-size: 14px;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+.rules-setting-btn:hover {
+  background: var(--surface);
+  border-color: var(--accent);
+}
+
 .font-select { position: relative; }
 .font-select select { width: 100%; height: 36px; appearance: none; padding: 0 30px 0 12px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); color: var(--ink); font-size: 13px; outline: 0; cursor: pointer; }
 .font-select svg { position: absolute; width: 15px; right: 10px; top: 11px; pointer-events: none; color: var(--muted); }
@@ -2462,6 +2508,22 @@ mark.search-highlight { background: var(--accent-soft); color: var(--accent); fo
   gap: 18px;
   padding: 18px 20px;
   overflow-y: auto;
+}
+
+.tts-link-btn {
+  background: none;
+  border: none;
+  color: var(--accent);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 550;
+  padding: 2px 6px;
+  border-radius: 4px;
+  transition: all 0.15s ease;
+}
+.tts-link-btn:hover {
+  background: var(--accent-soft);
+  color: var(--accent-ink);
 }
 
 .tts-setting-section {

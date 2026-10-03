@@ -396,6 +396,7 @@ export const SourceLoginModal: React.FC<SourceLoginModalProps> = ({
                 <div className="source-login-dropdown-menu">
                   <button
                     type="button"
+                    className="subtle-button"
                     onClick={() => {
                       setHeaderEditText(uiResponse?.loginHeader || '')
                       setHeaderEditOpen(true)
@@ -406,6 +407,7 @@ export const SourceLoginModal: React.FC<SourceLoginModalProps> = ({
                   </button>
                   <button
                     type="button"
+                    className="subtle-button"
                     onClick={() => {
                       setCookieModalOpen(true)
                       setMenuOpen(false)
@@ -415,6 +417,7 @@ export const SourceLoginModal: React.FC<SourceLoginModalProps> = ({
                   </button>
                   <button
                     type="button"
+                    className="subtle-button"
                     onClick={() => {
                       setBookmarkletModalOpen(true)
                       setMenuOpen(false)
@@ -423,14 +426,14 @@ export const SourceLoginModal: React.FC<SourceLoginModalProps> = ({
                     ⚡ {t('source.syncBookmarklet', '一键同步书签 (Bookmarklet)')}
                   </button>
                   {uiResponse?.loginHeader && (
-                    <button type="button" onClick={handleCopyLoginHeader}>
+                    <button type="button" className="subtle-button" onClick={handleCopyLoginHeader}>
                       📋 {t('source.copyLoginHeader', '复制登录头')}
                     </button>
                   )}
-                  <button type="button" className="danger-text" onClick={handleDeleteLoginHeader}>
+                  <button type="button" className="danger-text subtle-button" onClick={handleDeleteLoginHeader}>
                     🗑️ {t('source.deleteLoginHeader', '删除登录头')}
                   </button>
-                  <button type="button" className="danger-text" onClick={handleClearLoginInfo}>
+                  <button type="button" className="danger-text subtle-button" onClick={handleClearLoginInfo}>
                     🧹 {t('source.clearLoginInfo', '清空登录信息')}
                   </button>
                 </div>

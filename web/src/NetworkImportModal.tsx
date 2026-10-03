@@ -223,9 +223,9 @@ export const NetworkImportModal: React.FC<NetworkImportModalProps> = ({
 
         {menuOpen && (
           <div className="network-import-popover network-import-menu">
-            <button type="button" onClick={() => { selectAll(); setMenuOpen(false) }}>{t('source.networkImportSelectAll', '全选')}</button>
-            <button type="button" onClick={() => { clearAll(); setMenuOpen(false) }}>{t('source.networkImportDeselectAll', '取消全选')}</button>
-            <button type="button" onClick={() => { invert(); setMenuOpen(false) }}>{t('source.networkImportInvert', '反选')}</button>
+            <button type="button" className="subtle-button" onClick={() => { selectAll(); setMenuOpen(false) }}>{t('source.networkImportSelectAll', '全选')}</button>
+            <button type="button" className="subtle-button" onClick={() => { clearAll(); setMenuOpen(false) }}>{t('source.networkImportDeselectAll', '取消全选')}</button>
+            <button type="button" className="subtle-button" onClick={() => { invert(); setMenuOpen(false) }}>{t('source.networkImportInvert', '反选')}</button>
           </div>
         )}
 

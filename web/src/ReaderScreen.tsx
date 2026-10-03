@@ -66,7 +66,29 @@ function ReaderSettingsControls({
   return <div className="drawer-scroll-content">
     <section className="setting-section"><span className="setting-label">{t('reader.themeSection', '主题')}</span><div className="theme-grid">{themes.map(([theme, label]) => <button key={theme} className={`theme-choice theme-${theme} ${settings.theme === theme ? 'selected' : ''}`} onClick={() => update({ theme })}><i>{settings.theme === theme && <Icon name="check" />}</i><small>{label}</small></button>)}</div></section>
     <section className="setting-section"><span className="setting-label">{t('reader.fontSection', '字体')}</span><label className="font-select"><select value={settings.font} onChange={event => update({ font: event.target.value as ReaderSettings['font'] })}><option value="song">{t('reader.fontSong', '思源宋体')}</option><option value="hei">{t('reader.fontHei', '黑体 / 苹方')}</option><option value="kai">{t('reader.fontKai', '华文楷体')}</option><option value="fangsong">{t('reader.fontFangsong', '华文仿宋')}</option><option value="system">{t('reader.fontSystem', '系统字体')}</option></select><Icon name="chevronDown" /></label></section>
-    <section className="setting-section compact-settings"><div className="font-stepper"><span>{t('reader.fontSize', '字号')}</span><button aria-label={t('reader.decreaseFontSize', '减小字号')} onClick={() => update({ fontSize: Math.max(15, settings.fontSize - 1) })}>−</button><output>{settings.fontSize}</output><button aria-label={t('reader.increaseFontSize', '增大字号')} onClick={() => update({ fontSize: Math.min(28, settings.fontSize + 1) })}>+</button></div><SettingRange label={t('reader.letterSpacing', '字间距')} value={settings.letterSpacing} min={-.25} max={1.5} step={.05} display={settings.letterSpacing.toFixed(2)} onChange={letterSpacing => update({ letterSpacing })} /><SettingRange label={t('reader.lineHeight', '行间距')} value={settings.lineHeight} min={1.45} max={2.4} step={.05} display={settings.lineHeight.toFixed(2)} onChange={lineHeight => update({ lineHeight })} /><SettingRange label={t('reader.paragraphSpacing', '段间距')} value={settings.paragraphSpacing} min={.7} max={2} step={.05} display={settings.paragraphSpacing.toFixed(2)} onChange={paragraphSpacing => update({ paragraphSpacing })} /><SettingRange label={t('reader.contentPadding', '左右边距')} value={settings.contentPadding} min={20} max={120} step={2} display={`${settings.contentPadding}`} onChange={contentPadding => update({ contentPadding })} /><SettingRange label={t('reader.maxWidth', '版心宽度')} value={settings.maxWidth} min={560} max={1400} step={20} display={`${settings.maxWidth}px`} onChange={maxWidth => update({ maxWidth })} /></section>
+    <section className="setting-section compact-settings">
+      <div className="font-stepper">
+        <span>{t('reader.fontSize', '字号')}</span>
+        <button
+          type="button"
+          className="subtle-button font-step-btn"
+          aria-label={t('reader.decreaseFontSize', '减小字号')}
+          onClick={() => update({ fontSize: Math.max(15, settings.fontSize - 1) })}
+        >−</button>
+        <output>{settings.fontSize}</output>
+        <button
+          type="button"
+          className="subtle-button font-step-btn"
+          aria-label={t('reader.increaseFontSize', '增大字号')}
+          onClick={() => update({ fontSize: Math.min(28, settings.fontSize + 1) })}
+        >+</button>
+      </div>
+      <SettingRange label={t('reader.letterSpacing', '字间距')} value={settings.letterSpacing} min={-.25} max={1.5} step={.05} display={settings.letterSpacing.toFixed(2)} onChange={letterSpacing => update({ letterSpacing })} />
+      <SettingRange label={t('reader.lineHeight', '行间距')} value={settings.lineHeight} min={1.45} max={2.4} step={.05} display={settings.lineHeight.toFixed(2)} onChange={lineHeight => update({ lineHeight })} />
+      <SettingRange label={t('reader.paragraphSpacing', '段间距')} value={settings.paragraphSpacing} min={.7} max={2} step={.05} display={settings.paragraphSpacing.toFixed(2)} onChange={paragraphSpacing => update({ paragraphSpacing })} />
+      <SettingRange label={t('reader.contentPadding', '左右边距')} value={settings.contentPadding} min={20} max={120} step={2} display={`${settings.contentPadding}`} onChange={contentPadding => update({ contentPadding })} />
+      <SettingRange label={t('reader.maxWidth', '版心宽度')} value={settings.maxWidth} min={560} max={1400} step={20} display={`${settings.maxWidth}px`} onChange={maxWidth => update({ maxWidth })} />
+    </section>
     <section className="setting-section"><span className="setting-label">{t('reader.pageMode', '翻页方式')}</span><div className="page-modes"><button className={settings.pageMode === 'scroll' ? 'selected' : ''} onClick={() => update({ pageMode: 'scroll' })}>{t('reader.pageScroll', '连续滚动')}</button><button className={settings.pageMode === 'paginate' ? 'selected' : ''} onClick={() => update({ pageMode: 'paginate' })}>{t('reader.pagePaginate', '平移分页')}</button></div><small className="setting-hint">{settings.pageMode === 'paginate' ? t('reader.pagePaginateHint', '左右轻扫或点击屏幕两侧平滑翻页') : t('reader.pageScrollHint', '垂直滚动阅读，点击上下可快速翻滚')}</small></section>
     <section className="setting-section"><span className="setting-label">{t('reader.columnMode', '分栏排版')}</span><div className="page-modes column-modes"><button className={settings.columnMode === 'auto' ? 'selected' : ''} onClick={() => update({ columnMode: 'auto' })}>{t('reader.columnAuto', '自适应')}</button><button className={settings.columnMode === 'single' ? 'selected' : ''} onClick={() => update({ columnMode: 'single' })}>{t('reader.columnSingle', '单栏')}</button><button className={settings.columnMode === 'double' ? 'selected' : ''} onClick={() => update({ columnMode: 'double' })}>{t('reader.columnDouble', '双栏')}</button></div><small className="setting-hint">{settings.columnMode === 'auto' ? t('reader.columnAutoHint', '宽屏 (≥800px) 自动开启双页分栏') : settings.columnMode === 'double' ? t('reader.columnDoubleHint', '固定双栏双页排版') : t('reader.columnSingleHint', '固定单栏排版')}</small></section>
     {onOpenReplaceRules && (
@@ -2079,10 +2101,10 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
       </div>
 
       <nav className="mobile-reader-nav">
-        <button type="button" onClick={() => setActiveDrawer('toc')}><Icon name="list" /><span>{t('reader.catalog', '目录')}</span></button>
-        <button type="button" onClick={() => setShowSourceSwitch(true)}><Icon name="sliders" /><span>{t('reader.switchSource', '换源')}</span></button>
-        <button type="button" onClick={toggleTts}><Icon name={ttsActive && ttsPlayState === 'playing' ? 'pause' : 'volume2'} /><span>{ttsActive ? (ttsPlayState === 'playing' ? t('common.pause', '暂停') : t('common.continue', '继续')) : t('reader.listen', '朗读')}</span></button>
-        <button type="button" onClick={() => setActiveDrawer('settings')}><span className="aa">Aa</span><span>{t('reader.settings', '设置')}</span></button>
+        <button type="button" className="subtle-button mobile-nav-btn" onClick={() => setActiveDrawer('toc')}><Icon name="list" /><span>{t('reader.catalog', '目录')}</span></button>
+        <button type="button" className="subtle-button mobile-nav-btn" onClick={() => setShowSourceSwitch(true)}><Icon name="sliders" /><span>{t('reader.switchSource', '换源')}</span></button>
+        <button type="button" className="subtle-button mobile-nav-btn" onClick={toggleTts}><Icon name={ttsActive && ttsPlayState === 'playing' ? 'pause' : 'volume2'} /><span>{ttsActive ? (ttsPlayState === 'playing' ? t('common.pause', '暂停') : t('common.continue', '继续')) : t('reader.listen', '朗读')}</span></button>
+        <button type="button" className="subtle-button mobile-nav-btn" onClick={() => setActiveDrawer('settings')}><span className="aa">Aa</span><span>{t('reader.settings', '设置')}</span></button>
       </nav>
     </footer>
 

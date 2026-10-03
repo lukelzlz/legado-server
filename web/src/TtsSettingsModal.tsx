@@ -172,7 +172,7 @@ export const TtsSettingsModal: React.FC<TtsSettingsModalProps> = ({
                 <label className="tts-section-label">{t('tts.selectHttpTts', '选择 HTTP 音源')}</label>
                 <button
                   type="button"
-                  style={{ background: 'none', border: 'none', color: 'var(--accent)', cursor: 'pointer', fontSize: '12px', padding: 0 }}
+                  className="tts-link-btn"
                   onClick={() => setManagerOpen(true)}
                 >
                   {t('tts.addOrManagePrompt', '+ 添加或管理规则')}

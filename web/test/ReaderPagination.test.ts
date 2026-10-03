@@ -453,6 +453,27 @@ test('ReaderScroll - scroll compensation keeps the anchor visually still', () =>
   assert.equal(scrollCompensation(120, 120), 0)
 })
 
+test('ReaderScroll - expected neighbor section count handles first, last, and single chapters', () => {
+  const getExpected = (chapterIndex: number, totalChapters: number) => {
+    const hasPrev = chapterIndex > 0
+    const hasNext = chapterIndex < totalChapters - 1
+    return 1 + (hasPrev ? 1 : 0) + (hasNext ? 1 : 0)
+  }
+
+  // 单章书
+  assert.equal(getExpected(0, 1), 1)
+
+  // 两章书
+  assert.equal(getExpected(0, 2), 2)
+  assert.equal(getExpected(1, 2), 2)
+
+  // 多章书（首章、中间章、末章）
+  assert.equal(getExpected(0, 100), 2, '首章无上一章，最大段数恒为 2，不能硬编码为 3 导致死循环抢锁')
+  assert.equal(getExpected(50, 100), 3, '中间章期望 3 段')
+  assert.equal(getExpected(99, 100), 2, '末章无下一章，最大段数恒为 2，不能硬编码为 3 导致死循环抢锁')
+})
+
+
 
 
 

@@ -228,14 +228,13 @@ export function isScrollSectionTransitionAllowed(currentIndex: number, nextIndex
  * 三章窗口平移后，为保持**视觉位置不动**需要补偿的滚动量。
  *
  * 平移会从文档顶部移除/插入区块（例如下移时丢掉「上一章」），
- * 文档内容会整体位移。滚动坐标与内容位移方向相反：锚点向上移动时，
- * 必须增加 `scrollY` 才能把它拉回原来的视口位置。因此补偿量是
- * `anchorTopBefore - anchorTopAfter`，调用方将它加到当前 `scrollY`。
+ * 文档高度随之变化、内容整体位移。补偿量 = 平移后锚点区块的视口 top − 平移前记录的 top，
+ * 把它加到当前 `scrollY`，即可抵消浏览器已经完成的原生滚动锚定。
  *
- * 这与区块高度无关，因此无需等新章节加载完也能算准。
+ * 这与区块高度无关，因此无需等新章节加载完再量。
  */
 export function scrollCompensation(anchorTopBefore: number, anchorTopAfter: number): number {
-  return anchorTopBefore - anchorTopAfter
+  return anchorTopAfter - anchorTopBefore
 }
 
 

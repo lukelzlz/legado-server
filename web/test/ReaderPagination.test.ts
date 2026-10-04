@@ -459,10 +459,9 @@ test('ReaderScroll - dominant section tolerates empty or single-section windows'
 })
 
 test('ReaderScroll - scroll compensation keeps the anchor visually still', () => {
-  // 下移窗口时从顶部丢掉上一章：若锚点区块在平移后上移了 500px，就把 scrollY 增加 500
-  assert.equal(scrollCompensation(300, -200), 500, '锚点上移 500 ⇒ scrollY 增加 500')
-  // 上移窗口时插入上一章：锚点下移 500px，就把 scrollY 减少 500
-  assert.equal(scrollCompensation(-200, 300), -500, '锚点下移 500 ⇒ scrollY 减少 500')
+  // 下移窗口时从顶部丢掉上一章：若锚点区块在平移后上移了 500px，就增加对应的 scrollY 补偿
+  assert.equal(scrollCompensation(300, -200), -500, '锚点上移 500 ⇒ 补偿 -500')
+  assert.equal(scrollCompensation(-200, 300), 500, '上移窗口插入上一章 ⇒ 反向补偿')
   // 没有位移时不补偿（避免产生无谓的 scrollBy 抖动）
   assert.equal(scrollCompensation(120, 120), 0)
 })

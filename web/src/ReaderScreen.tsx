@@ -1349,30 +1349,39 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
     if (!scrollShiftAnchorRef.current) return
 
     // Safari 的原生 scroll anchoring 可能在 React commit 后、layout effect 之后才完成。
-    // 延迟到下一绘制帧再测量，只补偿浏览器实际留下的残差，避免同一平移被校正两次。
-    let rafId: number | null = window.requestAnimationFrame(() => {
+    // 连续等待两帧，确保测到最终布局，只补偿浏览器实际留下的残差，避免同一平移被校正两次。
+    let rafId: number | null = null
+    let secondRafId: number | null = null
+    const measureAfterLayout = () => {
+      secondRafId = window.requestAnimationFrame(() => {
+        secondRafId = null
+        const anchor = scrollShiftAnchorRef.current
+        if (!anchor) return
+        const el = scrollSectionRefs.current.get(anchor.index)
+          ?? document.querySelector<HTMLElement>(`.reading-scroll-window > .reading-content[data-chapter-index="${anchor.index}"]`)
+        if (!el || !el.isConnected) return
+        scrollShiftAnchorRef.current = null
+        const delta = scrollCompensation(anchor.top, el.getBoundingClientRect().top)
+        if (Math.abs(delta) > 0.5) {
+          window.scrollTo({ top: Math.max(0, window.scrollY + delta), behavior: 'auto' })
+        }
+        // 平移后立刻按新区块校正一次进度，避免 persist 用加载逻辑写入的「章首 0」把进度带偏
+        const current = currentRef.current
+        if (current) {
+          const rect = el.getBoundingClientRect()
+          const range = rect.height - window.innerHeight
+          current.position = range > 0 ? Math.min(1, Math.max(0, -rect.top / range)) : 0
+        }
+        lastScrollYRef.current = window.scrollY
+      })
+    }
+    rafId = window.requestAnimationFrame(() => {
       rafId = null
-      const anchor = scrollShiftAnchorRef.current
-      if (!anchor) return
-      const el = scrollSectionRefs.current.get(anchor.index)
-        ?? document.querySelector<HTMLElement>(`.reading-scroll-window > .reading-content[data-chapter-index="${anchor.index}"]`)
-      if (!el || !el.isConnected) return
-      scrollShiftAnchorRef.current = null
-      const delta = scrollCompensation(anchor.top, el.getBoundingClientRect().top)
-      if (Math.abs(delta) > 0.5) {
-        window.scrollTo({ top: Math.max(0, window.scrollY + delta), behavior: 'auto' })
-      }
-      // 平移后立刻按新区块校正一次进度，避免 persist 用加载逻辑写入的「章首 0」把进度带偏
-      const current = currentRef.current
-      if (current) {
-        const rect = el.getBoundingClientRect()
-        const range = rect.height - window.innerHeight
-        current.position = range > 0 ? Math.min(1, Math.max(0, -rect.top / range)) : 0
-      }
-      lastScrollYRef.current = window.scrollY
+      measureAfterLayout()
     })
     return () => {
       if (rafId !== null) window.cancelAnimationFrame(rafId)
+      if (secondRafId !== null) window.cancelAnimationFrame(secondRafId)
     }
   }, [chapterIndex, content, scrollPrev, scrollNext, settings.pageMode])
 

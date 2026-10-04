@@ -599,7 +599,15 @@ class Database(private val path: String) : Closeable, AutoCloseable {
             db.commit(); getBookshelf(db, request.sourceId, request.bookUrl)!!
         } catch (error: Throwable) { db.rollback(); throw error } finally { db.autoCommit = true }
     }
-    fun updateBookshelfCover(sourceId: String, bookUrl: String, coverKey: String, contentType: String = "image/*"): Boolean = write { db ->
+    /**
+     * 回写本地封面副本（`cover_key`），可选**同时**更新外链 `cover_url`。
+     *
+     * [coverUrl] 只在非空时一起写：默认 null ⇒ 与改动前**逐字一致**的行为
+     * （既有调用点传的都是 4 个参数，语义不变）。
+     * 深度回源补抓需要它——回源拿到的是原本那份**已过期签名地址的替代品**，
+     * 只更新 `cover_key` 的话外链兜底依然是死的。
+     */
+    fun updateBookshelfCover(sourceId: String, bookUrl: String, coverKey: String, contentType: String = "image/*", coverUrl: String? = null): Boolean = write { db ->
         val exists = db.prepareStatement("select 1 from book_shelf where source_id=? and book_url=?").use { stmt ->
             stmt.setString(1, sourceId)
             stmt.setString(2, bookUrl)
@@ -612,11 +620,21 @@ class Database(private val path: String) : Closeable, AutoCloseable {
             it.setString(2, contentType)
             it.executeUpdate()
         }
-        db.prepareStatement("update book_shelf set cover_key=? where source_id=? and book_url=?").use {
-            it.setString(1, coverKey)
-            it.setString(2, sourceId)
-            it.setString(3, bookUrl)
-            it.executeUpdate() > 0
+        if (coverUrl.isNullOrBlank()) {
+            db.prepareStatement("update book_shelf set cover_key=? where source_id=? and book_url=?").use {
+                it.setString(1, coverKey)
+                it.setString(2, sourceId)
+                it.setString(3, bookUrl)
+                it.executeUpdate() > 0
+            }
+        } else {
+            db.prepareStatement("update book_shelf set cover_key=?, cover_url=? where source_id=? and book_url=?").use {
+                it.setString(1, coverKey)
+                it.setString(2, coverUrl)
+                it.setString(3, sourceId)
+                it.setString(4, bookUrl)
+                it.executeUpdate() > 0
+            }
         }
     }
     fun listBookshelf(): List<BookshelfItem> = connect { db -> db.prepareStatement("""select s.source_id,s.book_url,s.name,s.author,s.toc_url,s.cover_key,p.chapter_index,p.scroll_position,s.last_read_at,coalesce(c.cached_chapters,0),coalesce(c.total_chapters,0),coalesce(c.state,'idle'),c.last_error,s.completed,s.alternate_sources,s.group_name,s.cover_url from book_shelf s left join reading_progress p on p.source_id=s.source_id and p.book_url=s.book_url left join book_cache_status c on c.source_id=s.source_id and c.book_url=s.book_url order by s.last_read_at desc""").use { query -> query.executeQuery().use { rs -> buildList { while (rs.next()) add(rs.toShelf()) } } } }

@@ -340,6 +340,16 @@ data class SourceLoginStateRecord(
 @Serializable data class CoverRefreshRequest(
     val sourceId: String? = null,
     val bookUrl: String? = null,
+    /**
+     * 深度模式：对「`cover_key` 为空且 `cover_url` 非空」的书**先回书源取新地址再物化**。
+     *
+     * 存在的理由：番茄（fqnovelpic）等 CDN 的封面地址是**带签名的**（约 60 天过期），
+     * 历史数据里存的地址早已过期 ⇒ 服务器抓不到、客户端外链兜底也失效。
+     * 深度模式回源拿到的是**全新的可用地址**，并会把它一并写回 `cover_url`。
+     *
+     * 默认 false ⇒ 行为与不加本字段时**完全一致**（只在已有的 `cover_url` 上重试）。
+     */
+    val deep: Boolean = false,
 )
 
 @Serializable data class CoverRefreshResponse(
@@ -347,6 +357,8 @@ data class SourceLoginStateRecord(
     val refreshed: Int,
     val failed: Int,
     val skipped: Int,
+    /** 深度模式下**回源取到与库里不同的新地址**的条数（便于判断这次补抓是否真的靠回源救活）。 */
+    val resourced: Int = 0,
 )
 @Serializable data class BatchBookRecleanRequest(
     val books: List<BookRecleanRequest>,

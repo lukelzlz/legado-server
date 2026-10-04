@@ -792,22 +792,18 @@ fun Route.apiRoutes(
         post("/books/details") {
             if (auth.requireSession(call, true) == null) return@post
             val request = call.receive<BookRequest>()
-            if (request.sourceId == LocalBookParser.LOC_BOOK_SOURCE_ID) {
-                val shelf = database.listBookshelf().firstOrNull { it.sourceId == request.sourceId && it.bookUrl == request.bookUrl }
-                    ?: run { call.respond(HttpStatusCode.NotFound, ApiError("not_found", "本地书籍不存在")); return@post }
-                val cover = shelf.coverKey?.let { "/api/covers/$it" }
-                call.respond(BookDetails(
-                    sourceId = LocalBookParser.LOC_BOOK_SOURCE_ID,
-                    name = shelf.name,
-                    author = shelf.author,
-                    intro = null,
-                    coverUrl = cover,
-                    tocUrl = shelf.tocUrl,
-                ))
+            val isLocal = request.sourceId == LocalBookParser.LOC_BOOK_SOURCE_ID
+            // 「书源不存在」与「本地书不在书架」是两条既有 404 契约，先在这里区分，
+            // 再把真正的取详情交给 [fetchBookDetails]（封面深度回源补抓复用同一份逻辑）。
+            if (!isLocal && database.getSource(request.sourceId) == null) {
+                call.respond(HttpStatusCode.NotFound, ApiError("not_found", "书源不存在"))
                 return@post
             }
-            val source = database.getSource(request.sourceId) ?: run { call.respond(HttpStatusCode.NotFound, ApiError("not_found", "书源不存在")); return@post }
-            call.respondCatching { runner.details(source.json, request.bookUrl) }
+            if (isLocal && database.listBookshelf().none { it.sourceId == request.sourceId && it.bookUrl == request.bookUrl }) {
+                call.respond(HttpStatusCode.NotFound, ApiError("not_found", "本地书籍不存在"))
+                return@post
+            }
+            call.respondCatching { fetchBookDetails(database, runner, request.sourceId, request.bookUrl)!! }
         }
         post("/books/chapters") {
             if (auth.requireSession(call, true) == null) return@post
@@ -1254,6 +1250,10 @@ fun Route.apiRoutes(
          * 用于修复「封面补抓逻辑上线之前导入的书架」——那些书的 `cover_key` 全为空，
          * 前端只能靠 `coverUrl` 直连；补抓完成后即切换为本地副本，不再依赖外部图床。
          * 传入 sourceId/bookUrl 则只补一本，否则补整架。
+         *
+         * `deep = true` 时改走**深度回源补抓**：这类书的 `cover_url` 往往是番茄（fqnovelpic）等
+         * CDN 的**带签名地址、早已过期**，直接抓必然失败 ⇒ 先回书源取一份新地址再物化，
+         * 并把新地址一并写回 `cover_url`（外链兜底也随之复活）。
          */
         post("/bookshelf/refresh-covers") {
             if (auth.requireSession(call, true) == null) return@post
@@ -1268,19 +1268,36 @@ fun Route.apiRoutes(
             val skipped = shelf.size - targets.size
             // 封面可能有数 MB，串行补抓整架会很久；这里用信号量限并发，
             // 既压住耗时又不至于把图床/线程池打满。
-            var refreshed = 0
-            var failed = 0
+            // 深度模式还会对每个目标各发一次「回源取详情」请求，同一上限一并约束。
+            val refreshed = AtomicInteger()
+            val failed = AtomicInteger()
+            val resourced = AtomicInteger()
+            val fetchDetailsForCover: (BookshelfItem) -> BookDetails? = { item ->
+                fetchBookDetails(database, runner, item.sourceId, item.bookUrl)
+            }
             coroutineScope {
                 val gate = Semaphore(6)
                 targets.map { item ->
                     async(Dispatchers.IO) {
                         gate.withPermit {
-                            val url = item.coverUrl!!
-                            val cached = runCatching { coverCache.getIfCached(url) ?: coverCache.cache(url) }.getOrNull()
-                            if (cached != null && database.updateBookshelfCover(item.sourceId, item.bookUrl, cached.key, cached.contentType)) {
-                                refreshed++
+                            if (req.deep) {
+                                // 回源失败 / 取不到新地址 / 下载失败 ⇒ 只计失败并静默继续，绝不中断整批。
+                                val freshUrl = resolveFreshCoverUrl(item, fetchDetailsForCover)
+                                if (freshUrl == null) {
+                                    failed.incrementAndGet()
+                                } else {
+                                    if (freshUrl != item.coverUrl) resourced.incrementAndGet()
+                                    val cached = materializeCover(database, coverCache, item, freshUrl)
+                                    if (cached != null) refreshed.incrementAndGet() else failed.incrementAndGet()
+                                }
                             } else {
-                                failed++
+                                val url = item.coverUrl!!
+                                val cached = runCatching { coverCache.getIfCached(url) ?: coverCache.cache(url) }.getOrNull()
+                                if (cached != null && database.updateBookshelfCover(item.sourceId, item.bookUrl, cached.key, cached.contentType)) {
+                                    refreshed.incrementAndGet()
+                                } else {
+                                    failed.incrementAndGet()
+                                }
                             }
                         }
                     }
@@ -1289,9 +1306,10 @@ fun Route.apiRoutes(
             call.respond(
                 CoverRefreshResponse(
                     total = targets.size,
-                    refreshed = refreshed,
-                    failed = failed,
+                    refreshed = refreshed.get(),
+                    failed = failed.get(),
                     skipped = skipped,
+                    resourced = resourced.get(),
                 )
             )
         }
@@ -1413,7 +1431,12 @@ fun Route.apiRoutes(
             val key = call.parameters["key"] ?: return@get call.respond(HttpStatusCode.NotFound)
             val file = coverCache.file(key) ?: return@get call.respond(HttpStatusCode.NotFound)
             val type = database.coverContentType(key)?.let(ContentType::parse) ?: ContentType.Application.OctetStream
-            call.response.cacheControl(CacheControl.MaxAge(maxAgeSeconds = 7 * 24 * 60 * 60, visibility = CacheControl.Visibility.Private))
+            // 封面 URL 里带的就是**内容哈希**（`cover_key = sha256(字节)`）⇒ 同一个 key 的内容永不改变，
+            // 因此这里可以声明「永不过期」：一年 + immutable，浏览器与中间层都不再回源校验。
+            // 之前是 7 天，纯属白跑请求；服务端本地副本本身也不会被淘汰（CoverCache 只有单文件 5 MiB 上限，
+            // delete() 只用于孤儿清理）⇒ 真正意义的「服务器缓存、永不过期」。
+            // 注：直接写头值，避免依赖 Ktor 版本里 CacheControl 的 immutable 支持差异。
+            call.response.headers.append(HttpHeaders.CacheControl, "private, max-age=31536000, immutable")
             call.respond(LocalFileContent(file.toFile(), type))
         }
         get("/reading-progress") {
@@ -1849,6 +1872,50 @@ internal fun tryCacheCover(coverCache: CoverCache, primaryUrl: String?, alternat
     }
     return null
 }
+
+/**
+ * 取一本书的详情（`POST /books/details` 与封面深度回源补抓**共用同一份逻辑**）。
+ *
+ * 返回 null 表示「取不到」——书源不存在，或本地书不在书架；
+ * 书源侧的失败（[RuleExecutionException] 等）原样抛出，由调用方决定转成 HTTP 提示还是计入 failed。
+ * **不要在这里把异常吞掉**：`/books/details` 依赖它把书源错误转成明确提示（`source_execution_failed`）。
+ */
+internal fun fetchBookDetails(database: Database, runner: RuleRunner, sourceId: String, bookUrl: String): BookDetails? {
+    if (sourceId == LocalBookParser.LOC_BOOK_SOURCE_ID) {
+        val shelf = database.listBookshelf().firstOrNull { it.sourceId == sourceId && it.bookUrl == bookUrl } ?: return null
+        return BookDetails(
+            sourceId = LocalBookParser.LOC_BOOK_SOURCE_ID,
+            name = shelf.name,
+            author = shelf.author,
+            intro = null,
+            coverUrl = shelf.coverKey?.let { "/api/covers/$it" },
+            tocUrl = shelf.tocUrl,
+        )
+    }
+    val source = database.getSource(sourceId) ?: return null
+    return runner.details(source.json, bookUrl)
+}
+
+/**
+ * 深度补抓的第一步：回书源取**新的**封面地址。
+ *
+ * [fetchDetails] 是注入式接缝（生产环境就是 [fetchBookDetails]）——
+ * 与 [CoverCache] 的 `fetcher` 接缝同源：网络 I/O 不该出现在单测里。
+ * 任何失败（回源异常、书源没配封面规则、取到空值）都静默返回 null。
+ */
+internal fun resolveFreshCoverUrl(item: BookshelfItem, fetchDetails: (BookshelfItem) -> BookDetails?): String? =
+    runCatching { fetchDetails(item)?.coverUrl }.getOrNull()?.trim()?.takeIf { it.isNotEmpty() }
+
+/**
+ * 深度补抓的第二步：把新地址物化成服务端本地副本，并**同时**把 `cover_url` 更新成新地址。
+ *
+ * 注意这里走的是 [CoverCache.cache]——内置下载路径的魔数校验与 gzip 兜底解压都在它内部，
+ * 不要绕过（历史踩坑：gzip 字节当 JPEG 落盘 ⇒ 接口 200 但 `<img>` 是裂图）。
+ * 下载失败静默返回 null，由调用方计入 failed 并继续处理下一本。
+ */
+internal fun materializeCover(database: Database, coverCache: CoverCache, item: BookshelfItem, url: String): CachedCover? =
+    runCatching { coverCache.getIfCached(url) ?: coverCache.cache(url) }.getOrNull()
+        ?.takeIf { database.updateBookshelfCover(item.sourceId, item.bookUrl, it.key, it.contentType, coverUrl = url) }
 
 private fun jsonEvent(message: String): String = Json.encodeToString(message)
 

@@ -490,8 +490,14 @@ data class SourceLoginStateRecord(
     val name: String,
     val author: String? = null,
     val coverUrl: String? = null,
+    val coverKey: String? = null,
     val groupName: String? = null,
     val alternateSources: List<SearchResult>? = null,
+)
+@Serializable data class CoverUploadResponse(
+    val coverKey: String,
+    val contentType: String,
+    val url: String,
 )
 data class CachedBookRequest(
     val sourceId: String,

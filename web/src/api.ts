@@ -80,6 +80,7 @@ export type BookshelfBatchRequest = {
   targetGroup?: string
   completed?: boolean
 }
+export type CoverUploadResponse = { coverKey: string; contentType: string; url: string }
 export type ImportResponse = { imported: number; updated: number; skipped: number; errors: string[]; sourceGroups?: number }
 
 /** 网络导入预览列表里的一条书源；`invalid` 表示该条注定无法导入（`reason` 说明原因）。 */
@@ -566,7 +567,7 @@ export const api = {
     request<BookRecleanResponse>('/api/bookshelf/reclean', { method: 'POST', body: JSON.stringify({ sourceId, bookUrl }) }),
   batchRecleanBookCache: (books: { sourceId: string; bookUrl: string }[]) =>
     request<BatchBookRecleanResponse>('/api/bookshelf/batch-reclean', { method: 'POST', body: JSON.stringify({ books }) }),
-  updateBookshelfInfo: (data: { sourceId: string; bookUrl: string; name: string; author?: string; coverUrl?: string; groupName?: string; alternateSources?: SearchResult[] }) => request<BookshelfItem>('/api/bookshelf/info', { method: 'PUT', body: JSON.stringify(data) }),
+  updateBookshelfInfo: (data: { sourceId: string; bookUrl: string; name: string; author?: string; coverUrl?: string; coverKey?: string; groupName?: string; alternateSources?: SearchResult[] }) => request<BookshelfItem>('/api/bookshelf/info', { method: 'PUT', body: JSON.stringify(data) }),
   switchBookshelfSource: (value: BookshelfSourceSwitch) => request<BookshelfItem>('/api/bookshelf/switch-source', { method: 'POST', body: JSON.stringify(value) }),
   importLocalBooks: async (files: File[]): Promise<LocalBookImportResponse> => {
     const formData = new FormData()
@@ -595,6 +596,23 @@ export const api = {
   updateBookGroup: (sourceId: string, bookUrl: string, groupName?: string | null) => request<BookshelfItem>('/api/bookshelf/group', { method: 'PUT', body: JSON.stringify({ sourceId, bookUrl, groupName }) }),
   batchBookshelf: (data: BookshelfBatchRequest) => request<{ affected: number }>('/api/bookshelf/batch', { method: 'POST', body: JSON.stringify(data) }),
   cover: (key: string) => `/api/covers/${encodeURIComponent(key)}`,
+  uploadCover: async (file: File): Promise<CoverUploadResponse> => {
+    const formData = new FormData()
+    formData.append('file', file, file.name)
+    const headers = new Headers()
+    if (csrfToken) headers.set('X-CSRF-Token', csrfToken)
+    const response = await fetch('/api/covers/upload', {
+      method: 'POST',
+      headers,
+      credentials: 'same-origin',
+      body: formData,
+    })
+    if (!response.ok) {
+      const err = await response.json().catch(() => ({ message: response.statusText })) as { message?: string }
+      throw new Error(err.message ?? i18n.t('shelf.uploadCoverFailed', '上传封面失败'))
+    }
+    return response.json() as Promise<CoverUploadResponse>
+  },
   progressSyncSettings: () => request<ProgressSyncSettings>('/api/progress-sync/settings'),
   saveProgressSyncSettings: (directoryName: string) =>
     request<ProgressSyncSettings>('/api/progress-sync/settings', { method: 'PUT', body: JSON.stringify({ directoryName }) }),

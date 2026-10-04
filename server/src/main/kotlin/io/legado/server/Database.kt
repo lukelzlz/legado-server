@@ -599,6 +599,14 @@ class Database(private val path: String) : Closeable, AutoCloseable {
             db.commit(); getBookshelf(db, request.sourceId, request.bookUrl)!!
         } catch (error: Throwable) { db.rollback(); throw error } finally { db.autoCommit = true }
     }
+    fun recordCoverCache(coverKey: String, contentType: String = "image/*") = write { db ->
+        db.prepareStatement("insert into cover_cache(cache_key,content_type) values(?,?) on conflict(cache_key) do update set content_type=excluded.content_type").use {
+            it.setString(1, coverKey)
+            it.setString(2, contentType)
+            it.executeUpdate()
+        }
+    }
+
     /**
      * 回写本地封面副本（`cover_key`），可选**同时**更新外链 `cover_url`。
      *
@@ -675,7 +683,9 @@ class Database(private val path: String) : Closeable, AutoCloseable {
                 }
             }
 
-            val newCoverKey = cover?.key ?: (if (request.coverUrl != null && request.coverUrl.isBlank()) null else oldCover)
+            val newCoverKey = cover?.key
+                ?: request.coverKey?.takeIf { it.isNotBlank() }
+                ?: (if ((request.coverUrl != null && request.coverUrl.isBlank()) || (request.coverKey != null && request.coverKey.isBlank())) null else oldCover)
             val newGroup = if (request.groupName != null) request.groupName.trim().takeIf { it.isNotEmpty() } else oldGroup
             val newAlts = if (request.alternateSources != null) Json.encodeToString(request.alternateSources) else oldAlts
             // 拒绝把本服务自己的封面接口地址回写成 coverUrl。

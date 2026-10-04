@@ -878,6 +878,9 @@ mark.search-highlight { background: var(--accent-soft); color: var(--accent); fo
 .reset-cover-btn:hover { color: var(--accent); border-color: var(--accent); }
 
 .edit-cover-inputs { display: grid; gap: 12px; }
+.edit-cover-upload-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.upload-cover-btn { display: inline-flex; align-items: center; gap: 6px; }
+.upload-cover-hint { font-size: 11px; color: var(--muted); line-height: 1.4; }
 .edit-form-label { display: grid; gap: 6px; font-size: 13px; font-weight: 600; color: var(--ink); }
 .edit-form-label span { display: flex; align-items: center; gap: 4px; }
 .edit-form-label .required-mark { color: var(--danger); }

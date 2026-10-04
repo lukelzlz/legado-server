@@ -1254,9 +1254,12 @@ function BookInfoEditModal({
   const [author, setAuthor] = useState(item.author || '')
   const [groupName, setGroupName] = useState<string | undefined>(item.groupName)
   const [coverUrl, setCoverUrl] = useState<string | null>(null) // null = keep existing, '' = clear, string = new URL
+  const [uploadedCoverKey, setUploadedCoverKey] = useState<string | null>(null)
+  const [uploadingCover, setUploadingCover] = useState(false)
   const [alternateSources, setAlternateSources] = useState<SearchResult[]>(item.alternateSources || [])
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
+  const fileInputRef = useRef<HTMLInputElement | null>(null)
 
   // In-modal online search completion states
   const [searchOpen, setSearchOpen] = useState(false)
@@ -1366,11 +1369,40 @@ function BookInfoEditModal({
   }, [alternateSources])
 
   const previewSrc = useMemo(() => {
+    if (uploadedCoverKey) return api.cover(uploadedCoverKey)
     if (coverUrl === '') return null
     if (coverUrl) return sanitizeImageUrl(coverUrl)
     if (item.coverKey) return api.cover(item.coverKey)
     return null
-  }, [coverUrl, item.coverKey])
+  }, [uploadedCoverKey, coverUrl, item.coverKey])
+
+  const handleUploadCover = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    const validExtensions = /\.(jpe?g|png|webp|gif|bmp)$/i
+    if (!file.type.startsWith('image/') && !validExtensions.test(file.name)) {
+      toast.error(t('shelf.coverFileLimitHint', '支持 JPG、PNG、WebP、GIF、BMP 格式，最大 5MB'))
+      if (fileInputRef.current) fileInputRef.current.value = ''
+      return
+    }
+    if (file.size > 5 * 1024 * 1024) {
+      toast.error(t('shelf.coverFileLimitHint', '支持 JPG、PNG、WebP、GIF、BMP 格式，最大 5MB'))
+      if (fileInputRef.current) fileInputRef.current.value = ''
+      return
+    }
+    setUploadingCover(true)
+    try {
+      const res = await api.uploadCover(file)
+      setUploadedCoverKey(res.coverKey)
+      setCoverUrl(null) // clear external text url since we now have uploaded key
+      toast.success(t('shelf.coverUploadSuccess', '封面上传成功'))
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : t('shelf.uploadCoverFailed', '上传封面失败'))
+    } finally {
+      setUploadingCover(false)
+      if (fileInputRef.current) fileInputRef.current.value = ''
+    }
+  }
 
   const handleSave = async (e: FormEvent) => {
     e.preventDefault()
@@ -1394,13 +1426,15 @@ function BookInfoEditModal({
       //   ③ 用户填了外部地址 ⇒ 提交该地址；若它是本服务自己的 /api/covers/<key>（自引用），
       //      则不提交 —— 封面本来就由 coverKey 表达（SESSION-027）。
       const externalCover = coverUrl && !coverUrl.startsWith('/api/covers/') ? coverUrl : undefined
-      const coverUrlField = coverUrl === null ? undefined : coverUrl === '' ? '' : externalCover
+      const coverUrlField = uploadedCoverKey ? undefined : coverUrl === null ? undefined : coverUrl === '' ? '' : externalCover
+      const coverKeyField = uploadedCoverKey || (coverUrl === '' ? '' : undefined)
       const updated = await api.updateBookshelfInfo({
         sourceId: item.sourceId,
         bookUrl: item.bookUrl,
         name: trimmedName,
         author: author.trim() || undefined,
         coverUrl: coverUrlField,
+        coverKey: coverKeyField,
         groupName: groupName || undefined,
         alternateSources,
       })
@@ -1596,21 +1630,27 @@ function BookInfoEditModal({
                     <span>{name.trim().slice(0, 1) || t('common.bookChar', '书')}</span>
                   </div>
                 )}
-                {coverUrl !== '' && (item.coverKey || coverUrl) && (
+                {(uploadedCoverKey || (coverUrl !== '' && (item.coverKey || coverUrl))) && (
                   <button
                     type="button"
                     className="subtle-button clear-cover-btn"
-                    onClick={() => setCoverUrl('')}
+                    onClick={() => {
+                      setUploadedCoverKey(null)
+                      setCoverUrl('')
+                    }}
                     title={t('shelf.clearCover', '清除并使用文字占位封面')}
                   >
                     {t('shelf.clearCover', '清除封面')}
                   </button>
                 )}
-                {coverUrl === '' && (
+                {(uploadedCoverKey !== null || coverUrl === '') && (
                   <button
                     type="button"
                     className="subtle-button reset-cover-btn"
-                    onClick={() => setCoverUrl(null)}
+                    onClick={() => {
+                      setUploadedCoverKey(null)
+                      setCoverUrl(null)
+                    }}
                     title={t('shelf.restoreCover', '恢复原封面')}
                   >
                     {t('shelf.restoreCover', '恢复原封面')}
@@ -1619,6 +1659,27 @@ function BookInfoEditModal({
               </div>
 
               <div className="edit-cover-inputs">
+                <div className="edit-cover-upload-row">
+                  <input
+                    type="file"
+                    ref={fileInputRef}
+                    style={{ display: 'none' }}
+                    accept="image/jpeg,image/png,image/webp,image/gif,image/bmp,.jpg,.jpeg,.png,.webp,.gif,.bmp"
+                    onChange={handleUploadCover}
+                  />
+                  <button
+                    type="button"
+                    className="secondary-button upload-cover-btn"
+                    disabled={uploadingCover}
+                    onClick={() => fileInputRef.current?.click()}
+                    title={t('shelf.coverFileLimitHint', '支持 JPG、PNG、WebP、GIF、BMP 格式，最大 5MB')}
+                  >
+                    <Icon name="upload" />
+                    <span>{uploadingCover ? t('shelf.uploadingCover', '正在上传封面...') : t('shelf.uploadCover', '上传本地封面')}</span>
+                  </button>
+                  <span className="upload-cover-hint">{t('shelf.coverFileLimitHint', '支持 JPG、PNG、WebP、GIF、BMP 格式，最大 5MB')}</span>
+                </div>
+
                 <label className="edit-form-label">
                   <span>{t('shelf.coverUrl', '封面图片 URL')}</span>
                   <div className="input-with-icon">
@@ -1627,7 +1688,10 @@ function BookInfoEditModal({
                       type="url"
                       placeholder="https://example.com/cover.jpg"
                       value={coverUrl === null ? '' : coverUrl}
-                      onChange={e => setCoverUrl(e.target.value)}
+                      onChange={e => {
+                        setUploadedCoverKey(null)
+                        setCoverUrl(e.target.value)
+                      }}
                     />
                   </div>
                   <small>{t('shelf.coverUrlHint', '可粘贴图片网络地址，保存时将自动拉取并缓存到服务器')}</small>
@@ -1638,13 +1702,16 @@ function BookInfoEditModal({
                     <span className="candidate-covers-title">{t('shelf.chooseCoverFromCandidates', '从备选书源选择封面 ({{count}})：', { count: candidateCovers.length })}</span>
                     <div className="candidate-covers-grid">
                       {candidateCovers.map(c => {
-                        const isSelected = coverUrl === c.coverUrl
+                        const isSelected = !uploadedCoverKey && coverUrl === c.coverUrl
                         return (
                           <button
                             key={c.coverUrl}
                             type="button"
                             className={`candidate-cover-card ${isSelected ? 'selected' : ''}`}
-                            onClick={() => setCoverUrl(c.coverUrl)}
+                            onClick={() => {
+                              setUploadedCoverKey(null)
+                              setCoverUrl(c.coverUrl)
+                            }}
                             title={t('shelf.useSourceCoverTitle', '使用来自【{{source}}】的封面', { source: c.sourceId })}
                           >
                             {sanitizeImageUrl(c.coverUrl) ? (

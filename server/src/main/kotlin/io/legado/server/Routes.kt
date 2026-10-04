@@ -1426,6 +1426,47 @@ fun Route.apiRoutes(
             }
             call.respond(mapOf("affected" to affected))
         }
+        post("/covers/upload") {
+            if (auth.requireSession(call, true) == null) return@post
+            val multipart = call.receiveMultipart()
+            var uploadedKey: String? = null
+            var uploadedType: String? = null
+            var errorMsg: String? = null
+
+            multipart.forEachPart { part ->
+                if (part is PartData.FileItem && uploadedKey == null) {
+                    val bytes = part.streamProvider().readBytes()
+                    if (bytes.size > 5 * 1024 * 1024) {
+                        errorMsg = "封面文件不能超过 5MB"
+                    } else if (bytes.isEmpty()) {
+                        errorMsg = "封面文件不能为空"
+                    } else {
+                        val detectedType = coverCache.detectImageContentType(bytes)
+                        if (detectedType == null) {
+                            errorMsg = "仅支持常见图片格式（JPG、PNG、GIF、WebP、BMP）"
+                        } else {
+                            val key = coverCache.saveCoverBytes(bytes, detectedType)
+                            database.recordCoverCache(key, detectedType)
+                            uploadedKey = key
+                            uploadedType = detectedType
+                        }
+                    }
+                }
+                part.dispose()
+            }
+
+            if (errorMsg != null) {
+                call.respond(HttpStatusCode.BadRequest, ApiError("invalid_cover", errorMsg))
+            } else if (uploadedKey != null && uploadedType != null) {
+                call.respond(CoverUploadResponse(
+                    coverKey = uploadedKey,
+                    contentType = uploadedType,
+                    url = "/api/covers/$uploadedKey"
+                ))
+            } else {
+                call.respond(HttpStatusCode.BadRequest, ApiError("invalid_cover", "未选择上传的封面文件"))
+            }
+        }
         get("/covers/{key}") {
             if (auth.requireSession(call) == null) return@get
             val key = call.parameters["key"] ?: return@get call.respond(HttpStatusCode.NotFound)

@@ -217,6 +217,26 @@ export function dominantScrollSection(rects: ScrollSectionRect[], viewportCenter
   return found
 }
 
+/** 连续滚动里判定「视口内第一段是谁」的参考线位置。 */
+export type ScrollAnchorPosition = 'centre' | 'top'
+
+/**
+ * 计算判定参考线相对视口顶部的位置。
+ *
+ * `centre`：视口中心（`window` 策略沿用，兼容既有行为）。
+ * `top`：视口顶部下方一小段（`keep` 策略专用）。
+ *
+ * ⚠️ 带宽必须够大：判定条件是「区块顶部 ≤ 参考线」，快速滑动时一帧可能跨过几百像素。
+ * 参考线若贴着顶边（例如 24px），一帧就能从「下一章还在参考线下方」直接跳过去，
+ * 那一帧仍由上一章占位（上一章顶部恒为负、永远满足条件）⇒ **换章被整帧跳过**。
+ * 实测：每步 250px 连滚 10000px 全程不换章。取约 1/4 屏即可彻底避免漏判
+ * —— 条件是单调的：下一章顶部一旦越过参考线就永远满足，不会被跨过。
+ */
+export function scrollDominantThreshold(viewportHeight: number, position: ScrollAnchorPosition): number {
+  if (position === 'centre') return viewportHeight / 2
+  return Math.min(viewportHeight * 0.25, 240)
+}
+
 export function isScrollSectionTransitionAllowed(currentIndex: number, nextIndex: number, scrollDelta: number): boolean {
   if (nextIndex === currentIndex) return false
   if (scrollDelta > 0) return nextIndex > currentIndex

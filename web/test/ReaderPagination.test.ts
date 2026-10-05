@@ -15,6 +15,7 @@ import {
   isTapGesture,
   paginateTapZone,
   scrollCompensation,
+  scrollDominantThreshold,
   scrollTapZone,
   splitParagraphs,
   swipeDirection,
@@ -23,12 +24,22 @@ import {
   defaultReaderSettings,
   getReaderFontFamily,
   loadReaderSettings,
+
   parseColumnMode,
   parseMaxWidth,
   parsePageMode,
   parseReaderFont,
   saveReaderSettings,
 } from '../src/readerSettings'
+import {
+  DEFAULT_KEEP_BOUNDS,
+  desiredScrollWindow,
+  scrollSectionKey,
+  scrollWindowInvariantViolations,
+  scrollWindowTrimPlan,
+  trimCompensation,
+} from '../src/readerScrollWindow'
+import { classifyScrollEngine, decideScrollStrategy, SCROLL_STRATEGY_STORAGE_KEY } from '../src/readerScrollStrategy'
 
 test('ReaderPagination - Tap Zones: Scroll reading mode tap zone partitions (top 30%, bottom 30%, middle 40%)', () => {
   const vh = 1000
@@ -458,6 +469,66 @@ test('ReaderScroll - dominant section tolerates empty or single-section windows'
   assert.equal(dominantScrollSection(firstChapter, 950), 1)
 })
 
+test('ReaderScroll - 判定参考线：keep 用视口顶部下方一小段并带兜底，window 沿用中心', () => {
+  const vh = 932
+  // keep：参考线在视口顶部下方一小段（带宽要够大，否则快速滑动一帧跨过窄带会漏判换章）
+  const top = scrollDominantThreshold(vh, 'top')
+  assert.ok(top >= 100 && top <= vh / 3, `视口顶部参考线应在合理带宽内，实际 ${top}`)
+  // window：必须离边缘足够远（换章要平移 DOM，参考线太靠边会让平移在可见区域发生）
+  assert.equal(scrollDominantThreshold(vh, 'centre'), vh / 2)
+
+  // 回归锁：章长 8000 / 视口 932 时，旧的中心参考线要求下一章露出约半屏才换章
+  // （实测：连滚 10000px 后 live 章仍停在上一章，进度/标题/TTS 与视口错位）。
+  const rects = [
+    { index: 3, top: -7008 },
+    { index: 4, top: 848 },
+  ]
+  assert.equal(dominantScrollSection(rects, vh / 2), 3, '中心参考线在下一章露出 848px 时仍判定为上一章')
+  assert.equal(dominantScrollSection(rects, top), 3, '参考线带宽内、下一章尚未进入时仍是上一章')
+  assert.equal(dominantScrollSection([{ index: 3, top: -7856 }, { index: 4, top: 0 }], top), 4, '下一章到达视口顶部即换章')
+  assert.equal(dominantScrollSection([{ index: 3, top: -7860 }, { index: 4, top: -4 }], top), 4, '下一章越过视口顶部仍算当前章')
+})
+
+test('ReaderScroll - 参考线带宽必须够大，否则快速滑动会整帧跳过换章判定', () => {
+  const vh = 932
+  const top = scrollDominantThreshold(vh, 'top')
+  // 带宽要显著大于「一帧的滚动量」（惯性滑动一帧可达数百像素），否则条件会被跨过
+  assert.ok(top >= 200, `参考线带宽至少应覆盖常见的一帧滚动量，实际 ${top}`)
+  assert.ok(top <= vh / 3, `参考线也不该深到半屏，实际 ${top}`)
+
+  // 上一章顶部恒为负 ⇒ 永远满足「顶部 ≤ 参考线」⇒ 窄带漏判时当前章会停住不推进
+  const narrow = 24
+  const wide = top
+  const rects = [
+    { index: 6, top: -7000 },
+    { index: 7, top: 150 },
+  ]
+  assert.equal(dominantScrollSection(rects, narrow), 6, '窄参考线在下一章露出 150px 时仍留在上一章（= 漏判换章）')
+  assert.equal(dominantScrollSection(rects, wide), 7, '宽参考线下同一帧已正确切换为下一章')
+  // 条件是单调的：一旦越过参考线，继续滚动只会保持满足
+  assert.equal(dominantScrollSection([{ index: 6, top: -7200 }, { index: 7, top: -50 }], wide), 7)
+})
+
+test('ReaderScroll - 恢复定位：目标不能提前清空、隔断不能随身份变化', () => {
+  const testDir = path.dirname(fileURLToPath(import.meta.url))
+  const reader = fs.readFileSync(path.resolve(testDir, '../src/ReaderScreen.tsx'), 'utf-8')
+
+  // ① 恢复目标只能在真正对齐之后清空。
+  // 若在 effect 开头就置 null，effect 因 scrollSections 变化重跑时会拿不到目标
+  // （相邻章异步挂载后把目标章往下推的那一刻，正是最需要重新对齐的时候）。
+  assert.match(reader, /const clearRestoreTarget = \(\) => \{/, '必须把清空恢复目标收敛到一个显式函数')
+  assert.doesNotMatch(reader, /\n\s*targetInitialPageRef\.current = null\n\s*initialPagePositionRef\.current = null\n/,
+    '恢复目标不能在 effect 开头无条件清空')
+
+  // ② 隔断必须只由章节下标决定：同一章在「当前章 ⇄ 邻居」两种身份下结构要一致。
+  // 否则高度会差一个隔断（实测 139px），跨章那一帧视口内容被推走一段。
+  assert.match(reader, /const firstMountedIndex = useMemo\(/, '必须有统一的「窗口第一段」判定')
+  assert.match(reader, /section\.index > firstMountedIndex &&/, '邻居段的隔断按下标判定')
+  assert.match(reader, /chapterIndex > firstMountedIndex &&/, '当前章的隔断同样按下标判定')
+  assert.doesNotMatch(reader, /position > 0 && \(\n\s*<div className="reader-chapter-stream-divider"/,
+    '隔断不能再依赖「在数组里的位置」')
+})
+
 test('ReaderScroll - scroll compensation keeps the anchor visually still', () => {
   // 下移窗口时从顶部丢掉上一章：若锚点区块在平移后上移了 500px，就增加对应的 scrollY 补偿
   assert.equal(scrollCompensation(300, -200), -500, '锚点上移 500 ⇒ 补偿 -500')
@@ -471,16 +542,156 @@ test('ReaderScroll - chapter sections keep stable DOM identity and disable nativ
   const reader = fs.readFileSync(path.resolve(testDir, '../src/ReaderScreen.tsx'), 'utf-8')
   const css = fs.readFileSync(path.resolve(testDir, '../src/styles.css'), 'utf-8')
 
-  // The same chapter must keep the same React key when moving from neighbor to current.
-  assert.match(reader, /key=\{`chapter-\$\{scrollPrev\.index\}`\}/)
-  assert.match(reader, /key=\{`chapter-\$\{chapterIndex\}`\}/)
-  assert.match(reader, /key=\{`chapter-\$\{scrollNext\.index\}`\}/)
-  assert.doesNotMatch(reader, /key=\{`(?:prev|next)-\$\{(?:scrollPrev|scrollNext)\.index\}`\}/)
+  // 同一章从「邻居」变成「当前章」时必须保持同一个 React key —— 换 key = 重建 DOM 节点 = 高度归零 = 跳动。
+  assert.match(reader, /key=\{scrollSectionKey\(section\.index\)\}/)
+  assert.match(reader, /key=\{scrollSectionKey\(chapterIndex\)\}/)
+  // 不允许再回到「第 n 章当邻居时用另一个 key 前缀」的写法。
+  assert.doesNotMatch(reader, /key=\{`(?:prev|next)-\$\{/)
+  assert.equal(scrollSectionKey(7), 'chapter-7')
 
-  // iOS Safari must not apply a second scroll correction while the app is compensating.
+  // iOS Safari 不得在应用补偿的同时再自作主张校正一次滚动位置。
   assert.match(css, /\.reading-scroll-window\s*\{[^}]*overflow-anchor:\s*none/s)
   assert.match(reader, /if \(scrollShiftAnchorRef\.current\) return/)
   assert.match(reader, /window\.scrollTo\(\{ top: Math\.max\(0, window\.scrollY \+ delta\), behavior: 'auto' \}\)/)
+})
+
+test('ReaderScroll - keep 策略：跨章只追加不摘章，回到已读章节不重建 DOM', () => {
+  const total = 100
+  // 首挂载：当前章 5
+  let range = desiredScrollWindow('keep', 5, total, null)
+  assert.ok(range.head <= 5 && range.tail >= 5, '窗口必须包含当前章')
+
+  // 一路读到第 6、7、8 章：head 绝不能往后退（往后退 = 从视口上方摘章 = 跳动）
+  const heads: number[] = []
+  for (const live of [6, 7, 8, 9, 10]) {
+    range = desiredScrollWindow('keep', live, total, range)
+    heads.push(range.head)
+  }
+  for (let i = 1; i < heads.length; i++) {
+    assert.ok(heads[i] <= heads[i - 1], `第 ${i} 步 head 回退了：${heads[i - 1]} → ${heads[i]}`)
+  }
+  // 并且当前章始终在窗口内
+  assert.ok(range.head <= 10 && range.tail >= 10)
+
+  // 往回读（上滑）时窗口同样不能缩小 —— 已经挂载的章节必须留着。
+  const beforeBack = { ...range }
+  const afterBack = desiredScrollWindow('keep', 8, total, range)
+  assert.equal(afterBack.head, beforeBack.head)
+  assert.equal(afterBack.tail, beforeBack.tail)
+
+  // window 策略保持三章口径不变。
+  assert.deepEqual(desiredScrollWindow('window', 5, total, null), { head: 4, tail: 6 })
+  assert.deepEqual(desiredScrollWindow('window', 0, total, null), { head: 0, tail: 1 })
+  assert.deepEqual(desiredScrollWindow('window', total - 1, total, null), { head: total - 2, tail: total - 1 })
+})
+
+test('ReaderScroll - keep 策略只回收视口之外且离得够远的章节，补偿只针对视口上方', () => {
+  const live = 20
+  const vh = 932
+  const range = { head: 10, tail: 22 }
+
+  // 每章 8000px 高；索引 < live 的在视口上方，> live 的在视口下方
+  const rects = new Map<number, { top: number; height: number }>()
+  for (let index = range.head; index <= range.tail; index++) {
+    const top = (index - live) * 8000 + 400
+    rects.set(index, { top, height: 8000 })
+  }
+
+  const plan = scrollWindowTrimPlan(range, live, vh, DEFAULT_KEEP_BOUNDS.before, rects, 1)
+  // 头部：10..13 都整段在视口上方一个半屏以外
+  assert.deepEqual(plan.remove, [10, 11, 12, 13, 22], '回收 = 视口上方前缀 + 视口下方足够远的尾巴')
+  assert.equal(plan.next.head, 14)
+  // 尾部：22 整段在视口下方一个半屏以外 → 一并回收（跳章夹层不回收就会永久驻留）；
+  // 21 = live+1 落在 keepCeil 保留区里，不回收。
+  assert.equal(plan.next.tail, 21, '保留区内的尾部不回收')
+  assert.ok(!plan.remove.includes(21) && !plan.remove.includes(20), '当前章与保留区绝不回收')
+  assert.ok(plan.next.head <= live && plan.next.tail >= live, '回收后窗口仍必须包含当前章')
+
+  // keepFloor 保护：当前章之前 6 章之内不回收；此时没有任何远方尾部
+  const tight = scrollWindowTrimPlan({ head: 15, tail: 21 }, live, vh, DEFAULT_KEEP_BOUNDS.before, rects, 1)
+  assert.deepEqual(tight.remove, [], '保留区内一律不回收')
+
+  // keepCeil 保护：当前章之后 keepCeil 章之内不回收（那是「接着往下读」的窗口）
+  const ceiling = scrollWindowTrimPlan({ head: 19, tail: 21 }, live, vh, DEFAULT_KEEP_BOUNDS.before, rects, 1)
+  assert.deepEqual(ceiling.remove, [], '当前章后 1 章之内不回收')
+
+  // 几何缺失时宁可留着，也不能凭猜回收（那会造成高度突变）
+  const noRects = scrollWindowTrimPlan(range, live, vh, DEFAULT_KEEP_BOUNDS.before, new Map(), 1)
+  assert.deepEqual(noRects.remove, [])
+  assert.deepEqual(noRects.next, range)
+
+  // 近处章节一律不回收（离视口不够远 ⇒ 可能在屏幕里）
+  const nearRects = new Map<number, { top: number; height: number }>()
+  for (let index = range.head; index <= range.tail; index++) nearRects.set(index, { top: 100, height: 8000 })
+  assert.deepEqual(scrollWindowTrimPlan(range, live, vh, 0, nearRects, 0).remove, [], '离视口不够远时一律不回收')
+
+  // 补偿方向：上方高度减少 ⇒ scrollY 减少同样的量（视觉不动），绝不为负补偿
+  assert.equal(trimCompensation(8000), -8000)
+  assert.equal(trimCompensation(0), 0)
+  assert.equal(trimCompensation(-100), 0)
+})
+
+test('ReaderScroll - 共享不变量：方向反转 / 超量位移 / 锚点漂移都要被抓出来', () => {
+  const vh = 932
+  // 干净数据：稳步向下每步 250
+  const clean = [
+    { y: 1000, anchorAbsTop: 1200, anchorId: 'c3#10' },
+    { y: 1250, anchorAbsTop: 950, anchorId: 'c3#10' },
+    { y: 1500, anchorAbsTop: 700, anchorId: 'c3#10' },
+  ]
+  assert.deepEqual(scrollWindowInvariantViolations(clean, 1, vh), [])
+
+  // 方向反转（往下滚却回跳）
+  const backward = [clean[0], { y: 700, anchorAbsTop: 1500, anchorId: 'c3#10' }]
+  const v1 = scrollWindowInvariantViolations(backward, 1, vh)
+  assert.ok(v1.some(v => v.kind === 'backward-shift'), '往下滚时 scrollY 变小必须报 backward-shift')
+
+  // 上滑时反向跳（用户报障的形态）
+  const up = [clean[1], { y: 1600, anchorAbsTop: 800, anchorId: 'c3#10' }]
+  const v2 = scrollWindowInvariantViolations(up, -1, vh)
+  assert.ok(v2.some(v => v.kind === 'backward-shift'), '往上滑时 scrollY 变大必须报 backward-shift')
+
+  // 单步位移超过一个视口
+  const overshoot = [clean[0], { y: 1000 + vh + 1, anchorAbsTop: 1200 - vh - 1, anchorId: 'c3#10' }]
+  assert.ok(scrollWindowInvariantViolations(overshoot, 1, vh).some(v => v.kind === 'oversized-shift'))
+
+  // 锚点漂移：位移量对了但内容错位
+  const drift = [clean[0], { y: 1250, anchorAbsTop: 1200, anchorId: 'c3#10' }]
+  assert.ok(scrollWindowInvariantViolations(drift, 1, vh).some(v => v.kind === 'anchor-drift'))
+
+  // 锚点换人时不判漂移（跨元素相减是量纲错误 —— 历史教训）
+  const swapped = [clean[0], { y: 1250, anchorAbsTop: 0, anchorId: 'c4#0' }]
+  assert.deepEqual(scrollWindowInvariantViolations(swapped, 1, vh), [])
+})
+
+test('ReaderScroll - 内核判定：三台真机 UA 必须各归其位（WebKit 才走 keep）', () => {
+  // 这三条是用户提供的真实 UA，直接当测试向量：判定错一条，桌面端就会从三章窗口变成别的形态
+  const IPHONE = 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.6 Mobile/15E148 Safari/604.1'
+  const EDGE = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36 Edg/154.0.0.0'
+  const ANDROID = 'Mozilla/5.0 (Linux; U; Android 13; zh-cn; PEPM00 Build/TP1A.220905.001) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/115.0.5790.168 Mobile Safari/537.36 HeyTapBrowser/40.10.23.1'
+
+  assert.equal(classifyScrollEngine(IPHONE), 'webkit', 'iPhone Safari 必须判为 WebKit')
+  // ⚠️ Blink 系的 UA 里同样带 AppleWebKit/537.36 —— 只看 AppleWebKit 会把 Edge/安卓误判成 WebKit，
+  // 这正是桌面端被误判成 keep（不再是三章窗口）的根因。
+  assert.equal(classifyScrollEngine(EDGE), 'blink', 'Edge 的 UA 带 AppleWebKit/537.36，但它是 Blink')
+  assert.equal(classifyScrollEngine(ANDROID), 'blink', '安卓 WebView/浏览器同样是 Blink')
+  assert.equal(classifyScrollEngine(''), 'unknown')
+  assert.equal(classifyScrollEngine(undefined), 'unknown')
+
+  // 策略映射：只有 WebKit 走 keep；Blink 与「认不出」都走 window（保守方向 = 不改变既有桌面行为）
+  assert.equal(decideScrollStrategy(null, 'webkit').strategy, 'keep')
+  assert.equal(decideScrollStrategy(null, 'webkit').reason, 'webkit')
+  assert.equal(decideScrollStrategy(null, 'blink').strategy, 'window')
+  assert.equal(decideScrollStrategy(null, 'blink').reason, 'blink')
+  assert.equal(decideScrollStrategy(null, 'unknown').strategy, 'window', '认不出时不得改变桌面观感')
+  assert.equal(decideScrollStrategy(null, 'unknown').reason, 'unknown-engine')
+  // 覆盖优先（探针要在同一内核上把两条策略都跑一遍）
+  assert.equal(decideScrollStrategy('keep', 'blink').strategy, 'keep')
+  assert.equal(decideScrollStrategy('window', 'webkit').strategy, 'window')
+  assert.equal(decideScrollStrategy('window', 'webkit').reason, 'override')
+  assert.equal(decideScrollStrategy('window', 'webkit').engine, 'webkit')
+  assert.equal(SCROLL_STRATEGY_STORAGE_KEY, 'legado-reader-scroll-strategy')
+  assert.equal(decideScrollStrategy('keep', 'webkit').keepBounds, DEFAULT_KEEP_BOUNDS)
 })
 test('ReaderScroll - expected neighbor section count handles first, last, and single chapters', () => {
   const getExpected = (chapterIndex: number, totalChapters: number) => {

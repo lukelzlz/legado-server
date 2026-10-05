@@ -3,16 +3,22 @@ import { flushSync } from 'react-dom'
 import { useTranslation } from 'react-i18next'
 import { api, BookDetails, Chapter, ReadingProgress, SearchResult } from './api'
 import { Icon } from './icons'
-import { calculatePaginationLayout, chapterTurnClassName, dominantScrollSection, findFirstFullyVisibleParagraphIndex, isAtBottomBoundary, isAtTopBoundary, isInteractiveReaderTarget, isScrollSectionTransitionAllowed, isTapGesture, paginateTapZone, scrollCompensation, scrollDominantThreshold, scrollTapZone, splitParagraphs, swipeDirection, ViewportBounds } from './readerInteractions'
+import { calculatePaginationLayout, chapterTurnClassName, findFirstFullyVisibleParagraphIndex, isAtBottomBoundary, isAtTopBoundary, isInteractiveReaderTarget, isTapGesture, paginateTapZone, scrollTapZone, splitParagraphs, swipeDirection, ViewportBounds } from './readerInteractions'
 import type { ChapterTurnDirection, ChapterTurnPhase } from './readerInteractions'
 import {
-  DEFAULT_KEEP_BOUNDS,
-  desiredScrollWindow,
+  bufferLoadRange,
+  chapterIndexAtViewportTop,
+  computeFirstRenderedIndex,
+  estimateChapterHeight,
+  keepRenderedDistance,
+  nextAppendRange,
+  planPlaceholders,
+  prependDistanceTrigger,
+  prependScrollFix,
+  previousPrependRange,
   scrollSectionKey,
-  scrollWindowTrimPlan,
-} from './readerScrollWindow'
-import type { ScrollMountStrategy, ScrollWindowRange } from './readerScrollWindow'
-import { decideScrollStrategy } from './readerScrollStrategy'
+} from './readerScrollStream'
+import type { ScrollStreamSlot } from './readerScrollStream'
 import { clampScrollPosition, defaultReaderSettings, getReaderFontFamily, ReaderSettings, scrollPosition, TtsEngineType } from './readerSettings'
 import { SourceSwitchModal } from './SourceSwitchModal'
 import { cleanAuthor, cleanTitle } from './searchFilters'
@@ -32,14 +38,6 @@ import {
 export type OpenBook = { details: BookDetails; bookUrl: string; chapters: Chapter[]; progress?: ReadingProgress }
 
 /**
- * keep 策略回收章节前的「滚动静默期」。
- *
- * 手势/惯性仍在进行时改动视口上方的 DOM 并 `scrollTo`，会与 WebKit 的滚动状态互相干扰；
- * 而回收没有时效性（被回收的章节离视口至少一个视口高），等滚动停下来再做完全无损。
- */
-const SCROLL_IDLE_BEFORE_TRIM_MS = 220
-
-/**
  * 滚动排障用的渲染采样开关（localStorage: `legado-scroll-debug` = '1'）。
  *
  * 连续滚动的问题都在「某一帧的 DOM 状态」上，而 React 的中间态在组件外看不到。
@@ -48,20 +46,11 @@ const SCROLL_IDLE_BEFORE_TRIM_MS = 220
  */
 const SCROLL_DEBUG_KEY = 'legado-scroll-debug'
 
-/**
- * 滚动模式里已挂载的章节区块。
- *
- * - `strategy === 'window'`（其他引擎）：只有相邻两章在这里，当前章由 `content`/`paragraphs` 提供。
- * - `strategy === 'keep'`（WebKit）：已读章节**长期驻留**在这里，跨章不再从视口上方摘除，
- *   因此不需要滚动补偿（见 [readerScrollWindow] 的推导）。
- */
-type ScrollSectionEntry = {
-  index: number
-  title: string
-  paragraphs: string[]
-  /** 该章的正文是否已就绪；未就绪时渲染骨架而不是空白（空白 = 高度突变）。 */
-  ready: boolean
-}
+/** 进入阅读器时先铺当前章前后多少章（连续流的起点）。 */
+const SCROLL_STREAM_INITIAL_BACK = 12
+const SCROLL_STREAM_INITIAL_FORWARD = 24
+/** 尾部区块进入「视口底部 + 这么多像素」以内时，才追加下一批（背压）。 */
+const SCROLL_APPEND_LOOKAHEAD_PX = 4000
 
 type ReaderScreenProps = {
   openBook: OpenBook
@@ -386,37 +375,70 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
   const initialPagePositionRef = useRef<number | null>(null)
   const wheelTimerRef = useRef<number | null>(null)
   /**
-   * 连续滚动的**挂载策略**（见 [readerScrollStrategy]）。
+   * 连续滚动：**一条连续流 + 等高占位**（见 [readerScrollStream]）。
    *
-   * - `window`：现状的三章窗口，跨章平移并在同一帧内补偿；
-   * - `keep`：WebKit 专用 —— 只追加不摘章，跨章不改动视口上方结构。
-   *
-   * 策略在挂载时判定一次：特征探测可能触发一次微型布局实验，不适合每帧重跑。
+   * 不再有「窗口平移 / 保留策略 / 内核判定 / 锚点补偿 / 几何派生当前章」这些机制 ——
+   * 它们存在的原因都是「要在滚动过程中移除视口上方的章节」，而那个操作会让文档高度变小、
+   * 触发浏览器钳制滚动位置。改成等高占位后，结构变化只发生在视口上方足够远处，
+   * 且高度是精确实测值 ⇒ 文档高度恒定、零补偿。
    */
-  const [scrollStrategy] = useState<ScrollMountStrategy>(() => decideScrollStrategy().strategy)
+  const [scrollText, setScrollText] = useState<Map<number, string[]>>(new Map())
+  /** 被收成占位的章节（正文不在 DOM 里，但高度精确保留）。 */
+  const [scrollPlaceholders, setScrollPlaceholders] = useState<Set<number>>(new Set())
+  /** 长流已渲染的区间（闭区间）。只向前后扩，不在中间挖洞。 */
+  const [scrollStream, setScrollStream] = useState<{ head: number; tail: number }>(() => {
+    // ⚠️ 初始区间必须在这里算出来，**不能**交给一个播种 effect。
+    // 踩过的坑：播种 effect 与「当前章正文写入流」的 effect 会在同一批提交里竞争，
+    // 播种 effect 里的 `setScrollText(new Map())` 后执行 ⇒ 把刚写进去的当前章正文清掉
+    // ⇒ 当前章渲染成骨架、还被占位高度实测记成「真实高度」，恢复对齐随后按这个错误高度
+    // 把视口滚到几万像素之外（实测 y=125398、liveTop=-6931）。
+    const total = currentBook.chapters.length
+    if (total === 0) return { head: 0, tail: -1 }
+    return {
+      head: Math.max(0, chapterIndex - SCROLL_STREAM_INITIAL_BACK),
+      tail: Math.min(total - 1, chapterIndex + SCROLL_STREAM_INITIAL_FORWARD),
+    }
+  })
+  /** 收起正文前实测的各章高度（下标 → px）。 */
+  const scrollHeightsRef = useRef<Map<number, number>>(new Map())
   /**
-   * 已挂载的章节区块（按 index 升序、区间连续）。
+   * 已拿到正文的章节下标（镜像 `scrollText` 的键）。
    *
-   * 与 `scrollPrev`/`scrollNext` 的区别：后者固定只有相邻两章（window 策略口径），
-   * 这里承载 keep 策略下长期驻留的已读章节，并且是**渲染的唯一来源**。
+   * ⚠️ 必须同步读取：占位/收起判定若依赖 React 状态提交时机，会出现「正文刚写进 map、
+   * 这一帧却读到旧的键集」的错判；直接把键集维护在写入处最稳。
    */
-  const [scrollSections, setScrollSections] = useState<ScrollSectionEntry[]>([])
-  /** 上一轮已挂载的区间；keep 策略据此做单调向前扩张。 */
-  const scrollRangeRef = useRef<ScrollWindowRange | null>(null)
+  const scrollTextKeysRef = useRef<Set<number>>(new Set())
   /**
-   * keep 策略回收前量到的章节高度快照（章节下标 → 高度）。
+   * 测量阶段量到的章节高度（下标 → px）。
    *
-   * 必须在 DOM 变更**之前**测量：变更之后被移除的章节已经量不到了。
-   * 由维护 effect 写入、由同帧补偿的 layout effect 消费（一次性）。
+   * 与 [scrollHeightsRef] 的分工：后者是「收起时冻结的高度」（占位块用它撑住文档），
+   * 这里存**每次测量的最新值**，用于给还没量到的章节做高度估算、以及在几何变化后补差。
    */
-  const scrollTrimHeightsRef = useRef<Map<number, number> | null>(null)
-  /** keep 策略下当前章之前保留多少章（见 `DEFAULT_KEEP_BOUNDS.before`）。 */
-  const scrollKeepFloor = DEFAULT_KEEP_BOUNDS.before
-  /** keep 策略下当前章之后至少保留多少章（跳章时夹层尾部据此回收，见 [scrollWindowTrimPlan]）。 */
-  const scrollKeepCeil = Math.max(1, DEFAULT_KEEP_BOUNDS.after)
-  /** 滚动静默后递增，用来把「延迟的回收」重新敲一次（见回收 layout effect）。 */
-  const [scrollTrimSignal, setScrollTrimSignal] = useState(0)
-  /** 各章节区块的 DOM 节点，用于判定「当前读的是哪一章」与位置补偿。 */
+  const scrollLiveHeightsRef = useRef<Map<number, number>>(new Map())
+  /**
+   * 几何位移同帧修正所需的两份快照。
+   *
+   * \`scrollHeightRef\`：上一帧的 \`document.scrollHeight\`（任何「上方变高」都必然体现在它上面）；
+   * \`scrollAnchorTopsRef\`：上一帧各区块在**文档中的绝对位置**（判断变高发生在视口上方还是下方）。
+   *
+   * 用户报障「向上划看上面的章节时总会跳动，本该在上一章末尾却直接跳到上一章开头」：
+   * 上方章节变高会把视口内容整体推下去，而浏览器不会替你保住它 —— 必须在同一帧补回。
+   */
+  const scrollHeightRef = useRef<number | null>(null)
+  const scrollAnchorTopsRef = useRef<Map<number, number>>(new Map())
+  /** 流头部下标（用于「前插后同帧修正滚动位置」时判断上方是否真的插入了内容）。 */
+  const streamHeadRef = useRef(0)
+  /** 标记「本次换章来自连续流滚动」：加载 effect 不要清空正文、不要回章首。 */
+  const streamAdvanceRef = useRef(false)
+  /** 背压信号：尾部区块接近视口时置位，驱动「按批追加」的 effect（由滚动处理写入）。 */
+  const [scrollAppendSignal, setScrollAppendSignal] = useState(true)
+  /** 背压信号的最新值（滚动处理里同步读，避免闭包拿到旧值而误判「从未放行」）。 */
+  const scrollAppendSignalRef = useRef(true)
+  /** 当前流尾部下标（滚动处理里读，避免把 scrollStream 塞进事件回调依赖）。 */
+  const scrollStreamTailRef = useRef(0)
+  /** 追加批次里出现「取正文失败」时的重试计数（避免上游永久失败时无限重试）。 */
+  const scrollRetryRef = useRef(0)
+  /** 各章节区块的 DOM 节点（判定当前章、量高度）。 */
   const scrollSectionRefs = useRef(new Map<number, HTMLElement>())
   /**
    * React callback ref 在章节窗口平移时会先以 null 清理旧节点，再登记新节点。
@@ -440,16 +462,6 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
     scrollSectionRefCallbacks.current.set(index, callback)
     return callback
   }, [])
-  /**
-   * 窗口平移的滚动锚点。
-   *
-   * 平移会从文档顶部移除/插入区块，文档高度随之变化 ⇒ 内容整体位移。
-   * 平移前记下**目标章**区块的视口 top，平移后的 layout effect 里再量一次，
-   * 差值补回 `scrollBy`，读者就察觉不到窗口换了。
-   */
-  const scrollShiftAnchorRef = useRef<{ index: number; top: number } | null>(null)
-  /** 标记「本次换章是滚动窗口平移」，让加载逻辑不要把滚动位置重置到章首。 */
-  const scrollShiftNoJumpRef = useRef(false)
   // Ref to the latest playTtsChunk so that async onEnd callbacks always invoke the freshest version,
   // avoiding stale closure issues when cross-chapter auto-play triggers after chapter content reloads.
   const playTtsChunkRef = useRef<(idx: number, mode?: TtsSpeakMode) => void>(() => undefined)
@@ -555,74 +567,88 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
   }, [content, isCurrentChapterLoaded])
 
   /**
-   * 挂载窗口里「不是当前章」的两半（当前章单独渲染在它们之间）。
+   * 连续流的渲染清单：从 `head` 到 `tail` 逐章列出「渲染正文」还是「等高占位」。
    *
-   * ⚠️ 去重是必须的：挂载列表本身包含当前章（[desiredScrollWindow] 的区间一定覆盖 live），
-   * 而当前章还要单独渲染一份（它是 TTS / 进度 / 标题的唯一权威）。
-   * 漏掉这次去重就会把同一章渲染两遍，形成「重复章节 + 高度翻倍」——
-   * 实测表现就是 `chaps=[2,3,4,5,4]` 与随之而来的滚动位移错乱。
+   * - 已渲染且未收起的章节 → 用 `scrollText` 里的段落渲染（含当前章）；
+   * - 收起 / 从未加载的中间章节 → 等高占位。
+   *
+   * 当前章一定在 `scrollText` 里（切章时同步写入），所以它永远不会是占位。
    */
-  const scrollSectionsBeforeLive = useMemo(
-    () => scrollSections.filter(section => section.index < chapterIndex),
-    [scrollSections, chapterIndex],
-  )
-  const scrollSectionsAfterLive = useMemo(
-    () => scrollSections.filter(section => section.index > chapterIndex),
-    [scrollSections, chapterIndex],
+  const scrollEntries = useMemo(() => {
+    const total = currentBook.chapters.length
+    if (total === 0 || scrollStream.tail < scrollStream.head) return []
+    const entries: Array<{
+      index: number
+      title: string
+      paragraphs: string[] | null
+      height: number
+      needsDivider: boolean
+      isCurrent: boolean
+    }> = []
+    for (let index = scrollStream.head; index <= scrollStream.tail && index < total; index++) {
+      const chapter = currentBook.chapters[index]
+      if (!chapter) continue
+      const collapsed = scrollPlaceholders.has(index)
+      const text = collapsed ? undefined : scrollText.get(index)
+      entries.push({
+        index,
+        title: chapter.title,
+        paragraphs: text ?? null,
+        /*
+         * ⚠️ 这里只认**真实量到的高度**，绝不能用估算值兜底。
+         *
+         * 渲染分支用 `height <= 0` 判断「这一章还没量到高度 ⇒ 必须渲染正常区块（骨架）才有机会被加载和测量」。
+         * 一旦用估算值把 height 填成正数，未加载的章节会被当成「已量到」而收成占位块 ——
+         * 占位块不渲染正文也不会被测量 ⇒ 它们永远不加载，读者看到「往上往下都不加载，只剩空白」
+         *（实测复现：全文档只剩当前章一个区块）。
+         * 几何稳定性由「测量后的同帧补差」负责，不靠给未测章节编高度。
+         */
+        height: scrollLiveHeightsRef.current.get(index)
+          ?? scrollHeightsRef.current.get(index)
+          ?? 0,
+        needsDivider: index > scrollStream.head,
+        isCurrent: index === chapterIndex,
+      })
+    }
+    return entries
+  }, [scrollStream, scrollText, scrollPlaceholders, currentBook.chapters, chapterIndex])
+
+  /** 当前章在流里的段落（TTS / 高亮 / 点选的唯一权威）。 */
+  const liveScrollParagraphs = useMemo(
+    () => scrollText.get(chapterIndex) ?? paragraphs,
+    [scrollText, chapterIndex, paragraphs],
   )
 
   /**
-   * 当前章区块真正要渲染的正文。
+   * 流里最靠下的一章是否**已经加载完成**（正文在手里，或已收成占位块）。
    *
-   * 优先用挂载列表里**已经准备好**的那一份（keep 策略下正文在切章之前就已驻留），
-   * 否则回退到 `content` 派生的段落。这样「live 段高度」在任何一帧都有确定来源，
-   * 不会出现「`chapterIndex` 已变、`content` 还没到」的骨架帧 ——
-   * 那一帧的高度塌陷会被浏览器换算成一次滚动位置钳制（实测 −711px，用户看到的就是跳动）。
+   * 与 `scrollTailReady` 的区别：占位也算「完成」—— 占位块撑住了精确高度，
+   * 是设计内的稳定状态，不该继续显示「正在加载下一章…」。
    */
-  const liveScrollParagraphs = useMemo(() => {
-    const prepared = scrollSections.find(section => section.index === chapterIndex && section.ready)
-    return prepared ? prepared.paragraphs : paragraphs
-  }, [scrollSections, chapterIndex, paragraphs])
+  const scrollTailLoaded = useMemo(() => {
+    const tail = scrollStream.tail
+    if (tail < 0) return false
+    return scrollText.has(tail) || scrollPlaceholders.has(tail)
+  }, [scrollStream.tail, scrollText, scrollPlaceholders])
 
-  /**
-   * 窗口里最先（最靠上）被挂载的章节下标 —— 它前面不需要隔断，其余章节都需要。
-   *
-   * ⚠️ 隔断必须**只由章节下标**决定，绝不能依赖「它此刻是不是当前章」。
-   * 当前章是单独渲染的、邻居来自挂载列表；若隔断随身份变化，同一章在「当前章 ⇄ 邻居」
-   * 之间切换时高度会差一个隔断（约 139px），它在文档里的绝对位置随之改变
-   * ⇒ 跨章那一帧视口内容被整体推走一段（实测 139px 的可见位移）。
-   */
-  const firstMountedIndex = useMemo(() => {
-    const indexes = [
-      ...scrollSections.map(section => section.index),
-      chapterIndex,
-    ].filter(index => index >= 0 && index < currentBook.chapters.length)
-    return indexes.length > 0 ? Math.min(...indexes) : chapterIndex
-  }, [scrollSections, chapterIndex, currentBook.chapters.length])
+  /** 流尾部下标同步给 ref（供滚动处理读取，避免把 scrollStream 塞进事件回调依赖）。 */
+  useEffect(() => {
+    scrollStreamTailRef.current = scrollStream.tail
+  }, [scrollStream.tail])
 
-  /** 挂载窗口里最靠下的章节下标（只统计当前章之后的那些）。 */
-  const scrollBottomIndex = useMemo(() => {
-    return scrollSectionsAfterLive.length > 0
-      ? scrollSectionsAfterLive[scrollSectionsAfterLive.length - 1].index
-      : chapterIndex
-  }, [scrollSectionsAfterLive, chapterIndex])
-
-  /** 列表里最靠下的那一章是否已经拿到正文 —— 决定「正在加载下一章…」是否该出现。 */
-  const scrollNextReady = useMemo(() => {
-    const target = scrollSections.find(section => section.index === scrollBottomIndex)
-    return target ? target.ready : false
-  }, [scrollSections, scrollBottomIndex])
+  /** 背压信号同步给 ref（滚动处理里要同步判断「是否已放行」）。 */
+  useEffect(() => {
+    scrollAppendSignalRef.current = scrollAppendSignal
+  }, [scrollAppendSignal])
 
   // 排障采样（默认关闭）：把每次 render 的关键状态记进 window.__scrollDebug
   useEffect(() => {
     if (typeof localStorage === 'undefined' || localStorage.getItem(SCROLL_DEBUG_KEY) !== '1') return
     const store = ((window as unknown as { __scrollDebug?: unknown[] }).__scrollDebug ??= [])
     const liveEl = scrollSectionRefs.current.get(chapterIndex)
-    const liveSection = scrollSections.find(section => section.index === chapterIndex)
     store.push({
       t: Math.round(performance.now()),
       chapterIndex,
-      liveSectionIndex: scrollSections.find(section => section.index === chapterIndex) ? chapterIndex : null,
       currentRefIndex: currentRef.current?.chapter.index ?? null,
       contentLen: content.length,
       loading,
@@ -630,8 +656,11 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
       loadedUrlTail: loadedChapterUrl.slice(-24),
       isLoaded: isCurrentChapterLoaded,
       paraCount: paragraphs.length,
-      sections: scrollSections.map(section => `${section.index}${section.ready ? 'r' : '-'}`).join(','),
-      liveSectionReady: liveSection ? liveSection.ready : null,
+      stream: `${scrollStream.head}..${scrollStream.tail}`,
+      textCount: scrollText.size,
+      /** 排障：正文表里每章的段落数与前几章首句长度（判断「200 但内容为空」还是「写进去又被清掉」）。 */
+      textPairs: [...scrollText.entries()].slice(0, 24).map(([i, ps]) => `${i}:${ps.length}:${ps[0]?.length ?? 0}`).join(' '),
+      placeholderCount: scrollPlaceholders.size,
       y: Math.round(window.scrollY),
       sh: document.documentElement.scrollHeight,
       liveH: liveEl ? Math.round(liveEl.getBoundingClientRect().height) : null,
@@ -733,164 +762,454 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
   }, [currentBook.chapters, loadChapterText])
 
   /**
-   * 把「目标章正文」**在切章之前**同步准备好：填 `content` + `loadedChapterUrl`。
+  /**
+   * 把某一章的正文同时写入「当前章正文」状态（供 TTS / 进度 / 标题使用）。
    *
-   * 为什么必须同步（WebKit 实测 2026-10-04）：`chapterIndex` 一旦先变、正文后到，
-   * 中间就会有一帧 live 段渲染成骨架 —— 高度 8011 → 327、文档高度 32609 → 24542。
-   * 浏览器随即把 `scrollY` **钳制**到 `24542 - 932 = 23610`（实测正好差 −711px），
-   * 文档高度恢复后这个位置也回不去了 ⇒ 用户看到的就是「跳动」。
-   *
-   * 三条来源按可靠性排序：
-   *   ① 已挂载章节列表（keep 策略下必然有，且与渲染用的是同一份数据）；
-   *   ② 预加载缓存（同一次会话里加载过就命中）；
-   *   ③ 兜底：保持原状，让加载 effect 按老路径处理（不支持 keep 的场景）。
+   * 连续流里正文有两个消费者：流里的章节区块（按 index 取 `scrollText`）与
+   * 当前章权威状态（`content`/`loadedChapterUrl`）。切章时两者必须一起更新，
+   * 否则会出现「`chapterIndex` 已变、`content` 还是旧的」那一帧 ——
+   * 实测那一帧会把当前章区块渲染成骨架、高度塌约 8000px，浏览器随即钳制 `scrollY`。
    */
-  const applyScrollSectionContent = useCallback((index: number): boolean => {
+  const applyLiveChapterText = useCallback((index: number, text: string): boolean => {
     const target = currentBook.chapters[index]
     if (!target) return false
-    const entry = scrollSections.find(section => section.index === index)
-    const text = entry?.ready
-      ? entry.paragraphs.join('\n')
-      : preloadedContentRef.current.get(target.url)
-    if (text === undefined) return false
-    currentRef.current = { chapter: target, position: currentRef.current?.position ?? 0 }
+    currentRef.current = { chapter: target, position: 0 }
     flushSync(() => {
       setContent(text)
       setLoadedChapterUrl(target.url)
     })
-    // flushSync 期间 `content`/`loadedChapterUrl` 已经上屏，骨架那一帧根本不会出现。
     return true
-  }, [currentBook.chapters, scrollSections, setContent, setLoadedChapterUrl])
+  }, [currentBook.chapters, setContent, setLoadedChapterUrl])
 
   /**
-   * 连续滚动：维护**已挂载章节列表**，并按策略决定回收。
+   * 换书时重置流状态（同一本书内不动）。
    *
-   * 两条策略共用这一个 effect：
+   * 初始区间由 `scrollStream` 的 state 初始化函数算出，这里只处理「换了另一本书」的情况：
+   * 清掉上一本的正文/占位/高度缓存，并把流重新起在当前章附近。
+   */
+  const streamBookRef = useRef(currentBook.bookUrl)
+  useEffect(() => {
+    if (settings.pageMode !== 'scroll') return
+    const total = currentBook.chapters.length
+    if (total === 0) return
+    if (streamBookRef.current === currentBook.bookUrl) return
+    streamBookRef.current = currentBook.bookUrl
+    const head = Math.max(0, chapterIndex - SCROLL_STREAM_INITIAL_BACK)
+    const tail = Math.min(total - 1, chapterIndex + SCROLL_STREAM_INITIAL_FORWARD)
+    setScrollStream({ head, tail })
+    streamHeadRef.current = head
+    setScrollText(new Map())
+    scrollTextKeysRef.current = new Set()
+    setScrollPlaceholders(new Set())
+    scrollHeightsRef.current = new Map()
+  }, [chapterIndex, currentBook.bookUrl, currentBook.chapters.length, settings.pageMode])
+
+  /**
+   * 按批向下追加章节（**只追加，绝不改动上方结构**）。
    *
-   * - `window`：列表恒为 [上一章, 当前章, 下一章]（当前章由 `content`/`paragraphs` 提供）。
-   * - `keep`：列表单调向前扩张（已读章节留着不动），只在章节离视口足够远时才回收，
-   *   且**回收与滚动补偿发生在同一帧内**（见下一个 layout effect）——这是与现状最本质的区别：
-   *   现状的补偿要等两个 rAF，中间那一帧是「内容已位移、位置没补」，用户看到的就是跳动。
+   * 这是连续流模型的核心：坐标以已经渲染出来的内容为准，读到接近底部就把后面的章节接上，
+   * 而不是靠窗口平移去换章。
+   *
+   * ⚠️ 必须有**背压**：只在「尾部区块已经接近视口」时才追加下一批，判据由滚动处理给出
+   *（`scrollAppendSignal`）。否则会被下一批触发的重渲染再次唤醒，一秒内把整本书 700+ 章
+   * 全甩进 DOM（实测：文档高度从 24 万涨到 269 万像素、段数 241，滚动条完全失控）。
    */
   useEffect(() => {
-    // ⚠️ 刻意**不**要求「当前章正文已加载」：挂载窗口的维护与当前章正文是否到位无关，
-    // 而一旦把两者绑在一起，正文加载期间挂载列表就会冻结、换章随之整体中止
-    //（实测：滚动到一半卡住不动，live 章与 DOM 段数都停在原地）。
-    if (settings.pageMode !== 'scroll') return
-
-    const total = currentBook.chapters.length
-    const clampedLive = Math.max(0, Math.min(Math.max(0, total - 1), chapterIndex))
-    const range = desiredScrollWindow(scrollStrategy, clampedLive, total, scrollRangeRef.current)
-    scrollRangeRef.current = range
-
-    // 列出需要挂载/补齐正文的章节：策略给出的区间 ∪ {当前章±1}。
-    // 相邻两章是「接着往下读」的必需品，任何策略下都不能缺。
-    const targets: number[] = []
-    for (let index = range.head; index <= range.tail && index < total; index++) targets.push(index)
-    for (const neighbor of [clampedLive - 1, clampedLive + 1]) {
-      if (neighbor >= 0 && neighbor < total && !targets.includes(neighbor)) targets.push(neighbor)
+    const node = typeof window === 'undefined' ? null : window
+    if (node && typeof localStorage !== 'undefined' && localStorage.getItem(SCROLL_DEBUG_KEY) === '1') {
+      const store = ((node as unknown as { __appendDebug?: unknown[] }).__appendDebug ??= [])
+      store.push({ kind: 'effect-run', t: Math.round(performance.now()),
+        signal: scrollAppendSignal, tail: scrollStream.tail,
+        total: currentBook.chapters.length, mode: settings.pageMode })
+      if (store.length > 80) store.splice(0, store.length - 80)
     }
-    targets.sort((a, b) => a - b)
+    if (settings.pageMode !== 'scroll') return
+    const total = currentBook.chapters.length
+    if (total === 0) return
+    if (!scrollAppendSignal) return
+    const range = nextAppendRange(scrollStream.tail, total)
+    if (!range) return
 
+    /**
+     * ⚠️ 每拿到一章就立即写入 `scrollText`，**不做整批提交**。
+     *
+     * 踩过的坑：原先是「按顺序 await 12 章，最后一起提交」，而 effect 的清理函数会把
+     * `cancelled` 置真 —— 只要这批还在跑的时候发生一次重渲染（`tail` 变化、测量触发等），
+     * 整个批次就被丢弃，正文永远不落库。表现就是：接口全部 200，但页面上没有任何正文
+     *（实测：45 次正文请求全成功，`scrollText` 里却始终只有当前章一章）。
+     */
     let cancelled = false
     const run = async () => {
-      const entries: ScrollSectionEntry[] = []
-      for (const index of targets) {
-        const target = currentBook.chapters[index]
-        if (!target) continue
+      const transient: number[] = []
+      for (const index of Array.from({ length: range.to - range.from + 1 }, (_, i) => range.from + i)) {
         const text = await loadChapterText(index)
-        if (cancelled) return
-        entries.push({
-          index,
-          title: target.title,
-          paragraphs: text === null ? [] : splitParagraphs(text),
-          ready: text !== null,
+        // ⚠️ 这里**不能**因为「已取消」就丢弃拿到的正文：每次重渲染都会换一次批次，
+        // 丢掉等于白请求（实测：接口全 200 但页面上没有正文）。
+        if (text === null) {
+          if (cancelled) return
+          // 取失败不能当成「这一章是空的」：既不给空正文，也不越过它推进 tail（等重试）
+          transient.push(index)
+          continue
+        }
+        const paragraphs = splitParagraphs(text)
+        scrollTextKeysRef.current.add(index)
+        setScrollText(prev => {
+          if (prev.has(index)) return prev
+          const next = new Map(prev)
+          next.set(index, paragraphs)
+          return next
         })
       }
       if (cancelled) return
-      // 先量高度（此时 DOM 还没变），回收与补偿都由下面的 layout effect 用这份快照完成。
-      const heights = new Map<number, number>()
-      for (const entry of entries) {
-        const el = scrollSectionRefs.current.get(entry.index)
-        if (el) heights.set(entry.index, el.getBoundingClientRect().height)
-      }
-      scrollTrimHeightsRef.current = heights
-      setScrollSections(prev => {
-        if (prev.length === entries.length && prev.every((item, i) =>
-          item.index === entries[i].index && item.ready === entries[i].ready && item.title === entries[i].title
-        )) {
-          return prev
+      if (transient.length > 0 && transient.length === range.to - range.from + 1) {
+        // 整批都失败：退避重试（上限几次，避免上游永久失败时无限重试）
+        if (scrollRetryRef.current < 4) {
+          scrollRetryRef.current += 1
+          window.setTimeout(() => setScrollAppendSignal(true), 700)
+          return
         }
-        return entries
-      })
+      }
+      scrollRetryRef.current = 0
+      /*
+       * 只推进到「连续成功」的那一段尾部：中间有失败就不越过它，等重试。
+       */
+      let newTail = range.to
+      if (transient.length > 0) newTail = Math.min(...transient) - 1
+      if (newTail >= range.from) {
+        setScrollStream(prev => ({ head: Math.min(prev.head, range.from), tail: Math.max(prev.tail, newTail) }))
+      }
+      // 排障采样：把这一批的失败章数与具体下标记下来
+      if (typeof localStorage !== 'undefined' && localStorage.getItem(SCROLL_DEBUG_KEY) === '1') {
+        const store = ((window as unknown as { __appendDebug?: unknown[] }).__appendDebug ??= [])
+        store.push({ t: Math.round(performance.now()), range: `${range.from}..${range.to}`,
+          ok: range.to - range.from + 1 - transient.length, failed: transient.length,
+          failedIdx: transient.slice(0, 8),
+          tail: newTail, y: Math.round(window.scrollY), sh: document.documentElement.scrollHeight })
+        if (store.length > 60) store.splice(0, store.length - 60)
+      }
+      /**
+       * ⚠️ 追加完一批必须**立刻把背压信号置回 false**。
+       *
+       * 否则信号会一直是 true，而下一次追加更新 `scrollStream.tail` 会让这个 effect 重跑，
+       * 于是又追加一批 —— 级联下去一秒内把整本书 700+ 章全甩进 DOM
+       *（实测：文档高度从 24 万涨到 331 万像素、段数 385）。
+       * 重新放行只能由滚动处理里的哨兵判定（尾部区块接近视口）给出。
+       */
+      setScrollAppendSignal(false)
     }
     void run()
     return () => { cancelled = true }
-  }, [chapterIndex, currentBook.chapters, loadChapterText, scrollStrategy, settings.pageMode])
+  }, [currentBook.chapters.length, loadChapterText, scrollAppendSignal, scrollStream.tail, settings.pageMode])
 
   /**
-   * 滚动静默后重跑一次回收判定。
+   * 当前章正文写入流 + **上下各 2 章预载**。
    *
-   * 维护 effect 可能在读者还在滚时就写好了高度快照，那一轮回收会主动让路（见下）。
-   * 这里在「最后一次 scroll 事件之后静默 220ms」再敲一次，保证延迟的回收一定会发生；
-   * 否则挂载列表会只增不减（实测：3 段连读 10 章后涨到 6 段、文档高度 32609 → 50080）。
+   * 用户定调：「章节加载时不要只加载看的这一章节，上下加载 2 章」。
+   * 为什么这样做能治跳动：正文章节在**跨越章界之前**就已经在手里，
+   * 而不是「读到章界那一刻才开始加载」—— 后者会出现空骨架帧，紧接着内容到位、
+   * 文档位移，观感就是跳。
    *
-   * 依赖里刻意不放 `scrollTrimSignal`：否则每回收一次都会重置计时器。
+   * 顺序很重要：**先写当前章**（立刻可读），再补邻居。
    */
   useEffect(() => {
-    if (settings.pageMode !== 'scroll' || scrollStrategy !== 'keep') return
-    const timer = window.setTimeout(() => setScrollTrimSignal(value => value + 1), SCROLL_IDLE_BEFORE_TRIM_MS)
-    return () => window.clearTimeout(timer)
-  }, [scrollSections, settings.pageMode, scrollStrategy])
+    if (settings.pageMode !== 'scroll') return
+    if (!isCurrentChapterLoaded || !content) return
+    const liveParagraphs = splitParagraphs(content)
+    setScrollText(prev => {
+      const existing = prev.get(chapterIndex)
+      if (existing && existing.length === liveParagraphs.length && existing[0] === liveParagraphs[0]) return prev
+      const next = new Map(prev)
+      next.set(chapterIndex, liveParagraphs)
+      scrollTextKeysRef.current.add(chapterIndex)
+      return next
+    })
+    setScrollPlaceholders(prev => {
+      if (!prev.has(chapterIndex)) return prev
+      const next = new Set(prev)
+      next.delete(chapterIndex)
+      return next
+    })
+
+    // 邻居预载：失败静默（下一次章界/滚动还会再试），绝不因为邻居失败影响当前章
+    const buffer = bufferLoadRange(chapterIndex, currentBook.chapters.length)
+    if (!buffer) return
+    let cancelled = false
+    const run = async () => {
+      for (let index = buffer.from; index <= buffer.to; index++) {
+        if (index === chapterIndex) continue
+        if (scrollTextKeysRef.current.has(index)) continue
+        const text = await loadChapterText(index)
+        if (text === null) continue
+        const paragraphs = splitParagraphs(text)
+        scrollTextKeysRef.current.add(index)
+        setScrollText(prev => {
+          if (prev.has(index)) return prev
+          const next = new Map(prev)
+          next.set(index, paragraphs)
+          return next
+        })
+        // 把预载到的章节纳入已渲染区间（否则它们不在 head..tail 内、不会被渲染）
+        setScrollStream(prev => ({
+          head: Math.min(prev.head, index),
+          tail: Math.max(prev.tail, index),
+        }))
+      }
+      if (cancelled) return
+    }
+    void run()
+    return () => { cancelled = true }
+  }, [chapterIndex, content, currentBook.chapters.length, isCurrentChapterLoaded, loadChapterText, settings.pageMode])
 
   /**
-   * keep 策略的回收 + 同帧滚动补偿。
+   * 等高占位：把视口上方足够远的章节正文收成「精确高度」的占位块。
    *
-   * 回收的一定是**视口上方**的章节（见 [scrollWindowTrimPlan]），因此：
-   * - 文档高度只减不增，`scrollTo` 不会被浏览器钳制；
-   * - 补偿量 = 被移除章节的高度和，方向恒为「往上补」，不需要读锚点几何。
+   * 与旧的回收机制本质不同：
+   * - 旧机制**移除**章节 ⇒ 文档变矮 ⇒ 浏览器钳制滚动位置 ⇒ 必须补偿 + 重试；
+   * - 现在只是把正文换成同高度的占位块（高度取收起前实测值）⇒ `scrollHeight` 恒定，
+   *   既不会被钳制、也不需要任何补偿。
    *
-   * 这一步在 DOM 更新后、绘制前执行，所以任何一帧都不会出现「内容已位移、位置没补」。
-   *
-   * 时机上再加一道闸：**只在滚动停下来之后回收**。
-   * 手势/惯性仍在进行时做结构性 DOM 改动 + `scrollTo` 会与 WebKit 的滚动状态相互干扰，
-   * 而回收本来就没有时效性（那些章节离视口至少一个视口高），等一秒完全无损。
+   * 结构变化只发生在视口上方 `keepRenderedDistance` 之外，因此永远不会出现在屏幕里。
    */
   useLayoutEffect(() => {
-    if (settings.pageMode !== 'scroll' || scrollStrategy !== 'keep') return
-    const range = scrollRangeRef.current
-    if (!range) return
-    const heights = scrollTrimHeightsRef.current
-    scrollTrimHeightsRef.current = null
-    if (!heights) return
-    if (Date.now() - lastScrollEventAtRef.current < SCROLL_IDLE_BEFORE_TRIM_MS) {
-      // 读者还在滚：把快照放回去，等滚动停下来的那次 effect 再回收。
-      scrollTrimHeightsRef.current = heights
-      return
-    }
-    const rects = new Map<number, { top: number; height: number }>()
-    for (const index of heights.keys()) {
+    if (settings.pageMode !== 'scroll') return
+    if (scrollStream.tail < scrollStream.head) return
+
+    const viewportHeight = window.innerHeight
+    const keepDistance = keepRenderedDistance(viewportHeight)
+    const slots: Array<{ index: number; top: number; height: number }> = []
+    for (let index = scrollStream.head; index <= scrollStream.tail; index++) {
       const el = scrollSectionRefs.current.get(index)
       if (!el) continue
-      const r = el.getBoundingClientRect()
-      rects.set(index, { top: r.top, height: r.height })
+      const rect = el.getBoundingClientRect()
+      slots.push({ index, top: rect.top, height: rect.height })
+      /**
+       * ⚠️ 只给**有正文**的章节记高度。
+       *
+       * 骨架态区块的高度不是这一章的最终高度（骨架只有一屏左右，正文有几千像素），
+       * 记进去会让「只收起已量高度的章节」这道守卫失效 —— 章节被按骨架高度收成占位，
+       * 文档里就出现整块空洞（实测：`0` 后面直接跳到 `25`，中间 24 章、约 13 万像素凭空消失）。
+       */
+      const hasText = scrollText.has(index) || index === chapterIndex
+      if (hasText && !scrollPlaceholders.has(index)) scrollHeightsRef.current.set(index, rect.height)
     }
-    const plan = scrollWindowTrimPlan(range, chapterIndex, window.innerHeight, scrollKeepFloor, rects, scrollKeepCeil)
-    if (plan.remove.length === 0) return
-    // 只有**视口上方**被移除的章节才需要滚动补偿：移除它们会让文档整体上移。
-    // 视口下方的移除与 scrollY 无关（那是跳章留下的夹层），补偿反而是错的。
-    let removedAboveHeight = 0
-    for (const index of plan.remove) {
-      const rect = rects.get(index)
-      if (!rect) continue
-      if (rect.top + rect.height <= 0) removedAboveHeight += heights.get(index) ?? rect.height
+    const firstRendered = computeFirstRenderedIndex(slots, keepDistance)
+    if (!Number.isFinite(firstRendered)) return
+
+    const modes: ScrollStreamSlot[] = slots.map(slot => ({
+      index: slot.index,
+      mode: scrollPlaceholders.has(slot.index) ? 'placeholder' : 'text',
+      height: slot.height,
+    }))
+    const plan = planPlaceholders(modes, firstRendered, new Set(scrollHeightsRef.current.keys()))
+    /**
+     * 换回正文需要正文在手里。
+     *
+     * ⚠️ 这里**优先用同步可得的正文**（`scrollText` → 预加载缓存），而不是「拿不到就继续占位」：
+     * 会话内读过的章节都在预加载缓存里，向上滚回时同一帧就能把正文装回去，
+     * 占位块与正文块高度一致 ⇒ 视觉零位移。只有真的从没加载过的章节才继续当占位。
+     */
+    const restore = new Map<number, string[]>()
+    for (const index of plan.toText) {
+      if (scrollText.has(index)) continue
+      const chapter = currentBook.chapters[index]
+      if (!chapter) continue
+      const cached = preloadedContentRef.current.get(chapter.url)
+      if (cached === undefined) continue
+      restore.set(index, splitParagraphs(cached))
     }
-    setScrollSections(prev => prev.filter(entry => !plan.remove.includes(entry.index)))
-    if (removedAboveHeight > 0) {
-      window.scrollTo({ top: Math.max(0, window.scrollY - removedAboveHeight), behavior: 'auto' })
-      lastScrollYRef.current = window.scrollY
+    const backToText = plan.toText.filter(index => scrollText.has(index) || restore.has(index))
+    if (plan.toPlaceholder.length === 0 && backToText.length === 0) return
+
+    if (restore.size > 0) {
+      setScrollText(prev => {
+        const next = new Map(prev)
+        for (const [index, paragraphs] of restore) {
+          next.set(index, paragraphs)
+          scrollTextKeysRef.current.add(index)
+        }
+        return next
+      })
     }
-  }, [scrollSections, scrollTrimSignal, chapterIndex, scrollStrategy, settings.pageMode])
+
+    setScrollPlaceholders(prev => {
+      const next = new Set(prev)
+      for (const index of plan.toPlaceholder) next.add(index)
+      for (const index of backToText) { next.delete(index); scrollTextKeysRef.current.delete(index) }
+      if (next.size === prev.size) {
+        let same = true
+        for (const index of next) if (!prev.has(index)) { same = false; break }
+        if (same) return prev
+      }
+      return next
+    })
+    if (plan.toPlaceholder.length > 0) {
+      setScrollText(prev => {
+        const next = new Map(prev)
+        for (const index of plan.toPlaceholder) {
+          // 当前章永不收起：TTS、进度、标题都依赖它的正文
+          if (index === chapterIndex) continue
+          next.delete(index)
+          scrollTextKeysRef.current.delete(index)
+        }
+        return next.size === prev.size ? prev : next
+      })
+      if (typeof localStorage !== 'undefined' && localStorage.getItem(SCROLL_DEBUG_KEY) === '1') {
+        const store = ((window as unknown as { __trimDebug?: unknown[] }).__trimDebug ??= [])
+        store.push({ kind: 'virtualize', toPlaceholder: plan.toPlaceholder.length,
+          toText: plan.toText.length, firstRendered: Math.round(firstRendered),
+          stream: `${scrollStream.head}..${scrollStream.tail}`,
+          heights: scrollHeightsRef.current.size, y: Math.round(window.scrollY), t: Math.round(performance.now()) })
+        if (store.length > 60) store.splice(0, store.length - 60)
+      }
+    }
+  }, [scrollStream, scrollText, scrollPlaceholders, chapterIndex, settings.pageMode])
+
+  /**
+   * 高度测量 + **几何位移的同帧修正**。
+   *
+   * 每一步做三件事：
+   *   ① 在 DOM 更新**之前**记下「锚点」：scrollY + 各区块在文档中的绝对位置；
+   *   ② 量一遍所有已渲染区块的高度，写进 `scrollLiveHeightsRef`（一个像素都没变时直接返回）；
+   *   ③ 如果高度变化让某个锚点区块的文档位置移动了（上面某章变高/变矮），
+   *      在**同一帧**把 `scrollY` 补回差值 —— 你正看着的那一行纹丝不动。
+   *
+   * 为什么必须有 ③（用户报障：「向上划看上面的章节时总会跳动，本该在上一章末尾却直接跳到上一章开头」）：
+   * 上方那些「还没量过高度」的章节起初只能占位估算，一旦被量到真实高度（约 8500px/章），
+   * 文档会在这一帧整体变长几千像素，而浏览器不会替你保住视口内容 —— 必须自己补。
+   * 等所有上方章节都量过之后，几何就稳定了，这个补偿自然变成 0。
+   */
+  /**
+   * 几何位移的同帧修正（**基于文档高度差**，必然捕获任何上方几何变化）。
+   *
+   * 用户报障的形态（双视角取证确认）：向上划时**没有任何 scrollTo 调用**，
+   * 但文档高度连续暴涨（实测 178327 → 203019 → 211992 → 219857 → 227919，约 5 万像素），
+   * 而 `scrollY` 只微微反向 ⇒ 「上方章节变高把内容整体推下去，却没人补偿」，
+   * 读者看到的就是「本该在上一章末尾，却跳到上一章开头」。
+   *
+   * 为什么用**文档高度差**而不是「锚点区块位移」：上方章节一旦被收成占位块就不再被测量，
+   * 它的高度变化会绕过纯锚点方案，而 `scrollHeight` 的变化必然包含它。
+   *
+   * 补偿方向：只有确认是**视口上方在长高**（与视口相交的锚点区块在文档里的位置下移了）
+   * 才把 `scrollY` 加上该位移；视口下方长高不需要补偿。两条一起看，才不会把读者推走。
+   */
+  useLayoutEffect(() => {
+    if (settings.pageMode !== 'scroll') return
+    if (scrollStream.tail < scrollStream.head) return
+
+    const height = document.documentElement.scrollHeight
+    const previous = scrollHeightRef.current
+    const tops = new Map<number, number>()
+    for (const [index, el] of scrollSectionRefs.current) {
+      if (!el.isConnected) continue
+      tops.set(index, el.getBoundingClientRect().top + window.scrollY)
+    }
+
+    if (previous !== null && height !== previous && height > previous) {
+      // 找与视口相交的锚点区块：它在文档里的位置下移了多少 = 上方长高了多少
+      for (const [index, docTopBefore] of scrollAnchorTopsRef.current) {
+        const docTopAfter = tops.get(index)
+        if (docTopAfter === undefined) continue
+        const rectTop = docTopAfter - window.scrollY
+        if (rectTop + 160 < 0 || rectTop > window.innerHeight) continue
+        const delta = docTopAfter - docTopBefore
+        if (delta === 0) continue
+        window.scrollTo({ top: Math.max(0, window.scrollY + delta), behavior: 'auto' })
+        lastScrollYRef.current = window.scrollY
+        if (typeof localStorage !== 'undefined' && localStorage.getItem(SCROLL_DEBUG_KEY) === '1') {
+          const store = ((window as unknown as { __anchorFixDebug?: unknown[] }).__anchorFixDebug ??= [])
+          store.push({ t: Math.round(performance.now()), index, delta: Math.round(delta),
+            growth: height - previous, y: Math.round(window.scrollY), sh: height })
+          if (store.length > 80) store.splice(0, store.length - 80)
+        }
+        break
+      }
+    }
+
+    scrollHeightRef.current = height
+    scrollAnchorTopsRef.current = tops
+  }, [scrollEntries, scrollText, scrollPlaceholders, chapterIndex, settings.pageMode])
+
+  /**
+   * 文档高度**只增不减**的兜底。
+   *
+   * 为什么必须有：浏览器在文档变矮时会**钳制** `scrollY`（把读者往回推），
+   * 而且这个钳制发生在引擎内部、发生在任何 layout effect 之前 —— 应用层补偿来不及。
+   * 双视角取证实测到它的签名：向上划时出现 29 次「scrollY 变大」且伴随文档高度突变，
+   * 而应用侧 `scrollTo/scrollBy` 调用次数为 **0**（说明是引擎自己改的）。
+   *
+   * 做法：给滚动容器一个「历史最大高度」的下限。某帧内容变矮时容器不跟着变矮，
+   * 于是不触发钳制；下一帧真实内容补上后自然恢复。多出来的空白在**视口下方**，读者看不到。
+   */
+  const [scrollStreamMinHeight, setScrollStreamMinHeight] = useState(0)
+  useLayoutEffect(() => {
+    if (settings.pageMode !== 'scroll') return
+    const height = document.querySelector<HTMLElement>('.reading-scroll-window')?.scrollHeight ?? 0
+    if (height <= scrollStreamMinHeight) return
+    setScrollStreamMinHeight(height)
+  }, [scrollEntries, settings.pageMode, scrollStreamMinHeight])
+
+  /**
+   * 向上补齐：从目录直接跳到很后面的章节时，上方章节从未加载过。
+   *
+   * 只在「已经贴到流的顶部」时按批前插；前插会让文档变高（不是变矮），
+   * 因此永远不会触发浏览器的滚动位置钳制 —— 由下面的同帧修正补回位移即可。
+   */
+  useLayoutEffect(() => {
+    if (settings.pageMode !== 'scroll') return
+    if (scrollStream.head <= 0) return
+    const firstEl = scrollSectionRefs.current.get(scrollStream.head)
+    if (!firstEl) return
+    if (firstEl.getBoundingClientRect().top > prependDistanceTrigger(window.innerHeight)) return
+
+    const range = previousPrependRange(scrollStream.head)
+    if (!range) return
+    let cancelled = false
+    const run = async () => {
+      for (let index = range.from; index <= range.to; index++) {
+        const text = await loadChapterText(index)
+        // 同「按批追加」：拿到正文就立即写入，不因重渲染取消而丢弃
+        if (text === null) continue
+        const paragraphs = splitParagraphs(text)
+        scrollTextKeysRef.current.add(index)
+        setScrollText(prev => {
+          if (prev.has(index)) return prev
+          const next = new Map(prev)
+          next.set(index, paragraphs)
+          return next
+        })
+      }
+      if (cancelled) return
+      setScrollStream(prev => ({ head: Math.min(prev.head, range.from), tail: Math.max(prev.tail, range.to) }))
+    }
+    void run()
+    return () => { cancelled = true }
+  }, [currentBook.chapters.length, loadChapterText, scrollStream, settings.pageMode])
+
+  /**
+   * 前插后的同帧滚动修正：把插入的高度补回 `scrollY`，视觉位置纹丝不动。
+   *
+   * 只在「流头部下标变小」时执行（真的插入了新章节）。
+   */
+  useLayoutEffect(() => {
+    if (settings.pageMode !== 'scroll') return
+    const prevHead = streamHeadRef.current
+    const head = scrollStream.head
+    if (head >= prevHead) {
+      streamHeadRef.current = head
+      return
+    }
+    let inserted = 0
+    for (let index = head; index < prevHead; index++) {
+      const el = scrollSectionRefs.current.get(index)
+      if (!el) continue
+      inserted += el.getBoundingClientRect().height
+    }
+    streamHeadRef.current = head
+    if (inserted <= 0) return
+    window.scrollTo({ top: window.scrollY + prependScrollFix(inserted), behavior: 'auto' })
+    lastScrollYRef.current = window.scrollY
+  }, [scrollStream.head, settings.pageMode])
+
 
   const playTtsChunk = useCallback((idx: number, mode: TtsSpeakMode = 'replace') => {
     if (!ttsData.chunks || ttsData.chunks.length === 0) return
@@ -1298,20 +1617,19 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
   useEffect(() => {
     let cancelled = false
     /**
-     * 本次换章是否来自「滚动窗口平移」。
+     * 本次换章是否来自**连续流滚动**（而不是目录/滑块跳章）。
      *
-     * 平移时必须**保留**现有正文（清空会让中间区块塌成空白 ⇒ 闪白 + 高度突变 + 滚动跳），
-     * 也不能把滚动位置重置回章首。标志在此消费一次。
+     * 连续流里换章只是「视口滚到了下一章」，正文早就在文档里 ——
+     * 此时必须**保留**现有正文、也不能把滚动位置重置回章首，否则会闪白并跳位。
+     * 标志在此消费一次。
      */
-    const seamlessShift = scrollShiftNoJumpRef.current
-    scrollShiftNoJumpRef.current = false
+    const seamlessShift = streamAdvanceRef.current
+    streamAdvanceRef.current = false
     /**
      * 已经把正文拿在手里的章节**绝不能走「清空 + loading」这条路**。
      *
-     * 事故（WebKit 实测 2026-10-04）：keep 策略下跨章时 `shiftScrollWindow` 会先同步把新章正文
-     * 填进 live 段（`flushSync`），紧接着这个 effect 因为 `startIndex` 等依赖变化又跑了一次，
-     * 此时 `seamlessShift` 已被上一次消费掉 ⇒ 走进清空分支 ⇒ live 段高度 8011 → 327，
-     * 文档高度同步塌 8000px，WebKit 把 `scrollY` 钳到这个新高度上（实测 −461px 的一次性位移）。
+     * 事故（WebKit 实测）：换章时先清空正文会让当前章区块高度从约 8000px 掉到几百像素，
+     * 文档高度同步塌陷，浏览器把 `scrollY` 钳到缩小后的高度上（实测一次性位移 −711px）。
      * 预加载缓存命中的章节本来就是「同步可用」的，不该有任何清空中间态。
      */
     const cachedText = preloadedContentRef.current.get(chapter.url)
@@ -1462,20 +1780,15 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
 
     rafId = window.requestAnimationFrame(function retry() {
       frames += 1
-      // 「窗口是否已铺齐」必须**先判段数，再看落点**。
-      // 只比较滚动量会被骗：相邻章还没进 DOM 时当前章恰好落在文档顶部，
-      // 目标算出来正是 0，于是 `0+2 >= 0` 判定「已到位」立刻停手 —— 实测就卡在这里。
-      // 段数按策略动态算：`window` 是「当前章 ± 1」，`keep` 是已读章节驻留后的实际挂载数。
-      const hasPrev = chapterIndex > 0
-      const hasNext = chapterIndex < currentBook.chapters.length - 1
-      const expected = scrollStrategy === 'keep'
-        ? scrollSections.filter(section => section.index !== chapterIndex).length + (hasNext && !scrollSections.some(section => section.index === chapterIndex + 1) ? 1 : 0)
-        : 1 + (hasPrev ? 1 : 0) + (hasNext ? 1 : 0)
-      const rendered = document.querySelectorAll('.reading-scroll-window > .reading-content').length
-      // 当前章区块必须已经存在，否则任何落点计算都不可信。
+      /**
+       * 连续流里「能否开始对齐」只有一个条件：**目标章的区块已经在 DOM 里**。
+       *
+       * 旧实现还要判「窗口是否铺齐」（按首/末章动态算期望段数），因为那时的窗口只有 3 段、
+       * 段数不对就意味着落点不可信。现在是一条连续流、每章一块，没有「铺齐」这个概念。
+       */
       const liveRendered = Boolean(scrollSectionRefs.current.get(chapterIndex))
-        || Boolean(document.querySelector(`.reading-scroll-window > .reading-content[data-chapter-index="${chapterIndex}"]`))
-      const complete = rendered >= expected && liveRendered
+        || Boolean(document.querySelector(`.reading-scroll-window > [data-chapter-index="${chapterIndex}"]`))
+      const complete = liveRendered
       let reached = false
       if (complete) {
         const result = alignTargetSection()
@@ -1518,8 +1831,8 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
       window.removeEventListener('touchstart', cancelRetry)
       window.removeEventListener('pointerdown', cancelRetry)
     }
-    // chapterIndex 入依赖：从目录/滑块跳章后要按**新章区块**重新定位
-  }, [chapterIndex, content, loading, scrollSections, scrollStrategy, settings.pageMode])
+    // chapterIndex / scrollStream 入依赖：跳章或流铺开之后都要按**新章区块**重新定位
+  }, [chapterIndex, content, loading, scrollStream, settings.pageMode])
 
   // Pagination measurement
   const measurePagination = useCallback(() => {
@@ -1651,130 +1964,31 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
 
   // Sync scroll / page progress
   /**
-   * 滚动模式的跨章切换：把「当前章」换成 `nextIndex`。
+  /**
+   * 连续流里「当前章」自然演进到 `nextIndex`。
    *
-   * ⚠️ 刻意**不走 `changeChapter`**：那条路会 `setContent('')` + `setLoading(true)`，
-   * 在连续滚动里表现为「内容闪白 + 滚动位置跳回章首」。
-   *
-   * 两条策略在这里分道：
-   *
-   * - `keep`（WebKit）：目标章**已经在文档里**（由挂载列表单调扩张保证），
-   *   所以只改 `chapterIndex` 与 `currentRef`，**DOM 一个字节都不动** ⇒ 无需任何补偿。
-   *   实测数据：现状 path 在这一步会 `scrollTo` 位移 −8238px（文档同时塌 8400px），
-   *   这正是 iOS 上抖动的来源。
-   * - `window`（其他引擎）：三章窗口必须同步平移 + 记锚点，由 layout effect 补偿。
+   * 与旧的窗口平移最大的区别：**什么都不用动**。
+   * 那一章的正文早就在文档里，视口只是滚到了它那里；这里只更新权威状态
+   *（进度、标题、TTS 的当前章）。既没有 DOM 结构变化，也没有滚动补偿 ——
+   * 因此不存在「章界那一帧」的任何风险。
    */
-  const shiftScrollWindow = useCallback((nextIndex: number) => {
+  const advanceStreamChapter = useCallback((nextIndex: number) => {
     if (nextIndex < 0 || nextIndex >= currentBook.chapters.length) return
-    const previousChapter = currentRef.current?.chapter
-    if (!previousChapter || nextIndex === previousChapter.index) return
+    const previous = currentRef.current?.chapter
+    if (previous && nextIndex === previous.index) return
     const target = currentBook.chapters[nextIndex]
     if (!target) return
-    const distance = Math.abs(nextIndex - previousChapter.index)
-
-    if (scrollStrategy === 'keep') {
-      // keep 策略下「当前章」由几何派生（见 scroll 处理），跨度可能是多章
-      //（快速滑动/跳章/几何纠正都会出现）。只要目标章正文已挂载即可安全切换 ——
-      // 结构不动、高度不变，因此多章跨度同样不会带来跳动。
-      const entry = scrollSections.find(section => section.index === nextIndex)
-      if (!entry?.ready) return
-      scrollShiftNoJumpRef.current = true
-      currentRef.current = { chapter: target, position: currentRef.current?.position ?? 0 }
-      // 与 changeChapter 的手动换章保持同一语义：朗读中换章必须停掉朗读。
-      if (!autoPlayNextChapterRef.current) {
-        stopTts()
-      } else if (settings.ttsEngine === 'webSpeech') {
-        stopAllEngines()
-      }
-      // 把目标章正文**同步**提升为当前章正文：否则 `chapterIndex` 先变、`content` 后到，
-      // 中间会有一帧骨架（高度 8011 → 327），浏览器把 scrollY 钳到缩小后的文档高度上
-      // ⇒ 一次性位移（实测 −711px）。
-      applyScrollSectionContent(nextIndex)
-      setChapterIndex(nextIndex)
-      return
-    }
-
-    // window 策略：只允许逐章平移。若旧的 ref/滚动回调在 Safari 中滞后，
-    // 禁止一次把当前章直接替换成相隔多章的过期区块（这条路径要动 DOM，必须保守）。
-    if (distance !== 1) return
-
-    // 锚点：目标章区块当前的视口 top，平移后补回同一位置。
-    const anchorEl = document.querySelector<HTMLElement>(`.reading-scroll-window > .reading-content[data-chapter-index="${nextIndex}"]`)
-      ?? scrollSectionRefs.current.get(nextIndex)
-    // React commit 尚未完成或 iOS Safari 短暂清理 callback ref 时，不能无锚点平移。
-    // 否则章节高度变化会交给 Safari 的 scroll anchoring 处理，视口可能回跳整章。
-    if (!anchorEl?.isConnected) return
-    // 一次窗口平移尚未完成时不要覆盖旧锚点。快速惯性滚动在 iOS 上可能
-    // 连续触发多个 scroll 回调，覆盖锚点会让一次补偿变成跨多章的错误补偿。
-    if (scrollShiftAnchorRef.current) return
-    scrollShiftAnchorRef.current = { index: nextIndex, top: anchorEl.getBoundingClientRect().top }
-    scrollShiftNoJumpRef.current = true
+    // 标记「这次换章来自滚动」：加载 effect 里不要清空正文/不要回章首
+    streamAdvanceRef.current = true
     currentRef.current = { chapter: target, position: currentRef.current?.position ?? 0 }
-
-    // 与 changeChapter 的手动换章保持**同一语义**：朗读中换章必须停掉朗读。
-    // 否则 ttsData 会重算成新章的 chunk 列表，而正在播的仍是旧章音频 ⇒ 高亮与文本错位。
-    // （TTS 自动续章走 autoPlayNextChapterRef，不受影响。）
+    // 与手动换章保持同一语义：朗读中换章必须停掉朗读（否则高亮与文本错位）
     if (!autoPlayNextChapterRef.current) {
       stopTts()
     } else if (settings.ttsEngine === 'webSpeech') {
       stopAllEngines()
     }
-
-    // 相邻章若已预加载，同帧把正文填好（多一次空区块渲染都会让补偿量测错）
-    const cached = preloadedContentRef.current.get(target.url)
-    if (cached !== undefined) {
-      setContent(cached)
-      setLoadedChapterUrl(target.url)
-    }
     setChapterIndex(nextIndex)
-  }, [applyScrollSectionContent, currentBook.chapters, scrollSections, scrollStrategy, settings.ttsEngine, stopAllEngines, stopTts])
-
-  /**
-   * 窗口平移后的滚动补偿 + 进度校正（在 DOM 更新后、绘制前执行）。
-   *
-   * 平移会从文档里增删区块 ⇒ 内容整体位移；把锚点区块的视口 top 补回原值即可「视觉不动」。
-   * 补偿量与区块高度无关，因此不等新章加载完也能算准。
-   */
-  useLayoutEffect(() => {
-    if (settings.pageMode !== 'scroll') return
-    if (!scrollShiftAnchorRef.current) return
-
-    // Safari 的原生 scroll anchoring 可能在 React commit 后、layout effect 之后才完成。
-    // 连续等待两帧，确保测到最终布局，只补偿浏览器实际留下的残差，避免同一平移被校正两次。
-    let rafId: number | null = null
-    let secondRafId: number | null = null
-    const measureAfterLayout = () => {
-      secondRafId = window.requestAnimationFrame(() => {
-        secondRafId = null
-        const anchor = scrollShiftAnchorRef.current
-        if (!anchor) return
-        const el = scrollSectionRefs.current.get(anchor.index)
-          ?? document.querySelector<HTMLElement>(`.reading-scroll-window > .reading-content[data-chapter-index="${anchor.index}"]`)
-        if (!el || !el.isConnected) return
-        scrollShiftAnchorRef.current = null
-        const delta = scrollCompensation(anchor.top, el.getBoundingClientRect().top)
-        if (Math.abs(delta) > 0.5) {
-          window.scrollTo({ top: Math.max(0, window.scrollY + delta), behavior: 'auto' })
-        }
-        // 平移后立刻按新区块校正一次进度，避免 persist 用加载逻辑写入的「章首 0」把进度带偏
-        const current = currentRef.current
-        if (current) {
-          const rect = el.getBoundingClientRect()
-          const range = rect.height - window.innerHeight
-          current.position = range > 0 ? Math.min(1, Math.max(0, -rect.top / range)) : 0
-        }
-        lastScrollYRef.current = window.scrollY
-      })
-    }
-    rafId = window.requestAnimationFrame(() => {
-      rafId = null
-      measureAfterLayout()
-    })
-    return () => {
-      if (rafId !== null) window.cancelAnimationFrame(rafId)
-      if (secondRafId !== null) window.cancelAnimationFrame(secondRafId)
-    }
-  }, [chapterIndex, content, scrollSections, settings.pageMode])
+  }, [currentBook.chapters, settings.ttsEngine, stopAllEngines, stopTts])
 
   useEffect(() => {
     if (settings.pageMode !== 'scroll') return
@@ -1797,110 +2011,60 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
         }
         lastScrollYRef.current = currentY
         const clientHeight = window.innerHeight
-        // 三章窗口下不能用整文档的 scrollHeight：进度必须相对**当前章区块**计算
-          const sectionEl = document.querySelector<HTMLElement>(`.reading-scroll-window > .reading-content[data-chapter-index="${current.chapter.index}"]`)
-            ?? scrollSectionRefs.current.get(current.chapter.index)
-          if (sectionEl?.isConnected) {
+
+        // 正文区间：流里已经渲染出来的章节区块
+        const slots = [...document.querySelectorAll<HTMLElement>('.reading-scroll-window > .reading-content[data-chapter-index]')]
+          .filter(node => node.isConnected)
+          .map(node => ({
+            index: Number(node.dataset.chapterIndex),
+            top: node.getBoundingClientRect().top,
+          }))
+          .filter(slot => Number.isInteger(slot.index))
+
+        const sectionEl = slots.length > 0
+          ? (scrollSectionRefs.current.get(current.chapter.index)
+            ?? document.querySelector<HTMLElement>(`.reading-scroll-window > .reading-content[data-chapter-index="${current.chapter.index}"]`))
+          : null
+        if (sectionEl?.isConnected) {
           const rect = sectionEl.getBoundingClientRect()
           const range = rect.height - clientHeight
           current.position = range > 0 ? Math.min(1, Math.max(0, -rect.top / range)) : 0
-          // 读到本章头部/尾部附近时，把更远的章节也拉进预加载缓存
           if (current.position >= 0.7) preloadNextChapter(current.chapter.index)
           else if (current.position <= 0.3) preloadPrevChapter(current.chapter.index)
-          // 视口越过了相邻章开头 ⇒ 换章，实现「一直往下滚就接着读下一章」
-          //
-          // 参考线按策略选：`keep` 用「视口顶部下方约 1/4 屏」（跨章不动 DOM，可以更早、更准地换章）；
-          // `window` 沿用视口中心（换章要平移 DOM，判定必须保守）。详见 [scrollDominantThreshold]。
-          const anchorThreshold = scrollDominantThreshold(clientHeight, scrollStrategy === 'keep' ? 'top' : 'centre')
-          const rects = [...document.querySelectorAll<HTMLElement>('.reading-scroll-window > .reading-content[data-chapter-index]')]
-            .filter(node => node.isConnected)
-            .map(node => ({
-              index: Number(node.dataset.chapterIndex),
-              top: node.getBoundingClientRect().top,
-            }))
-            .filter(rect => Number.isInteger(rect.index))
-          /**
-           * 从**几何**派生「读者此刻真正在读哪一章」，它就是当前章的唯一权威。
-           *
-           * 为什么以几何为准（WebKit 实测 2026-10-04）：恢复进度时 `chapterIndex` 取的是进度里的章，
-           * 滚动位置却是按百分比换算的；两者在不同排版/高度估算下会对不上，出现
-           * 「记录当前章 = 第 7 章，而视口里显示的正文是第 5 章」这种长期脱节。
-           * 脱节之后，凡是以记录章为基准的判定都会自我一致地错下去（此前实测：每步 250px
-           * 连滚 10000px 全程不换章；只改 `currentRef`、不改 state 还会把记录章彻底冻死）。
-           *
-           * 派生规则：取「顶部 ≤ 参考线」里最靠下的那一段；一段都没有时取第一段。
-           * 该值是**单调**的（随向下滚动只增不减），所以不需要再用滚动方向做二次守卫。
-           */
-          let derivedIndex: number | null = current.chapter.index
-          if (rects.length > 0) {
-            let best: number | null = null
-            let bestTop = Number.NEGATIVE_INFINITY
-            let nextUp: number | null = null
-            let nextUpTop = Number.NEGATIVE_INFINITY
-            for (const rect of rects) {
-              if (!Number.isFinite(rect.top)) continue
-              if (rect.top > nextUpTop) { nextUpTop = rect.top; nextUp = rect.index }
-              if (rect.top <= anchorThreshold && rect.top > bestTop) { bestTop = rect.top; best = rect.index }
-            }
-            // 没有任何段满足参考线条件（视口落在两章之间的空隙、而下一章已在 DOM 里）时，
-            // 归属**最靠下的那一段**（= 读者即将读到的下一章）。
-            // ⚠️ 不能取「最靠上」的那段：那是视口上方最远的段，会把当前章往回退（实测直接退了两章）。
-            derivedIndex = best ?? nextUp
-          }
-          /**
-           * 两条策略的换章判定不同：
-           * - `keep`：以**几何派生值**为准（它是单调的，不需要方向守卫；且跨章不动 DOM，多章跨度也安全）。
-           * - `window`：保持原行为 —— 视口中心命中 + 方向守卫，只在逐章平移时生效（这条路径要动 DOM，必须保守）。
-           */
-          const keepStrategy = scrollStrategy === 'keep'
-          const geometric = derivedIndex
-          /**
-           * 收敛步长限制为**一帧最多一章**。
-           *
-           * 几何派生值有时会离记录值很远（例如打开书时进度里的章与滚动位置换算结果不一致），
-           * 一步跳过去就是「一下子跳好几章」——用户报障的「跳到上一章开头」正是这种大跨度回退。
-           * 逐帧挪一章则：① 单帧之内永远看不出跳变；② 连续滚动时几帧内自然收敛到正确章节。
-           */
-          const stepToward = (target: number) =>
-            target > current.chapter.index ? current.chapter.index + 1
-              : target < current.chapter.index ? current.chapter.index - 1
-                : current.chapter.index
-          /**
-           * 向前收敛随时允许；**向后收敛只允许在用户确实往上滚的时候**。
-           *
-           * 打开书时「进度里的章」与「按百分比换算出的滚动位置」本来就可能对不上
-           * （实测：记录第 4 章、视口显示第 3 章），此时几何会觉得应该往回退。
-           * 不加这条守卫，读者一进书就会被逐帧拖回前几章 —— 正是报障的「跳到上一章开头」。
-           * 反之读者主动往上滑时几何一定可信（他就在往上看），该退就退。
-           */
-          const canMoveBackward = scrollDirectionRef.current < 0
-          const dominant = geometric === null
-            ? null
-            : stepToward(geometric) < current.chapter.index && !canMoveBackward
-              ? current.chapter.index
-              : stepToward(geometric)
-          const shouldShift = dominant !== null && dominant !== current.chapter.index &&
-            (keepStrategy || isScrollSectionTransitionAllowed(current.chapter.index, dominant, scrollDelta))
-          const traceShift = typeof localStorage !== 'undefined' && localStorage.getItem(SCROLL_DEBUG_KEY) === '1'
-          if (traceShift) {
-            const store = ((window as unknown as { __scrollShiftDebug?: unknown[] }).__scrollShiftDebug ??= [])
-            store.push({
-              t: Math.round(performance.now()), current: current.chapter.index, derived: derivedIndex,
-              dominant, delta: Math.round(scrollDelta), threshold: Math.round(anchorThreshold), y: currentY,
-              allowed: shouldShift,
-              // 判定用的几何快照：确认「参考线该落在哪一段」是不是与 DOM 一致
-              rects: rects.map(rect => `${rect.index}@${Math.round(rect.top)}`).join(' '),
-              refKeys: [...scrollSectionRefs.current.keys()].join(','),
-              found: document.querySelectorAll('.reading-scroll-window > .reading-content[data-chapter-index]').length,
-            })
-            if (store.length > 200) store.splice(0, store.length - 200)
-          }
-          if (shouldShift && derivedIndex !== null) {
-            shiftScrollWindow(derivedIndex)
-          }
         } else {
           current.position = scrollPosition(currentY, document.documentElement.scrollHeight, clientHeight)
         }
+
+        /**
+         * 当前章 = **视口顶部所在的那一章**。
+         *
+         * 连续流里这个判定天然正确（内容就在文档里、坐标就是文档坐标），
+         * 不需要旧实现那套「几何派生 + 单帧最多收敛一章」的收敛逻辑 ——
+         * 那套东西存在的原因是窗口里只有 3 段、视口可能与记录章差好几章。
+         */
+        const viewportTopThreshold = Math.min(clientHeight * 0.25, 240)
+        const atTop = chapterIndexAtViewportTop(slots, viewportTopThreshold)
+        if (atTop !== null && atTop !== current.chapter.index) {
+          advanceStreamChapter(atTop)
+        }
+
+        /**
+         * 背压哨兵：只有「尾部区块已经接近视口」才允许追加下一批（避免级联把整本书甩进 DOM）。
+         *
+         * 判据用**文档绝对位置**（`rect.top + scrollY`），因为这里拿到的是滚动事件的最新 scrollY。
+         * 每次滚动都会重新评估 ⇒ 信号一旦被关闭，读者继续往下滚就会重新打开，
+         * 不会出现「关了就再也没人打开」的死锁（实测踩过：关掉之后往上往下都不再加载、只剩空白）。
+         */
+        const tailEl = scrollSectionRefs.current.get(scrollStreamTailRef.current)
+        if (tailEl) {
+          const tailDocTop = tailEl.getBoundingClientRect().top + window.scrollY
+          const nearTail = tailDocTop < window.scrollY + clientHeight * 2 + SCROLL_APPEND_LOOKAHEAD_PX
+          setScrollAppendSignal(prev => (prev === nearTail ? prev : nearTail))
+        } else {
+          // 尾部区块压根不在 DOM 里（流还没铺开）⇒ 必须放行，否则首次加载就被卡死
+          setScrollAppendSignal(true)
+        }
+
         if (timerRef.current === null) {
           timerRef.current = window.setTimeout(() => {
             timerRef.current = null
@@ -1921,7 +2085,7 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
       if (timerRef.current !== null) window.clearTimeout(timerRef.current)
       persist()
     }
-  }, [applyScrollSectionContent, currentBook.chapters, persist, preloadNextChapter, preloadPrevChapter, scrollSections, settings.pageMode, shiftScrollWindow])
+  }, [advanceStreamChapter, persist, preloadNextChapter, preloadPrevChapter, settings.pageMode])
 
   // 进度里的「当前章」必须与**正在显示的章**锁死同步，不能等正文加载完再更新。
   //
@@ -2472,109 +2636,117 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
         </div>
       ) : (
         /*
-         * 滚动模式：连续滚动。
+         * 滚动模式：**一条连续流**（对标 X 时间线的滚动观感）。
          *
-         * 窗口由挂载策略决定（`window` = 三章；`keep` = 已读章节驻留），
-         * 但渲染形态完全一致：一串 `data-chapter-index` 升序排列的 `.reading-content`。
-         * 章节交界处的「线 —— 章节名 —— 线」隔断挂在**每一章的头部**，
-         * 由「该章之前是否还有前一段」决定，因此章节在窗口里换位置也不会丢隔断。
+         * 从头到尾依次渲染已加载的章节区块；离屏很远的章节收成**等高占位**，
+         * 因此文档高度恒定、滚动坐标天然稳定。章界处不再有任何窗口平移或补偿，
+         * 「当前章」由滚动处理按视口顶部判定，正文早就在文档里 ——
+         * 这正是「章末上滑跳回上一章开头」这一类问题的根除方式。
          */
-        <div className="reading-scroll-window" data-scroll-strategy={scrollStrategy}>
-          {scrollSectionsBeforeLive.map(section => (
-            <article
-              data-chapter-index={section.index}
-              key={scrollSectionKey(section.index)}
-              className={`reading-content is-scroll-neighbor font-${settings.font}`}
-              ref={getScrollSectionRef(section.index)}
-              aria-hidden="true"
-            >
-              {section.index > firstMountedIndex && (
-                <div className="reader-chapter-stream-divider" aria-hidden="true">
-                  <span className="divider-line" />
-                  <span className="divider-badge">{section.title}</span>
-                  <span className="divider-line" />
-                </div>
-              )}
-              <h1>{section.title}</h1>
-              {!section.ready && <ReaderContentSkeleton />}
-              {section.paragraphs.map((line, index) => (
-                <p key={index} className="reader-paragraph">{line}</p>
-              ))}
-            </article>
-          ))}
-          <article
-            data-chapter-index={chapterIndex}
-            key={scrollSectionKey(chapterIndex)}
-            className={`reading-content font-${settings.font}`}
-            onPointerDown={onPointerDown}
-            onPointerUp={onPointerUp}
-            ref={getScrollSectionRef(chapterIndex)}
-          >
-            {/*
-              两章之间的隔断：线 —— 章节名 —— 线（沿用上游同款外观）。
-              只在「本段不是窗口里第一段」时渲染，所以它恰好落在章节交界处。
-            */}
-            {chapterIndex > firstMountedIndex && (
-              <div className="reader-chapter-stream-divider" aria-hidden="true">
-                <span className="divider-line" />
-                <span className="divider-badge">{chapter?.title}</span>
-                <span className="divider-line" />
-              </div>
-            )}
-            <h1>{chapter?.title}</h1>
-            {loading && !content && liveScrollParagraphs.length === 0 && <ReaderContentSkeleton />}
-            {message && <p className="reader-error">{message}</p>}
-            {liveScrollParagraphs.map((line, index) => (
-              <p
-                key={index}
-                data-paragraph-index={index}
-                className={`reader-paragraph ${ttsActive && activeParagraphIndex === index ? 'tts-active-paragraph' : ''}`}
-                onClick={() => { if (ttsActive) handleParagraphClick(index) }}
+        <div
+          className="reading-scroll-window"
+          style={scrollStreamMinHeight > 0 ? { minHeight: `${scrollStreamMinHeight}px` } : undefined}
+        >
+          {scrollEntries.map(entry => {
+            if (entry.paragraphs === null) {
+              /*
+               * 正文不在手里的章节有两种，必须区别对待（⚠️ 这里踩过一个大坑）：
+               *
+               * ① **已经量过高度**的已读章节 ⇒ 收成等高占位块（不渲染正文、撑住精确高度）。
+               * ② **还没量过高度**的章节 ⇒ 必须渲染成正常区块（骨架/正文）。
+               *    绝不能一律用占位块：占位块既不渲染正文、也不会被量到高度，
+               *    于是这些章节**永远停在占位态**、读者看到的就是「往上往下都不加载，只有空白」
+               *   （实测复现：把未加载章节也换成占位块后，整本书只剩当前章有内容）。
+               */
+              if (entry.height <= 0) {
+                return (
+                  <article
+                    key={scrollSectionKey(entry.index)}
+                    data-chapter-index={entry.index}
+                    className={`reading-content is-scroll-neighbor font-${settings.font}`}
+                    ref={getScrollSectionRef(entry.index)}
+                    aria-hidden="true"
+                  >
+                    {entry.needsDivider && (
+                      <div className="reader-chapter-stream-divider" aria-hidden="true">
+                        <span className="divider-line" />
+                        <span className="divider-badge">{entry.title}</span>
+                        <span className="divider-line" />
+                      </div>
+                    )}
+                    <h1>{entry.title}</h1>
+                    <ReaderContentSkeleton />
+                  </article>
+                )
+              }
+              return (
+                <div
+                  key={scrollSectionKey(entry.index)}
+                  data-chapter-index={entry.index}
+                  data-scroll-placeholder="true"
+                  className="reading-scroll-placeholder"
+                  ref={getScrollSectionRef(entry.index)}
+                  style={{
+                    height: `${entry.height}px`,
+                    containIntrinsicSize: `${entry.height}px`,
+                  }}
+                  aria-hidden="true"
+                />
+              )
+            }
+            return (
+              <article
+                data-chapter-index={entry.index}
+                key={scrollSectionKey(entry.index)}
+                className={`reading-content font-${settings.font}${entry.isCurrent ? '' : ' is-scroll-neighbor'}`}
+                ref={getScrollSectionRef(entry.index)}
+                aria-hidden={entry.isCurrent ? undefined : 'true'}
+                onPointerDown={entry.isCurrent ? onPointerDown : undefined}
+                onPointerUp={entry.isCurrent ? onPointerUp : undefined}
               >
-                {renderParagraphContent(line, index)}
-              </p>
-            ))}
-          </article>
-          {scrollSectionsAfterLive.map(section => (
-            <article
-              data-chapter-index={section.index}
-              key={scrollSectionKey(section.index)}
-              className={`reading-content is-scroll-neighbor font-${settings.font}`}
-              ref={getScrollSectionRef(section.index)}
-              aria-hidden="true"
-            >
-              {/* 同上：隔断只由章节下标决定，保证同一章在「当前章 ⇄ 邻居」两种身份下结构一致 */}
-              {section.index > firstMountedIndex && (
-                <div className="reader-chapter-stream-divider" aria-hidden="true">
-                  <span className="divider-line" />
-                  <span className="divider-badge">{section.title}</span>
-                  <span className="divider-line" />
-                </div>
-              )}
-              <h1>{section.title}</h1>
-              {!section.ready && <ReaderContentSkeleton />}
-              {section.paragraphs.map((line, index) => (
-                <p key={index} className="reader-paragraph">{line}</p>
-              ))}
-            </article>
-          ))}
+                {entry.needsDivider && (
+                  <div className="reader-chapter-stream-divider" aria-hidden="true">
+                    <span className="divider-line" />
+                    <span className="divider-badge">{entry.title}</span>
+                    <span className="divider-line" />
+                  </div>
+                )}
+                <h1>{entry.title}</h1>
+                {entry.isCurrent && loading && !content && liveScrollParagraphs.length === 0 && <ReaderContentSkeleton />}
+                {entry.isCurrent && message && <p className="reader-error">{message}</p>}
+                {entry.isCurrent
+                  ? liveScrollParagraphs.map((line, index) => (
+                    <p
+                      key={index}
+                      data-paragraph-index={index}
+                      className={`reader-paragraph ${ttsActive && activeParagraphIndex === index ? 'tts-active-paragraph' : ''}`}
+                      onClick={() => { if (ttsActive) handleParagraphClick(index) }}
+                    >
+                      {renderParagraphContent(line, index)}
+                    </p>
+                  ))
+                  : entry.paragraphs.map((line, index) => (
+                    <p key={index} className="reader-paragraph">{line}</p>
+                  ))}
+              </article>
+            )
+          })}
           {/*
-            窗口末尾两态（按「窗口里最后一段是第几章」判断）：
-            ① 最后一段已经是全书最后一章 ⇒ 「全书完」收尾提示 —— 不论它是中间段还是下一段。
-            ② 后面还有章、但下一章正文还没到 ⇒ 「正在加载下一章…」；否则冷缓存时往下滚
-               会撞到空白且毫无反馈。
-            下一章已经躺在窗口里且不是末章 ⇒ 什么都不显示，继续往下读即可。
+            流末尾三态：
+            ① 尾部正文还没接上 ⇒ 「正在加载下一章…」（提示读者继续往下滚不会撞到空白）；
+            ② 已经铺到全书最后一章 ⇒ 「全书完」收尾提示；
+            ③ 还有后续章节但正文已就绪 ⇒ 什么都不显示，继续往下读即可。
           */}
-          {scrollBottomIndex >= currentBook.chapters.length - 1 ? (
-            <div className="reader-stream-end-notice" role="status">
-              <span>{t('reader.lastChapterNotice', '— 全书完 · 已读至最后一章 —')}</span>
-            </div>
-          ) : scrollNextReady ? null : (
+          {!scrollTailLoaded ? (
             <div className="reader-stream-bottom-loader" role="status">
               <span className="reader-loading-spinner-ring" />
               <span>{t('reader.loadingNextChapter', '正在加载下一章...')}</span>
             </div>
-          )}
+          ) : scrollStream.tail >= currentBook.chapters.length - 1 ? (
+            <div className="reader-stream-end-notice" role="status">
+              <span>{t('reader.lastChapterNotice', '— 全书完 · 已读至最后一章 —')}</span>
+            </div>
+          ) : null}
         </div>
       )}
       {boundaryMessage && <p className="reader-boundary-message" role="status">{boundaryMessage}</p>}

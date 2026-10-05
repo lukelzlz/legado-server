@@ -1212,7 +1212,12 @@ mark.search-highlight { background: var(--accent-soft); color: var(--accent); fo
 .reading-content { width: min(var(--reader-max-width, 860px), calc(100% - var(--reader-content-padding) * 2)); padding: calc(clamp(64px, 8vw, 88px) + var(--safe-top)) max(0px, var(--safe-right)) calc(48px + var(--safe-bottom)) max(0px, var(--safe-left)); margin: 0 auto; font-family: var(--reader-font-family, serif) !important; font-size: var(--reader-font-size); line-height: var(--reader-line-height); letter-spacing: var(--reader-letter-spacing); }
 .reading-content *, .reader-paginated-column-body * { font-family: inherit !important; }
 .reading-content h1, .reader-paginated-column-body h1 { margin-bottom: 1.55em; font-size: 1.22em; font-weight: 650; line-height: 1.45; }
-.reading-content p, .reader-paginated-column-body p { margin-bottom: var(--reader-paragraph-spacing); color: var(--ink); text-align: justify; text-wrap: pretty; }
+.reading-content p, .reader-paginated-column-body p { margin-bottom: var(--reader-paragraph-spacing); color: var(--ink); text-align: justify; }
+/*
+ * ⚠️ 刻意**不用** `text-wrap: pretty`（曾在这里写过）：WebKit 对中文段落在该模式下会提前换行，
+ * 实测行盒只到 266px 而段落宽 365px ⇒ 每行右边空出约 40px，视觉上就是「右边占不满」。
+ * 中文正文用 `text-align: justify` 本身就能两端对齐，不需要 pretty 的避孤行处理。
+ */
 .reader-boundary-message { position: fixed; z-index: 25; top: calc(18px + var(--safe-top)); left: 50%; transform: translateX(-50%); padding: 8px 14px; border: 1px solid var(--line); border-radius: 6px; background: color-mix(in srgb, var(--surface) 96%, transparent); box-shadow: 0 6px 20px rgba(0, 0, 0, .12); color: var(--ink); font-size: 13px; pointer-events: none; }
 .reader-status, .reader-error { color: var(--muted) !important; text-align: center !important; padding: 60px 0; }
 .reader-error { color: var(--danger) !important; }
@@ -1272,16 +1277,31 @@ mark.search-highlight { background: var(--accent-soft); color: var(--accent); fo
   100% { background-position: -200% 0; }
 }
 /*
- * 滚动模式的「三章连续滚动窗口」。
+ * 滚动模式：**一条连续流**（对标 X 时间线的滚动观感）。
  *
- * 结构是 [上一章, 当前章, 下一章] 三段叠放，读起来是无缝的一整篇 ⇒ 相邻章**与当前章同样式**，
- * 不做变暗/缩小（那不是"接着往下读"，而是"预览"）。
- * 相邻章不挂 `data-paragraph-index` 也不绑点击：它们不参与 TTS 与段落点选，
- * 等窗口平移、它们成为当前章时才具备交互。
+ * 章节按顺序依次叠放，读起来是无缝的一整篇；离屏很远的章节由 `.reading-scroll-placeholder`
+ * 收成等高占位。因此这里既不需要窗口平移，也不依赖浏览器的滚动锚定去救场。
  */
 .reading-scroll-window {
   display: block;
+  /* 滚动坐标完全由应用自己维护（连续流 + 等高占位），明确关掉引擎的滚动锚定，
+     避免它在结构变化时自作主张地修正 scrollY（实测该项在本项目里零收益） */
   overflow-anchor: none;
+}
+/*
+ * 等高占位块：正文被收起、但**精确高度**保留。
+ *
+ * 这是「零补偿」的前提：文档高度不因收起而变化，浏览器就不会钳制 scrollY。
+ * `contain: layout style paint` 让占位块成为一个独立的布局/绘制单元，
+ * 既不参与内部排版计算、也不参与绘制，代价接近 0 —— 790 章的占位同时存在也没问题。
+ */
+.reading-scroll-placeholder {
+  display: block;
+  contain: layout style paint;
+  overflow: hidden;
+  width: 100%;
+  /* 高度由内联样式给出（实测值）；这里给个兜底，避免某一帧高度为 0 导致文档抖动 */
+  min-height: 1px;
 }
 /*
  * 章节之间的隔断：一条线 —— 章节名徽标 —— 一条线。
@@ -1530,7 +1550,12 @@ mark.search-highlight { background: var(--accent-soft); color: var(--accent); fo
   .reader-header-actions .reader-icon-button:first-child { display: none; }
   .reader-header-title { font-size: 14px; }
   .reading-content {
-    width: min(100% - 36px, 580px);
+    /*
+     * 手机端要**尽量占满宽度**：原先固定留 36px（左右各 18px），在 393px 宽的机器上
+     * 正文只剩 357px，配合中文 19px 字号一行只放得下 18 个字，观感偏窄。
+     * 这里改成「安全区 + 左右各 12px」，并把上限提到 640px（平板/横屏也不至于拉成超宽行）。
+     */
+    width: min(calc(100% - max(24px, var(--safe-left) + var(--safe-right) + 24px)), 640px);
     padding-top: calc(64px + var(--safe-top));
     padding-bottom: calc(64px + var(--safe-bottom));
   }
@@ -1581,7 +1606,13 @@ mark.search-highlight { background: var(--accent-soft); color: var(--accent); fo
   .login-panel { padding: 30px 24px; }
   .editor-actions { width: 100%; }
   .editor-actions button { flex: 1; }
-  .reading-content { width: calc(100% - 28px); }
+  /*
+   * 小屏手机（≤420px）正文再放宽一档：左右各 10px。
+   *
+   * ⚠️ 这条规则在层叠上晚于上面的 720px 断点，**实际生效的是它** ——
+   * 只在 720px 断点里改宽度是没用的（实测：改了 720px 那条，393px 机器上仍量到 365px = 100%-28px）。
+   */
+  .reading-content { width: calc(100% - 20px); }
   .reader-header { grid-template-columns: 40px minmax(0, 1fr) 76px; }
 }
 /* Toast Notification System */

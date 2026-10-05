@@ -41,6 +41,19 @@ import {
 } from '../src/readerScrollWindow'
 import { classifyScrollEngine, decideScrollStrategy, SCROLL_STRATEGY_STORAGE_KEY } from '../src/readerScrollStrategy'
 
+/**
+ * 剥掉 JS/TS 注释（块注释与行注释），只用于「源码结构断言」。
+ *
+ * ⚠️ 必要性：注释里经常引用同一段代码（我自己就写过），直接在原始文本上做 `assert.doesNotMatch`
+ * 会命中注释里的示例 —— 本地因换行差异侥幸通过、CI 直接红。所有结构断言都在剥注释后的代码上做。
+ * 行注释的正则刻意避开 `://`（URL）与 `http://`，避免把字符串里的内容当成注释起点。
+ */
+function stripComments(source: string): string {
+  return source
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/(^|[^:])\/\/[^\n]*/g, '$1')
+}
+
 test('ReaderPagination - Tap Zones: Scroll reading mode tap zone partitions (top 30%, bottom 30%, middle 40%)', () => {
   const vh = 1000
   assert.equal(scrollTapZone(100, vh), 'previous', 'Top 10% should trigger previous')
@@ -513,19 +526,48 @@ test('ReaderScroll - 恢复定位：目标不能提前清空、隔断不能随�
   const testDir = path.dirname(fileURLToPath(import.meta.url))
   const reader = fs.readFileSync(path.resolve(testDir, '../src/ReaderScreen.tsx'), 'utf-8')
 
+  // 结构判定用「去掉注释后的代码」：
+  // ⚠️ 曾经的写法是在**原始文本**上匹配「两行连续赋值」，结果匹配到了我自己注释里引用的同一段代码，
+  // 本地因换行差异侥幸通过、CI 直接红（同样的坑踩过：本地过 ≠ CI 过）。断言一律在剥注释后的代码上做。
+  const code = stripComments(reader)
+
   // ① 恢复目标只能在真正对齐之后清空。
-  // 若在 effect 开头就置 null，effect 因 scrollSections 变化重跑时会拿不到目标
-  // （相邻章异步挂载后把目标章往下推的那一刻，正是最需要重新对齐的时候）。
-  assert.match(reader, /const clearRestoreTarget = \(\) => \{/, '必须把清空恢复目标收敛到一个显式函数')
-  assert.doesNotMatch(reader, /\n\s*targetInitialPageRef\.current = null\n\s*initialPagePositionRef\.current = null\n/,
-    '恢复目标不能在 effect 开头无条件清空')
+  // 若在 effect 开头「读一次就置 null」，effect 因 scrollSections 变化重跑时会拿不到目标
+  //（相邻章异步挂载后把目标章往下推的那一刻，正是最需要重新对齐的时候）。
+  //
+  // ⚠️ 两个坑都踩过：① 同名 ref 在**分页模式**的 `measurePagination` 里也被使用（那里读一次就清是对的），
+  // 所以必须裁剪出恢复 effect 的范围再断言；② 定位标记本身是注释，必须先定位、再剥注释。
+  const restoreStartRaw = reader.indexOf('// Scroll mode layout effect to restore position or jump to start/end')
+  const restoreEndRaw = reader.indexOf('// Pagination measurement', restoreStartRaw)
+  assert.ok(restoreStartRaw >= 0, '必须能定位恢复定位 effect')
+  assert.ok(restoreEndRaw > restoreStartRaw, '必须能界定恢复定位 effect 的范围')
+  const restoreBlock = stripComments(reader.slice(restoreStartRaw, restoreEndRaw))
+
+  assert.match(restoreBlock, /const clearRestoreTarget = \(\) => \{/, '必须把清空恢复目标收敛到一个显式函数')
+  const clearFnIndex = restoreBlock.indexOf('const clearRestoreTarget = () => {')
+  const clearBodyStart = restoreBlock.indexOf('{', clearFnIndex)
+  const clearBodyEnd = restoreBlock.indexOf('}', clearBodyStart)
+  const clearBody = restoreBlock.slice(clearBodyStart, clearBodyEnd)
+  assert.match(clearBody, /targetInitialPageRef\.current = null/, 'clearRestoreTarget 必须清空 targetInitialPageRef')
+  assert.match(clearBody, /initialPagePositionRef\.current = null/, 'clearRestoreTarget 必须清空 initialPagePositionRef')
+  // 清空函数之外不得再清这两个 ref（即：读完不能立刻置 null）
+  const outsideClearFn = restoreBlock.slice(0, clearFnIndex) + restoreBlock.slice(clearBodyEnd)
+  assert.doesNotMatch(outsideClearFn, /targetInitialPageRef\.current = null/,
+    '恢复 effect 内只允许 clearRestoreTarget 清空 targetInitialPageRef')
+  assert.doesNotMatch(outsideClearFn, /initialPagePositionRef\.current = null/,
+    '恢复 effect 内只允许 clearRestoreTarget 清空 initialPagePositionRef')
+  // 而且必须真的被调用（只定义不调用等于没清）
+  assert.match(restoreBlock, /clearRestoreTarget\(\)/, 'clearRestoreTarget 必须在对齐成功后真正调用')
 
   // ② 隔断必须只由章节下标决定：同一章在「当前章 ⇄ 邻居」两种身份下结构要一致。
   // 否则高度会差一个隔断（实测 139px），跨章那一帧视口内容被推走一段。
-  assert.match(reader, /const firstMountedIndex = useMemo\(/, '必须有统一的「窗口第一段」判定')
-  assert.match(reader, /section\.index > firstMountedIndex &&/, '邻居段的隔断按下标判定')
-  assert.match(reader, /chapterIndex > firstMountedIndex &&/, '当前章的隔断同样按下标判定')
-  assert.doesNotMatch(reader, /position > 0 && \(\n\s*<div className="reader-chapter-stream-divider"/,
+  assert.match(code, /const firstMountedIndex = useMemo\(/, '必须有统一的「窗口第一段」判定')
+  assert.match(code, /section\.index > firstMountedIndex &&/, '邻居段的隔断按下标判定')
+  assert.match(code, /chapterIndex > firstMountedIndex &&/, '当前章的隔断同样按下标判定')
+  // 隔断不能再依赖「在挂载数组里的位置」（position > 0 / position === 0 这类写法）
+  assert.doesNotMatch(code, /position > 0 && \(\s*<div className="reader-chapter-stream-divider"/,
+    '隔断不能再依赖「在数组里的位置」')
+  assert.doesNotMatch(code, /position === 0 && \(\s*<div className="reader-chapter-stream-divider"/,
     '隔断不能再依赖「在数组里的位置」')
 })
 

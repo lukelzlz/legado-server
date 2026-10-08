@@ -109,6 +109,9 @@ export type NetworkImportPreview = {
 }
 export type LocalBookImportItem = { filename: string; success: boolean; bookUrl?: string; name?: string; author?: string; totalChapters: number; error?: string }
 export type LocalBookImportResponse = { total: number; imported: number; failed: number; results: LocalBookImportItem[] }
+/** 单本本地书的重新解析结果。`status` 取 `reparsed` / `skipped` / `failed`。 */
+export type LocalReparseItem = { bookUrl: string; name: string; chapters: number; status: 'reparsed' | 'skipped' | 'failed'; error?: string | null }
+export type LocalReparseResponse = { total: number; reparsed: number; skipped: number; failed: number; chapters: number; items: LocalReparseItem[] }
 export type SourceSubscription = { id: number; url: string; enabled: boolean; createdAt: number; updatedAt: number; lastSuccessAt?: number; lastAttemptAt?: number; lastError?: string; lastImported: number; contentHash?: string }
 export type SearchStreamEvent = { type: 'start' | 'results' | 'progress' | 'done' | 'error'; totalSources: number; completedSources: number; matchedSources: number; emptySources: number; failedSources: number; resultCount: number; results: SearchResult[]; message?: string }
 
@@ -567,6 +570,15 @@ export const api = {
     request<BookRecleanResponse>('/api/bookshelf/reclean', { method: 'POST', body: JSON.stringify({ sourceId, bookUrl }) }),
   batchRecleanBookCache: (books: { sourceId: string; bookUrl: string }[]) =>
     request<BatchBookRecleanResponse>('/api/bookshelf/batch-reclean', { method: 'POST', body: JSON.stringify({ books }) }),
+  /**
+   * 用「存量原始文件」重新解析本地书，覆盖目录与正文缓存。
+   *
+   * 专治「解析器缺陷修复之前导入的本地书」：正文早就在导入时落库，解析器修好也不会自动变好。
+   * 原始文件仍在 `local_books` 目录，因此无需重新上传；`local://<bookId>` 不变，进度与书签延续。
+   * 不传参数则处理全部本地书。
+   */
+  reparseLocalBooks: (filter?: { sourceId?: string; bookUrl?: string }) =>
+    request<LocalReparseResponse>('/api/bookshelf/reparse-local', { method: 'POST', body: JSON.stringify(filter ?? {}) }),
   updateBookshelfInfo: (data: { sourceId: string; bookUrl: string; name: string; author?: string; coverUrl?: string; coverKey?: string; groupName?: string; alternateSources?: SearchResult[] }) => request<BookshelfItem>('/api/bookshelf/info', { method: 'PUT', body: JSON.stringify(data) }),
   switchBookshelfSource: (value: BookshelfSourceSwitch) => request<BookshelfItem>('/api/bookshelf/switch-source', { method: 'POST', body: JSON.stringify(value) }),
   importLocalBooks: async (files: File[]): Promise<LocalBookImportResponse> => {

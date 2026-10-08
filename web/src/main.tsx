@@ -1810,6 +1810,7 @@ function BookManageModal({
   const { t } = useTranslation()
   const [editingInfo, setEditingInfo] = useState(false)
   const [recleaning, setRecleaning] = useState(false)
+  const [reparsing, setReparsing] = useState(false)
   const isCaching = item.cacheState === 'caching'
   const isReady = item.cacheState === 'ready'
   const isFailed = item.cacheState === 'failed'
@@ -1947,6 +1948,39 @@ function BookManageModal({
             </div>
             <Icon name="arrowRight" />
           </button>
+
+          {/* 本地书专用：解析器缺陷修复之后，老书需要按留存的原文件重新解析才能拿到分段正文。
+              线上书源的书走不到这里（它们的正文是即时抓取的，不涉及解析器版本）。 */}
+          {item.sourceId === 'loc_book' && (
+            <button
+              className="manage-action-row"
+              disabled={reparsing}
+              onClick={async () => {
+                setReparsing(true)
+                try {
+                  const res = await api.reparseLocalBooks({ sourceId: item.sourceId, bookUrl: item.bookUrl })
+                  if (res.reparsed > 0) {
+                    toast.success(t('shelf.reparseLocalSuccess', '《{{name}}》已重新解析，共 {{count}} 章', { name: item.name, count: res.chapters }))
+                    // 复用既有回调：让书架列表重新拉一次服务端状态
+                    onUpdateInfo(item)
+                  } else {
+                    toast.info(res.items[0]?.error ?? t('shelf.reparseLocalSkipped', '《{{name}}》无需重新解析', { name: item.name }))
+                  }
+                } catch (err) {
+                  toast.error(err instanceof Error ? err.message : t('shelf.reparseLocalFailed', '重新解析失败'))
+                } finally {
+                  setReparsing(false)
+                }
+              }}
+            >
+              <div className="action-icon"><Icon name="refresh" /></div>
+              <div className="action-text">
+                <strong>{reparsing ? t('shelf.reparsingDesc', '正在重新解析本地文件...') : t('shelf.reparseLocalRules', '重新解析本地文件')}</strong>
+                <small>{t('shelf.reparseLocalRulesDesc', '按留存的 TXT / EPUB 原文件重建目录与正文，阅读进度保留')}</small>
+              </div>
+              <Icon name="arrowRight" />
+            </button>
+          )}
 
           <button className="manage-action-row" onClick={() => { onClose(); onToggleCompleted() }}>
             <div className="action-icon"><Icon name="check" /></div>

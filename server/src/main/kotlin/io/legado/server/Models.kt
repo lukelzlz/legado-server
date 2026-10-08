@@ -360,6 +360,37 @@ data class SourceLoginStateRecord(
     /** 深度模式下**回源取到与库里不同的新地址**的条数（便于判断这次补抓是否真的靠回源救活）。 */
     val resourced: Int = 0,
 )
+
+/**
+ * 本地书重新解析请求。留空 [sourceId]/[bookUrl] 表示「全部本地书」。
+ *
+ * 用于修复历史数据：解析器缺陷修复**之前**导入的本地书，目录与正文早已按旧逻辑落库。
+ */
+@Serializable data class LocalReparseRequest(
+    val sourceId: String? = null,
+    val bookUrl: String? = null,
+)
+
+/** 单本本地书的重新解析结果。[status] 取 `reparsed` / `skipped` / `failed`。 */
+@Serializable data class LocalReparseItem(
+    val bookUrl: String,
+    val name: String,
+    val chapters: Int,
+    val status: String,
+    /** 仅 `skipped`（缺原始文件等）与 `failed`（解析/写库异常）时给出原因。 */
+    val error: String? = null,
+)
+
+@Serializable data class LocalReparseResponse(
+    /** 命中的本地书总数 */
+    val total: Int,
+    val reparsed: Int,
+    val skipped: Int,
+    val failed: Int,
+    /** 本次重新写入的章节总数 */
+    val chapters: Int,
+    val items: List<LocalReparseItem> = emptyList(),
+)
 @Serializable data class BatchBookRecleanRequest(
     val books: List<BookRecleanRequest>,
 )

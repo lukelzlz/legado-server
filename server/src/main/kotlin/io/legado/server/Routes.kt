@@ -1313,6 +1313,70 @@ fun Route.apiRoutes(
                 )
             )
         }
+        /**
+         * 用**存量原始文件**重新解析本地书，覆盖目录与正文缓存。
+         *
+         * 用于修复「解析器缺陷修复之前导入的本地书」：本地书的目录与正文是在**导入那一刻**
+         * 解析落库的，因此解析器修好后老数据不会自动变好——EPUB 的正文段落在导入时已被
+         * 压成单行、边界信息不可逆丢失，替换净化规则也救不回来，**只能重新解析**。
+         * 原始文件一直保留在 [localBooksDirectory]（文件名 `<bookId>.<ext>`），
+         * 所以就地重解析即可：用户不用重新上传，`local://<bookId>` 不变
+         * ⇒ 书架元数据、分组、封面、阅读进度与书签全部延续。
+         *
+         * 幂等；默认处理全部本地书，传 `sourceId`/`bookUrl` 则只处理一本。
+         */
+        post("/bookshelf/reparse-local") {
+            if (auth.requireSession(call, true) == null) return@post
+            val req = runCatching { call.receive<LocalReparseRequest>() }.getOrDefault(LocalReparseRequest())
+            val targets = database.listBookshelf().filter { item ->
+                item.sourceId == LocalBookParser.LOC_BOOK_SOURCE_ID &&
+                    item.bookUrl.startsWith("local://") &&
+                    (req.sourceId == null || item.sourceId == req.sourceId) &&
+                    (req.bookUrl == null || item.bookUrl == req.bookUrl)
+            }
+            // 一次重新解析要把整本书读进内存（EPUB 解压后可能上百 MB），串行执行即可；
+            // 并发只会让多本大书同时展开，收益为零、内存风险实打实。
+            val items = mutableListOf<LocalReparseItem>()
+            for (item in targets) {
+                val bookId = item.bookUrl.removePrefix("local://").substringBefore('/')
+                val file = if (Files.isDirectory(localBooksDirectory)) {
+                    Files.list(localBooksDirectory).use { stream ->
+                        stream.filter { it.fileName.toString().startsWith("$bookId.") }.findFirst().orElse(null)
+                    }
+                } else null
+                if (file == null) {
+                    items += LocalReparseItem(item.bookUrl, item.name, 0, "skipped", "原始文件已不在 local_books 目录")
+                    continue
+                }
+                runCatching {
+                    val bytes = Files.readAllBytes(file)
+                    LocalBookParser.parse(file.fileName.toString(), bytes)
+                }.mapCatching { parsed ->
+                    database.replaceLocalBookCache(bookId, parsed)
+                }.fold(
+                    onSuccess = { chapters ->
+                        items += if (chapters > 0) {
+                            LocalReparseItem(item.bookUrl, item.name, chapters, "reparsed")
+                        } else {
+                            LocalReparseItem(item.bookUrl, item.name, 0, "skipped", "书籍不在书架中")
+                        }
+                    },
+                    onFailure = { error ->
+                        items += LocalReparseItem(item.bookUrl, item.name, 0, "failed", error.message ?: "重新解析失败")
+                    },
+                )
+            }
+            call.respond(
+                LocalReparseResponse(
+                    total = targets.size,
+                    reparsed = items.count { it.status == "reparsed" },
+                    skipped = items.count { it.status == "skipped" },
+                    failed = items.count { it.status == "failed" },
+                    chapters = items.sumOf { it.chapters },
+                    items = items,
+                )
+            )
+        }
         put("/bookshelf/status") {
             if (auth.requireSession(call, true) == null) return@put
             val request = call.receive<BookshelfStatusRequest>()

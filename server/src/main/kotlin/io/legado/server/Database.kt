@@ -1115,82 +1115,139 @@ class Database(private val path: String) : Closeable, AutoCloseable {
                 }
             }
 
-            // 3. Insert TOC cache
-            val chapters = parsed.chapters.mapIndexed { idx, ch ->
-                Chapter(
-                    index = idx,
-                    title = ch.title,
-                    url = "local://$bookId/chapter_${idx + 1}"
-                )
-            }
-            db.prepareStatement("""
-                insert into book_toc_cache(source_id, toc_url, chapters_json, updated_at)
-                values(?, ?, ?, ?)
-                on conflict(source_id, toc_url) do update set
-                    chapters_json = excluded.chapters_json, updated_at = excluded.updated_at
-            """.trimIndent()).use { stmt ->
-                stmt.setString(1, sourceId)
-                stmt.setString(2, tocUrl)
-                stmt.setString(3, Json.encodeToString(chapters))
-                stmt.setLong(4, now)
-                stmt.executeUpdate()
-            }
-            db.prepareStatement("""
-                insert into book_toc_cache(source_id, toc_url, chapters_json, updated_at)
-                values(?, ?, ?, ?)
-                on conflict(source_id, toc_url) do update set
-                    chapters_json = excluded.chapters_json, updated_at = excluded.updated_at
-            """.trimIndent()).use { stmt ->
-                stmt.setString(1, sourceId)
-                stmt.setString(2, bookUrl)
-                stmt.setString(3, Json.encodeToString(chapters))
-                stmt.setLong(4, now)
-                stmt.executeUpdate()
-            }
-
-            // 4. Batch insert chapters into book_content_cache
-            db.prepareStatement("delete from book_content_cache where source_id = ? and book_url = ?").use {
-                it.setString(1, sourceId)
-                it.setString(2, bookUrl)
-                it.executeUpdate()
-            }
-            db.prepareStatement("""
-                insert into book_content_cache(source_id, book_url, chapter_url, title, content, cached_at, raw_title, raw_content)
-                values(?, ?, ?, ?, ?, ?, ?, ?)
-            """.trimIndent()).use { stmt ->
-                chapters.forEachIndexed { idx, ch ->
-                    val contentText = parsed.chapters.getOrNull(idx)?.content ?: ""
-                    stmt.setString(1, sourceId)
-                    stmt.setString(2, bookUrl)
-                    stmt.setString(3, ch.url)
-                    stmt.setString(4, ch.title)
-                    stmt.setString(5, contentText)
-                    stmt.setLong(6, now)
-                    stmt.setString(7, ch.title)
-                    stmt.setString(8, contentText)
-                    stmt.addBatch()
-                }
-                stmt.executeBatch()
-            }
-
-            // 5. Update book_cache_status to ready
-            db.prepareStatement("""
-                insert into book_cache_status(source_id, book_url, total_chapters, cached_chapters, state, last_error, updated_at)
-                values(?, ?, ?, ?, 'ready', null, ?)
-                on conflict(source_id, book_url) do update set
-                    total_chapters = excluded.total_chapters, cached_chapters = excluded.cached_chapters,
-                    state = 'ready', last_error = null, updated_at = excluded.updated_at
-            """.trimIndent()).use { stmt ->
-                stmt.setString(1, sourceId)
-                stmt.setString(2, bookUrl)
-                stmt.setInt(3, chapters.size)
-                stmt.setInt(4, chapters.size)
-                stmt.setLong(5, now)
-                stmt.executeUpdate()
-            }
+            // 3~5. 目录 + 正文 + 缓存状态
+            writeLocalBookCaches(db, bookId, parsed, now)
 
             db.commit()
             getBookshelf(db, sourceId, bookUrl)!!
+        } catch (e: Throwable) {
+            db.rollback()
+            throw e
+        } finally {
+            db.autoCommit = true
+        }
+    }
+
+    /**
+     * 写入本地书的目录 + 正文 + 缓存状态。
+     *
+     * 「首次导入」([importLocalBook]) 与「存量重新解析」([replaceLocalBookCache]) 共用这一段落盘路径，
+     * 避免两条代码路径各自演化出不一致的缓存形状（目录键、章节 URL 规则、双副本都需要完全一致）。
+     *
+     * 调用方负责事务：两处调用点都已在 `autoCommit = false` 下执行，成功各自 `commit()`、失败 `rollback()`。
+     *
+     * @return 写入的章节数
+     */
+    private fun writeLocalBookCaches(db: Connection, bookId: String, parsed: ParsedBook, now: Long): Int {
+        val sourceId = LocalBookParser.LOC_BOOK_SOURCE_ID
+        val bookUrl = "local://$bookId"
+        val tocUrl = "local://$bookId/toc"
+
+        // 1. 目录缓存：`tocUrl` 与 `bookUrl` 两个键都要写。
+        //    前者是标准目录接口用的键，后者是 `getCachedChaptersFallback` 的兜底查询键。
+        val chapters = parsed.chapters.mapIndexed { idx, ch ->
+            Chapter(
+                index = idx,
+                title = ch.title,
+                url = "local://$bookId/chapter_${idx + 1}"
+            )
+        }
+        db.prepareStatement("""
+            insert into book_toc_cache(source_id, toc_url, chapters_json, updated_at)
+            values(?, ?, ?, ?)
+            on conflict(source_id, toc_url) do update set
+                chapters_json = excluded.chapters_json, updated_at = excluded.updated_at
+        """.trimIndent()).use { stmt ->
+            stmt.setString(1, sourceId)
+            stmt.setString(2, tocUrl)
+            stmt.setString(3, Json.encodeToString(chapters))
+            stmt.setLong(4, now)
+            stmt.executeUpdate()
+        }
+        db.prepareStatement("""
+            insert into book_toc_cache(source_id, toc_url, chapters_json, updated_at)
+            values(?, ?, ?, ?)
+            on conflict(source_id, toc_url) do update set
+                chapters_json = excluded.chapters_json, updated_at = excluded.updated_at
+        """.trimIndent()).use { stmt ->
+            stmt.setString(1, sourceId)
+            stmt.setString(2, bookUrl)
+            stmt.setString(3, Json.encodeToString(chapters))
+            stmt.setLong(4, now)
+            stmt.executeUpdate()
+        }
+
+        // 2. 正文缓存：先清后写，保证重新解析后不残留旧章节行（章节数变少时尤其重要）。
+        db.prepareStatement("delete from book_content_cache where source_id = ? and book_url = ?").use {
+            it.setString(1, sourceId)
+            it.setString(2, bookUrl)
+            it.executeUpdate()
+        }
+        db.prepareStatement("""
+            insert into book_content_cache(source_id, book_url, chapter_url, title, content, cached_at, raw_title, raw_content)
+            values(?, ?, ?, ?, ?, ?, ?, ?)
+        """.trimIndent()).use { stmt ->
+            chapters.forEachIndexed { idx, ch ->
+                val contentText = parsed.chapters.getOrNull(idx)?.content ?: ""
+                stmt.setString(1, sourceId)
+                stmt.setString(2, bookUrl)
+                stmt.setString(3, ch.url)
+                stmt.setString(4, ch.title)
+                stmt.setString(5, contentText)
+                stmt.setLong(6, now)
+                stmt.setString(7, ch.title)
+                stmt.setString(8, contentText)
+                stmt.addBatch()
+            }
+            stmt.executeBatch()
+        }
+
+        // 3. 缓存状态置为 ready（本地书不存在「待抓取」中间态）
+        db.prepareStatement("""
+            insert into book_cache_status(source_id, book_url, total_chapters, cached_chapters, state, last_error, updated_at)
+            values(?, ?, ?, ?, 'ready', null, ?)
+            on conflict(source_id, book_url) do update set
+                total_chapters = excluded.total_chapters, cached_chapters = excluded.cached_chapters,
+                state = 'ready', last_error = null, updated_at = excluded.updated_at
+        """.trimIndent()).use { stmt ->
+            stmt.setString(1, sourceId)
+            stmt.setString(2, bookUrl)
+            stmt.setInt(3, chapters.size)
+            stmt.setInt(4, chapters.size)
+            stmt.setLong(5, now)
+            stmt.executeUpdate()
+        }
+
+        return chapters.size
+    }
+
+    /**
+     * 用重新解析的结果**覆盖**已有本地书的目录与正文缓存（只动缓存，不碰书架行）。
+     *
+     * 存在理由：本地书（尤其 EPUB）的目录与正文是在**导入那一刻**解析落库的，
+     * 因此解析器的缺陷修好之后，**老数据不会自动变好**——正文段落边界在导入时已被压成单行、
+     * 信息不可逆丢失，替换净化规则也救不回来，只能重新解析。
+     * 原始文件一直保留在 `local_books` 目录（`<bookId>.<ext>`），所以可以直接就地重解析，
+     * 用户既不用重新上传，`local://<bookId>` 也不用变 ⇒ 书架元数据、分组、封面、
+     * 阅读进度与书签全部延续。
+     *
+     * 幂等：同一本书反复调用结果一致（先清后写，章节 URL 由序号推导）。
+     *
+     * @return 写入的章节数；书籍不在书架中时返回 0（拒绝为孤儿文件凭空造缓存）
+     */
+    fun replaceLocalBookCache(bookId: String, parsed: ParsedBook): Int = write { db ->
+        val sourceId = LocalBookParser.LOC_BOOK_SOURCE_ID
+        val bookUrl = "local://$bookId"
+        db.autoCommit = false
+        try {
+            if (getBookshelf(db, sourceId, bookUrl) == null) {
+                db.rollback()
+                0
+            } else {
+                val count = writeLocalBookCaches(db, bookId, parsed, System.currentTimeMillis())
+                db.commit()
+                count
+            }
         } catch (e: Throwable) {
             db.rollback()
             throw e

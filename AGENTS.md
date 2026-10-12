@@ -244,6 +244,7 @@ AI 与人类协作时必须明确当前达到的完成度阶梯，严禁混淆�
 | PROPOSAL-019 | 双副本正文缓存与规则重洗流水线 | [`docs/proposals/PROPOSAL-019-dual-content-cache-and-reclean-pipeline.md`](file:///Users/zhangran/Documents/antigravity/joyful-galileo/docs/proposals/PROPOSAL-019-dual-content-cache-and-reclean-pipeline.md) | Accepted |
 | PROPOSAL-020 | 本地导入书籍联网搜索与元数据补全 | [`docs/proposals/PROPOSAL-020-local-book-metadata-network-search-completion.md`](file:///Users/zhangran/Documents/antigravity/joyful-galileo/docs/proposals/PROPOSAL-020-local-book-metadata-network-search-completion.md) | Accepted |
 | PROPOSAL-021 | 书源分组与按分组搜书（分组列表/改名/删除 + 书库页范围选项卡 + 备份导入分组透出） | [`docs/proposals/PROPOSAL-021-book-source-groups-and-group-scoped-search.md`](file:///root/legado-server/docs/proposals/PROPOSAL-021-book-source-groups-and-group-scoped-search.md) | Tested（待用户验收） |
+| PROPOSAL-022 | 漫画（图片书源）端到端支持与内嵌内容寻址缓存体系 (方案E · 原版规则完全适配) | [`docs/proposals/PROPOSAL-022-manga-support-and-content-addressed-cache.md`](file:///root/legado-server/docs/proposals/PROPOSAL-022-manga-support-and-content-addressed-cache.md) | Draft (Spec Complete) |
 
 ### 架构决策记录 (ADR)
 | 编号 | 决策标题 | 关联文档 | 状态 |
@@ -269,6 +270,7 @@ AI 与人类协作时必须明确当前达到的完成度阶梯，严禁混淆�
 | ADR-019 | 采用 SQLite 单表双列存储原文副本与批量重洗流水线架构 | [`docs/decisions/ADR-019-dual-content-cache-and-reclean-pipeline.md`](file:///Users/zhangran/Documents/antigravity/joyful-galileo/docs/decisions/ADR-019-dual-content-cache-and-reclean-pipeline.md) | Accepted |
 | ADR-020 | 编辑书籍弹窗内流式搜索与备选书源沉淀架构 | [`docs/decisions/ADR-020-in-modal-stream-search-and-alternate-sources-enrichment.md`](file:///Users/zhangran/Documents/antigravity/joyful-galileo/docs/decisions/ADR-020-in-modal-stream-search-and-alternate-sources-enrichment.md) | Accepted |
 | ADR-021 | 书源分组以 `source_group` 字符串列落库与分组范围搜索语义（不建分组表 / 未分组哨兵 / nocase 合并语义 / 删组解绑 / 封顶只作用于未显式指定范围） | [`docs/decisions/ADR-021-book-source-groups-string-column-and-search-scope.md`](file:///root/legado-server/docs/decisions/ADR-021-book-source-groups-string-column-and-search-scope.md) | Accepted |
+| ADR-022 | 采用单进程内嵌式双层内容寻址缓存体系 (方案E) 完全整合适配原版漫画规则 | [`docs/decisions/ADR-022-embedded-content-addressed-manga-cache.md`](file:///root/legado-server/docs/decisions/ADR-022-embedded-content-addressed-manga-cache.md) | Proposed |
 
 ### 工作记忆与历史推演归档 (Sessions Chronicle)
 | 日期 / ID | 类型 | 标题 / 议题 | 关联文档 | 状态 |

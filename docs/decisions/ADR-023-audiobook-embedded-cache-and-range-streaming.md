@@ -49,8 +49,11 @@ date: 2026-10-12
    - 写入先盘后表，清理先表后盘。
 6. **进度字段定死为毫秒 (Milliseconds Semantic)**：
    - `reading_progress.scroll_position`（`real` 类型）在有声书模式下严格存储**播放时间戳（毫秒）**，与安卓原版 `durChapterPos` 语义完全一致，保障跨设备与 WebDAV 同步无缝对接。
-7. **独立播放器架构（`AudiobookPlayerScreen`）**：
+7. **独立播放器架构（`AudiobookPlayerScreen` · Apple Music 现代毛玻璃流媒体风，零全局侵入）**：
    - 独立路由 `/audiobook/:sourceId/:bookHash`，与 `ReaderScreen` 平级，不复用文本阅读器外壳；
+   - **坚决不做全局 Mini 播放条**：避免对纯阅读/漫画用户造成界面与状态污染；退出即暂停、释放句柄，书架零常驻 DOM；
+   - **Apple Music 风格流媒体沉浸美学**：动态提取封面高斯模糊渐变背景，大圆角悬浮封面卡片，极简纤细滑轨进度条，毛玻璃胶囊药丸按钮（倍速/定时），大号中心播放按键；
+   - **宽屏双栏响应式**：桌面端自动展开为左侧毛玻璃播放器 + 右侧常驻全集列表抽屉；
    - 全面集成 `navigator.mediaSession`（锁屏/耳机控制），并在连播时提前（播放到 70%）预取下一章，对冲整章下载等待。
 
 ---

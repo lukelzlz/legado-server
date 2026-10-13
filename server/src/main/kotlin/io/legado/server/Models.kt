@@ -507,6 +507,7 @@ data class SourceLoginStateRecord(
     val coverUrl: String? = null,
     val alternateSources: List<SearchResult>? = null,
     val groupName: String? = null,
+    val bookKind: String? = null,
 )
 @Serializable data class BookshelfSourceSwitchRequest(
     val oldSourceId: String,
@@ -575,6 +576,7 @@ data class CachedBookRequest(
     val completed: Boolean = false,
     val alternateSources: List<SearchResult> = emptyList(),
     val groupName: String? = null,
+    val bookKind: String = "novel",
 )
 
 @Serializable
@@ -942,6 +944,8 @@ data class BackupShelfEntry(
      * 未分组 / 找不到对应分组时为 null。
      */
     val groupName: String? = null,
+    /** 书的内容类型（novel/comic），用于导入时设定书架 book_kind 列。 */
+    val bookKind: String = "novel",
 )
 
 /**
@@ -1078,6 +1082,28 @@ data class ExploreSourceItem(
     val name: String,
     val group: String? = null,
     val enabled: Boolean = true,
+)
+
+// ---------------------------------------------------------------------------
+// 漫画（图片书源）章节清单 —— 方案 E · P0 解析打通
+// ---------------------------------------------------------------------------
+
+/** P0：单张图片的清单项。`url` 暂为上游 URL（前端直连，先能看）；P1 将替换为服务端定位地址。 */
+@Serializable
+data class MangaImageItem(
+    val index: Int,
+    val url: String,
+)
+
+/** 章节图片清单。P0 阶段 `images` 返回**有序上游 URL**，供前端直连；不再包含其它字段。 */
+@Serializable
+data class MangaChapterManifest(
+    val sourceId: String,
+    val bookUrl: String,
+    val chapterUrl: String,
+    val title: String? = null,
+    val total: Int,
+    val images: List<MangaImageItem>,
 )
 
 

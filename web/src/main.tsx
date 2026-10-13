@@ -6,6 +6,7 @@ import { Icon } from './icons'
 import { Logo } from './Logo'
 import { Login } from './Login'
 import { OpenBook, ReaderScreen } from './ReaderScreen'
+import { MangaReaderScreen } from './MangaReaderScreen'
 import { loadReaderSettings, ReaderSettings, saveReaderSettings } from './readerSettings'
 import { AppHeader } from './AppHeader'
 import { cleanAuthor, cleanTitle, defaultSearchFilters, filterSearchGroups, isExactMatch, isPopularMatch, SearchFilters, SearchGroup, SortMode } from './searchFilters'
@@ -2718,6 +2719,7 @@ function ShelfPage({ onOpen }: { onOpen: (item: BookshelfItem) => void }) {
                     <span className="cover-fallback">{item.name.slice(0, 1)}</span>
                   )}
                   {isLocal && <span className="shelf-card-tag-local">{t('shelf.localTag', '本地')}</span>}
+                  {item.bookKind === 'comic' && <span className="shelf-card-tag-comic">{t('shelf.comicTag', '漫画')}</span>}
                   {badge && <span className={`shelf-card-badge ${item.cacheState}`}>{badge}</span>}
                   {isCaching && (
                     <div className="shelf-card-progress-track">
@@ -3056,6 +3058,7 @@ function App() {
         details: safeDetails,
         bookUrl: item.bookUrl,
         chapters,
+        bookKind: item.bookKind,
         progress: mergedProgress || (item.chapterIndex !== undefined ? {
           sourceId: item.sourceId,
           bookUrl: item.bookUrl,
@@ -3115,6 +3118,23 @@ function App() {
   }
 
   if (page === 'reader' && reader) {
+    const closeReader = () => {
+      // 「关闭书籍时自动备份」的触发点：这里是退出阅读器的**唯一**出口，
+      // 因此放在这里而不是各个按钮的回调里，避免漏掉某条退出路径。
+      // 同样无条件上报，服务端按开关决定是否写盘；失败静默（用户此时在离开，无从提示）。
+      void api.autoExportBackup('book').catch(() => undefined)
+      navigate(readerReturnPage)
+    }
+    // 漫画（图片书源）走独立的阅读器：没有可朗读文本、没有替换净化、
+    // 但需要纵向瀑布 + 按图片序号的进度语义（见方案 E 的 E9/E10）。
+    if (reader.book.bookKind === 'comic') {
+      return (
+        <div className={`app-shell theme-${settings.theme}`}>
+          <ToastContainer />
+          <MangaReaderScreen openBook={reader.book} startIndex={reader.index} onClose={closeReader} />
+        </div>
+      )
+    }
     return (
       <div className={`app-shell theme-${settings.theme}`}>
         <ToastContainer />
@@ -3123,13 +3143,7 @@ function App() {
           startIndex={reader.index}
           settings={settings}
           onSettingsChange={setSettings}
-          onClose={() => {
-            // 「关闭书籍时自动备份」的触发点：这里是退出阅读器的**唯一**出口，
-            // 因此放在这里而不是各个按钮的回调里，避免漏掉某条退出路径。
-            // 同样无条件上报，服务端按开关决定是否写盘；失败静默（用户此时在离开，无从提示）。
-            void api.autoExportBackup('book').catch(() => undefined)
-            navigate(readerReturnPage)
-          }}
+          onClose={closeReader}
         />
       </div>
     )

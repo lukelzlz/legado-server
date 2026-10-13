@@ -744,6 +744,7 @@ mark.search-highlight { background: var(--accent-soft); color: var(--accent); fo
 .shelf-card-badge.caching { background: rgba(204, 130, 10, 0.9); color: #fff; }
 .shelf-card-badge.failed { background: rgba(210, 45, 45, 0.88); color: #fff; }
 .shelf-card-tag-local { position: absolute; top: 8px; left: 8px; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: 600; background: rgba(14, 116, 144, 0.9); color: #fff; letter-spacing: 0.5px; backdrop-filter: blur(6px); box-shadow: 0 2px 6px rgba(0,0,0,.15); }
+.shelf-card-tag-comic { position: absolute; top: 8px; right: 8px; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: 600; background: rgba(180, 83, 9, 0.92); color: #fff; letter-spacing: 0.5px; backdrop-filter: blur(6px); box-shadow: 0 2px 6px rgba(0,0,0,.15); }
 .shelf-header-actions { display: flex; align-items: center; gap: 12px; }
 .shelf-import-btn { display: inline-flex; align-items: center; gap: 6px; padding: 6px 14px; border-radius: 8px; font-size: 13px; font-weight: 550; cursor: pointer; border: 1px solid var(--line); background: var(--surface); color: var(--ink); transition: all .15s ease; }
 .shelf-import-btn:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
@@ -5921,6 +5922,111 @@ mark.search-highlight { background: var(--accent-soft); color: var(--accent); fo
   .explore-book-grid {
     grid-template-columns: 1fr;
   }
+}
+
+/* ---------------------------------------------------------------------------
+   漫画阅读器（方案 E · P0）
+   纵向瀑布 + 占位；宽高未知时用固定比例兜底（P1 的 manifest 会带上真实宽高）。
+   --------------------------------------------------------------------------- */
+.manga-workspace .reader-header-title {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+}
+
+.manga-header-chapter {
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--muted);
+  max-width: 60vw;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.manga-counter {
+  font-size: 12px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  padding: 0 6px;
+}
+
+.manga-scroll {
+  height: 100vh;
+  height: 100dvh;
+  overflow-y: auto;
+  overscroll-behavior: none;
+  padding: calc(var(--safe-top) + 56px) 0 calc(var(--safe-bottom) + 88px);
+  background: var(--surface-muted);
+  -webkit-overflow-scrolling: touch;
+}
+
+.manga-image-frame {
+  width: 100%;
+  max-width: 900px;
+  margin: 0 auto 6px;
+  min-height: 60vh;
+  display: grid;
+  place-items: center;
+  background: var(--surface);
+}
+
+.manga-image-frame img {
+  display: block;
+  width: 100%;
+  height: auto;
+  max-width: 100%;
+}
+
+.manga-image-failed {
+  width: 100%;
+  min-height: 40vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 24px;
+  border: 1px dashed var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.manga-image-failed svg {
+  width: 28px;
+  opacity: .6;
+}
+
+.manga-image-failed small {
+  max-width: 32em;
+  text-align: center;
+  line-height: 1.5;
+  opacity: .8;
+}
+
+.manga-error-box {
+  max-width: 560px;
+  margin: 15vh auto 0;
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  align-items: center;
+  text-align: center;
+}
+
+.manga-error-actions {
+  display: flex;
+  gap: 10px;
+}
+
+.manga-end-of-chapter {
+  display: flex;
+  justify-content: center;
+  padding: 24px 0 8px;
 }
 
 

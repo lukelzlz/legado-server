@@ -1038,6 +1038,48 @@ fun Route.apiRoutes(
                 }
             }
         }
+        post("/books/images/manifest") {
+            if (auth.requireSession(call) == null) return@post
+            val request = call.receive<ContentRequest>()
+            if (request.sourceId.isBlank()) {
+                call.respond(HttpStatusCode.BadRequest, ApiError("invalid_manga", "缺少书源"))
+                return@post
+            }
+            val chapterUrl = request.chapterUrl
+            if (chapterUrl.isBlank()) {
+                call.respond(HttpStatusCode.BadRequest, ApiError("invalid_manga", "缺少章节地址"))
+                return@post
+            }
+            val source = database.getSource(request.sourceId)
+                ?: return@post call.respond(HttpStatusCode.NotFound, ApiError("not_found", "书源不存在"))
+            val bookUrl = request.bookUrl ?: if (chapterUrl.startsWith("local://")) chapterUrl.substringBeforeLast('/') else ""
+
+            // 书源 payload 里 bookSourceType==2 ⇒ 本书是漫画，顺手把书架类型修好
+            // （修复「解析器识别之前加进书架的老漫画」——幂等回填）。
+            if (bookUrl.isNotBlank() && BookKind.fromSourcePayload(source.json) == BookKind.COMIC) {
+                database.setBookKindSilently(request.sourceId, bookUrl)
+            }
+
+            // 解析失败一律走 respondCatching ⇒ 502 `source_execution_failed` + 真实原因，
+            // 与 `/books/content` 完全一致（抛 500「服务器内部错误」会把「书源规则没配好」
+            // 伪装成「服务端故障」，是最容易误导排障的形态）。
+            //
+            // P0（先能看）：清单里回的是**上游 URL**，前端直连渲染。
+            // ⚠️ P1 起这里必须换成服务端定位地址 `dirKey/chapterKey/index` ——
+            // 返回上游 URL 会让前端绕过字节缓存，防盗链与离线能力全部失效
+            // （见方案 E §8 环节 E7 的「死配置」防范）。
+            call.respondCatching {
+                val images = runner.mangaImages(source.json, chapterUrl)
+                MangaChapterManifest(
+                    sourceId = request.sourceId,
+                    bookUrl = bookUrl,
+                    chapterUrl = chapterUrl,
+                    title = null,
+                    total = images.size,
+                    images = images.mapIndexed { index, url -> MangaImageItem(index, url) },
+                )
+            }
+        }
         get("/bookshelf") {
             if (auth.requireSession(call) == null) return@get
             call.respond(database.listBookshelf())
@@ -1047,7 +1089,8 @@ fun Route.apiRoutes(
             val request = call.receive<BookshelfWriteRequest>()
             if (request.sourceId.isBlank() || request.bookUrl.isBlank() || request.name.isBlank() || request.tocUrl.isBlank()) { call.respond(HttpStatusCode.BadRequest, ApiError("invalid_bookshelf", "书架数据无效")); return@post }
             val immediateCover = tryFindCachedCover(coverCache, request.coverUrl, request.alternateSources)
-            val item = database.saveBookshelf(request, immediateCover)
+            val bookKind = database.getSource(request.sourceId)?.let { BookKind.fromSourcePayload(it.json).name.lowercase() } ?: "novel"
+            val item = database.saveBookshelf(request.copy(bookKind = bookKind), immediateCover)
             if (request.sourceId != LocalBookParser.LOC_BOOK_SOURCE_ID && !request.bookUrl.startsWith("local://")) {
                 bookCache.enqueue(CachedBookRequest(request.sourceId, request.bookUrl, request.tocUrl))
             } else {
@@ -1404,8 +1447,10 @@ fun Route.apiRoutes(
             if (request.oldSourceId.isBlank() || request.oldBookUrl.isBlank() || book.sourceId.isBlank() || book.bookUrl.isBlank() || book.name.isBlank() || book.tocUrl.isBlank()) { call.respond(HttpStatusCode.BadRequest, ApiError("invalid_bookshelf", "书架数据无效")); return@post }
             val altList = (request.alternateSources ?: emptyList()) + (book.alternateSources ?: emptyList())
             val cover = tryCacheCover(coverCache, book.coverUrl, altList)
+            val bookKind = database.getSource(book.sourceId)?.let { BookKind.fromSourcePayload(it.json).name.lowercase() } ?: "novel"
+            val bookWithKind = book.copy(bookKind = bookKind)
             bookCache.cancel(request.oldSourceId, request.oldBookUrl)
-            val (item, orphan) = database.switchBookshelf(request.oldSourceId, request.oldBookUrl, book, cover, request.alternateSources)
+            val (item, orphan) = database.switchBookshelf(request.oldSourceId, request.oldBookUrl, bookWithKind, cover, request.alternateSources)
             orphan?.let(coverCache::delete)
             bookCache.enqueue(CachedBookRequest(book.sourceId, book.bookUrl, book.tocUrl))
             call.respond(item)

@@ -257,6 +257,7 @@ class BackupImporter(
                 chapterIndex = book.number("durChapterIndex")?.toInt() ?: 0,
                 readAt = book.number("durChapterTime") ?: 0L,
                 kind = ShelfKind.of(book.text("bookUrl"), book.text("origin"), book.text("type"), book.text("kind")),
+                bookKind = BookKind.fromTab(ShelfKind.decodeTab(book.text("bookUrl"))).name.lowercase(),
                 groupName = groupId?.let { nameById[it] },
             )
         }

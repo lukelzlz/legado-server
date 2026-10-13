@@ -34,8 +34,8 @@ Legado 具备成熟的书源生态，其中 `bookSourceType == 1` 为**音频（
   - 复用 `RuleRunner` 执行 `ruleContent.content`，解析出音频 URL（纯文本 URL、JSON 数组多分段、扩展 Header 格式）；
   - 服务端流式代抓并执行内容寻址落盘（`data/legado-server/audio/<hash[0:2]>/<hash>`），采用 `.part` 临时文件 + `ATOMIC_MOVE` 原则，避免半截脏文件；
   - 直出路由 `GET /api/audio/{key}`：手写支持单段 `Range`（`206 Partial Content` / `416 Range Not Satisfiable`），流式直出（`FileChannel` + `respondBytesWriter`），并携带 `Accept-Ranges: bytes`、`ETag` 与 `Cache-Control: public, max-age=31536000, immutable`；
-  - 建立 `audio_cache` 数据表，记录缓存元数据、字节数、时长、状态与访问时间；
-  - 缓存配额与 GC：默认配额 20 GiB（`LEGADO_AUDIO_CACHE_MAX_BYTES`），分档 LRU 淘汰（手动下载 `pinned` > 已收听 `listened` > 预取未听）；
+  - 建立 `audio_cache` 数据表，记录缓存元数据、字节数、时长、章节序号、状态与访问时间；
+  - 缓存配额与 GC：默认配额 20 GiB（支持 `LEGADO_AUDIO_CACHE_MAX_GB`），采用**滑窗前瞻保护与已听历史优先淘汰**机制（已听完历史冷数据第 1 顺位淘汰 > 弃坑孤立预取第 2 顺位淘汰 > 当前在听后方 5 章滑窗强保护 > 手动整本下载 `pinned` 免死金牌）；
   - 连播预取：播放到 70% 时服务端/前端触发预取下一章，消除切章等待。
 -- **现代化 Web 独立有声书播放器（`AudiobookPlayerScreen` · Apple Music 现代毛玻璃流媒体风）**：
   - **零全局侵入（独立屏幕）**：独立路由 `/audiobook/:sourceId/:bookHash`，与 `ReaderScreen` 平级；**坚决不设置全局 Mini 播放条**，不听有声书的用户在书架、书库、搜索、设置中零视觉干扰、零常驻 DOM；点击退出即暂停并销毁句柄，保持全局绝对整洁。
@@ -76,7 +76,7 @@ Legado 具备成熟的书源生态，其中 `bookSourceType == 1` 为**音频（
 - **Story 6（睡眠定时与自动关停）**：
   作为睡前听书用户，我在播放控制面板中设定“30 分钟后停止”或“播完本章后停止”。倒计时结束或本章播放完毕后，音频自动淡出或暂停，并准确保存停播时的毫秒进度。
 - **Story 7（磁盘配额与透明清理）**：
-  作为自建服务用户，我收听了大量音频导致磁盘占用升高。服务端的 `AudioCacheGc` 守护任务根据 20 GiB 上限自动淘汰最久未听的章节，且严格保留我手动“固定下载（pinned）”的书籍；在设置或存储统计中，我能清楚看到听书占用的总磁盘空间与各书籍的明细。
+  作为自建服务用户，我收听了大量音频导致磁盘占用升高。服务端的 `AudioCacheGc` 守护任务根据 20 GiB 上限（可由 `LEGADO_AUDIO_CACHE_MAX_GB` 调整）自动运行，优先淘汰已经听完且落后于当前进度的早期历史章节，绝不误删我当前在听位置接下来的前瞻章节，且严格保留我手动“固定下载（pinned）”的书籍；在设置或存储统计中，我能清楚看到听书占用的总磁盘空间与各书籍的明细。
 
 ---
 
@@ -91,14 +91,15 @@ create table if not exists audio_cache (
   source_id      text not null,
   book_url       text not null,      -- 用于按本统计占用与批量删除
   chapter_url    text not null,
+  chapter_index  integer not null default 0, -- 章节序号，用于基于阅读锚点计算前后距离
   origin_url     text not null,      -- 原始音频源地址（仅服务端排障/重拉使用，绝不下发前端）
   content_type   text not null,      -- audio/mpeg · audio/mp4 · audio/aac · audio/ogg
   bytes          integer not null,
   duration_ms    integer not null default 0,   -- 媒体时长毫秒
   state          text not null,      -- pending | downloading | ready | failed
   downloaded     integer not null default 0,
-  pinned         integer not null default 0,   -- 1 = 手动下载整本（GC 豁免保护）
-  listened       integer not null default 0,   -- 1 = 听过 30% 以上（GC 优先保留）
+  pinned         integer not null default 0,   -- 1 = 手动下载整本（GC 豁免免死）
+  listened       integer not null default 0,   -- 1 = 听完 80% 以上（已读完历史，第 1 顺位淘汰候选）
   last_error     text,
   created_at     integer not null,
   last_access_at integer not null

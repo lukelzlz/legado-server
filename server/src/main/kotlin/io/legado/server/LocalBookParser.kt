@@ -312,26 +312,37 @@ object LocalBookParser {
     private fun extractHtmlContent(bytes: ByteArray): String {
         val html = String(bytes, StandardCharsets.UTF_8)
         val doc = Jsoup.parse(html)
-        doc.select("script, style, link, meta").remove()
-        // 将块级元素转换为换行
-        doc.select("p, div, br, h1, h2, h3, h4, h5, h6, tr, li, blockquote").prepend("\n\n")
-        val text = doc.body()?.text() ?: doc.text()
-        return cleanText(text)
+        return htmlToText(doc)
     }
 
     private fun extractHtmlTitleAndContent(bytes: ByteArray, defaultIndex: Int): Pair<String, String> {
         val html = String(bytes, StandardCharsets.UTF_8)
         val doc = Jsoup.parse(html)
-        doc.select("script, style, link, meta").remove()
         val titleCandidate = doc.select("h1, h2, title").firstOrNull()?.text()?.trim()
         val title = if (!titleCandidate.isNullOrBlank() && titleCandidate.length <= 40) {
             titleCandidate
         } else {
             "第 $defaultIndex 章"
         }
-        doc.select("p, div, br, h1, h2, h3, h4, h5, h6, tr, li, blockquote").prepend("\n\n")
-        val text = doc.body()?.text() ?: doc.text()
-        return title to cleanText(text)
+        return title to htmlToText(doc)
+    }
+
+    /**
+     * HTML 转纯文本，**保留段落边界**。
+     *
+     * 历史实现是 `select(...).prepend("\n\n")` 再取 `Element.text()`，这是错的：
+     * Jsoup 的 `text()` 会把所有空白字符（含 `\n`）归一化成空格，插进去的换行会被全部吃掉，
+     * 结果是整章正文被压成**一行**、阅读页完全没有分段。
+     *
+     * 正确做法：块级元素边界改用**非空白占位符**（字面量 `\n` 两个字符）标记，
+     * 它能活过 `text()` 的空白归一化，取完文本后再统一换回真正的换行。
+     */
+    private fun htmlToText(doc: Document): String {
+        doc.select("script, style, link, meta, head, title").remove()
+        doc.select("br").append("\\n")
+        doc.select("p, div, h1, h2, h3, h4, h5, h6, tr, li, blockquote, section, article").prepend("\\n")
+        val raw = doc.body()?.text() ?: doc.text()
+        return cleanText(raw.replace("\\n", "\n"))
     }
 
     private fun cleanText(text: String): String {

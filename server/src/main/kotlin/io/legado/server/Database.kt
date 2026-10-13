@@ -18,6 +18,7 @@ import java.nio.file.Path
 import java.security.MessageDigest
 import java.security.SecureRandom
 import java.sql.Connection
+import java.sql.ResultSet
 import java.util.Base64
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.locks.ReentrantLock
@@ -212,12 +213,28 @@ class Database(private val path: String) : Closeable, AutoCloseable {
                 );
                 create index if not exists idx_replace_rule_enabled on replace_rule(is_enabled, sort_order asc);
                 create index if not exists idx_replace_rule_group on replace_rule(group_name);
+                create table if not exists http_tts (
+                  id integer primary key,
+                  name text not null,
+                  url text not null,
+                  header text,
+                  content_type text,
+                  concurrent_rate text,
+                  login_url text,
+                  login_check_js text,
+                  login_ui text,
+                  js_lib text,
+                  enabled_cookie_jar integer not null default 0,
+                  last_update_time integer not null
+                );
+                create index if not exists idx_http_tts_name on http_tts(name);
             """.trimIndent())
         }
         migrateReadingProgress(db)
         migrateBookshelf(db)
         migrateSourceTable(db)
         migrateBookContentCache(db)
+        healLocalBookCacheStatus(db)
         val userExists = db.prepareStatement("select 1 from app_user where id = 1").use { it.executeQuery().next() }
         if (!userExists) {
             require(!initialPassword.isNullOrBlank()) { "首次启动必须提供 ADMIN_PASSWORD" }
@@ -292,6 +309,33 @@ class Database(private val path: String) : Closeable, AutoCloseable {
                                 hasLogin = rs.getInt(9) == 1,
                                 updatedAt = rs.getLong(7),
                                 version = rs.getLong(8),
+                            )
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    /** 列出所有配置了有效 exploreUrl 的书源 */
+    fun listExploreSources(): List<ExploreSourceItem> = connect { db ->
+        val sql = """
+            select id, name, source_group, enabled
+            from source
+            where json_extract(payload, '$.exploreUrl') is not null
+              and trim(json_extract(payload, '$.exploreUrl')) != ''
+            order by enabled desc, name collate nocase
+        """.trimIndent()
+        db.prepareStatement(sql).use { statement ->
+            statement.executeQuery().use { rs ->
+                buildList {
+                    while (rs.next()) {
+                        add(
+                            ExploreSourceItem(
+                                id = rs.getString(1),
+                                name = rs.getString(2),
+                                group = rs.getString(3),
+                                enabled = rs.getInt(4) == 1,
                             )
                         )
                     }
@@ -538,14 +582,40 @@ class Database(private val path: String) : Closeable, AutoCloseable {
             // 书名入库前统一清洗：去掉换行（目录页规则常把「最新章节标题」带进书名，
             // 实测会出现 `"书名\n第八十章 …"` 这种脏数据，见 SESSION-027）。
             val cleanName = sanitizeBookName(request.name).ifBlank { request.name.trim() }
+            // cover_url 与 cover_key 的「缺省」语义必须对齐成**保留**。
+            //
+            // 原先 cover_url 是 `excluded.cover_url` 无条件覆盖，而 cover_key 有 coalesce 保护 ——
+            // 这个不对称会造成不可逆的数据损失：前端每次开书都会调一次「加入书架」
+            // （main.tsx 的 openReader），而它传的 coverUrl 对「只靠外链、没有本地副本」的书是 undefined
+            // ⇒ cover_url 被抹成 NULL ⇒ 该书的封面引用彻底消失，返回书架就再也看不到封面。
+            // 实测（2026-10-03）已因此弄丢 2 本书的封面。缺省一律视为「保留」。
+            //
+            // cover_key 反过来改成「已有副本优先」：重复加入书架（例如再次从书源页打开）不该顶掉
+            // 已经物化好的封面，手动选好的封面同理。
             db.prepareStatement("""insert into book_shelf(source_id,book_url,name,author,toc_url,cover_url,cover_key,last_read_at,alternate_sources,group_name) values(?,?,?,?,?,?,?,?,?,?)
-                on conflict(source_id,book_url) do update set name=excluded.name,author=excluded.author,toc_url=excluded.toc_url,cover_url=excluded.cover_url,cover_key=coalesce(excluded.cover_key,book_shelf.cover_key),last_read_at=excluded.last_read_at,alternate_sources=coalesce(excluded.alternate_sources,book_shelf.alternate_sources),group_name=coalesce(excluded.group_name,book_shelf.group_name)""").use {
-                it.setString(1, request.sourceId); it.setString(2, request.bookUrl); it.setString(3, cleanName); it.setString(4, request.author); it.setString(5, request.tocUrl); it.setString(6, request.coverUrl?.takeIf { u -> !isSelfCoverReference(u, cover?.key) }); it.setString(7, cover?.key); it.setLong(8, now); it.setString(9, altJson); it.setString(10, cleanGroup); it.executeUpdate()
+                on conflict(source_id,book_url) do update set name=excluded.name,author=excluded.author,toc_url=excluded.toc_url,cover_url=coalesce(excluded.cover_url,book_shelf.cover_url),cover_key=coalesce(book_shelf.cover_key,excluded.cover_key),last_read_at=excluded.last_read_at,alternate_sources=coalesce(excluded.alternate_sources,book_shelf.alternate_sources),group_name=coalesce(excluded.group_name,book_shelf.group_name)""").use {
+                it.setString(1, request.sourceId); it.setString(2, request.bookUrl); it.setString(3, cleanName); it.setString(4, request.author); it.setString(5, request.tocUrl); it.setString(6, request.coverUrl?.trim()?.takeIf { u -> u.isNotEmpty() && !isSelfCoverReference(u, cover?.key) }); it.setString(7, cover?.key); it.setLong(8, now); it.setString(9, altJson); it.setString(10, cleanGroup); it.executeUpdate()
             }
             db.commit(); getBookshelf(db, request.sourceId, request.bookUrl)!!
         } catch (error: Throwable) { db.rollback(); throw error } finally { db.autoCommit = true }
     }
-    fun updateBookshelfCover(sourceId: String, bookUrl: String, coverKey: String, contentType: String = "image/*"): Boolean = write { db ->
+    fun recordCoverCache(coverKey: String, contentType: String = "image/*") = write { db ->
+        db.prepareStatement("insert into cover_cache(cache_key,content_type) values(?,?) on conflict(cache_key) do update set content_type=excluded.content_type").use {
+            it.setString(1, coverKey)
+            it.setString(2, contentType)
+            it.executeUpdate()
+        }
+    }
+
+    /**
+     * 回写本地封面副本（`cover_key`），可选**同时**更新外链 `cover_url`。
+     *
+     * [coverUrl] 只在非空时一起写：默认 null ⇒ 与改动前**逐字一致**的行为
+     * （既有调用点传的都是 4 个参数，语义不变）。
+     * 深度回源补抓需要它——回源拿到的是原本那份**已过期签名地址的替代品**，
+     * 只更新 `cover_key` 的话外链兜底依然是死的。
+     */
+    fun updateBookshelfCover(sourceId: String, bookUrl: String, coverKey: String, contentType: String = "image/*", coverUrl: String? = null): Boolean = write { db ->
         val exists = db.prepareStatement("select 1 from book_shelf where source_id=? and book_url=?").use { stmt ->
             stmt.setString(1, sourceId)
             stmt.setString(2, bookUrl)
@@ -558,11 +628,21 @@ class Database(private val path: String) : Closeable, AutoCloseable {
             it.setString(2, contentType)
             it.executeUpdate()
         }
-        db.prepareStatement("update book_shelf set cover_key=? where source_id=? and book_url=?").use {
-            it.setString(1, coverKey)
-            it.setString(2, sourceId)
-            it.setString(3, bookUrl)
-            it.executeUpdate() > 0
+        if (coverUrl.isNullOrBlank()) {
+            db.prepareStatement("update book_shelf set cover_key=? where source_id=? and book_url=?").use {
+                it.setString(1, coverKey)
+                it.setString(2, sourceId)
+                it.setString(3, bookUrl)
+                it.executeUpdate() > 0
+            }
+        } else {
+            db.prepareStatement("update book_shelf set cover_key=?, cover_url=? where source_id=? and book_url=?").use {
+                it.setString(1, coverKey)
+                it.setString(2, coverUrl)
+                it.setString(3, sourceId)
+                it.setString(4, bookUrl)
+                it.executeUpdate() > 0
+            }
         }
     }
     fun listBookshelf(): List<BookshelfItem> = connect { db -> db.prepareStatement("""select s.source_id,s.book_url,s.name,s.author,s.toc_url,s.cover_key,p.chapter_index,p.scroll_position,s.last_read_at,coalesce(c.cached_chapters,0),coalesce(c.total_chapters,0),coalesce(c.state,'idle'),c.last_error,s.completed,s.alternate_sources,s.group_name,s.cover_url from book_shelf s left join reading_progress p on p.source_id=s.source_id and p.book_url=s.book_url left join book_cache_status c on c.source_id=s.source_id and c.book_url=s.book_url order by s.last_read_at desc""").use { query -> query.executeQuery().use { rs -> buildList { while (rs.next()) add(rs.toShelf()) } } } }
@@ -580,14 +660,18 @@ class Database(private val path: String) : Closeable, AutoCloseable {
             var oldCover: String? = null
             var oldGroup: String? = null
             var oldAlts: String? = null
-            db.prepareStatement("select cover_key, group_name, alternate_sources from book_shelf where source_id=? and book_url=?").use {
+            var oldCoverUrl: String? = null
+            // 必须把 cover_url 一起查出来 —— 「表里有」不等于「读得到」，
+            // 缺了它就无从判断「字段缺省时该保留什么」（同类教训见备份导入封面那条）。
+            db.prepareStatement("select cover_key, cover_url, group_name, alternate_sources from book_shelf where source_id=? and book_url=?").use {
                 it.setString(1, request.sourceId); it.setString(2, request.bookUrl)
                 it.executeQuery().use { rs ->
                     if (rs.next()) {
                         found = true
                         oldCover = rs.getString(1)
-                        oldGroup = rs.getString(2)
-                        oldAlts = rs.getString(3)
+                        oldCoverUrl = rs.getString(2)
+                        oldGroup = rs.getString(3)
+                        oldAlts = rs.getString(4)
                     }
                 }
             }
@@ -599,7 +683,9 @@ class Database(private val path: String) : Closeable, AutoCloseable {
                 }
             }
 
-            val newCoverKey = cover?.key ?: (if (request.coverUrl != null && request.coverUrl.isBlank()) null else oldCover)
+            val newCoverKey = cover?.key
+                ?: request.coverKey?.takeIf { it.isNotBlank() }
+                ?: (if ((request.coverUrl != null && request.coverUrl.isBlank()) || (request.coverKey != null && request.coverKey.isBlank())) null else oldCover)
             val newGroup = if (request.groupName != null) request.groupName.trim().takeIf { it.isNotEmpty() } else oldGroup
             val newAlts = if (request.alternateSources != null) Json.encodeToString(request.alternateSources) else oldAlts
             // 拒绝把本服务自己的封面接口地址回写成 coverUrl。
@@ -607,13 +693,24 @@ class Database(private val path: String) : Closeable, AutoCloseable {
             // 实测（SESSION-027）：编辑弹窗在没有外部 URL 时会回退调用 api.cover(coverKey)，
             // 于是把 `/api/covers/<自己的 key>` 当成"外部封面地址"存了回来，形成自引用。
             // 危害：一旦 coverKey 被清空，前端回退到 coverUrl 就指向自身，形成无意义的循环。
-            // 这里以 coverKey 为准，剥离该自引用（保留真实外部 URL）。
-            val sanitizedCoverUrl = request.coverUrl?.takeIf { !isSelfCoverReference(it, newCoverKey) }
+            //
+            // cover_url 的三种情形必须区分开，不能再拿「缺省」兼职「清空」：
+            //   ① 字段缺失（null）⇒ **保留**原值 —— 编辑弹窗只改书名/作者时不该顺手抹掉封面地址。
+            //      原实现直接写 null，实测「不改封面点保存」会把 cover_url 抹成 NULL（不可逆）。
+            //   ② 显式空串（""）  ⇒ 清除（编辑弹窗的「清除封面」按钮走这条）。
+            //   ③ 有值            ⇒ 采用该值。
+            // 传入自引用时退回原值而不是写 null —— 写 null 同样会毁掉外链兜底。
+            val fallbackCoverUrl = oldCoverUrl?.takeIf { url -> !isSelfCoverReference(url, newCoverKey) }
+            val newCoverUrl = when {
+                request.coverUrl == null -> fallbackCoverUrl
+                request.coverUrl.isBlank() -> null
+                else -> request.coverUrl.takeIf { url -> !isSelfCoverReference(url, newCoverKey) } ?: fallbackCoverUrl
+            }
 
             db.prepareStatement("update book_shelf set name=?, author=?, cover_url=?, cover_key=?, group_name=?, alternate_sources=? where source_id=? and book_url=?").use {
                 it.setString(1, sanitizeBookName(request.name).ifBlank { request.name.trim() })
                 it.setString(2, request.author)
-                it.setString(3, sanitizedCoverUrl)
+                it.setString(3, newCoverUrl)
                 it.setString(4, newCoverKey)
                 it.setString(5, newGroup)
                 it.setString(6, newAlts)
@@ -1018,82 +1115,139 @@ class Database(private val path: String) : Closeable, AutoCloseable {
                 }
             }
 
-            // 3. Insert TOC cache
-            val chapters = parsed.chapters.mapIndexed { idx, ch ->
-                Chapter(
-                    index = idx,
-                    title = ch.title,
-                    url = "local://$bookId/chapter_${idx + 1}"
-                )
-            }
-            db.prepareStatement("""
-                insert into book_toc_cache(source_id, toc_url, chapters_json, updated_at)
-                values(?, ?, ?, ?)
-                on conflict(source_id, toc_url) do update set
-                    chapters_json = excluded.chapters_json, updated_at = excluded.updated_at
-            """.trimIndent()).use { stmt ->
-                stmt.setString(1, sourceId)
-                stmt.setString(2, tocUrl)
-                stmt.setString(3, Json.encodeToString(chapters))
-                stmt.setLong(4, now)
-                stmt.executeUpdate()
-            }
-            db.prepareStatement("""
-                insert into book_toc_cache(source_id, toc_url, chapters_json, updated_at)
-                values(?, ?, ?, ?)
-                on conflict(source_id, toc_url) do update set
-                    chapters_json = excluded.chapters_json, updated_at = excluded.updated_at
-            """.trimIndent()).use { stmt ->
-                stmt.setString(1, sourceId)
-                stmt.setString(2, bookUrl)
-                stmt.setString(3, Json.encodeToString(chapters))
-                stmt.setLong(4, now)
-                stmt.executeUpdate()
-            }
-
-            // 4. Batch insert chapters into book_content_cache
-            db.prepareStatement("delete from book_content_cache where source_id = ? and book_url = ?").use {
-                it.setString(1, sourceId)
-                it.setString(2, bookUrl)
-                it.executeUpdate()
-            }
-            db.prepareStatement("""
-                insert into book_content_cache(source_id, book_url, chapter_url, title, content, cached_at, raw_title, raw_content)
-                values(?, ?, ?, ?, ?, ?, ?, ?)
-            """.trimIndent()).use { stmt ->
-                chapters.forEachIndexed { idx, ch ->
-                    val contentText = parsed.chapters.getOrNull(idx)?.content ?: ""
-                    stmt.setString(1, sourceId)
-                    stmt.setString(2, bookUrl)
-                    stmt.setString(3, ch.url)
-                    stmt.setString(4, ch.title)
-                    stmt.setString(5, contentText)
-                    stmt.setLong(6, now)
-                    stmt.setString(7, ch.title)
-                    stmt.setString(8, contentText)
-                    stmt.addBatch()
-                }
-                stmt.executeBatch()
-            }
-
-            // 5. Update book_cache_status to ready
-            db.prepareStatement("""
-                insert into book_cache_status(source_id, book_url, total_chapters, cached_chapters, state, last_error, updated_at)
-                values(?, ?, ?, ?, 'ready', null, ?)
-                on conflict(source_id, book_url) do update set
-                    total_chapters = excluded.total_chapters, cached_chapters = excluded.cached_chapters,
-                    state = 'ready', last_error = null, updated_at = excluded.updated_at
-            """.trimIndent()).use { stmt ->
-                stmt.setString(1, sourceId)
-                stmt.setString(2, bookUrl)
-                stmt.setInt(3, chapters.size)
-                stmt.setInt(4, chapters.size)
-                stmt.setLong(5, now)
-                stmt.executeUpdate()
-            }
+            // 3~5. 目录 + 正文 + 缓存状态
+            writeLocalBookCaches(db, bookId, parsed, now)
 
             db.commit()
             getBookshelf(db, sourceId, bookUrl)!!
+        } catch (e: Throwable) {
+            db.rollback()
+            throw e
+        } finally {
+            db.autoCommit = true
+        }
+    }
+
+    /**
+     * 写入本地书的目录 + 正文 + 缓存状态。
+     *
+     * 「首次导入」([importLocalBook]) 与「存量重新解析」([replaceLocalBookCache]) 共用这一段落盘路径，
+     * 避免两条代码路径各自演化出不一致的缓存形状（目录键、章节 URL 规则、双副本都需要完全一致）。
+     *
+     * 调用方负责事务：两处调用点都已在 `autoCommit = false` 下执行，成功各自 `commit()`、失败 `rollback()`。
+     *
+     * @return 写入的章节数
+     */
+    private fun writeLocalBookCaches(db: Connection, bookId: String, parsed: ParsedBook, now: Long): Int {
+        val sourceId = LocalBookParser.LOC_BOOK_SOURCE_ID
+        val bookUrl = "local://$bookId"
+        val tocUrl = "local://$bookId/toc"
+
+        // 1. 目录缓存：`tocUrl` 与 `bookUrl` 两个键都要写。
+        //    前者是标准目录接口用的键，后者是 `getCachedChaptersFallback` 的兜底查询键。
+        val chapters = parsed.chapters.mapIndexed { idx, ch ->
+            Chapter(
+                index = idx,
+                title = ch.title,
+                url = "local://$bookId/chapter_${idx + 1}"
+            )
+        }
+        db.prepareStatement("""
+            insert into book_toc_cache(source_id, toc_url, chapters_json, updated_at)
+            values(?, ?, ?, ?)
+            on conflict(source_id, toc_url) do update set
+                chapters_json = excluded.chapters_json, updated_at = excluded.updated_at
+        """.trimIndent()).use { stmt ->
+            stmt.setString(1, sourceId)
+            stmt.setString(2, tocUrl)
+            stmt.setString(3, Json.encodeToString(chapters))
+            stmt.setLong(4, now)
+            stmt.executeUpdate()
+        }
+        db.prepareStatement("""
+            insert into book_toc_cache(source_id, toc_url, chapters_json, updated_at)
+            values(?, ?, ?, ?)
+            on conflict(source_id, toc_url) do update set
+                chapters_json = excluded.chapters_json, updated_at = excluded.updated_at
+        """.trimIndent()).use { stmt ->
+            stmt.setString(1, sourceId)
+            stmt.setString(2, bookUrl)
+            stmt.setString(3, Json.encodeToString(chapters))
+            stmt.setLong(4, now)
+            stmt.executeUpdate()
+        }
+
+        // 2. 正文缓存：先清后写，保证重新解析后不残留旧章节行（章节数变少时尤其重要）。
+        db.prepareStatement("delete from book_content_cache where source_id = ? and book_url = ?").use {
+            it.setString(1, sourceId)
+            it.setString(2, bookUrl)
+            it.executeUpdate()
+        }
+        db.prepareStatement("""
+            insert into book_content_cache(source_id, book_url, chapter_url, title, content, cached_at, raw_title, raw_content)
+            values(?, ?, ?, ?, ?, ?, ?, ?)
+        """.trimIndent()).use { stmt ->
+            chapters.forEachIndexed { idx, ch ->
+                val contentText = parsed.chapters.getOrNull(idx)?.content ?: ""
+                stmt.setString(1, sourceId)
+                stmt.setString(2, bookUrl)
+                stmt.setString(3, ch.url)
+                stmt.setString(4, ch.title)
+                stmt.setString(5, contentText)
+                stmt.setLong(6, now)
+                stmt.setString(7, ch.title)
+                stmt.setString(8, contentText)
+                stmt.addBatch()
+            }
+            stmt.executeBatch()
+        }
+
+        // 3. 缓存状态置为 ready（本地书不存在「待抓取」中间态）
+        db.prepareStatement("""
+            insert into book_cache_status(source_id, book_url, total_chapters, cached_chapters, state, last_error, updated_at)
+            values(?, ?, ?, ?, 'ready', null, ?)
+            on conflict(source_id, book_url) do update set
+                total_chapters = excluded.total_chapters, cached_chapters = excluded.cached_chapters,
+                state = 'ready', last_error = null, updated_at = excluded.updated_at
+        """.trimIndent()).use { stmt ->
+            stmt.setString(1, sourceId)
+            stmt.setString(2, bookUrl)
+            stmt.setInt(3, chapters.size)
+            stmt.setInt(4, chapters.size)
+            stmt.setLong(5, now)
+            stmt.executeUpdate()
+        }
+
+        return chapters.size
+    }
+
+    /**
+     * 用重新解析的结果**覆盖**已有本地书的目录与正文缓存（只动缓存，不碰书架行）。
+     *
+     * 存在理由：本地书（尤其 EPUB）的目录与正文是在**导入那一刻**解析落库的，
+     * 因此解析器的缺陷修好之后，**老数据不会自动变好**——正文段落边界在导入时已被压成单行、
+     * 信息不可逆丢失，替换净化规则也救不回来，只能重新解析。
+     * 原始文件一直保留在 `local_books` 目录（`<bookId>.<ext>`），所以可以直接就地重解析，
+     * 用户既不用重新上传，`local://<bookId>` 也不用变 ⇒ 书架元数据、分组、封面、
+     * 阅读进度与书签全部延续。
+     *
+     * 幂等：同一本书反复调用结果一致（先清后写，章节 URL 由序号推导）。
+     *
+     * @return 写入的章节数；书籍不在书架中时返回 0（拒绝为孤儿文件凭空造缓存）
+     */
+    fun replaceLocalBookCache(bookId: String, parsed: ParsedBook): Int = write { db ->
+        val sourceId = LocalBookParser.LOC_BOOK_SOURCE_ID
+        val bookUrl = "local://$bookId"
+        db.autoCommit = false
+        try {
+            if (getBookshelf(db, sourceId, bookUrl) == null) {
+                db.rollback()
+                0
+            } else {
+                val count = writeLocalBookCaches(db, bookId, parsed, System.currentTimeMillis())
+                db.commit()
+                count
+            }
         } catch (e: Throwable) {
             db.rollback()
             throw e
@@ -1272,6 +1426,49 @@ class Database(private val path: String) : Closeable, AutoCloseable {
     }
 
     /**
+     * 保证本地导入书籍的缓存状态为 ready。
+     *
+     * 本地图书在导入时已由 [LocalBookParser] 解析完毕并全部入库（写入 [book_content_cache]），
+     * 严禁被网络爬虫队列覆盖为 failed。
+     */
+    fun ensureLocalBookStatusReady(sourceId: String, bookUrl: String) = write { db ->
+        val cachedCount = db.prepareStatement("select count(*) from book_content_cache where source_id=? and book_url=?").use {
+            it.setString(1, sourceId); it.setString(2, bookUrl); it.executeQuery().use { rs -> rs.next(); rs.getInt(1) }
+        }
+        val existingTotal = db.prepareStatement("select total_chapters from book_cache_status where source_id=? and book_url=?").use {
+            it.setString(1, sourceId); it.setString(2, bookUrl); it.executeQuery().use { rs -> if (rs.next()) rs.getInt(1) else 0 }
+        }
+        val total = if (existingTotal > 0) existingTotal else if (cachedCount > 0) cachedCount else 1
+        db.prepareStatement("""
+            insert into book_cache_status(source_id, book_url, total_chapters, cached_chapters, state, last_error, updated_at)
+            values(?, ?, ?, ?, 'ready', null, ?)
+            on conflict(source_id, book_url) do update set
+                total_chapters = case when excluded.cached_chapters > 0 then excluded.cached_chapters else book_cache_status.total_chapters end,
+                cached_chapters = case when excluded.cached_chapters > 0 then excluded.cached_chapters else book_cache_status.cached_chapters end,
+                state = 'ready',
+                last_error = null,
+                updated_at = excluded.updated_at
+        """.trimIndent()).use {
+            it.setString(1, sourceId)
+            it.setString(2, bookUrl)
+            it.setInt(3, total)
+            it.setInt(4, cachedCount)
+            it.setLong(5, System.currentTimeMillis())
+            it.executeUpdate()
+        }
+    }
+
+    private fun healLocalBookCacheStatus(db: Connection) {
+        // 自愈被历史网络缓存误判为失败的本地图书
+        db.prepareStatement("""
+            update book_cache_status
+            set state = 'ready', last_error = null
+            where (source_id = 'loc_book' or book_url like 'local://%')
+              and state = 'failed'
+        """.trimIndent()).use { it.executeUpdate() }
+    }
+
+    /**
      * 启动时需要**续做**的缓存任务。
      *
      * 只返回上次未跑完的书（`state` 为 `pending`/`caching`），而不是整张书架。
@@ -1383,7 +1580,7 @@ class Database(private val path: String) : Closeable, AutoCloseable {
                         on conflict(source_id,book_url) do update set
                           name=excluded.name, author=excluded.author, toc_url=excluded.toc_url,
                           cover_url=coalesce(excluded.cover_url,book_shelf.cover_url),
-                          last_read_at=excluded.last_read_at, completed=excluded.completed
+                          last_read_at=excluded.last_read_at, completed=book_shelf.completed
                     """.trimIndent()).use { save ->
                         entries.forEach { entry ->
                             existing.setString(1, entry.sourceId); existing.setString(2, entry.bookUrl)
@@ -1551,6 +1748,32 @@ class Database(private val path: String) : Closeable, AutoCloseable {
             stmt.setString(1, bookName)
             stmt.setString(2, bookAuthor)
             stmt.executeQuery().use { rs -> if (rs.next()) rs.getInt(1) else 0 }
+        }
+    }
+
+    /** 全部书签（导出备份用）。按书籍、章节与位置排序，保证输出稳定。 */
+    fun listAllBookmarks(): List<Bookmark> = connect { db ->
+        db.prepareStatement(
+            "select id,book_name,book_author,chapter_index,chapter_name,chapter_pos,book_text,content,created_at " +
+                "from bookmark order by book_name asc, chapter_index asc, chapter_pos asc"
+        ).use { stmt ->
+            stmt.executeQuery().use { rs ->
+                buildList {
+                    while (rs.next()) add(
+                        Bookmark(
+                            id = rs.getLong(1),
+                            bookName = rs.getString(2),
+                            bookAuthor = rs.getString(3),
+                            chapterIndex = rs.getInt(4),
+                            chapterName = rs.getString(5),
+                            chapterPos = rs.getInt(6),
+                            bookText = rs.getString(7),
+                            content = rs.getString(8),
+                            createdAt = rs.getLong(9),
+                        )
+                    )
+                }
+            }
         }
     }
 
@@ -1940,9 +2163,16 @@ class Database(private val path: String) : Closeable, AutoCloseable {
         val altSources = if (!altJson.isNullOrBlank()) {
             runCatching { Json.decodeFromString<List<SearchResult>>(altJson) }.getOrDefault(emptyList())
         } else emptyList()
+        val sourceId = getString(1)
+        val bookUrl = getString(2)
+        val rawState = getString(12)
+        val rawError = getString(13)
+        val isLocal = sourceId == LocalBookParser.LOC_BOOK_SOURCE_ID || bookUrl.startsWith("local://")
+        val state = if (isLocal && rawState == "failed") "ready" else rawState
+        val error = if (isLocal && rawState == "failed") null else rawError
         return BookshelfItem(
-            sourceId = getString(1),
-            bookUrl = getString(2),
+            sourceId = sourceId,
+            bookUrl = bookUrl,
             name = getString(3),
             author = getString(4),
             tocUrl = getString(5),
@@ -1952,8 +2182,8 @@ class Database(private val path: String) : Closeable, AutoCloseable {
             lastReadAt = getLong(9),
             cachedChapters = getInt(10),
             totalChapters = getInt(11),
-            cacheState = getString(12),
-            cacheError = getString(13),
+            cacheState = state,
+            cacheError = error,
             completed = getInt(14) != 0,
             alternateSources = altSources,
             groupName = runCatching { getString(16) }.getOrNull()?.trim()?.takeIf { it.isNotEmpty() },
@@ -2085,6 +2315,69 @@ class Database(private val path: String) : Closeable, AutoCloseable {
             stmt.setInt(1, if (enabled) 1 else 0)
             stmt.setLong(2, now)
             ids.forEachIndexed { idx, id -> stmt.setString(idx + 3, id) }
+            stmt.executeUpdate()
+        }
+    }
+
+    fun batchSetReplaceRulesGroup(ids: List<String>, group: String?): Int = write { db ->
+        if (ids.isEmpty()) return@write 0
+        val placeholders = ids.joinToString(",") { "?" }
+        val targetGroup = group?.trim()?.takeIf { it.isNotBlank() && !it.equals(SourceGroupFilter.UNGROUPED, ignoreCase = true) }
+        val now = System.currentTimeMillis()
+        db.prepareStatement("update replace_rule set group_name = ?, updated_at = ? where id in ($placeholders)").use { stmt ->
+            stmt.setString(1, targetGroup)
+            stmt.setLong(2, now)
+            ids.forEachIndexed { idx, id -> stmt.setString(idx + 3, id) }
+            stmt.executeUpdate()
+        }
+    }
+
+    fun listReplaceRuleGroups(): List<ReplaceRuleGroupSummary> = connect { db ->
+        val sql = """
+            select trim(group_name) as gname,
+                   count(*) as total,
+                   sum(case when is_enabled = 1 then 1 else 0 end) as enabled
+            from replace_rule
+            where group_name is not null and trim(group_name) != ''
+            group by trim(group_name) collate nocase
+            order by trim(group_name) collate nocase asc
+        """.trimIndent()
+        db.prepareStatement(sql).use { stmt ->
+            stmt.executeQuery().use { rs ->
+                val list = mutableListOf<ReplaceRuleGroupSummary>()
+                while (rs.next()) {
+                    list.add(
+                        ReplaceRuleGroupSummary(
+                            name = rs.getString(1),
+                            ruleCount = rs.getInt(2),
+                            enabledCount = rs.getInt(3),
+                        )
+                    )
+                }
+                list
+            }
+        }
+    }
+
+    fun renameReplaceRuleGroup(from: String, to: String): Int {
+        val target = to.trim()
+        require(!target.equals(SourceGroupFilter.UNGROUPED, ignoreCase = true)) {
+            "不能使用系统保留字「$target」作为分组名称"
+        }
+        return write { db ->
+            db.prepareStatement("update replace_rule set group_name = ?, updated_at = ? where group_name = ? collate nocase").use { stmt ->
+                stmt.setString(1, target)
+                stmt.setLong(2, System.currentTimeMillis())
+                stmt.setString(3, from.trim())
+                stmt.executeUpdate()
+            }
+        }
+    }
+
+    fun clearReplaceRuleGroup(name: String): Int = write { db ->
+        db.prepareStatement("update replace_rule set group_name = null, updated_at = ? where group_name = ? collate nocase").use { stmt ->
+            stmt.setLong(1, System.currentTimeMillis())
+            stmt.setString(2, name.trim())
             stmt.executeUpdate()
         }
     }
@@ -2239,6 +2532,97 @@ class Database(private val path: String) : Closeable, AutoCloseable {
             db.createStatement().use { it.executeUpdate("alter table book_content_cache add column raw_content text") }
         }
     }
+    fun listHttpTts(query: String? = null): List<HttpTts> = connect { db ->
+        val sql = if (!query.isNullOrBlank()) {
+            "select id, name, url, header, content_type, concurrent_rate, login_url, login_check_js, login_ui, js_lib, enabled_cookie_jar, last_update_time from http_tts where name like ? or url like ? order by id asc"
+        } else {
+            "select id, name, url, header, content_type, concurrent_rate, login_url, login_check_js, login_ui, js_lib, enabled_cookie_jar, last_update_time from http_tts order by id asc"
+        }
+        db.prepareStatement(sql).use { stmt ->
+            if (!query.isNullOrBlank()) {
+                val q = "%${query.trim()}%"
+                stmt.setString(1, q)
+                stmt.setString(2, q)
+            }
+            stmt.executeQuery().use { rs ->
+                val list = mutableListOf<HttpTts>()
+                while (rs.next()) {
+                    list.add(rs.toHttpTts())
+                }
+                list
+            }
+        }
+    }
+
+    fun getHttpTts(id: Long): HttpTts? = connect { db ->
+        db.prepareStatement("select id, name, url, header, content_type, concurrent_rate, login_url, login_check_js, login_ui, js_lib, enabled_cookie_jar, last_update_time from http_tts where id = ?").use { stmt ->
+            stmt.setLong(1, id)
+            stmt.executeQuery().use { rs -> if (rs.next()) rs.toHttpTts() else null }
+        }
+    }
+
+    fun saveHttpTts(tts: HttpTts): HttpTts = write { db ->
+        val now = System.currentTimeMillis()
+        val id = if (tts.id != 0L) tts.id else now
+        val lastUpdate = if (tts.lastUpdateTime > 0L) tts.lastUpdateTime else now
+        db.prepareStatement("""
+            insert into http_tts(id, name, url, header, content_type, concurrent_rate, login_url, login_check_js, login_ui, js_lib, enabled_cookie_jar, last_update_time)
+            values(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            on conflict(id) do update set
+              name = excluded.name,
+              url = excluded.url,
+              header = excluded.header,
+              content_type = excluded.content_type,
+              concurrent_rate = excluded.concurrent_rate,
+              login_url = excluded.login_url,
+              login_check_js = excluded.login_check_js,
+              login_ui = excluded.login_ui,
+              js_lib = excluded.js_lib,
+              enabled_cookie_jar = excluded.enabled_cookie_jar,
+              last_update_time = excluded.last_update_time
+        """.trimIndent()).use { stmt ->
+            stmt.setLong(1, id)
+            stmt.setString(2, tts.name.ifBlank { "未命名" })
+            stmt.setString(3, tts.url)
+            stmt.setString(4, tts.header)
+            stmt.setString(5, tts.contentType)
+            stmt.setString(6, tts.concurrentRate)
+            stmt.setString(7, tts.loginUrl)
+            stmt.setString(8, tts.loginCheckJs)
+            stmt.setString(9, tts.loginUi)
+            stmt.setString(10, tts.jsLib)
+            stmt.setInt(11, if (tts.enabledCookieJar) 1 else 0)
+            stmt.setLong(12, lastUpdate)
+            stmt.executeUpdate()
+        }
+        getHttpTts(id) ?: tts.copy(id = id, lastUpdateTime = lastUpdate)
+    }
+
+    fun deleteHttpTts(id: Long): Boolean = write { db ->
+        db.prepareStatement("delete from http_tts where id = ?").use { stmt ->
+            stmt.setLong(1, id)
+            stmt.executeUpdate() > 0
+        }
+    }
+
+    fun importHttpTts(list: List<HttpTts>): HttpTtsImportResponse {
+        var imported = 0
+        var failed = 0
+        for (item in list) {
+            try {
+                if (item.url.isBlank()) {
+                    failed++
+                    continue
+                }
+                saveHttpTts(item)
+                imported++
+            } catch (_: Throwable) {
+                failed++
+            }
+        }
+        return HttpTtsImportResponse(total = list.size, imported = imported, failed = failed)
+    }
+
     private fun secret(): String = ByteArray(32).also(random::nextBytes).let { Base64.getUrlEncoder().withoutPadding().encodeToString(it) }
     private fun passwordHash(password: String): String {
         val salt = ByteArray(SALT_BYTES).also(random::nextBytes)
@@ -2264,4 +2648,19 @@ class Database(private val path: String) : Closeable, AutoCloseable {
 }
 
 class VersionConflict : RuntimeException()
+
+private fun ResultSet.toHttpTts(): HttpTts = HttpTts(
+    id = getLong("id"),
+    name = getString("name"),
+    url = getString("url"),
+    header = getString("header"),
+    contentType = getString("content_type"),
+    concurrentRate = getString("concurrent_rate"),
+    loginUrl = getString("login_url"),
+    loginCheckJs = getString("login_check_js"),
+    loginUi = getString("login_ui"),
+    jsLib = getString("js_lib"),
+    enabledCookieJar = getInt("enabled_cookie_jar") == 1,
+    lastUpdateTime = getLong("last_update_time"),
+)
 

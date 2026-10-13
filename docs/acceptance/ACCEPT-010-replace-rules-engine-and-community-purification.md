@@ -1,7 +1,7 @@
 # 替换净化规则系统实操验收手册 (ACCEPT-010)
 
-> **关联提案**：[`docs/proposals/PROPOSAL-010-replace-rules-engine-and-community-purification.md`](file:///root/legado-server/docs/proposals/PROPOSAL-010-replace-rules-engine-and-community-purification.md)  
-> **关联架构决策**：[`docs/decisions/ADR-010-replace-rules-pipeline-and-scope-matching.md`](file:///root/legado-server/docs/decisions/ADR-010-replace-rules-pipeline-and-scope-matching.md)
+> **关联提案**：[`docs/proposals/PROPOSAL-010-replace-rules-engine-and-community-purification.md`](../proposals/PROPOSAL-010-replace-rules-engine-and-community-purification.md)  
+> **关联架构决策**：[`docs/decisions/ADR-010-replace-rules-pipeline-and-scope-matching.md`](../decisions/ADR-010-replace-rules-pipeline-and-scope-matching.md)
 
 ---
 

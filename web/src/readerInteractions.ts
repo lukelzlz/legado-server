@@ -47,6 +47,28 @@ export function isDoubleColumnActive(columnMode: 'auto' | 'single' | 'double', v
   return columnMode === 'double' || (columnMode === 'auto' && viewportWidth >= 800)
 }
 
+/**
+ * 跨章翻页的方向。
+ *
+ * `next` = 向下一章翻（内容向左走）；`prev` = 向上一章翻（内容向右走）。
+ */
+export type ChapterTurnDirection = 'next' | 'prev'
+
+/** 跨章过渡的阶段：`pending` = 已决定跨章、等新章内容就位；`in` = 新章沿手势方向滑入。 */
+export type ChapterTurnPhase = 'pending' | 'in'
+
+/**
+ * 跨章翻页过渡层的类名。
+ *
+ * ⚠️ 这里是**类名契约的唯一出处**：`styles.css` 里的关键帧选择器必须与它逐字对齐，
+ * 否则就是「永不命中的死配置」（仓库既有教训：PWA 缓存规则写了一个根本不存在的路由）。
+ * 单测会拿它去比对真实 CSS，防止两边各写一份而漂移。
+ */
+export function chapterTurnClassName(phase: ChapterTurnPhase | null, direction: ChapterTurnDirection): string {
+  const base = 'reader-chapter-turn'
+  return phase ? `${base} is-${phase} is-${direction}` : base
+}
+
 export type PaginationLayout = {
   isDoubleColumn: boolean
   columnWidth: number
@@ -139,6 +161,80 @@ export function findFirstFullyVisibleParagraphIndex(
   }
 
   return 0
+}
+
+/**
+ * 把章节正文切成段落。
+ *
+ * 滚动模式的「三章窗口」要对相邻章做与当前章**完全相同**的切分，
+ * 因此抽成一个函数，避免两处各写一份而漂移。
+ */
+export function splitParagraphs(raw: string): string[] {
+  if (!raw) return []
+  const result: string[] = []
+  for (const line of raw.split('\n')) {
+    const trimmed = line.trim()
+    if (trimmed) result.push(trimmed)
+  }
+  return result
+}
+
+/** 滚动窗口里一个章节区块在视口中的位置。 */
+export type ScrollSectionRect = {
+  /** 章节下标（书内全局下标） */
+  index: number
+  /** 区块顶部相对视口顶部的偏移（即可为负） */
+  top: number
+}
+
+/**
+ * 三章窗口里判定「当前正在阅读的是哪一章」。
+ *
+ * 规则：取**最后一个顶部不晚于视口中心**的区块。
+ *
+ * | 场景 | 视口中心落在 | 判定 |
+ * | :--- | :--- | :--- |
+ * | 正在读中间章 | 中间章顶部之下、下一章顶部之上 | 中间章 |
+ * | 向下滚过下一章开头 | 下一章顶部之下 | **下一章** ⇒ 窗口下移 |
+ * | 向上滚过当前章开头 | 当前章顶部之上 | **上一章** ⇒ 窗口上移 |
+ *
+ * 用「视口中心」而不是「视口顶部」是为了**对称**：向下与向上各需滚过约半屏才换章，
+ * 不会出现「刚露头就换章」的抖动。
+ *
+ * @returns 命中的章节下标；区块为空时返回 null（调用方据此跳过本次平移）
+ */
+export function dominantScrollSection(rects: ScrollSectionRect[], viewportCenter: number): number | null {
+  let found: number | null = null
+  let foundTop = Number.NEGATIVE_INFINITY
+  for (const rect of rects) {
+    // Ref Map 的插入顺序不等于 DOM 顺序：React 重绑 callback ref 后，
+    // Safari 可能让相邻区块以任意顺序重新登记。必须按视口位置找最靠后的区块。
+    if (Number.isFinite(rect.top) && rect.top <= viewportCenter && rect.top > foundTop) {
+      found = rect.index
+      foundTop = rect.top
+    }
+  }
+  return found
+}
+
+export function isScrollSectionTransitionAllowed(currentIndex: number, nextIndex: number, scrollDelta: number): boolean {
+  if (nextIndex === currentIndex) return false
+  if (scrollDelta > 0) return nextIndex > currentIndex
+  if (scrollDelta < 0) return nextIndex < currentIndex
+  return false
+}
+
+/**
+ * 三章窗口平移后，为保持**视觉位置不动**需要补偿的滚动量。
+ *
+ * 平移会从文档顶部移除/插入区块（例如下移时丢掉「上一章」），
+ * 文档高度随之变化、内容整体位移。补偿量 = 平移后锚点区块的视口 top − 平移前记录的 top，
+ * 把它加到当前 `scrollY`，即可抵消浏览器已经完成的原生滚动锚定。
+ *
+ * 这与区块高度无关，因此无需等新章节加载完再量。
+ */
+export function scrollCompensation(anchorTopBefore: number, anchorTopAfter: number): number {
+  return anchorTopAfter - anchorTopBefore
 }
 
 

@@ -449,6 +449,59 @@ class BookCacheServiceTest {
         } finally { Files.deleteIfExists(java.nio.file.Path.of(path)) }
     }
 
+    @Test
+    fun `local book enqueue is ignored by network cache service and kept as ready`() = runBlocking {
+        val path = temporaryDatabase()
+        try {
+            val database = Database(path); database.initialize("test-pass")
+            val localBook = BookshelfWriteRequest("loc_book", "local://book123", "本地小说", tocUrl = "local://book123/toc")
+            database.saveBookshelf(localBook, null)
+
+            // 模拟本地解析入库后存入两章
+            database.cacheBookContent("loc_book", "local://book123", "local://book123/c1", ChapterContent("第1章", "内容1"))
+            database.cacheBookContent("loc_book", "local://book123", "local://book123/c2", ChapterContent("第2章", "内容2"))
+            database.ensureLocalBookStatusReady("loc_book", "local://book123")
+
+            val runner = RuleRunner { error("Local books should never invoke RuleRunner network fetch: $it") }
+            val service = BookCacheService(database, runner) {}
+
+            // 尝试 enqueue 本地图书，应该立即被拦截且绝不抛出「书源不存在」，状态保持 ready
+            service.enqueue(CachedBookRequest("loc_book", "local://book123", "local://book123/toc"))
+            delay(100)
+
+            val shelf = database.listBookshelf().single()
+            assertEquals("ready", shelf.cacheState)
+            assertNull(shelf.cacheError)
+            assertEquals(2, shelf.cachedChapters)
+
+            service.stop()
+        } finally { Files.deleteIfExists(java.nio.file.Path.of(path)) }
+    }
+
+    @Test
+    fun `database heals legacy failed cache status for local books on init and toShelf`() = runBlocking {
+        val path = temporaryDatabase()
+        try {
+            val database = Database(path); database.initialize("test-pass")
+            val localBook = BookshelfWriteRequest("loc_book", "local://book456", "旧本地书", tocUrl = "local://book456/toc")
+            database.saveBookshelf(localBook, null)
+
+            // 人工模拟旧版本被写坏的 failed 状态（书源不存在）
+            database.finishBookCache("loc_book", "local://book456", "书源不存在")
+
+            // toShelf 自动防御映射必须返回 ready
+            val shelf = database.listBookshelf().single()
+            assertEquals("ready", shelf.cacheState)
+            assertNull(shelf.cacheError)
+
+            // 重新初始化数据库触发 healLocalBookCacheStatus
+            val reloadedDb = Database(path); reloadedDb.initialize("test-pass")
+            val healedShelf = reloadedDb.listBookshelf().single()
+            assertEquals("ready", healedShelf.cacheState)
+            assertNull(healedShelf.cacheError)
+        } finally { Files.deleteIfExists(java.nio.file.Path.of(path)) }
+    }
+
 
     private suspend fun waitForCondition(timeoutMs: Long, condition: () -> Boolean): Boolean {
         val deadline = System.currentTimeMillis() + timeoutMs

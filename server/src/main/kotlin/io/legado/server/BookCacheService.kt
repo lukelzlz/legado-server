@@ -49,7 +49,18 @@ class BookCacheService(private val database: Database, private val runner: RuleR
     }
     fun stop() { scope.cancel() }
 
+    private fun isLocalBook(sourceId: String, bookUrl: String): Boolean {
+        return sourceId == LocalBookParser.LOC_BOOK_SOURCE_ID ||
+            bookUrl.startsWith("local://") ||
+            bookUrl.startsWith("content://") ||
+            bookUrl.startsWith("file://")
+    }
+
     fun enqueue(book: CachedBookRequest) {
+        if (isLocalBook(book.sourceId, book.bookUrl)) {
+            database.ensureLocalBookStatusReady(book.sourceId, book.bookUrl)
+            return
+        }
         val key = "${book.sourceId}\u0000${book.bookUrl}"
         if (jobs[key]?.isActive == true) return
         jobs[key] = scope.launch {
@@ -60,10 +71,16 @@ class BookCacheService(private val database: Database, private val runner: RuleR
     fun cancel(sourceId: String, bookUrl: String) {
         val job = jobs.remove("$sourceId\u0000$bookUrl")
         job?.cancel()
-        database.finishBookCache(sourceId, bookUrl, "已取消缓存")
+        if (!isLocalBook(sourceId, bookUrl)) {
+            database.finishBookCache(sourceId, bookUrl, "已取消缓存")
+        }
     }
 
     private suspend fun cache(book: CachedBookRequest) {
+        if (isLocalBook(book.sourceId, book.bookUrl)) {
+            database.ensureLocalBookStatusReady(book.sourceId, book.bookUrl)
+            return
+        }
         try {
             val source = database.getSource(book.sourceId) ?: throw IllegalArgumentException("书源不存在")
             val chapters = withContext(Dispatchers.IO) { runner.chapters(source.json, book.tocUrl) }

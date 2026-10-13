@@ -1,4 +1,5 @@
 import { useSyncExternalStore } from 'react'
+import i18n from './i18n'
 import { api, BookDetails, SearchResult, SearchStreamEvent, streamSearch } from './api'
 import { OpenBook } from './ReaderScreen'
 import { cleanAuthor, cleanTitle, defaultSearchFilters, SearchFilters, SearchGroup } from './searchFilters'
@@ -46,7 +47,7 @@ export const groupSearchResults = (results: SearchResult[]): SearchGroup[] => {
   const titleToUnknownAuthorKey = new Map<string, string>()
 
   for (const result of results) {
-    const rawCleanName = cleanTitle(result.name) || result.name.trim() || '未知书名'
+    const rawCleanName = cleanTitle(result.name) || result.name.trim() || i18n.t('common.unknownBook', '未知书名')
     const rawCleanAuthor = cleanAuthor(result.author)
     const titleKey = rawCleanName.toLowerCase()
 
@@ -137,7 +138,7 @@ export const loadSourceBook = async (result: SearchResult, alternateSources?: Se
     fallbackSources.find(s => isValidBookTitle(s.name))?.name?.trim() ||
     details.name?.trim() ||
     result.name?.trim() ||
-    '未知书名'
+    i18n.t('common.unknownBook', '未知书名')
   const safeName = cleanTitle(rawName) || rawName
 
   const rawAuthor = (isValidAuthor(details.author) ? details.author.trim() : null) ||
@@ -284,7 +285,7 @@ export class SearchStore {
         }
         if (packet.type === 'error') {
           this.setState({
-            message: packet.message || '搜索失败',
+            message: packet.message || i18n.t('search.failed', '搜索失败'),
             loading: false,
           })
           this.socket = null
@@ -367,7 +368,7 @@ export class SearchStore {
         loadedBook = book
         break
       } catch (err) {
-        const errMsg = err instanceof Error ? err.message : '无法读取此书源'
+        const errMsg = err instanceof Error ? err.message : i18n.t('search.cannotReadSource', '无法读取此书源')
         this.setState(prev => ({
           choices: prev.choices.map((c, idx) => (idx === i ? { ...c, status: 'error', error: errMsg } : c)),
         }))
@@ -377,7 +378,7 @@ export class SearchStore {
     if (loadedBook) {
       this.setState({ openBook: loadedBook, detailLoading: false })
     } else {
-      this.setState({ message: '所有书源均无法读取', detailLoading: false })
+      this.setState({ message: i18n.t('search.allSourcesUnreadable', '所有书源均无法读取'), detailLoading: false })
     }
   }
 
@@ -431,7 +432,7 @@ export class SearchStore {
         openBook: book,
       }))
     } catch (err) {
-      const errMsg = err instanceof Error ? err.message : '无法读取此书源'
+      const errMsg = err instanceof Error ? err.message : i18n.t('search.cannotReadSource', '无法读取此书源')
       this.setState(prev => ({
         choices: prev.choices.map(c =>
           c.result.sourceId === choice.result.sourceId && c.result.bookUrl === choice.result.bookUrl

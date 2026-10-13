@@ -2,6 +2,7 @@ package io.legado.server
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -99,7 +100,7 @@ class SourceCodecTest {
 
     @Test
     fun `parses real-world complex shareBookSource JSON`() {
-        val sampleFile = java.io.File("/Users/zhangran/Downloads/shareBookSource(1).json")
+        val sampleFile = System.getenv("SAMPLE_SOURCE_FILE")?.let { java.io.File(it) } ?: java.io.File("shareBookSource(1).json")
         if (sampleFile.exists()) {
             val content = sampleFile.readText()
             val list = kotlinx.serialization.json.Json.parseToJsonElement(content) as kotlinx.serialization.json.JsonArray
@@ -131,5 +132,63 @@ class SourceCodecTest {
         assertFalse(cleared.contains("bookSourceGroup"))
         val clearedBlank = SourceCodec.withGroup(withGroup, "   ")
         assertFalse(clearedBlank.contains("bookSourceGroup"))
+    }
+
+    @Test
+    fun `parseSourceList unwraps every known collection shape`() {
+        // 两条真实社区链接的响应体都是「顶层数组」，但 Legado 生态还有若干种外层包装
+        val one = """{"bookSourceUrl":"https://a.example.com","bookSourceName":"A"}"""
+        val two = """{"bookSourceUrl":"https://b.example.com","bookSourceName":"B"}"""
+
+        assertEquals(2, SourceCodec.parseSourceList("[$one,$two]").size)
+        assertEquals(2, SourceCodec.parseSourceList("""{"data":[$one,$two]}""").size)
+        assertEquals(2, SourceCodec.parseSourceList("""{"sources":[$one,$two]}""").size)
+        assertEquals(2, SourceCodec.parseSourceList("""{"bookSources":[$one,$two]}""").size)
+        assertEquals(2, SourceCodec.parseSourceList("""{"list":[$one,$two]}""").size)
+        // 单个书源对象（站点直接回一条源）
+        assertEquals(1, SourceCodec.parseSourceList(one).size)
+        // UTF-8 BOM：PowerShell / 记事本另存常见
+        assertEquals(2, SourceCodec.parseSourceList("\uFEFF[$one,$two]").size)
+
+        // 拆出来的每一条都必须能独立喂给 parse()（订阅更新与网络导入共用本函数的关键前提）
+        SourceCodec.parseSourceList("""{"data":[$one,$two]}""").forEach { SourceCodec.parse(it) }
+    }
+
+    @Test
+    fun `parseSourceList rejects non JSON content`() {
+        val error = assertThrows(IllegalArgumentException::class.java) {
+            SourceCodec.parseSourceList("<html><body>404 Not Found</body></html>")
+        }
+        assertTrue(error.message!!.contains("不是有效 JSON"))
+    }
+
+    /**
+     * 一行一条 JSON（JSONL / NDJSON）。
+     *
+     * ⚠️ 这份容忍度原先**只存在于前端**的 `parseSourceJsonText`，服务端没有 ⇒
+     * 「本地导入能用的文件、走网络导入或走服务端预览却报无效」。现已上移到本函数，两侧共用。
+     */
+    @Test
+    fun `parseSourceList accepts line delimited JSON`() {
+        val one = """{"bookSourceUrl":"https://nd1.example.com","bookSourceName":"ND1"}"""
+        val two = """{"bookSourceUrl":"https://nd2.example.com","bookSourceName":"ND2"}"""
+
+        val parsed = SourceCodec.parseSourceList("$one\n$two")
+        assertEquals(2, parsed.size)
+        assertEquals("https://nd1.example.com", SourceCodec.parse(parsed[0]).id)
+        assertEquals("https://nd2.example.com", SourceCodec.parse(parsed[1]).id)
+
+        // 空行、行首尾空白、BOM 都要容忍
+        assertEquals(2, SourceCodec.parseSourceList("\uFEFF$one\n\n   $two  \n").size)
+        // 夹杂非 JSON 行时跳过该行，其余照常解析
+        assertEquals(2, SourceCodec.parseSourceList("$one\n这不是 JSON\n$two").size)
+    }
+
+    @Test
+    fun `parseSourceList still rejects content with no JSON line at all`() {
+        val error = assertThrows(IllegalArgumentException::class.java) {
+            SourceCodec.parseSourceList("这不是 JSON\n也不是\n随便一段文本")
+        }
+        assertTrue(error.message!!.contains("不是有效 JSON"))
     }
 }

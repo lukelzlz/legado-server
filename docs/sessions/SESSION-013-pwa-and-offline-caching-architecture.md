@@ -1,8 +1,8 @@
 # 工作记忆归档：完整 PWA 能力、用户自主正文分段离线缓存与沉浸式全屏抽屉适配 (SESSION-013)
 
-> **关联提案**：[`docs/proposals/PROPOSAL-012-pwa-capabilities-and-fullscreen-drawer-adaptation.md`](file:///root/legado-server/docs/proposals/PROPOSAL-012-pwa-capabilities-and-fullscreen-drawer-adaptation.md)  
-> **关联架构决策**：[`docs/decisions/ADR-012-vite-plugin-pwa-workbox-and-safe-area-layout.md`](file:///root/legado-server/docs/decisions/ADR-012-vite-plugin-pwa-workbox-and-safe-area-layout.md)  
-> **关联验收手册**：[`docs/acceptance/ACCEPT-012-pwa-and-offline-cache.md`](file:///root/legado-server/docs/acceptance/ACCEPT-012-pwa-and-offline-cache.md)
+> **关联提案**：[`docs/proposals/PROPOSAL-012-pwa-capabilities-and-fullscreen-drawer-adaptation.md`](../proposals/PROPOSAL-012-pwa-capabilities-and-fullscreen-drawer-adaptation.md)  
+> **关联架构决策**：[`docs/decisions/ADR-012-vite-plugin-pwa-workbox-and-safe-area-layout.md`](../decisions/ADR-012-vite-plugin-pwa-workbox-and-safe-area-layout.md)  
+> **关联验收手册**：[`docs/acceptance/ACCEPT-012-pwa-and-offline-cache.md`](../acceptance/ACCEPT-012-pwa-and-offline-cache.md)
 
 ---
 

@@ -1,7 +1,7 @@
 # 书源批量整理、分组维护与轻量连通性健康体检实操验收手册 (ACCEPT-014)
 
-> **关联提案**：[`docs/proposals/PROPOSAL-014-book-source-batch-management-and-health-check.md`](file:///root/legado-server/docs/proposals/PROPOSAL-014-book-source-batch-management-and-health-check.md)  
-> **关联架构决策**：[`docs/decisions/ADR-014-source-batch-operations-and-lightweight-probe-pipeline.md`](file:///root/legado-server/docs/decisions/ADR-014-source-batch-operations-and-lightweight-probe-pipeline.md)
+> **关联提案**：[`docs/proposals/PROPOSAL-014-book-source-batch-management-and-health-check.md`](../proposals/PROPOSAL-014-book-source-batch-management-and-health-check.md)  
+> **关联架构决策**：[`docs/decisions/ADR-014-source-batch-operations-and-lightweight-probe-pipeline.md`](../decisions/ADR-014-source-batch-operations-and-lightweight-probe-pipeline.md)
 
 ---
 

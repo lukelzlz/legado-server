@@ -109,7 +109,7 @@ class CoverCache(private val directory: Path, private val fetcher: ((String) -> 
      * 之所以必须做：本项目的封面来自任意外部图床，响应头不可信。
      * 只有校验真实字节，才能保证「存进去的封面浏览器一定画得出来」。
      */
-    private fun looksLikeImage(bytes: ByteArray): Boolean {
+    fun looksLikeImage(bytes: ByteArray): Boolean {
         if (bytes.size < 12) return false
         fun at(i: Int) = bytes[i].toInt() and 0xff
         return when {
@@ -124,7 +124,21 @@ class CoverCache(private val directory: Path, private val fetcher: ((String) -> 
         }
     }
 
-    private fun sha256(value: String) = MessageDigest.getInstance("SHA-256").digest(value.toByteArray()).joinToString("") { "%02x".format(it) }
+    fun detectImageContentType(bytes: ByteArray): String? {
+        if (!looksLikeImage(bytes)) return null
+        fun at(i: Int) = bytes[i].toInt() and 0xff
+        return when {
+            at(0) == 0xff && at(1) == 0xd8 && at(2) == 0xff -> "image/jpeg"
+            at(0) == 0x89 && at(1) == 0x50 && at(2) == 0x4e && at(3) == 0x47 -> "image/png"
+            at(0) == 0x47 && at(1) == 0x49 && at(2) == 0x46 -> "image/gif"
+            at(0) == 0x42 && at(1) == 0x4d -> "image/bmp"
+            at(0) == 0x52 && at(1) == 0x49 && at(2) == 0x46 && at(3) == 0x46 &&
+                at(8) == 0x57 && at(9) == 0x45 && at(10) == 0x42 && at(11) == 0x50 -> "image/webp"
+            else -> "image/jpeg"
+        }
+    }
+
+    fun sha256(value: String) = MessageDigest.getInstance("SHA-256").digest(value.toByteArray()).joinToString("") { "%02x".format(it) }
     private fun sha256Bytes(bytes: ByteArray) = MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
     private companion object { const val MAX_BYTES = 5 * 1024 * 1024 }
 }

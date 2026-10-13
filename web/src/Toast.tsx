@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import { Icon } from './icons'
 
 export type ToastType = 'success' | 'info' | 'error' | 'warning'
@@ -67,6 +68,7 @@ class ToastStore {
 export const toast = new ToastStore()
 
 export function ToastContainer() {
+  const { t } = useTranslation()
   const [toasts, setToasts] = useState<ToastItem[]>([])
 
   useEffect(() => {
@@ -92,7 +94,7 @@ export function ToastContainer() {
             <button
               className="toast-close"
               onClick={() => toast.dismiss(item.id)}
-              aria-label="关闭提示"
+              aria-label={t('common.close')}
             >
               <Icon name="close" />
             </button>

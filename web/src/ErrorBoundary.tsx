@@ -1,4 +1,5 @@
 import React, { Component, ErrorInfo, ReactNode } from 'react'
+import { i18n } from './i18n'
 
 interface Props {
   children: ReactNode
@@ -55,9 +56,9 @@ export class ErrorBoundary extends Component<Props, State> {
           minHeight: '60vh',
           gap: '16px',
         }}>
-          <h2 style={{ fontSize: '20px', fontWeight: 600 }}>页面渲染遇到异常</h2>
+          <h2 style={{ fontSize: '20px', fontWeight: 600 }}>{i18n.t('errorBoundary.title')}</h2>
           <p style={{ color: 'var(--muted, #888)', maxWidth: '480px', fontSize: '14px', lineHeight: 1.6 }}>
-            {this.state.error?.message || '组件加载失败，请尝试刷新页面或返回书架。'}
+            {this.state.error?.message || i18n.t('errorBoundary.desc')}
           </p>
           <div style={{ display: 'flex', gap: '12px', marginTop: '8px' }}>
             <button
@@ -66,7 +67,7 @@ export class ErrorBoundary extends Component<Props, State> {
               onClick={this.handleReset}
               style={{ padding: '8px 18px', cursor: 'pointer' }}
             >
-              刷新重试
+              {i18n.t('errorBoundary.retry')}
             </button>
             <button
               type="button"
@@ -74,7 +75,7 @@ export class ErrorBoundary extends Component<Props, State> {
               onClick={this.handleBackToShelf}
               style={{ padding: '8px 18px', cursor: 'pointer' }}
             >
-              返回书架
+              {i18n.t('errorBoundary.backHome')}
             </button>
           </div>
         </div>

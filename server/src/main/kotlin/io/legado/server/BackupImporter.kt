@@ -46,6 +46,9 @@ class BackupImporter(
         val parsedGroups = readSection(zip, entries, "bookgroup.json")?.let(::parseGroups).orEmpty()
         val parsedShelf = readSection(zip, entries, "bookshelf.json")?.let { parseShelf(it, parsedGroups) }.orEmpty()
         val parsedBookmarks = readSection(zip, entries, "bookmark.json")?.let(::parseBookmarks).orEmpty()
+        // HTTP TTS（`httpTTS.json`）：字段与备份格式逐字对齐，见 [parseHttpTts]
+        // （文件名统一传小写，与 readSection 的匹配口径一致）
+        val parsedTts = readSection(zip, entries, "httptts.json")?.let(::parseHttpTts).orEmpty()
         require(sources.isNotEmpty() || rules.isNotEmpty() || parsedShelf.isNotEmpty()) {
             "不是 Legado 备份包：未找到 bookSource.json / replaceRule.json / bookshelf.json"
         }
@@ -81,6 +84,8 @@ class BackupImporter(
         // 那是用户在手机端整理好的成果，必须原样带过来。
         val sourceResult = database.importSources(sources, applyGroups = true)
         val ruleResult = database.importReplaceRules(rules)
+        // HTTP TTS 复用既有导入实现（天然幂等：同 id 覆盖）
+        val ttsResult = database.importHttpTts(parsedTts)
         val library = database.importLibrary(shelf)
         // 分组必须在书架导入**之后**执行：它要把 book_shelf.group_name 补上对应分组名。
         database.importBookGroups(groups, shelf)
@@ -142,7 +147,13 @@ class BackupImporter(
     }
 
     private fun readSection(zip: ZipFile, entries: List<ZipEntry>, fileName: String): String? {
-        val entry = entries.firstOrNull { it.name.substringAfterLast('/').lowercase() == fileName } ?: return null
+        // ⚠️ 比较必须**两侧都转小写**：包内条目大小写与调用方传参不一致（真实备份是
+        // `httpTTS.json` / `bookSource.json`，而调用方习惯写小写），只把条目名转小写、
+        // 拿 `fileName` 原样比，就会静默返回 null —— 表现为「这一整段没导入」且毫无报错。
+        // 我加 httpTTS 时正是踩了这个：传 `"httpTTS.json"` ⇒ `"httptts.json" == "httpTTS.json"` 为假
+        // ⇒ TTS 一个都没导（实测库里是 []）。
+        val wanted = fileName.lowercase()
+        val entry = entries.firstOrNull { it.name.substringAfterLast('/').lowercase() == wanted } ?: return null
         require(entry.size <= MAX_ENTRY_BYTES) { "$fileName 展开后超过 ${MAX_ENTRY_BYTES / 1024 / 1024} MiB，已拒绝" }
         return zip.getInputStream(entry).use { stream -> stream.readBytes().toString(Charsets.UTF_8) }
     }
@@ -237,13 +248,44 @@ class BackupImporter(
                 author = book.text("author")?.takeIf { it.isNotBlank() },
                 tocUrl = book.text("tocUrl")?.takeIf { it.isNotBlank() } ?: bookUrl,
                 coverUrl = (book.text("coverUrl") ?: book.text("customCoverUrl"))?.takeIf { it.isNotBlank() },
-                completed = book.text("kind")?.contains("完结") == true,
+                // 「已读完」不由导入判定：导入只负责**书籍与阅读进度**，完结与否照导入。
+                // 备份里表示连载状态的字段形态极不统一（实测 378 条真实数据里同时存在
+                // "都市脑洞,6.2,连载中,番茄" / "连载中,9.3分,都市高武,…" / "已完结,,," / 字段缺失），
+                // 书源自己的状态也常常滞后。拿它推「已读完」既不可靠，又会覆盖用户手动标的已读完，
+                // 因此这里恒为 false，并且入库时对已有记录**保留原值**（见 Database.importLibrary）。
+                completed = false,
                 chapterIndex = book.number("durChapterIndex")?.toInt() ?: 0,
                 readAt = book.number("durChapterTime") ?: 0L,
                 kind = ShelfKind.of(book.text("bookUrl"), book.text("origin"), book.text("type"), book.text("kind")),
                 groupName = groupId?.let { nameById[it] },
             )
         }
+    }
+
+    /**
+     * 解析 `httpTTS.json`（真实备份 `backup2026-09-30-PEPM00.zip` 实测字段）：
+     * `concurrentRate / contentType / enabledCookieJar / header / id / lastUpdateTime /
+     *  loginCheckJs / loginUi / loginUrl / name / url`（本服务另有 `jsLib`，缺失时留空）。
+     *
+     * 空字符串一律按「未设置」处理（手机端就是用 `""` 表示没有），避免把空串写进库。
+     */
+    private fun parseHttpTts(text: String): List<HttpTts> = array(text, "httpTTS.json").mapNotNull { element ->
+        val tts = element as? JsonObject ?: return@mapNotNull null
+        val url = tts.text("url")?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
+        HttpTts(
+            id = tts.number("id") ?: 0L,
+            name = tts.text("name")?.takeIf { it.isNotBlank() } ?: "未命名",
+            url = url,
+            header = tts.text("header")?.takeIf { it.isNotBlank() },
+            contentType = tts.text("contentType")?.takeIf { it.isNotBlank() },
+            concurrentRate = tts.text("concurrentRate")?.takeIf { it.isNotBlank() },
+            loginUrl = tts.text("loginUrl")?.takeIf { it.isNotBlank() },
+            loginCheckJs = tts.text("loginCheckJs")?.takeIf { it.isNotBlank() },
+            loginUi = tts.text("loginUi")?.takeIf { it.isNotBlank() },
+            jsLib = tts.text("jsLib")?.takeIf { it.isNotBlank() },
+            enabledCookieJar = tts.flag("enabledCookieJar") ?: false,
+            lastUpdateTime = tts.number("lastUpdateTime") ?: 0L,
+        )
     }
 
     private fun array(text: String, fileName: String): List<JsonElement> =

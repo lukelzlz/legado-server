@@ -1,6 +1,10 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import fs from 'node:fs'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 import {
+  chapterTurnClassName,
   findFirstFullyVisibleParagraphIndex,
   calculatePaginationLayout,
   isAtBottomBoundary,
@@ -9,18 +13,42 @@ import {
   isTapGesture,
   paginateTapZone,
   scrollTapZone,
+  splitParagraphs,
   swipeDirection,
 } from '../src/readerInteractions'
 import {
   defaultReaderSettings,
   getReaderFontFamily,
   loadReaderSettings,
+
   parseColumnMode,
   parseMaxWidth,
   parsePageMode,
   parseReaderFont,
   saveReaderSettings,
 } from '../src/readerSettings'
+import {
+  bufferLoadRange,
+  chapterIndexAtViewportTop,
+  estimateChapterHeight,
+  keepRenderedDistance,
+  planPlaceholders,
+  scrollSectionKey,
+} from '../src/readerScrollStream'
+import type { ScrollStreamSlot } from '../src/readerScrollStream'
+
+/**
+ * 剥掉 JS/TS 注释（块注释与行注释），只用于「源码结构断言」。
+ *
+ * ⚠️ 必要性：注释里经常引用同一段代码（我自己就写过），直接在原始文本上做 `assert.doesNotMatch`
+ * 会命中注释里的示例 —— 本地因换行差异侥幸通过、CI 直接红。所有结构断言都在剥注释后的代码上做。
+ * 行注释的正则刻意避开 `://`（URL）与 `http://`，避免把字符串里的内容当成注释起点。
+ */
+function stripComments(source: string): string {
+  return source
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/(^|[^:])\/\/[^\n]*/g, '$1')
+}
 
 test('ReaderPagination - Tap Zones: Scroll reading mode tap zone partitions (top 30%, bottom 30%, middle 40%)', () => {
   const vh = 1000
@@ -357,7 +385,156 @@ test('ReaderPagination - findFirstFullyVisibleParagraphIndex: finds first fully 
   assert.equal(findFirstFullyVisibleParagraphIndex(giantParagraph, scrollViewport), 3, 'Falls back to visible paragraph if taller than screen')
 })
 
+/**
+ * 跨章翻页过渡（章末翻到下一章）。
+ *
+ * 旧实现的观感缺陷：内容替换后 `pageIndex` 由「本章最后一页」变 `0`，
+ * 轨道带着 CSS 过渡**倒退**回第一页 —— 方向与手势相反。现在改为沿手势方向滑入。
+ */
+test('ReaderPagination - Chapter Turn: class contract carries both phase and direction', () => {
+  assert.equal(chapterTurnClassName(null, 'next'), 'reader-chapter-turn', '静止时只有基类')
+  assert.equal(chapterTurnClassName('pending', 'next'), 'reader-chapter-turn is-pending is-next')
+  assert.equal(chapterTurnClassName('in', 'next'), 'reader-chapter-turn is-in is-next')
+  assert.equal(chapterTurnClassName('in', 'prev'), 'reader-chapter-turn is-in is-prev')
+})
+
+test('ReaderPagination - Chapter Turn: every class the contract emits is actually styled', () => {
+  const testDir = path.dirname(fileURLToPath(import.meta.url))
+  const css = fs.readFileSync(path.resolve(testDir, '../src/styles.css'), 'utf-8')
+
+  // 基类必须有布局声明，否则过渡层不占高度、动画不可见
+  assert.ok(/\.reader-chapter-turn\s*\{/.test(css), '缺少 .reader-chapter-turn 基类规则')
+
+  // 「沿手势方向滑入」：向后翻从右侧进、向前翻从左侧进
+  for (const [phase, direction] of [['in', 'next'], ['in', 'prev']] as const) {
+    const className = chapterTurnClassName(phase, direction)
+    const selector = className.split(' ').map(c => `.${c}`).join('')
+    assert.ok(css.includes(selector), `CSS 里找不到选择器 ${selector} —— 类名契约与样式已经漂移`)
+  }
+  assert.ok(/@keyframes\s+reader-turn-in-next/.test(css), '缺少 reader-turn-in-next 关键帧')
+  assert.ok(/@keyframes\s+reader-turn-in-prev/.test(css), '缺少 reader-turn-in-prev 关键帧')
+
+  // 向后翻必须从右侧进入（+100%），否则方向仍然是反的
+  const nextKeyframes = css.slice(css.indexOf('@keyframes reader-turn-in-next'))
+  assert.ok(/translateX\(100%\)/.test(nextKeyframes.slice(0, 200)), 'reader-turn-in-next 应从右侧（+100%）进入')
+  const prevKeyframes = css.slice(css.indexOf('@keyframes reader-turn-in-prev'))
+  assert.ok(/translateX\(-100%\)/.test(prevKeyframes.slice(0, 200)), 'reader-turn-in-prev 应从左侧（-100%）进入')
+
+  // 跨章期间必须抑制轨道自身的过渡，否则仍会倒退
+  assert.ok(/\.reader-paginated-track\.is-turning\s*\{[^}]*transition:\s*none/.test(css), '缺少 .reader-paginated-track.is-turning 的过渡抑制')
+})
+
+/**
+ * 滚动模式的「三章连续滚动」：窗口平移判定与位置补偿。
+ *
+ * 目标：读完本章继续往下滚 ⇒ 直接进入下一章（不再有章末换章栏），
+ * 且窗口换掉的瞬间**视觉位置不能跳**。
+ */
+test('ReaderScroll - splitParagraphs matches the single-chapter pipeline', () => {
+  assert.deepEqual(splitParagraphs(''), [])
+  assert.deepEqual(splitParagraphs('\n\n  \n'), [], '空行与纯空白行都要丢掉')
+  assert.deepEqual(splitParagraphs('第一段\n第二段'), ['第一段', '第二段'])
+  // 前后空白要去掉，与当前章的 paragraphs 派生口径一致
+  assert.deepEqual(splitParagraphs('  缩进段  \n\n\t制表段\t'), ['缩进段', '制表段'])
+})
 
 
+test('ReaderScroll - 连续流的当前章判定：视口顶部落在哪一章，它就是当前章', () => {
+  const source = fs.readFileSync(path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../src/ReaderScreen.tsx'), 'utf-8')
+  assert.match(source, /chapterIndexAtViewportTop\(slots, viewportTopThreshold\)/)
+  assert.match(source, /advanceStreamChapter\(atTop\)/)
+  assert.doesNotMatch(source, /shiftScrollWindow/)
+  assert.doesNotMatch(source, /desiredScrollWindow/)
 
+  const slots = [
+    { index: 3, top: -7000 },
+    { index: 4, top: -300 },
+    { index: 5, top: 5000 },
+  ]
+  assert.equal(chapterIndexAtViewportTop(slots, 240), 4, '视口顶部落在第 4 章内部 ⇒ 当前章是第 4 章')
+  assert.equal(chapterIndexAtViewportTop(slots, 5100), 5, '继续往下滚过第 5 章顶部 ⇒ 切到第 5 章')
+  const back = [
+    { index: 3, top: -15000 },
+    { index: 4, top: -2000 },
+    { index: 5, top: 6000 },
+  ]
+  assert.equal(chapterIndexAtViewportTop(back, 240), 4, '向上滚回：当前章回到第 4 章')
+  assert.equal(chapterIndexAtViewportTop([], 240), null)
+  assert.equal(chapterIndexAtViewportTop([{ index: 1, top: Number.NaN }], 240), null)
+})
 
+test('ReaderScroll - 等高占位：上方最多留 3 章、滚回来要能换回正文', () => {
+  const vh = 932
+  const keepDistance = keepRenderedDistance(vh)
+  assert.ok(keepDistance >= vh * 2, '收起距离至少两屏')
+
+  const scrolled = [
+    { index: 1, top: -20000, height: 3000 },
+    { index: 2, top: -17000, height: 3000 },
+    { index: 3, top: -14000, height: 3000 },
+    { index: 4, top: -11000, height: 3000 },
+    { index: 5, top: -8000, height: 3000 },
+    { index: 6, top: 0, height: 3000 },
+  ]
+  const measured = new Set([1, 2, 3, 4, 5, 6])
+  const modes = scrolled.map(slot => ({ index: slot.index, mode: 'text' as const, height: slot.height }))
+  const plan = planPlaceholders(modes, 6, measured)
+  assert.deepEqual(plan.toPlaceholder, [1, 2], '超出「上方 3 章」上限的才收起')
+  assert.deepEqual(planPlaceholders(modes, 6, measured, 0).toPlaceholder, [1, 2, 3, 4, 5])
+  assert.deepEqual(planPlaceholders(modes, 6, measured, 5).toPlaceholder, [])
+  /*
+   * ⚠️ 没量到高度的章节也**必须收**（踩坑改过来的规则）：原先要求「只有量到实测高度的才准收」，
+   * 于是没量到的章节以「一屏高骨架」留在文档里；等它被量到真实高度（约 8500px，骨架只有约 900px）
+   * 文档会一次性变长几千像素 ⇒ 视口内容整体位移 = 用户报障的「向上划时跳动」。
+   */
+  assert.deepEqual(planPlaceholders(modes, 6, new Set()).toPlaceholder, [1, 2],
+    '没量到高度也要收起，但保留区仍按上限放行')
+
+  const backModes: ScrollStreamSlot[] = [
+    { index: 1, mode: 'placeholder', height: 3000 },
+    { index: 2, mode: 'placeholder', height: 3000 },
+    { index: 3, mode: 'text', height: 3000 },
+  ]
+  const backPlan = planPlaceholders(backModes, 1, measured)
+  assert.ok(backPlan.toText.includes(2), '滚回来时占位要换回正文')
+  assert.deepEqual(backPlan.toPlaceholder, [], '保留区内的章节不该被收起')
+
+  const heights = new Map<number, number>([[10, 8000], [20, 9000]])
+  assert.equal(estimateChapterHeight(11, heights), 8000, '优先取更近的邻居')
+  assert.equal(estimateChapterHeight(19, heights), 9000)
+  assert.equal(estimateChapterHeight(100, new Map()), null, '毫无参考时返回 null')
+})
+
+test('ReaderScroll - 上下各 2 章缓冲预载（用户要求：不要只加载当前章）', () => {
+  assert.deepEqual(bufferLoadRange(50, 793), { from: 48, to: 52 })
+  assert.deepEqual(bufferLoadRange(0, 793), { from: 0, to: 2 }, '首章向上钳制')
+  assert.deepEqual(bufferLoadRange(792, 793), { from: 790, to: 792 }, '末章向下钳制')
+  assert.equal(bufferLoadRange(0, 0), null, '空书返回 null')
+  assert.deepEqual(bufferLoadRange(50, 793, 0), { from: 50, to: 50 }, '缓冲为 0 时只加载当前章')
+})
+
+test('ReaderScroll - 连续流的渲染契约与引擎滚动锚定', () => {
+  const testDir = path.dirname(fileURLToPath(import.meta.url))
+  const reader = fs.readFileSync(path.resolve(testDir, '../src/ReaderScreen.tsx'), 'utf-8')
+  const css = fs.readFileSync(path.resolve(testDir, '../src/styles.css'), 'utf-8')
+  const code = stripComments(reader)
+
+  assert.match(code, /key=\{scrollSectionKey\(entry\.index\)\}/)
+  assert.equal(scrollSectionKey(7), 'chapter-7')
+
+  assert.match(code, /data-scroll-placeholder/)
+  assert.match(code, /height: `\$\{entry\.height\}px`/)
+  assert.match(code, /containIntrinsicSize: `\$\{entry\.height\}px`/)
+  assert.match(code, /if \(entry\.height <= 0\) \{[\s\S]{0,900}?ReaderContentSkeleton/,
+    '没量到高度的章节必须走正常区块（骨架），不能收成占位块')
+  assert.doesNotMatch(code, /height:[\s\S]{0,200}?estimateChapterHeight/, '渲染高度不能来自估算')
+  assert.match(code, /entry\.isCurrent\s*\?\s*liveScrollParagraphs\.map/)
+  assert.match(code, /minHeight: `\$\{scrollStreamMinHeight\}px`/, '文档高度只增不减')
+  assert.doesNotMatch(code, /data-scroll-strategy/)
+  assert.doesNotMatch(code, /shiftScrollWindow/)
+  assert.match(css, /\.reading-scroll-window\s*\{[^}]*overflow-anchor:\s*none/s)
+  assert.match(css, /\.reading-scroll-placeholder\s*\{[^}]*contain:\s*layout style paint/s)
+  const cssCode = stripComments(css)
+  assert.match(cssCode, /\.reading-content p[^{]*\{[^}]*text-align:\s*justify/s)
+  assert.doesNotMatch(cssCode, /text-wrap:\s*pretty/, '中文正文不要用 text-wrap: pretty')
+})

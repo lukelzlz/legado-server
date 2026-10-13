@@ -27,6 +27,7 @@ import kotlinx.serialization.json.Json
 
 class TtsSessionService(
     private val edgeTts: EdgeTtsService,
+    private val httpTtsService: HttpTtsService? = null,
 ) : AutoCloseable {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val sessions = ConcurrentHashMap<String, TtsSession>()
@@ -42,7 +43,7 @@ class TtsSessionService(
 
     fun create(ownerId: String): TtsSessionInfo {
         val id = UUID.randomUUID().toString()
-        val session = TtsSession(id, ownerId, edgeTts, scope) { removed -> sessions.remove(removed.sessionId, removed) }
+        val session = TtsSession(id, ownerId, edgeTts, scope, { removed -> sessions.remove(removed.sessionId, removed) }, httpTtsService)
         sessions[id] = session
         session.start()
         return TtsSessionInfo(id, "/api/tts/session/$id/audio", "/api/tts/session/$id/events")
@@ -74,6 +75,18 @@ class TtsSession(
     private val parentScope: CoroutineScope,
     private val onClosed: (TtsSession) -> Unit,
 ) : AutoCloseable {
+    internal var httpTtsService: HttpTtsService? = null
+
+    constructor(
+        sessionId: String,
+        ownerId: String,
+        edgeTts: EdgeTtsService,
+        parentScope: CoroutineScope,
+        onClosed: (TtsSession) -> Unit,
+        httpTtsService: HttpTtsService?,
+    ) : this(sessionId, ownerId, edgeTts, parentScope, onClosed) {
+        this.httpTtsService = httpTtsService
+    }
     private val createdAt = System.currentTimeMillis()
     private val lastActivityAt = AtomicLong(createdAt)
     private val chunks = Channel<TtsSessionChunkRequest>(48)
@@ -198,7 +211,13 @@ class TtsSession(
             )
         )
         try {
-            val audioStats = if (chunk.engine == "custom") streamCustom(chunk) else streamEdge(chunk)
+            val audioStats = if (chunk.httpTtsId != null || chunk.engine == "http") {
+                streamHttpTts(chunk)
+            } else if (chunk.engine == "custom") {
+                streamCustom(chunk)
+            } else {
+                streamEdge(chunk)
+            }
             audioCursorMs += audioStats.durationMs
             events.tryEmit(
                 TtsSessionEvent(
@@ -228,6 +247,48 @@ class TtsSession(
                 onAudio = callback,
             )
         }
+    }
+
+    private suspend fun streamHttpTts(chunk: TtsSessionChunkRequest): AudioStreamStats {
+        val service = httpTtsService
+            ?: throw IllegalStateException("HttpTtsService 未配置")
+        val speedMultiplier = (1.0 + chunk.rate / 100.0).coerceIn(0.2, 4.0)
+        val (contentType, bytes) = if (chunk.httpTtsId != null) {
+            service.synthesizeById(
+                id = chunk.httpTtsId,
+                text = chunk.text,
+                speed = speedMultiplier,
+                voice = chunk.voice,
+            )
+        } else if (!chunk.customUrl.isNullOrBlank()) {
+            val tts = HttpTts(
+                id = 0L,
+                name = "custom",
+                url = chunk.customUrl,
+                header = chunk.customHeader,
+            )
+            service.synthesize(
+                tts = tts,
+                text = chunk.text,
+                speed = speedMultiplier,
+                voice = chunk.voice,
+            )
+        } else {
+            throw IllegalArgumentException("缺少 HTTP TTS 参数或 ID")
+        }
+
+        if (bytes.isNotEmpty()) {
+            audio.emit(bytes)
+        }
+        val durationMs = if (contentType.contains("wav", ignoreCase = true)) {
+            service.estimateDurationMs(bytes, chunk.text)
+        } else {
+            val estimator = Mp3DurationEstimator()
+            estimator.add(bytes)
+            val d = estimator.durationMs()
+            if (d > 0) d else service.estimateDurationMs(bytes, chunk.text)
+        }
+        return AudioStreamStats(bytes.size.toLong(), durationMs)
     }
 
     private suspend fun streamCustom(chunk: TtsSessionChunkRequest): AudioStreamStats {

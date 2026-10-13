@@ -19,14 +19,14 @@ tags: [tts, edge-tts, nginx, buffering, mp3, silence-preamble, media-session]
 ## 2. 最终落地的正确解法 (Final Solution)
 
 1. **反代防缓冲响应头注入**：
-   - 在 [`server/src/main/kotlin/io/legado/server/Routes.kt`](file:///root/legado-server/server/src/main/kotlin/io/legado/server/Routes.kt) 的 `/audio` 与 `/events` 路由中强制追加：
+   - 在 [`server/src/main/kotlin/io/legado/server/Routes.kt`](../../server/src/main/kotlin/io/legado/server/Routes.kt) 的 `/audio` 与 `/events` 路由中强制追加：
      - `X-Accel-Buffering: no`
      - `Cache-Control: no-cache, no-transform`
      - `Connection: keep-alive`
 2. **首帧微型 MP3 静音帧垫底（Silence Preamble）**：
-   - 在 [`server/src/main/kotlin/io/legado/server/TtsSessionService.kt`](file:///root/legado-server/server/src/main/kotlin/io/legado/server/TtsSessionService.kt) 中，客户端一旦建立音频流连接，服务端即刻向 `ByteWriteChannel` 输出 144 字节的合法 LAME MP3 帧头（24kHz 48kbps Mono）并立即 flush。浏览器即刻进入 `HAVE_FUTURE_DATA` 准备状态并唤醒系统控制中心。
+   - 在 [`server/src/main/kotlin/io/legado/server/TtsSessionService.kt`](../../server/src/main/kotlin/io/legado/server/TtsSessionService.kt) 中，客户端一旦建立音频流连接，服务端即刻向 `ByteWriteChannel` 输出 144 字节的合法 LAME MP3 帧头（24kHz 48kbps Mono）并立即 flush。浏览器即刻进入 `HAVE_FUTURE_DATA` 准备状态并唤醒系统控制中心。
 3. **前端同步手势预热**：
-   - 在 [`web/src/ttsEngine.ts`](file:///root/legado-server/web/src/ttsEngine.ts) 中，用户点击朗读时在同步调用栈中立即预热 `<audio>` 实例，保持移动端与 Safari 用户交互授权有效。
+   - 在 [`web/src/ttsEngine.ts`](../../web/src/ttsEngine.ts) 中，用户点击朗读时在同步调用栈中立即预热 `<audio>` 实例，保持移动端与 Safari 用户交互授权有效。
 
 ## 3. 沉淀的教训与部落知识 (Lessons Learned)
 

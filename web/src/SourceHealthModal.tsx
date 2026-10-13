@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useMemo } from 'react'
+import { useTranslation } from 'react-i18next'
 import { api, SourceHealthCheckItem, SourceHealthCheckResponse, SourceSummary } from './api'
 import { Icon } from './icons'
 
@@ -17,6 +18,7 @@ export function SourceHealthModal({
   onSourcesChange,
   onToast,
 }: SourceHealthModalProps) {
+  const { t } = useTranslation()
   const [running, setRunning] = useState(false)
   const [progress, setProgress] = useState<{ total: number; checked: number }>({ total: sources.length, checked: 0 })
   const [results, setResults] = useState<SourceHealthCheckItem[]>([])
@@ -60,7 +62,7 @@ export function SourceHealthModal({
   const startCheck = async (targetIds?: string[]) => {
     const idsToCheck = targetIds ?? sources.map(s => s.id)
     if (idsToCheck.length === 0) {
-      onToast('没有可检测的书源', 'info')
+      onToast(t('source.noSourcesToCheck', '没有可检测的书源'), 'info')
       return
     }
     setRunning(true)
@@ -87,9 +89,17 @@ export function SourceHealthModal({
       }
       setDurationMs(resp.durationMs)
       setProgress({ total: idsToCheck.length, checked: idsToCheck.length })
-      onToast(`体检完成：${resp.successCount} 个正常，${resp.slowCount} 个迟缓，${resp.failedCount} 个失效`, resp.failedCount > 0 ? 'info' : 'success')
+      onToast(
+        t('source.healthCheckComplete', {
+          valid: resp.successCount,
+          slow: resp.slowCount,
+          failed: resp.failedCount,
+          defaultValue: `体检完成：${resp.successCount} 个正常，${resp.slowCount} 个迟缓，${resp.failedCount} 个失效`,
+        }),
+        resp.failedCount > 0 ? 'info' : 'success'
+      )
     } catch (err) {
-      onToast(err instanceof Error ? err.message : '体检请求失败', 'error')
+      onToast(err instanceof Error ? err.message : t('source.healthCheckFailed', '体检请求失败'), 'error')
     } finally {
       setRunning(false)
       if (timerRef.current) {
@@ -110,16 +120,16 @@ export function SourceHealthModal({
   const handleBatchDisableFailed = async () => {
     const failedItems = results.filter(r => r.statusCategory === 'failed' || r.statusCategory === 'blocked')
     if (failedItems.length === 0) {
-      onToast('当前无失效书源需要停用', 'info')
+      onToast(t('source.noFailedSourcesToDisable', '当前无失效书源需要停用'), 'info')
       return
     }
     setBusyAction('disable_failed')
     try {
       const resp = await api.batchSources('disable', failedItems.map(i => i.id))
-      onToast(resp.message || `已停用 ${resp.affected} 个失效书源`, 'success')
+      onToast(t('source.disabledFailedSuccess', { count: resp.affected, defaultValue: `已停用 ${resp.affected} 个失效书源` }), 'success')
       onSourcesChange()
     } catch (err) {
-      onToast(err instanceof Error ? err.message : '停用失败', 'error')
+      onToast(err instanceof Error ? err.message : t('source.disableSourcesFailed', '停用失败'), 'error')
     } finally {
       setBusyAction(null)
     }
@@ -128,21 +138,26 @@ export function SourceHealthModal({
   const handleBatchDeleteFailed = async () => {
     const failedItems = results.filter(r => r.statusCategory === 'failed' || r.statusCategory === 'blocked')
     if (failedItems.length === 0) {
-      onToast('当前无失效书源需要删除', 'info')
+      onToast(t('source.noFailedSourcesToDelete', '当前无失效书源需要删除'), 'info')
       return
     }
-    const names = failedItems.slice(0, 3).map(i => i.name).join('、') + (failedItems.length > 3 ? ` 等共 ${failedItems.length} 个` : '')
-    if (!confirm(`确定要彻底删除以下 ${failedItems.length} 个失效书源吗？\n（${names}）\n删除后不可恢复！`)) {
+    const separator = t('common.separator', '、')
+    const names = failedItems.slice(0, 3).map(i => i.name).join(separator) + (failedItems.length > 3 ? t('source.etcCount', ' 等共 {{count}} 个', { count: failedItems.length }) : '')
+    if (!confirm(t('source.deleteFailedConfirm', {
+      count: failedItems.length,
+      names,
+      defaultValue: `确定要彻底删除以下 ${failedItems.length} 个失效书源吗？\n（${names}）\n删除后不可恢复！`,
+    }))) {
       return
     }
     setBusyAction('delete_failed')
     try {
       const resp = await api.batchSources('delete', failedItems.map(i => i.id))
-      onToast(resp.message || `已删除 ${resp.affected} 个失效书源`, 'success')
+      onToast(t('source.deletedFailedSuccess', { count: resp.affected, defaultValue: `已删除 ${resp.affected} 个失效书源` }), 'success')
       setResults(prev => prev.filter(r => r.statusCategory !== 'failed' && r.statusCategory !== 'blocked'))
       onSourcesChange()
     } catch (err) {
-      onToast(err instanceof Error ? err.message : '删除失败', 'error')
+      onToast(err instanceof Error ? err.message : t('source.deleteSourcesFailed', '删除失败'), 'error')
     } finally {
       setBusyAction(null)
     }
@@ -153,7 +168,7 @@ export function SourceHealthModal({
       .filter(r => r.statusCategory === 'failed' || r.statusCategory === 'blocked')
       .map(r => r.id)
     if (failedIds.length === 0) {
-      onToast('没有失效书源需要重试', 'info')
+      onToast(t('source.noFailedSourcesToRetry', '没有失效书源需要重试'), 'info')
       return
     }
     void startCheck(failedIds)
@@ -170,15 +185,15 @@ export function SourceHealthModal({
           <div className="health-modal-title">
             <Icon name="activity" />
             <div>
-              <h2>书源连通性与健康体检</h2>
+              <h2>{t('source.healthCheckTitle', '书源连通性与健康体检')}</h2>
               <small>
                 {running
-                  ? `正在并发探测书源 Host 与入口连通性 (${(durationMs / 1000).toFixed(1)}s)...`
-                  : `共检测 ${stats.total} 个书源 · 用时 ${(durationMs / 1000).toFixed(1)}s`}
+                  ? t('source.probingHostConnectivity', { time: (durationMs / 1000).toFixed(1), defaultValue: `正在并发探测书源 Host 与入口连通性 (${(durationMs / 1000).toFixed(1)}s)...` })
+                  : t('source.healthSummaryDone', { total: stats.total, time: (durationMs / 1000).toFixed(1), defaultValue: `共检测 ${stats.total} 个书源 · 用时 ${(durationMs / 1000).toFixed(1)}s` })}
               </small>
             </div>
           </div>
-          <button type="button" className="close-button" onClick={onClose} aria-label="关闭">
+          <button type="button" className="close-button" onClick={onClose} aria-label={t('common.close', '关闭')}>
             <Icon name="close" />
           </button>
         </header>
@@ -199,35 +214,35 @@ export function SourceHealthModal({
               className={`health-tab-btn ${activeTab === 'all' ? 'active' : ''}`}
               onClick={() => setActiveTab('all')}
             >
-              全部 ({stats.total})
+              {t('source.allCount', { count: stats.total, defaultValue: `全部 (${stats.total})` })}
             </button>
             <button
               type="button"
               className={`health-tab-btn tab-valid ${activeTab === 'valid' ? 'active' : ''}`}
               onClick={() => setActiveTab('valid')}
             >
-              🟢 正常 ({stats.valid})
+              {t('source.statusValid', { count: stats.valid, defaultValue: `🟢 正常 (${stats.valid})` })}
             </button>
             <button
               type="button"
               className={`health-tab-btn tab-slow ${activeTab === 'slow' ? 'active' : ''}`}
               onClick={() => setActiveTab('slow')}
             >
-              🟡 迟缓 ({stats.slow})
+              {t('source.statusSlow', { count: stats.slow, defaultValue: `🟡 迟缓 (${stats.slow})` })}
             </button>
             <button
               type="button"
               className={`health-tab-btn tab-failed ${activeTab === 'failed' ? 'active' : ''}`}
               onClick={() => setActiveTab('failed')}
             >
-              🔴 失效 ({stats.failed})
+              {t('source.statusFailed', { count: stats.failed, defaultValue: `🔴 失效 (${stats.failed})` })}
             </button>
           </div>
           <div className="health-search-input">
             <Icon name="search" />
             <input
               type="text"
-              placeholder="搜索检测结果..."
+              placeholder={t('source.searchHealthResults', '搜索检测结果...')}
               value={filterQuery}
               onChange={e => setFilterQuery(e.target.value)}
             />
@@ -244,7 +259,7 @@ export function SourceHealthModal({
               disabled={running || busyAction !== null}
             >
               <Icon name="refresh" className={running ? 'spin' : ''} />
-              <span>{running ? '体检中...' : '重新全量体检'}</span>
+              <span>{running ? t('source.checking', '体检中...') : t('source.recheckAll', '重新全量体检')}</span>
             </button>
             {stats.failed > 0 && !running && (
               <button
@@ -253,7 +268,7 @@ export function SourceHealthModal({
                 onClick={handleRetryFailed}
                 disabled={busyAction !== null}
               >
-                <span>重试失效项 ({stats.failed})</span>
+                <span>{t('source.retryFailed', { count: stats.failed, defaultValue: `重试失效项 (${stats.failed})` })}</span>
               </button>
             )}
           </div>
@@ -265,7 +280,7 @@ export function SourceHealthModal({
                 onClick={() => void handleBatchDisableFailed()}
                 disabled={running || busyAction !== null}
               >
-                <span>一键停用失效源 ({stats.failed})</span>
+                <span>{t('source.disableFailed', { count: stats.failed, defaultValue: `一键停用失效源 (${stats.failed})` })}</span>
               </button>
               <button
                 type="button"
@@ -273,7 +288,7 @@ export function SourceHealthModal({
                 onClick={() => void handleBatchDeleteFailed()}
                 disabled={running || busyAction !== null}
               >
-                <span>一键删除失效源 ({stats.failed})</span>
+                <span>{t('source.deleteFailed', { count: stats.failed, defaultValue: `一键删除失效源 (${stats.failed})` })}</span>
               </button>
             </div>
           )}
@@ -283,7 +298,7 @@ export function SourceHealthModal({
         <div className="health-results-list">
           {filteredResults.length === 0 ? (
             <div className="health-empty-state">
-              <p>{running ? '正在努力探测中...' : '无符合筛选条件的结果'}</p>
+              <p>{running ? t('source.probingInProgress', '正在努力探测中...') : t('source.noMatchingHealthResults', '无符合筛选条件的结果')}</p>
             </div>
           ) : (
             filteredResults.map(item => {
@@ -293,16 +308,16 @@ export function SourceHealthModal({
               const isFailed = item.statusCategory === 'failed'
 
               let badgeClass = 'badge-valid'
-              let badgeText = '连通正常'
+              let badgeText = t('source.badgeValid', '连通正常')
               if (isSlow) {
                 badgeClass = 'badge-slow'
-                badgeText = '响应较慢'
+                badgeText = t('source.badgeSlow', '响应较慢')
               } else if (isBlocked) {
                 badgeClass = 'badge-blocked'
-                badgeText = '访问受限'
+                badgeText = t('source.badgeRestricted', '访问受限')
               } else if (isFailed) {
                 badgeClass = 'badge-failed'
-                badgeText = '连接失效'
+                badgeText = t('source.badgeFailed', '连接失效')
               }
 
               return (
@@ -327,7 +342,7 @@ export function SourceHealthModal({
                     <button
                       type="button"
                       className="subtle-button icon-only"
-                      title="单独重测"
+                      title={t('source.singleRetest', '单独重测')}
                       onClick={() => handleRetrySingle(item.id)}
                       disabled={running}
                     >

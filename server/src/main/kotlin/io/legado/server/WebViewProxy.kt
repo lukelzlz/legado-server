@@ -1,6 +1,7 @@
 package io.legado.server
 
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonObject
@@ -8,6 +9,8 @@ import org.jsoup.Jsoup
 import org.jsoup.nodes.DataNode
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
+import java.io.ByteArrayOutputStream
+import java.io.InputStream
 import java.net.URI
 import java.net.URLEncoder
 import java.net.http.HttpClient
@@ -23,8 +26,19 @@ import java.util.zip.InflaterInputStream
 /** 反向代理失败时抛出，由路由层转换为 4xx 响应。 */
 class WebViewException(message: String) : RuntimeException(message)
 
-/** 代理结果：状态码 + 内容类型 + 响应体。 */
-data class ProxiedPayload(val status: Int, val contentType: String, val body: ByteArray)
+/**
+ * 代理结果：状态码 + 内容类型 + 响应体 + 需要透传给浏览器的缓存头。
+ *
+ * [cacheHeaders] 用于把上游的 `Cache-Control` / `ETag` / `Last-Modified` / `Expires`
+ * 原样转发给浏览器。此前一个都不转发 ⇒ 浏览器**什么都缓存不了**：实测 cdnjs 的
+ * font-awesome / jquery 明确给了 `public, max-age=30672000, immutable`，也被我们丢掉了。
+ */
+data class ProxiedPayload(
+    val status: Int,
+    val contentType: String,
+    val body: ByteArray,
+    val cacheHeaders: List<Pair<String, String>> = emptyList(),
+)
 
 /**
  * 内置 WebView 登录引擎。
@@ -75,6 +89,10 @@ class WebViewProxy(private val database: Database) {
         tickets.remove(token)
     }
 
+    /** 票据是否属于该书源且未过期：设置结果回传必须凭当前会话的票据才允许落库。 */
+    fun hasTicket(sourceId: String, token: String): Boolean =
+        runCatching { resolveTicket(token, sourceId) }.isSuccess
+
     private fun resolveTicket(token: String, sourceId: String): Ticket {
         val ticket = tickets[token] ?: throw WebViewException("登录会话已失效，请重新打开内置浏览器")
         if (ticket.expiresAt < System.currentTimeMillis()) {
@@ -98,15 +116,15 @@ class WebViewProxy(private val database: Database) {
         val uri = validateTarget(ticket, target, enforceDomain = true)
         val response = requestFollowing(uri, "GET", null, null, sourceId, referer = null)
         val contentType = response.headers().firstValue("content-type").orElse("")
-        val raw = response.body()
+        // 解压只在 bodyOf 这一个收口做，之后所有分支拿到的都是**已解压**字节
+        val raw = bodyOf(response)
         val mime = contentType.substringBefore(';').trim().lowercase()
         if (mime.isNotEmpty() && !mime.contains("html")) {
             // 目标其实是个文件（如 PDF/图片），直接透传
             return ProxiedPayload(response.statusCode(), sanitizeContentType(contentType), raw)
         }
         val charset = detectCharset(contentType, raw)
-        val html = decodeBody(raw, response.headers().firstValue("content-encoding").orElse(""), charset)
-        val rewritten = rewriteHtml(html, uri, sourceId, token)
+        val rewritten = rewriteHtml(String(raw, charset), uri, sourceId, token)
         return ProxiedPayload(response.statusCode(), "text/html; charset=utf-8", rewritten.toByteArray(Charsets.UTF_8))
     }
 
@@ -116,21 +134,20 @@ class WebViewProxy(private val database: Database) {
         val uri = validateTarget(ticket, target, enforceDomain = false)
         val response = requestFollowing(uri, "GET", null, null, sourceId, referer = refererFor(uri))
         val contentType = response.headers().firstValue("content-type").orElse("application/octet-stream")
-        val raw = response.body()
+        val raw = bodyOf(response)
+        val cache = cacheHeadersOf(response)
         val mime = contentType.substringBefore(';').trim().lowercase()
         if (mime.contains("html")) {
             // 某些资源实际返回了 HTML（例如防盗链跳转页），同样重写以便站内跳转可用
             val charset = detectCharset(contentType, raw)
-            val html = decodeBody(raw, response.headers().firstValue("content-encoding").orElse(""), charset)
-            return ProxiedPayload(response.statusCode(), "text/html; charset=utf-8", rewriteHtml(html, uri, sourceId, token).toByteArray(Charsets.UTF_8))
+            return ProxiedPayload(response.statusCode(), "text/html; charset=utf-8", rewriteHtml(String(raw, charset), uri, sourceId, token).toByteArray(Charsets.UTF_8), cache)
         }
         if (mime.contains("css")) {
             val charset = detectCharset(contentType, raw)
-            val css = decodeBody(raw, response.headers().firstValue("content-encoding").orElse(""), charset)
-            val rewritten = rewriteCss(css, uri, sourceId, token)
-            return ProxiedPayload(response.statusCode(), "text/css; charset=utf-8", rewritten.toByteArray(Charsets.UTF_8))
+            val rewritten = rewriteCss(String(raw, charset), uri, sourceId, token)
+            return ProxiedPayload(response.statusCode(), "text/css; charset=utf-8", rewritten.toByteArray(Charsets.UTF_8), cache)
         }
-        return ProxiedPayload(response.statusCode(), sanitizeContentType(contentType), raw)
+        return ProxiedPayload(response.statusCode(), sanitizeContentType(contentType), raw, cache)
     }
 
     /** 表单提交转发（GET / POST 均可）。 */
@@ -150,14 +167,13 @@ class WebViewProxy(private val database: Database) {
             requestFollowing(uri, "GET", null, null, sourceId, referer = refererFor(uri))
         }
         val responseContentType = response.headers().firstValue("content-type").orElse("")
-        val raw = response.body()
+        val raw = bodyOf(response)
         val mime = responseContentType.substringBefore(';').trim().lowercase()
         if (mime.isNotEmpty() && !mime.contains("html")) {
             return ProxiedPayload(response.statusCode(), sanitizeContentType(responseContentType), raw)
         }
         val charset = detectCharset(responseContentType, raw)
-        val html = decodeBody(raw, response.headers().firstValue("content-encoding").orElse(""), charset)
-        return ProxiedPayload(response.statusCode(), "text/html; charset=utf-8", rewriteHtml(html, uri, sourceId, token).toByteArray(Charsets.UTF_8))
+        return ProxiedPayload(response.statusCode(), "text/html; charset=utf-8", rewriteHtml(String(raw, charset), uri, sourceId, token).toByteArray(Charsets.UTF_8))
     }
 
     /** 当前书源已捕获到的 Cookie（按域名分组），用于前端展示登录结果。 */
@@ -326,6 +342,41 @@ class WebViewProxy(private val database: Database) {
         private const val MAX_BODY_BYTES = 8 * 1024 * 1024
         private const val MAX_INLINE_BYTES = 4 * 1024 * 1024
         private const val MAX_INLINE_PAGES = 16
+
+        /** 书源自生成页面的结果容器 id；出现这些 id 才注入采集脚本。 */
+        val RESULT_CONTAINER_IDS = listOf(
+            "source-settings-final-result",
+            "source-settings-result",
+            "bubble-settings-result",
+        )
+
+        /** 单份设置结果的上限：页面状态是几百字节级，超过即视为异常载荷。 */
+        private const val MAX_SETTINGS_BYTES = 64 * 1024
+
+        /** 结果必须至少命中一个已知设置键，避免把无关页面的 JSON 写进源变量。 */
+        private val SETTINGS_MARKER_KEYS =
+            setOf("tab", "sources", "server", "tone_id", "shuqi_tone_id", "pstyle", "proxy", "find_source")
+
+        /**
+         * 把页面回传的设置收敛成可落库的源变量。
+         *
+         * 兜底口径与书源 JS 自己 `source.setVariable()` 之前的三步保持一致：
+         * 丢弃一次性 nonce、书旗音色回落 `multi_role`、`pstyle` 归一为字符串。
+         * 结构不可信（空对象 / 无任何已知键 / 超长）时返回 null，由路由层给出明确提示。
+         */
+        fun normalizeSettingsResult(settings: JsonObject): JsonObject? {
+            if (settings.isEmpty()) return null
+            if (SETTINGS_MARKER_KEYS.none { settings.containsKey(it) }) return null
+            val cleaned = settings.toMutableMap()
+            cleaned.remove("_settings_nonce")
+            val tone = (cleaned["shuqi_tone_id"] as? JsonPrimitive)?.contentOrNull
+            if (tone.isNullOrBlank() || tone == "默认音色") cleaned["shuqi_tone_id"] = JsonPrimitive("multi_role")
+            val pstyle = (cleaned["pstyle"] as? JsonPrimitive)?.contentOrNull.orEmpty().ifBlank { "0" }
+            cleaned["pstyle"] = JsonPrimitive(pstyle)
+            val normalized = JsonObject(cleaned)
+            if (normalized.toString().toByteArray(Charsets.UTF_8).size > MAX_SETTINGS_BYTES) return null
+            return normalized
+        }
         const val DESKTOP_USER_AGENT =
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 
@@ -406,13 +457,70 @@ class WebViewProxy(private val database: Database) {
             return Charsets.UTF_8
         }
 
-        private fun decodeBody(bytes: ByteArray, contentEncoding: String, charset: Charset): String {
-            val decoded = when (contentEncoding.lowercase()) {
-                "gzip" -> runCatching { GZIPInputStream(bytes.inputStream()).readAllBytes() }.getOrDefault(bytes)
-                "deflate" -> runCatching { InflaterInputStream(bytes.inputStream()).readAllBytes() }.getOrDefault(bytes)
-                else -> bytes
+        /**
+         * 把上游的缓存元数据透传给浏览器。
+         *
+         * 只做**忠实转发**，不自己编造 `max-age`：上游（如 CDN）说能缓存多久就多久，
+         * 上游没给（例如本项目的目标站点对 HTML/JSON 一个缓存头都不发）就不缓存 ——
+         * 避免把可能因登录态变化的页面缓存成陈旧副本。
+         */
+        private fun cacheHeadersOf(response: HttpResponse<ByteArray>): List<Pair<String, String>> {
+            val names = listOf("cache-control", "etag", "last-modified", "expires")
+            return names.mapNotNull { name ->
+                response.headers().firstValue(name).orElse("").takeIf { it.isNotBlank() }?.let { name to it }
             }
-            return String(decoded, charset)
+        }
+
+        /**
+         * 读取响应体并**按魔数兜底解压**。
+         *
+         * ⚠️ 这是整个代理读取 body 的**唯一收口**。原先只有 html/css 会经 `decodeBody` 解压，
+         * 其它资源（JS / JSON / SVG / 字体）一律直接透传 `response.body()`；而请求头声明了
+         * `Accept-Encoding: gzip`，而 JDK HttpClient **不会自动解压** ⇒ 实测 `jquery.min.js`
+         * 交给浏览器的前 4 字节是 `1F 8B 08 00`（gzip），浏览器又拿不到 `Content-Encoding`
+         * （我们不转发该头）⇒ **脚本变成乱码、根本无法执行**，页面表现为一直转圈 / 按钮无反应 /
+         * 更新页卡在「正在检查更新…」。
+         *
+         * 仓库既有教训（SESSION-027「`BodyHandlers.ofByteArray()` 不解压 gzip」）在这里同样适用，
+         * 且**必须按魔数判断、不能只信 `Content-Encoding`**——上游会谎报，强行解压反而会弄坏
+         * 已经解压过的好数据。
+         */
+        private fun bodyOf(response: HttpResponse<ByteArray>): ByteArray =
+            decompress(response.body(), response.headers().firstValue("content-encoding").orElse(""))
+
+        /**
+         * 放开为 `internal` 仅为让单测直接锁定「**按魔数**解压」这一核心行为
+         * （见 `WebViewProxyDecompressTest`）——该修复一旦被无声改回「只信响应头」，
+         * 所有 gzip 过的 JS 又会变回乱码。
+         */
+        internal fun decompress(bytes: ByteArray, contentEncoding: String): ByteArray {
+            val gzipMagic = bytes.size >= 2 && bytes[0] == 0x1F.toByte() && bytes[1] == 0x8B.toByte()
+            val header = contentEncoding.lowercase()
+            // 魔数优先：上游会谎报 Content-Encoding，凭头部强行解压会弄坏已经解压过的好数据
+            val useGzip = gzipMagic || header.contains("gzip")
+            val useInflate = !useGzip && header.contains("deflate")
+            if (!useGzip && !useInflate) return bytes
+            // ⚠️ `GZIPInputStream(...)` / `InflaterInputStream(...)` 的**构造函数本身**就可能抛
+            // ZipException / EOFException（魔数对但内容是坏数据，或上游谎报 gzip）。
+            // 因此**流的构造与读取必须一起**包在 runCatching 里 —— 只包读取会让异常冒泡成 500，
+            // 把整个资源请求打挂（本类的调用方只捕获 WebViewException）。
+            // `readBounded` 同时给解压结果加上限：坏数据可能解出天文数字体积（放大炸弹）。
+            return runCatching {
+                val stream: InputStream = if (useGzip) GZIPInputStream(bytes.inputStream()) else InflaterInputStream(bytes.inputStream())
+                stream.use { it.readBounded(MAX_BODY_BYTES) }
+            }.getOrDefault(bytes)
+        }
+
+        private fun InputStream.readBounded(limit: Int): ByteArray {
+            val out = ByteArrayOutputStream()
+            val buffer = ByteArray(16 * 1024)
+            while (true) {
+                val read = read(buffer)
+                if (read < 0) break
+                if (out.size() + read > limit) throw IllegalStateException("解压后超过 ${limit / 1024 / 1024} MiB")
+                out.write(buffer, 0, read)
+            }
+            return out.toByteArray()
         }
 
         private fun absolutize(raw: String, base: URI): String? {
@@ -423,21 +531,8 @@ class WebViewProxy(private val database: Database) {
                 lower.startsWith("tel:") || lower.startsWith("blob:") || lower.startsWith("about:") ||
                 lower.startsWith("#") || lower.startsWith("sms:")
             ) return null
-            val resolved = runCatching { base.resolve(percentEncodeIllegal(value)) }.getOrNull() ?: return null
+            val resolved = runCatching { base.resolve(encodeIllegalUrlChars(value)) }.getOrNull() ?: return null
             return resolved.takeIf { it.scheme?.lowercase() in setOf("http", "https") }?.toString()
-        }
-
-        /** 对 URL 中的非法字符做百分号编码（中文、空格、模板花括号等），否则 URI 解析会直接失败。 */
-        private fun percentEncodeIllegal(value: String): String {
-            val builder = StringBuilder(value.length)
-            for (ch in value) {
-                when {
-                    ch == ' ' -> builder.append("%20")
-                    ch.code > 127 || ch in "\"<>{}|\\^`" -> builder.append(URLEncoder.encode(ch.toString(), Charsets.UTF_8))
-                    else -> builder.append(ch)
-                }
-            }
-            return builder.toString()
         }
 
         fun pageUrl(sourceId: String, token: String, target: String): String =
@@ -523,6 +618,7 @@ class WebViewProxy(private val database: Database) {
             }
 
             injectBootstrap(document, base, sourceId, token)
+            injectSettingsCollector(document, html)
             return document.outerHtml()
         }
 
@@ -563,8 +659,10 @@ class WebViewProxy(private val database: Database) {
 
         /**
          * 注入引导脚本：
-         * 1. 屏蔽 frame-busting（把 top/parent/frameElement 指向自身）；
-         * 2. 把页面内 JS 发起的 fetch / XHR / window.open 也改写到代理路径上。
+         * 1. 在屏蔽 frame-busting 之前**先抓住真实宿主窗口**（`__legadoHost`），否则
+         *    `window.parent` 被指向自身后，页面再也无法向宿主 postMessage；
+         * 2. 把页面内 JS 发起的 fetch / XHR / window.open 也改写到代理路径上；
+         * 3. 用真实宿主回报地址变化（地址栏与前进/后退）。
          */
         private fun injectBootstrap(document: Document, base: URI, sourceId: String, token: String) {
             // Jsoup 的 head() 在缺失时会自动补建，因此必定非空
@@ -575,6 +673,9 @@ class WebViewProxy(private val database: Database) {
                 script,
                 """
                 (function(){
+                  var HOST=null;
+                  try{ HOST=window.parent }catch(e){}
+                  try{ if(HOST&&HOST!==window) window.__legadoHost=HOST }catch(e){}
                   try{Object.defineProperty(window,'top',{get:function(){return window},configurable:true})}catch(e){}
                   try{Object.defineProperty(window,'parent',{get:function(){return window},configurable:true})}catch(e){}
                   try{Object.defineProperty(window,'frameElement',{get:function(){return null},configurable:true})}catch(e){}
@@ -586,8 +687,8 @@ class WebViewProxy(private val database: Database) {
                   var toRes=function(u){return build('res',u)}, toPage=function(u){return build('page',u)};
                   window.__legadoProxy={toRes:toRes,toPage:toPage};
                   try{
-                    if(window.parent&&window.parent!==window){
-                      window.parent.postMessage({source:'legado-webview',type:'navigated',url:BASE},'*')
+                    if(window.__legadoHost){
+                      window.__legadoHost.postMessage({source:'legado-webview',type:'navigated',url:BASE},'*')
                     }
                   }catch(e){}
                   var nativeFetch=window.fetch;
@@ -606,10 +707,88 @@ class WebViewProxy(private val database: Database) {
                     return nativeOpen.apply(this,arguments)
                   };
                   window.open=function(url){ if(url){ window.location.href=toPage(url) } return window };
+                  // 书源「更新书源」页的线路按钮用的是客户端私有协议
+                  //   yuedu://booksource/importonline?src=<urlencoded 书源地址>
+                  // 浏览器 iframe 不认识该协议（点了完全没反应），而代理层既无法把 href 改写成
+                  // 代理地址（它没有对应的网络请求），也改写不了 JS 对 location 的赋值。
+                  // 因此在**捕获阶段**拦下点击，把 src 抽出来 postMessage 交回宿主，
+                  // 由宿主走「网络书源导入」弹窗（服务端代抓 + 票据预览）。
+                  document.addEventListener('click', function(event){
+                    var node=event.target;
+                    while(node&&node.nodeType===1&&node.tagName!=='A'){ node=node.parentElement }
+                    if(!node||node.tagName!=='A') return;
+                    var href=node.getAttribute('href')||'';
+                    if(href.indexOf('yuedu://booksource/importonline')!==0) return;
+                    var raw=null;
+                    try{ raw=new URL(href).searchParams.get('src') }catch(e){}
+                    if(!raw){
+                      var q=href.indexOf('?');
+                      if(q>=0){
+                        var m=href.substring(q+1).match(/(?:^|&)src=([^&]*)/);
+                        if(m){ try{ raw=decodeURIComponent(m[1]) }catch(e){ raw=m[1] } }
+                      }
+                    }
+                    if(!raw) return;
+                    event.preventDefault();
+                    event.stopPropagation();
+                    try{
+                      if(window.__legadoHost&&window.__legadoHost!==window){
+                        window.__legadoHost.postMessage({source:'legado-webview',type:'import-online',url:String(raw)},'*')
+                      }
+                    }catch(e){}
+                  }, true);
                 })();
                 """.trimIndent(),
             )
             host.prependChild(script)
+        }
+
+        /**
+         * 注入「设置结果采集」脚本（仅当页面存在结果容器时）。
+         *
+         * 安卓端由 `startBrowserAwait` 直接返回关闭时的页面 body，书源 JS 再从 body 里解析
+         * `<script id="source-settings-*-result">`；无头端这个 body 通道不存在，于是改为
+         * 在代理层采集容器文本并 postMessage 给宿主，由宿主回传服务端落库。
+         */
+        private fun injectSettingsCollector(document: Document, html: String) {
+            if (RESULT_CONTAINER_IDS.none { html.contains(it) }) return
+            val host = document.head()
+            val script = document.createElement("script")
+            script.attr("data-legado-proxy", "settings-collector")
+            replaceRawContent(
+                script,
+                """
+                (function(){
+                  var IDS=${RESULT_CONTAINER_IDS.joinToString(prefix = "[", postfix = "]") { jsString(it) }};
+                  var HOST=null;
+                  try{ HOST=(window.__legadoHost&&window.__legadoHost!==window)?window.__legadoHost:window.parent }catch(e){}
+                  if(!HOST||HOST===window) return;
+                  var last={};
+                  function report(){
+                    for(var i=0;i<IDS.length;i++){
+                      var id=IDS[i];
+                      var el=document.getElementById(id);
+                      var text=el?String(el.textContent||'').trim():'';
+                      if(!text||last[id]===text) continue;
+                      last[id]=text;
+                      var settings=null;
+                      try{ settings=JSON.parse(decodeURIComponent(text)) }catch(e){ continue }
+                      if(!settings||typeof settings!=='object'||Array.isArray(settings)) continue;
+                      try{ HOST.postMessage({source:'legado-webview',type:'settings-result',resultId:id,settings:settings},'*') }catch(e){}
+                    }
+                  }
+                  try{
+                    new MutationObserver(report).observe(document.documentElement||document,{subtree:true,childList:true,characterData:true});
+                  }catch(e){}
+                  document.addEventListener('DOMContentLoaded',report);
+                  window.addEventListener('load',report);
+                  window.addEventListener('pagehide',report);
+                  window.addEventListener('beforeunload',report);
+                  setInterval(report,1500);
+                })();
+                """.trimIndent(),
+            )
+            host.appendChild(script)
         }
 
         private fun jsString(value: String): String =

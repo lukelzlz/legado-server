@@ -1,8 +1,8 @@
 # 移动端全面屏死区适配与替换净化规则 UI 重构实操验收手册 (ACCEPT-013)
 
-> **关联提案**：[`docs/proposals/PROPOSAL-013-mobile-safe-area-and-rules-ui-redesign.md`](file:///root/legado-server/docs/proposals/PROPOSAL-013-mobile-safe-area-and-rules-ui-redesign.md)  
-> **关联架构决策**：[`docs/decisions/ADR-013-safe-area-layout-and-rules-design-system.md`](file:///root/legado-server/docs/decisions/ADR-013-safe-area-layout-and-rules-design-system.md)  
-> **关联工作记忆**：[`docs/sessions/SESSION-014-safe-area-and-rules-ui-redesign.md`](file:///root/legado-server/docs/sessions/SESSION-014-safe-area-and-rules-ui-redesign.md)
+> **关联提案**：[`docs/proposals/PROPOSAL-013-mobile-safe-area-and-rules-ui-redesign.md`](../proposals/PROPOSAL-013-mobile-safe-area-and-rules-ui-redesign.md)  
+> **关联架构决策**：[`docs/decisions/ADR-013-safe-area-layout-and-rules-design-system.md`](../decisions/ADR-013-safe-area-layout-and-rules-design-system.md)  
+> **关联工作记忆**：[`docs/sessions/SESSION-014-safe-area-and-rules-ui-redesign.md`](../sessions/SESSION-014-safe-area-and-rules-ui-redesign.md)
 
 ---
 

@@ -136,6 +136,131 @@ class LocalBookParserTest {
     }
 
     @Test
+    fun `parseEpub keeps block level paragraph breaks`() {
+        // 回归点：旧实现用 `prepend("\n\n")` 给块级元素标记边界，再取 `Element.text()`，
+        // 而 Jsoup 的 text() 会把所有空白字符归一化 ⇒ 插进去的换行被全部吃掉，
+        // 整章正文被压成一行，阅读页完全没有分段（实测真实书 3300 字/0 个换行）。
+        val chapterHtml = """
+            <html>
+              <head><title>不该出现在正文里的标题</title></head>
+              <body>
+                <h1>第一章 段落</h1>
+                <p>第一段。</p>
+                <p>第二段。</p>
+                <div><p>第三段。</p><div>第四段。</div></div>
+                <blockquote>第五段。</blockquote>
+                <p>第六段<br/>第七段。</p>
+              </body>
+            </html>
+        """.trimIndent()
+        val epubBytes = createSampleEpub(
+            title = "段落测试",
+            author = "测试作者",
+            intro = "验证块级元素边界不丢",
+            coverBytes = byteArrayOf(0xFF.toByte(), 0xD8.toByte(), 0xFF.toByte(), 0xE0.toByte()),
+            chapters = listOf("第一章 段落" to chapterHtml)
+        )
+
+        val parsed = LocalBookParser.parseEpub("段落测试.epub", epubBytes)
+        val content = parsed.chapters.single().content
+
+        // 块级元素之间必须有真正的换行，而不是被归一化成空格
+        assertTrue("块级元素之间必须保留段落分隔，实际内容：$content", content.contains("\n"))
+        assertTrue("相邻 <p> 应各自成段，实际内容：$content", content.contains("第一段。\n\n第二段。"))
+        assertTrue("嵌套 <div> 内的文本应能断行，实际内容：$content", content.contains("第四段。"))
+        assertTrue("<br> 应断行，实际内容：$content", content.contains("第六段\n\n第七段。"))
+
+        val paragraphs = content.split("\n").map { it.trim() }.filter { it.isNotEmpty() }
+        assertTrue("段落数应接近 7，实际 ${paragraphs.size}：$content", paragraphs.size >= 6)
+        assertEquals("第一章 段落", paragraphs.first())
+        // head/title 不得混进正文
+        assertFalse("head 中的 <title> 不应进入正文：$content", content.contains("不该出现在正文里的标题"))
+    }
+
+    @Test
+    fun `replaceLocalBookCache rewrites caches but keeps shelf metadata and progress`() {
+        val tempDir = Files.createTempDirectory("local-book-reparse-test")
+        val database = Database(tempDir.resolve("legado.sqlite").toString())
+        database.initialize("admin123")
+
+        // 导入一本「正文被压成一行」的坏书
+        val legacy = ParsedBook(
+            title = "旧书名",
+            author = "旧作者",
+            intro = null,
+            coverBytes = null,
+            coverContentType = null,
+            chapters = listOf(
+                ParsedChapter("第一章 旧", "整章被压成一行，没有任何分段。"),
+                ParsedChapter("第二章 旧", "第二章同样被压成一行。")
+            )
+        )
+        database.importLocalBook("reparse01", legacy, null)
+
+        // 用户在服务端手工整理过的元数据与进度：重解析绝不能覆盖它们
+        database.updateBookshelfInfo(
+            BookshelfInfoUpdateRequest(
+                sourceId = "loc_book",
+                bookUrl = "local://reparse01",
+                name = "我改过的书名",
+                author = "我改过的作者",
+                groupName = "我的分组"
+            ),
+            null
+        )
+        database.saveProgress(
+            ReadingProgress(
+                sourceId = "loc_book",
+                bookUrl = "local://reparse01",
+                chapterUrl = "local://reparse01/chapter_2",
+                chapterIndex = 1
+            )
+        )
+
+        val reparsed = ParsedBook(
+            title = "重新解析后的书名",
+            author = "重新解析后的作者",
+            intro = null,
+            coverBytes = null,
+            coverContentType = null,
+            chapters = listOf(
+                ParsedChapter("第一章 新", "第一段。\n\n第二段。")
+            )
+        )
+        val written = database.replaceLocalBookCache("reparse01", reparsed)
+        assertEquals(1, written)
+
+        // 正文已回填
+        val refreshed = database.cachedContent("loc_book", "local://reparse01", "local://reparse01/chapter_1")
+        assertNotNull(refreshed)
+        assertTrue(refreshed!!.content.contains("第一段。\n\n第二段。"))
+        // 章节数变少时，旧的多余章节行必须被清掉
+        assertNull(database.cachedContent("loc_book", "local://reparse01", "local://reparse01/chapter_2"))
+        // 目录跟着重建
+        val toc = database.getTocCache("loc_book", "local://reparse01")
+        assertEquals(1, toc!!.size)
+        assertEquals("第一章 新", toc[0].title)
+
+        // 书架行列（书名/作者/分组）不被重解析覆盖
+        val shelf = database.listBookshelf().single()
+        assertEquals("我改过的书名", shelf.name)
+        assertEquals("我改过的作者", shelf.author)
+        assertEquals("我的分组", shelf.groupName)
+        // 阅读进度不变（bookUrl 不变，进度自然延续）
+        val progress = database.getProgress("loc_book", "local://reparse01")
+        assertNotNull(progress)
+        assertEquals(1, progress!!.chapterIndex)
+
+        // 幂等：同一本反复回填结果一致
+        assertEquals(1, database.replaceLocalBookCache("reparse01", reparsed))
+        // 不在书架中的 bookId 直接拒绝，避免为孤儿文件凭空造缓存
+        assertEquals(0, database.replaceLocalBookCache("ghost", reparsed))
+
+        database.close()
+        tempDir.toFile().deleteRecursively()
+    }
+
+    @Test
     fun `importLocalBook in Database and reading routes`() {
         val tempDir = Files.createTempDirectory("local-book-db-test")
         val dbPath = tempDir.resolve("legado.sqlite").toString()

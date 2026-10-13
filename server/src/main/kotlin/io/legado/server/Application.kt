@@ -32,11 +32,25 @@ fun Application.legadoApplication(config: ServerConfig = ServerConfig.fromEnviro
     val runner = RuleRunner(database = database)
     val bookCache = BookCacheService(database, runner) { message -> log.info(message) }
     val edgeTts = EdgeTtsService()
-    val ttsSessions = TtsSessionService(edgeTts)
+    val httpTtsService = HttpTtsService(database)
+    val ttsSessions = TtsSessionService(edgeTts, httpTtsService)
+    // WebDAV 存储区在多个地方用到（WebDAV 服务端 + 「从 WebDAV 导入书籍」+ 定时备份导出），
+    // 因此在这里先建好，保证几边看到的是同一个根目录。
+    val webDavStorage = WebDavStorage(config.webDavDirectory)
+    val backupExportScheduler = BackupExportScheduler(
+        database,
+        webDavStorage,
+        BackupExporter(database),
+    ) { message -> log.info(message) }
     subscriptions.start()
     bookCache.start()
-    environment.monitor.subscribe(ApplicationStopping) { subscriptions.stop(); bookCache.stop(); ttsSessions.close(); database.close() }
-    environment.monitor.subscribe(ApplicationStopped) { subscriptions.stop(); bookCache.stop(); ttsSessions.close(); database.close() }
+    backupExportScheduler.start()
+    val stopServices = {
+        subscriptions.stop(); bookCache.stop(); backupExportScheduler.stop()
+        ttsSessions.close(); database.close()
+    }
+    environment.monitor.subscribe(ApplicationStopping) { stopServices() }
+    environment.monitor.subscribe(ApplicationStopped) { stopServices() }
 
     install(ContentNegotiation) {
         json(Json { ignoreUnknownKeys = true; explicitNulls = false; encodeDefaults = true })
@@ -59,9 +73,6 @@ fun Application.legadoApplication(config: ServerConfig = ServerConfig.fromEnviro
     routing {
         get("/healthz") { call.respond(mapOf("status" to "ok")) }
         val coverCache = CoverCache(config.coverCacheDirectory)
-        // WebDAV 存储区在两个地方用到（WebDAV 服务端 + 「从 WebDAV 导入书籍」），
-        // 构造一次共享，保证两边看到的是同一个根目录。
-        val webDavStorage = WebDavStorage(config.webDavDirectory)
         authRoutes(auth)
         apiRoutes(
             database, auth, runner, coverCache, subscriptions, bookCache, edgeTts, ttsSessions,
@@ -69,6 +80,7 @@ fun Application.legadoApplication(config: ServerConfig = ServerConfig.fromEnviro
             // 进度文件落在 WebDAV 根目录下的 bookProgress（与手机端备份结构一致）
             BookProgressSync(config.webDavDirectory, database),
             webDavStorage,
+            httpTtsService,
         )
         webDavRoutes(auth, webDavStorage, database, coverCache)
         staticWeb()

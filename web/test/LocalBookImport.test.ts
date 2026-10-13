@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { BookshelfItem, LocalBookImportResponse } from '../src/api'
+import { api, setCsrfToken, BookshelfItem, LocalBookImportResponse, LocalReparseResponse } from '../src/api'
 import { LOCAL_BOOK_ACCEPT_ATTR, isSupportedLocalBook, isLocalBookFile, isBackupArchive } from '../src/WebDavSettingsPage'
 
 test('LocalBookImport - api types and local book shelf item identification', () => {
@@ -128,5 +128,72 @@ test('LocalBookImport - isLocalBookFile stays in sync with the supported set', (
       isSupportedLocalBook(name),
       `${name} 的两个判定必须一致`,
     )
+  }
+})
+
+test('LocalBookImport - local book cache badge never displays cache failure', () => {
+  // 模拟 cacheBadge 逻辑对本地书的防护
+  const cacheBadge = (item: BookshelfItem) => {
+    if (item.sourceId === 'loc_book' || item.bookUrl.startsWith('local://')) {
+      const count = item.cachedChapters || item.totalChapters || 0
+      return count > 0 ? `${count}章已缓存` : null
+    }
+    if (item.cacheState === 'caching') return '缓存中'
+    if (item.cacheState === 'ready') return `${item.cachedChapters}章已缓存`
+    if (item.cacheState === 'failed') return '缓存中断'
+    return null
+  }
+
+  // 哪怕因为历史网络误伤将 cacheState 置为 failed，本地书也决不能展示「缓存中断」
+  const damagedLocalBook: BookshelfItem = {
+    sourceId: 'loc_book',
+    bookUrl: 'local://damaged',
+    name: '本地书',
+    tocUrl: 'local://damaged/toc',
+    lastReadAt: Date.now(),
+    cachedChapters: 50,
+    totalChapters: 50,
+    cacheState: 'failed',
+    cacheError: '书源不存在',
+    completed: false,
+  }
+
+  assert.equal(cacheBadge(damagedLocalBook), '50章已缓存')
+})
+
+test('LocalBookImport - reparseLocalBooks posts to the one-off repair endpoint', async () => {
+  // 本地书的目录与正文在导入时就已落库，因此「解析器修好」之后必须有一个显式的
+  // 存量回填入口；这里锁定前端调用的路径与请求体，避免它被误改成一个不存在的端点。
+  const originalFetch = globalThis.fetch
+  let captured: { url: string; method?: string; body?: any } | null = null
+
+  globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    captured = { url: input.toString(), method: init?.method, body: init?.body }
+    const payload: LocalReparseResponse = {
+      total: 1,
+      reparsed: 1,
+      skipped: 0,
+      failed: 0,
+      chapters: 1605,
+      items: [{ bookUrl: 'local://abc', name: '黎明之剑', chapters: 1605, status: 'reparsed' }],
+    }
+    return new Response(JSON.stringify(payload), { status: 200, headers: { 'Content-Type': 'application/json' } })
+  }
+
+  try {
+    setCsrfToken('csrf-reparse')
+    const result = await api.reparseLocalBooks({ sourceId: 'loc_book', bookUrl: 'local://abc' })
+    assert.equal(captured!.url, '/api/bookshelf/reparse-local')
+    assert.equal(captured!.method, 'POST')
+    assert.deepEqual(JSON.parse(String(captured!.body)), { sourceId: 'loc_book', bookUrl: 'local://abc' })
+    assert.equal(result.reparsed, 1)
+    assert.equal(result.chapters, 1605)
+    assert.equal(result.items[0].status, 'reparsed')
+
+    // 不传参数（整批回填）时必须发一个空对象，而不是 undefined 或缺字段
+    await api.reparseLocalBooks()
+    assert.deepEqual(JSON.parse(String(captured!.body)), {})
+  } finally {
+    globalThis.fetch = originalFetch
   }
 })

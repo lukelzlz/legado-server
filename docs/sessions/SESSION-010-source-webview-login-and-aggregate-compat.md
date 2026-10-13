@@ -22,14 +22,14 @@ tags: [webview, proxy, login, cookie, rhino, jssandbox, aggregate-sources, rules
 ## 2. 最终落地的正确解法 (Final Solution)
 
 1. **服务端反向代理与安全防护**：
-   - [`server/src/main/kotlin/io/legado/server/WebViewProxy.kt`](file:///root/legado-server/server/src/main/kotlin/io/legado/server/WebViewProxy.kt)：实现轻量级 HTML/CSS 重写引擎，结合 `NetworkSecurity` 强制防御 SSRF，实施 30 分钟短时效 Ticket 令牌鉴权与书源域名白名单。
+   - [`server/src/main/kotlin/io/legado/server/WebViewProxy.kt`](../../server/src/main/kotlin/io/legado/server/WebViewProxy.kt)：实现轻量级 HTML/CSS 重写引擎，结合 `NetworkSecurity` 强制防御 SSRF，实施 30 分钟短时效 Ticket 令牌鉴权与书源域名白名单。
 2. **规则执行沙箱与生态补全**：
-   - [`server/src/main/kotlin/io/legado/server/JsSandbox.kt`](file:///root/legado-server/server/src/main/kotlin/io/legado/server/JsSandbox.kt)：注入 `JavaImporter` 安全替身，增加 `book` / `chapter` 上下文桥接及 `hexDecodeToString` / `hexEncodeToString` / `getWebViewUA` 等常用工具 API。
-   - [`server/src/main/kotlin/io/legado/server/RuleRunner.kt`](file:///root/legado-server/server/src/main/kotlin/io/legado/server/RuleRunner.kt)：支持 `<js>...</js>` 后置规则链递归求值与 `##` 正则替换，JSON 节点保持原生 Map/List 对象传递。
+   - [`server/src/main/kotlin/io/legado/server/JsSandbox.kt`](../../server/src/main/kotlin/io/legado/server/JsSandbox.kt)：注入 `JavaImporter` 安全替身，增加 `book` / `chapter` 上下文桥接及 `hexDecodeToString` / `hexEncodeToString` / `getWebViewUA` 等常用工具 API。
+   - [`server/src/main/kotlin/io/legado/server/RuleRunner.kt`](../../server/src/main/kotlin/io/legado/server/RuleRunner.kt)：支持 `<js>...</js>` 后置规则链递归求值与 `##` 正则替换，JSON 节点保持原生 Map/List 对象传递。
 3. **Cookie Jar 规范化存储**：
-   - [`server/src/main/kotlin/io/legado/server/Database.kt`](file:///root/legado-server/server/src/main/kotlin/io/legado/server/Database.kt)：实现 `extractCookiePair` 与分级域名匹配。
+   - [`server/src/main/kotlin/io/legado/server/Database.kt`](../../server/src/main/kotlin/io/legado/server/Database.kt)：实现 `extractCookiePair` 与分级域名匹配。
 4. **前端沉浸式 Web 浏览器弹窗**：
-   - [`web/src/SourceWebViewModal.tsx`](file:///root/legado-server/web/src/SourceWebViewModal.tsx)：提供前进/后退/刷新/地址栏/Cookie 徽标/在新标签打开/一键登录检测完整闭环。
+   - [`web/src/SourceWebViewModal.tsx`](../../web/src/SourceWebViewModal.tsx)：提供前进/后退/刷新/地址栏/Cookie 徽标/在新标签打开/一键登录检测完整闭环。
 
 ## 3. 沉淀的教训与部落知识 (Lessons Learned)
 

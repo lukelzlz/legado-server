@@ -332,7 +332,9 @@ async function runE2E() {
 
       // Click "批量管理"
       console.log('  2. Entering Batch Mode...')
-      const batchBtn = await page.waitForSelector('.source-sidebar-top-actions button:last-child')
+      // 用语义类名而不是 button:last-child —— 顶部按钮后来追加了「分组管理」，
+      // last-child 会点到它上面（打开分组管理弹窗），表现为「点了批量管理没反应」。
+      const batchBtn = await page.waitForSelector('.batch-mode-btn')
       assert.ok(batchBtn)
       await batchBtn.click()
 
@@ -431,7 +433,7 @@ async function runE2E() {
 
       // Enter Batch Mode
       console.log('  2. Mobile Touch: Entering Batch Mode...')
-      const batchBtn = await page.waitForSelector('.source-sidebar-top-actions button:last-child')
+      const batchBtn = await page.waitForSelector('.batch-mode-btn')
       await batchBtn?.click()
 
       // Verify floating bar responsive styling on mobile

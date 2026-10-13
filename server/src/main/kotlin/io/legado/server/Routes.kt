@@ -61,8 +61,12 @@ fun Route.apiRoutes(
      * 默认从 [progressSync] 所在的 webdav 根推导，保持与 WebDAV 服务端同一目录。
      */
     webDavStorage: WebDavStorage = WebDavStorage(Path.of(".data/webdav")),
+    httpTtsService: HttpTtsService = HttpTtsService(database),
 ) {
     val webView = WebViewProxy(database)
+
+    /** 网络书源导入：服务端代抓 + 内存票据两步式（见 [ADR-023]）。 */
+    val networkImport = NetworkSourceImport(database, log = { message -> application.log.info(message) })
 
     /**
      * 把一本书的字节导入为本地书籍（**两个入口共用**）。
@@ -142,6 +146,72 @@ fun Route.apiRoutes(
     }
 
     route("/api") {
+        route("/settings") {
+            get("/locale") {
+                val locale = database.getSetting("locale")
+                call.respond(LocaleSettingResponse(locale = locale))
+            }
+            put("/locale") {
+                if (auth.requireSession(call, csrfRequired = true) == null) return@put
+                val req = runCatching { call.receive<LocaleSettingRequest>() }.getOrNull()
+                val normalized = ServerMessages.normalizeLocale(req?.locale)
+                if (normalized == null) {
+                    call.respondApiError(HttpStatusCode.BadRequest, "invalid_locale", "不支持的语言代码")
+                    return@put
+                }
+                database.setSetting("locale", normalized)
+                call.application.log.info("server locale setting updated to: {}", normalized)
+                call.respond(LocaleSettingResponse(locale = normalized))
+            }
+        }
+        route("/explore") {
+            get("/sources") {
+                if (auth.requireSession(call) == null) return@get
+                call.respond(database.listExploreSources())
+            }
+            get("/categories") {
+                if (auth.requireSession(call) == null) return@get
+                val sourceId = call.request.queryParameters["sourceId"]
+                if (sourceId.isNullOrBlank()) {
+                    call.respondApiError(HttpStatusCode.BadRequest, "source_id_required", "缺少 sourceId 参数")
+                    return@get
+                }
+                val source = database.getSource(sourceId)
+                if (source == null) {
+                    call.respondApiError(HttpStatusCode.NotFound, "source_not_found", "书源不存在")
+                    return@get
+                }
+                try {
+                    val categories = runner.exploreCategories(source.json)
+                    call.respond(categories)
+                } catch (e: Throwable) {
+                    call.application.log.warn("explore categories failed for source $sourceId: ${e.message}")
+                    call.respondApiError(HttpStatusCode.InternalServerError, "explore_categories_failed", e.message ?: "解析发现分类失败")
+                }
+            }
+            get("/books") {
+                if (auth.requireSession(call) == null) return@get
+                val sourceId = call.request.queryParameters["sourceId"]
+                val exploreUrl = call.request.queryParameters["url"]
+                val page = call.request.queryParameters["page"]?.toIntOrNull() ?: 1
+                if (sourceId.isNullOrBlank() || exploreUrl.isNullOrBlank()) {
+                    call.respondApiError(HttpStatusCode.BadRequest, "params_missing", "缺少 sourceId 或 url 参数")
+                    return@get
+                }
+                val source = database.getSource(sourceId)
+                if (source == null) {
+                    call.respondApiError(HttpStatusCode.NotFound, "source_not_found", "书源不存在")
+                    return@get
+                }
+                try {
+                    val books = runner.exploreBooks(source.json, exploreUrl, page)
+                    call.respond(books)
+                } catch (e: Throwable) {
+                    call.application.log.warn("explore books failed for source $sourceId, url $exploreUrl: ${e.message}")
+                    call.respondApiError(HttpStatusCode.InternalServerError, "explore_books_failed", e.message ?: "获取发现书籍列表失败")
+                }
+            }
+        }
         get("/sources") {
             if (auth.requireSession(call) == null) return@get
             call.respond(database.listSources(call.request.queryParameters["q"]))
@@ -150,7 +220,7 @@ fun Route.apiRoutes(
             if (auth.requireSession(call, true) == null) return@post
             val req = call.receive<BatchSourceRequest>()
             if (req.ids.isEmpty()) {
-                call.respond(HttpStatusCode.BadRequest, ApiError("empty_selection", "请先选择需要操作的书源"))
+                call.respondApiError(HttpStatusCode.BadRequest, "empty_selection", "请先选择需要操作的书源")
                 return@post
             }
             try {
@@ -165,10 +235,10 @@ fun Route.apiRoutes(
                 call.application.log.info("source batch operation: action={}, count={}", req.action, count)
                 call.respond(BatchSourceResponse(ok = true, affected = count, action = req.action, message = msg))
             } catch (error: IllegalArgumentException) {
-                call.respond(HttpStatusCode.BadRequest, ApiError("invalid_action", error.message ?: "无效的批量操作"))
+                call.respondApiError(HttpStatusCode.BadRequest, "invalid_action", error.message ?: "无效的批量操作")
             } catch (error: Throwable) {
                 call.application.log.error("source batch operation failed", error)
-                call.respond(HttpStatusCode.InternalServerError, ApiError("batch_failed", error.message ?: "批量操作失败"))
+                call.respondApiError(HttpStatusCode.InternalServerError, "batch_failed", error.message ?: "批量操作失败")
             }
         }
         post("/sources/health-check") {
@@ -288,6 +358,56 @@ fun Route.apiRoutes(
             val response = database.importSources(call.receive<ImportRequest>().sources, applyGroups = false)
             call.application.log.info("source import completed: imported={}, updated={}, skipped={}", response.imported, response.updated, response.skipped)
             call.respond(response)
+        }
+        /**
+         * 网络书源导入：**预览**。
+         *
+         * 由服务端代抓（浏览器跨域 + 信任边界，见 [ADR-023]）→ 逐条试解析 → 只回传元数据与
+         * 一次性票据；完整书源原文留在 [networkImport] 的内存缓存里等 commit。
+         */
+        post("/sources/import-url/preview") {
+            if (auth.requireSession(call, true) == null) return@post
+            val request = runCatching { call.receive<NetworkImportPreviewRequest>() }.getOrNull()
+                ?: return@post call.respondApiError(HttpStatusCode.BadRequest, "invalid_request", "请求格式无效")
+            try {
+                call.respond(networkImport.preview(request.url))
+            } catch (error: NetworkImportException) {
+                call.respondApiError(HttpStatusCode.BadRequest, error.code, error.message)
+            }
+        }
+        /**
+         * 本地书源文件：**预览**。
+         *
+         * 与网络导入共用 [NetworkSourceImport.buildPreview] 的解析与判定，只是内容来自
+         * 浏览器读出的文件而不是服务端代抓 —— 两条路的「新增 / 更新 / 不可导入」口径、
+         * 名称兜底的 id 改写、以及凭票据落库的流程完全一致。
+         */
+        post("/sources/import-json/preview") {
+            if (auth.requireSession(call, true) == null) return@post
+            val request = runCatching { call.receive<LocalSourcePreviewRequest>() }.getOrNull()
+                ?: return@post call.respondApiError(HttpStatusCode.BadRequest, "invalid_request", "请求格式无效")
+            try {
+                call.respond(networkImport.previewLocal(request.content, request.label))
+            } catch (error: NetworkImportException) {
+                call.respondApiError(HttpStatusCode.BadRequest, error.code, error.message)
+            }
+        }
+        /**
+         * 网络书源导入：**确认落库**。
+         *
+         * `selected` 是预览列表下标；`group` 为空表示不改动分组（新源落「未分组」）。
+         */
+        post("/sources/import-url/commit") {
+            if (auth.requireSession(call, true) == null) return@post
+            val request = runCatching { call.receive<NetworkImportCommitRequest>() }.getOrNull()
+                ?: return@post call.respondApiError(HttpStatusCode.BadRequest, "invalid_request", "请求格式无效")
+            try {
+                call.respond(networkImport.commit(request.token, request.selected, request.group))
+            } catch (error: NetworkImportException) {
+                call.respondApiError(HttpStatusCode.BadRequest, error.code, error.message)
+            } catch (error: IllegalArgumentException) {
+                call.respondApiError(HttpStatusCode.BadRequest, "invalid_source", error.message ?: "书源无效")
+            }
         }
         route("/sources/{id}") {
             get {
@@ -494,6 +614,35 @@ fun Route.apiRoutes(
                         call.respond(HttpStatusCode.BadRequest, ApiError("inline_page_failed", error.message ?: "内置页面无法打开"))
                     }
                 }
+                // 书源自生成页面（设置中心 / 段评气泡）的结果回传：等价于安卓端 startBrowserAwait 的返回体
+                post("/result") {
+                    if (auth.requireSession(call, true) == null) return@post
+                    val sourceId = call.parameters["id"]!!
+                    val req = runCatching { call.receive<SourceBrowserResultRequest>() }.getOrNull()
+                        ?: run {
+                            call.respondApiError(HttpStatusCode.BadRequest, "invalid_browser_result", "设置结果格式无效")
+                            return@post
+                        }
+                    if (database.getSource(sourceId) == null) {
+                        call.respondApiError(HttpStatusCode.NotFound, "not_found", "书源不存在")
+                        return@post
+                    }
+                    if (!webView.hasTicket(sourceId, req.token)) {
+                        call.respondApiError(HttpStatusCode.BadRequest, "browser_session_expired", "内置浏览器会话已失效，请重新打开设置中心")
+                        return@post
+                    }
+                    val settings = WebViewProxy.normalizeSettingsResult(req.settings)
+                        ?: run {
+                            call.respondApiError(HttpStatusCode.BadRequest, "invalid_settings_result", "设置结果无法识别")
+                            return@post
+                        }
+                    database.saveSourceVariable(sourceId, settings.toString())
+                    call.application.log.info(
+                        "source settings saved: {} ({} keys, container={})",
+                        sourceId, settings.size, req.resultId.ifBlank { "unknown" },
+                    )
+                    call.respond(SourceBrowserResultResponse(saved = true, keys = settings.size))
+                }
                 get("/res") {
                     val sourceId = call.parameters["id"]!!
                     val token = call.request.queryParameters["t"]
@@ -643,22 +792,18 @@ fun Route.apiRoutes(
         post("/books/details") {
             if (auth.requireSession(call, true) == null) return@post
             val request = call.receive<BookRequest>()
-            if (request.sourceId == LocalBookParser.LOC_BOOK_SOURCE_ID) {
-                val shelf = database.listBookshelf().firstOrNull { it.sourceId == request.sourceId && it.bookUrl == request.bookUrl }
-                    ?: run { call.respond(HttpStatusCode.NotFound, ApiError("not_found", "本地书籍不存在")); return@post }
-                val cover = shelf.coverKey?.let { "/api/covers/$it" }
-                call.respond(BookDetails(
-                    sourceId = LocalBookParser.LOC_BOOK_SOURCE_ID,
-                    name = shelf.name,
-                    author = shelf.author,
-                    intro = null,
-                    coverUrl = cover,
-                    tocUrl = shelf.tocUrl,
-                ))
+            val isLocal = request.sourceId == LocalBookParser.LOC_BOOK_SOURCE_ID
+            // 「书源不存在」与「本地书不在书架」是两条既有 404 契约，先在这里区分，
+            // 再把真正的取详情交给 [fetchBookDetails]（封面深度回源补抓复用同一份逻辑）。
+            if (!isLocal && database.getSource(request.sourceId) == null) {
+                call.respond(HttpStatusCode.NotFound, ApiError("not_found", "书源不存在"))
                 return@post
             }
-            val source = database.getSource(request.sourceId) ?: run { call.respond(HttpStatusCode.NotFound, ApiError("not_found", "书源不存在")); return@post }
-            call.respondCatching { runner.details(source.json, request.bookUrl) }
+            if (isLocal && database.listBookshelf().none { it.sourceId == request.sourceId && it.bookUrl == request.bookUrl }) {
+                call.respond(HttpStatusCode.NotFound, ApiError("not_found", "本地书籍不存在"))
+                return@post
+            }
+            call.respondCatching { fetchBookDetails(database, runner, request.sourceId, request.bookUrl)!! }
         }
         post("/books/chapters") {
             if (auth.requireSession(call, true) == null) return@post
@@ -755,6 +900,33 @@ fun Route.apiRoutes(
                 val count = database.toggleReplaceRules(req.ids, req.enabled)
                 call.respond(mapOf("updated" to count))
             }
+            post("/batch") {
+                if (auth.requireSession(call, true) == null) return@post
+                val req = call.receive<BatchReplaceRuleRequest>()
+                if (req.ids.isEmpty()) {
+                    call.respond(BatchReplaceRuleResponse(ok = true, affected = 0, action = req.action))
+                    return@post
+                }
+                when (req.action) {
+                    "enable" -> {
+                        val count = database.toggleReplaceRules(req.ids, true)
+                        call.respond(BatchReplaceRuleResponse(ok = true, affected = count, action = req.action))
+                    }
+                    "disable" -> {
+                        val count = database.toggleReplaceRules(req.ids, false)
+                        call.respond(BatchReplaceRuleResponse(ok = true, affected = count, action = req.action))
+                    }
+                    "delete" -> {
+                        val count = database.deleteReplaceRules(req.ids)
+                        call.respond(BatchReplaceRuleResponse(ok = true, affected = count, action = req.action))
+                    }
+                    "set_group" -> {
+                        val count = database.batchSetReplaceRulesGroup(req.ids, req.group)
+                        call.respond(BatchReplaceRuleResponse(ok = true, affected = count, action = req.action))
+                    }
+                    else -> call.respond(HttpStatusCode.BadRequest, ApiError("invalid_action", "未知的批量操作: ${req.action}"))
+                }
+            }
             get("/export") {
                 if (auth.requireSession(call) == null) return@get
                 val ids = call.request.queryParameters.getAll("id")
@@ -783,6 +955,42 @@ fun Route.apiRoutes(
                     changed = cleaned != req.text,
                     appliedRules = appliedNames,
                 ))
+            }
+        }
+        route("/replace-rule-groups") {
+            get {
+                if (auth.requireSession(call) == null) return@get
+                call.respond(database.listReplaceRuleGroups())
+            }
+            put("/rename") {
+                if (auth.requireSession(call, true) == null) return@put
+                val request = call.receive<ReplaceRuleGroupRenameRequest>()
+                val from = request.from.trim()
+                val to = request.to.trim()
+                if (from.isBlank() || to.isBlank()) {
+                    call.respond(HttpStatusCode.BadRequest, ApiError("invalid_name", "原分组名与新分组名均不能为空"))
+                    return@put
+                }
+                if (to.equals(SourceGroupFilter.UNGROUPED, ignoreCase = true)) {
+                    call.respond(HttpStatusCode.BadRequest, ApiError("reserved_name", "不能使用系统保留字「$to」作为分组名称"))
+                    return@put
+                }
+                if (from.equals(to, ignoreCase = true)) {
+                    call.respond(ReplaceRuleGroupMutationResponse(ok = true, affected = 0, message = "分组名未变化"))
+                    return@put
+                }
+                val affected = database.renameReplaceRuleGroup(from, to)
+                call.respond(ReplaceRuleGroupMutationResponse(ok = true, affected = affected, message = "已将 $affected 条规则从「$from」移到分组「$to」"))
+            }
+            delete {
+                if (auth.requireSession(call, true) == null) return@delete
+                val name = call.request.queryParameters["name"]?.trim().orEmpty()
+                if (name.isBlank()) {
+                    call.respond(HttpStatusCode.BadRequest, ApiError("missing_name", "缺少分组名称"))
+                    return@delete
+                }
+                val affected = database.clearReplaceRuleGroup(name)
+                call.respond(ReplaceRuleGroupMutationResponse(ok = true, affected = affected, message = "已删除分组「$name」，$affected 条规则变为未分组（规则未被删除）"))
             }
         }
         post("/books/content") {
@@ -840,8 +1048,19 @@ fun Route.apiRoutes(
             if (request.sourceId.isBlank() || request.bookUrl.isBlank() || request.name.isBlank() || request.tocUrl.isBlank()) { call.respond(HttpStatusCode.BadRequest, ApiError("invalid_bookshelf", "书架数据无效")); return@post }
             val immediateCover = tryFindCachedCover(coverCache, request.coverUrl, request.alternateSources)
             val item = database.saveBookshelf(request, immediateCover)
-            bookCache.enqueue(CachedBookRequest(request.sourceId, request.bookUrl, request.tocUrl))
-            if (immediateCover == null && (!request.coverUrl.isNullOrBlank() || !request.alternateSources.isNullOrEmpty())) {
+            if (request.sourceId != LocalBookParser.LOC_BOOK_SOURCE_ID && !request.bookUrl.startsWith("local://")) {
+                bookCache.enqueue(CachedBookRequest(request.sourceId, request.bookUrl, request.tocUrl))
+            } else {
+                database.ensureLocalBookStatusReady(request.sourceId, request.bookUrl)
+            }
+            // 只在「这本书现在还没有本地副本」时才去补抓一次。
+            //
+            // 语义边界（用户明确要求）：封面只在**导入 / 加入书架 / 手动修改**这三种时机获取，
+            // 重复添加或打开阅读都不许刷新。原判断只看 `immediateCover == null`，
+            // 于是给一本**已有封面**的书重新「加入书架」时，后台下载会绕过 saveBookshelf 的
+            // 「已有 cover_key 优先」保护、直接把封面顶掉（手动选好的封面也会被顶掉）。
+            // item 是 upsert 之后的结果，coverKey 非空即代表这本书已经有封面可用 ⇒ 不必再抓。
+            if (item.coverKey == null && (!request.coverUrl.isNullOrBlank() || !request.alternateSources.isNullOrEmpty())) {
                 application.launch(Dispatchers.IO) {
                     val cached = tryCacheCover(coverCache, request.coverUrl, request.alternateSources)
                     if (cached != null) {
@@ -962,6 +1181,11 @@ fun Route.apiRoutes(
             val request = call.receive<BookCacheRangeRequest>()
             val item = database.listBookshelf().firstOrNull { it.sourceId == request.sourceId && it.bookUrl == request.bookUrl }
                 ?: return@post call.respond(HttpStatusCode.NotFound, ApiError("not_found", "书籍不在书架中"))
+            if (item.sourceId == LocalBookParser.LOC_BOOK_SOURCE_ID || item.bookUrl.startsWith("local://")) {
+                database.ensureLocalBookStatusReady(item.sourceId, item.bookUrl)
+                call.respond(HttpStatusCode.Accepted, mapOf("status" to "ready"))
+                return@post
+            }
             bookCache.enqueue(CachedBookRequest(
                 item.sourceId,
                 item.bookUrl,
@@ -1026,6 +1250,10 @@ fun Route.apiRoutes(
          * 用于修复「封面补抓逻辑上线之前导入的书架」——那些书的 `cover_key` 全为空，
          * 前端只能靠 `coverUrl` 直连；补抓完成后即切换为本地副本，不再依赖外部图床。
          * 传入 sourceId/bookUrl 则只补一本，否则补整架。
+         *
+         * `deep = true` 时改走**深度回源补抓**：这类书的 `cover_url` 往往是番茄（fqnovelpic）等
+         * CDN 的**带签名地址、早已过期**，直接抓必然失败 ⇒ 先回书源取一份新地址再物化，
+         * 并把新地址一并写回 `cover_url`（外链兜底也随之复活）。
          */
         post("/bookshelf/refresh-covers") {
             if (auth.requireSession(call, true) == null) return@post
@@ -1040,19 +1268,36 @@ fun Route.apiRoutes(
             val skipped = shelf.size - targets.size
             // 封面可能有数 MB，串行补抓整架会很久；这里用信号量限并发，
             // 既压住耗时又不至于把图床/线程池打满。
-            var refreshed = 0
-            var failed = 0
+            // 深度模式还会对每个目标各发一次「回源取详情」请求，同一上限一并约束。
+            val refreshed = AtomicInteger()
+            val failed = AtomicInteger()
+            val resourced = AtomicInteger()
+            val fetchDetailsForCover: (BookshelfItem) -> BookDetails? = { item ->
+                fetchBookDetails(database, runner, item.sourceId, item.bookUrl)
+            }
             coroutineScope {
                 val gate = Semaphore(6)
                 targets.map { item ->
                     async(Dispatchers.IO) {
                         gate.withPermit {
-                            val url = item.coverUrl!!
-                            val cached = runCatching { coverCache.getIfCached(url) ?: coverCache.cache(url) }.getOrNull()
-                            if (cached != null && database.updateBookshelfCover(item.sourceId, item.bookUrl, cached.key, cached.contentType)) {
-                                refreshed++
+                            if (req.deep) {
+                                // 回源失败 / 取不到新地址 / 下载失败 ⇒ 只计失败并静默继续，绝不中断整批。
+                                val freshUrl = resolveFreshCoverUrl(item, fetchDetailsForCover)
+                                if (freshUrl == null) {
+                                    failed.incrementAndGet()
+                                } else {
+                                    if (freshUrl != item.coverUrl) resourced.incrementAndGet()
+                                    val cached = materializeCover(database, coverCache, item, freshUrl)
+                                    if (cached != null) refreshed.incrementAndGet() else failed.incrementAndGet()
+                                }
                             } else {
-                                failed++
+                                val url = item.coverUrl!!
+                                val cached = runCatching { coverCache.getIfCached(url) ?: coverCache.cache(url) }.getOrNull()
+                                if (cached != null && database.updateBookshelfCover(item.sourceId, item.bookUrl, cached.key, cached.contentType)) {
+                                    refreshed.incrementAndGet()
+                                } else {
+                                    failed.incrementAndGet()
+                                }
                             }
                         }
                     }
@@ -1061,9 +1306,74 @@ fun Route.apiRoutes(
             call.respond(
                 CoverRefreshResponse(
                     total = targets.size,
-                    refreshed = refreshed,
-                    failed = failed,
+                    refreshed = refreshed.get(),
+                    failed = failed.get(),
                     skipped = skipped,
+                    resourced = resourced.get(),
+                )
+            )
+        }
+        /**
+         * 用**存量原始文件**重新解析本地书，覆盖目录与正文缓存。
+         *
+         * 用于修复「解析器缺陷修复之前导入的本地书」：本地书的目录与正文是在**导入那一刻**
+         * 解析落库的，因此解析器修好后老数据不会自动变好——EPUB 的正文段落在导入时已被
+         * 压成单行、边界信息不可逆丢失，替换净化规则也救不回来，**只能重新解析**。
+         * 原始文件一直保留在 [localBooksDirectory]（文件名 `<bookId>.<ext>`），
+         * 所以就地重解析即可：用户不用重新上传，`local://<bookId>` 不变
+         * ⇒ 书架元数据、分组、封面、阅读进度与书签全部延续。
+         *
+         * 幂等；默认处理全部本地书，传 `sourceId`/`bookUrl` 则只处理一本。
+         */
+        post("/bookshelf/reparse-local") {
+            if (auth.requireSession(call, true) == null) return@post
+            val req = runCatching { call.receive<LocalReparseRequest>() }.getOrDefault(LocalReparseRequest())
+            val targets = database.listBookshelf().filter { item ->
+                item.sourceId == LocalBookParser.LOC_BOOK_SOURCE_ID &&
+                    item.bookUrl.startsWith("local://") &&
+                    (req.sourceId == null || item.sourceId == req.sourceId) &&
+                    (req.bookUrl == null || item.bookUrl == req.bookUrl)
+            }
+            // 一次重新解析要把整本书读进内存（EPUB 解压后可能上百 MB），串行执行即可；
+            // 并发只会让多本大书同时展开，收益为零、内存风险实打实。
+            val items = mutableListOf<LocalReparseItem>()
+            for (item in targets) {
+                val bookId = item.bookUrl.removePrefix("local://").substringBefore('/')
+                val file = if (Files.isDirectory(localBooksDirectory)) {
+                    Files.list(localBooksDirectory).use { stream ->
+                        stream.filter { it.fileName.toString().startsWith("$bookId.") }.findFirst().orElse(null)
+                    }
+                } else null
+                if (file == null) {
+                    items += LocalReparseItem(item.bookUrl, item.name, 0, "skipped", "原始文件已不在 local_books 目录")
+                    continue
+                }
+                runCatching {
+                    val bytes = Files.readAllBytes(file)
+                    LocalBookParser.parse(file.fileName.toString(), bytes)
+                }.mapCatching { parsed ->
+                    database.replaceLocalBookCache(bookId, parsed)
+                }.fold(
+                    onSuccess = { chapters ->
+                        items += if (chapters > 0) {
+                            LocalReparseItem(item.bookUrl, item.name, chapters, "reparsed")
+                        } else {
+                            LocalReparseItem(item.bookUrl, item.name, 0, "skipped", "书籍不在书架中")
+                        }
+                    },
+                    onFailure = { error ->
+                        items += LocalReparseItem(item.bookUrl, item.name, 0, "failed", error.message ?: "重新解析失败")
+                    },
+                )
+            }
+            call.respond(
+                LocalReparseResponse(
+                    total = targets.size,
+                    reparsed = items.count { it.status == "reparsed" },
+                    skipped = items.count { it.status == "skipped" },
+                    failed = items.count { it.status == "failed" },
+                    chapters = items.sumOf { it.chapters },
+                    items = items,
                 )
             )
         }
@@ -1180,12 +1490,58 @@ fun Route.apiRoutes(
             }
             call.respond(mapOf("affected" to affected))
         }
+        post("/covers/upload") {
+            if (auth.requireSession(call, true) == null) return@post
+            val multipart = call.receiveMultipart()
+            var uploadedKey: String? = null
+            var uploadedType: String? = null
+            var errorMsg: String? = null
+
+            multipart.forEachPart { part ->
+                if (part is PartData.FileItem && uploadedKey == null) {
+                    val bytes = part.streamProvider().readBytes()
+                    if (bytes.size > 5 * 1024 * 1024) {
+                        errorMsg = "封面文件不能超过 5MB"
+                    } else if (bytes.isEmpty()) {
+                        errorMsg = "封面文件不能为空"
+                    } else {
+                        val detectedType = coverCache.detectImageContentType(bytes)
+                        if (detectedType == null) {
+                            errorMsg = "仅支持常见图片格式（JPG、PNG、GIF、WebP、BMP）"
+                        } else {
+                            val key = coverCache.saveCoverBytes(bytes, detectedType)
+                            database.recordCoverCache(key, detectedType)
+                            uploadedKey = key
+                            uploadedType = detectedType
+                        }
+                    }
+                }
+                part.dispose()
+            }
+
+            if (errorMsg != null) {
+                call.respond(HttpStatusCode.BadRequest, ApiError("invalid_cover", errorMsg))
+            } else if (uploadedKey != null && uploadedType != null) {
+                call.respond(CoverUploadResponse(
+                    coverKey = uploadedKey,
+                    contentType = uploadedType,
+                    url = "/api/covers/$uploadedKey"
+                ))
+            } else {
+                call.respond(HttpStatusCode.BadRequest, ApiError("invalid_cover", "未选择上传的封面文件"))
+            }
+        }
         get("/covers/{key}") {
             if (auth.requireSession(call) == null) return@get
             val key = call.parameters["key"] ?: return@get call.respond(HttpStatusCode.NotFound)
             val file = coverCache.file(key) ?: return@get call.respond(HttpStatusCode.NotFound)
             val type = database.coverContentType(key)?.let(ContentType::parse) ?: ContentType.Application.OctetStream
-            call.response.cacheControl(CacheControl.MaxAge(maxAgeSeconds = 7 * 24 * 60 * 60, visibility = CacheControl.Visibility.Private))
+            // 封面 URL 里带的就是**内容哈希**（`cover_key = sha256(字节)`）⇒ 同一个 key 的内容永不改变，
+            // 因此这里可以声明「永不过期」：一年 + immutable，浏览器与中间层都不再回源校验。
+            // 之前是 7 天，纯属白跑请求；服务端本地副本本身也不会被淘汰（CoverCache 只有单文件 5 MiB 上限，
+            // delete() 只用于孤儿清理）⇒ 真正意义的「服务器缓存、永不过期」。
+            // 注：直接写头值，避免依赖 Ktor 版本里 CacheControl 的 immutable 支持差异。
+            call.response.headers.append(HttpHeaders.CacheControl, "private, max-age=31536000, immutable")
             call.respond(LocalFileContent(file.toFile(), type))
         }
         get("/reading-progress") {
@@ -1399,7 +1755,20 @@ fun Route.apiRoutes(
                     return@post
                 }
                 try {
-                    if (req.engine == "custom" && !req.customUrl.isNullOrBlank()) {
+                    if (req.httpTtsId != null) {
+                        val speedMultiplier = (1.0 + req.rate / 100.0).coerceIn(0.2, 4.0)
+                        val (contentType, audioBytes) = httpTtsService.synthesizeById(
+                            id = req.httpTtsId,
+                            text = text,
+                            speed = speedMultiplier,
+                            voice = req.voice,
+                        )
+                        call.respondBytes(
+                            bytes = audioBytes,
+                            contentType = ContentType.parse(contentType),
+                            status = HttpStatusCode.OK,
+                        )
+                    } else if (req.engine == "custom" && !req.customUrl.isNullOrBlank()) {
                         val (contentType, audioBytes) = edgeTts.synthesizeCustom(req)
                         call.respondBytes(
                             bytes = audioBytes,
@@ -1444,6 +1813,70 @@ fun Route.apiRoutes(
                 } catch (e: Exception) {
                     call.application.log.warn("TTS get speak failed: {}", e.message)
                     call.respond(HttpStatusCode.InternalServerError, ApiError("tts_failed", e.message ?: "语音合成失败"))
+                }
+            }
+        }
+        route("/http-tts") {
+            get {
+                if (auth.requireSession(call) == null) return@get
+                val query = call.request.queryParameters["query"]
+                call.respond(database.listHttpTts(query))
+            }
+            get("/{id}") {
+                if (auth.requireSession(call) == null) return@get
+                val id = call.parameters["id"]?.toLongOrNull()
+                    ?: return@get call.respond(HttpStatusCode.BadRequest, ApiError("invalid_id", "TTS ID 无效"))
+                val tts = database.getHttpTts(id)
+                    ?: return@get call.respond(HttpStatusCode.NotFound, ApiError("not_found", "未找到该 HTTP TTS"))
+                call.respond(tts)
+            }
+            post {
+                if (auth.requireSession(call, true) == null) return@post
+                val tts = call.receive<HttpTts>()
+                if (tts.name.isBlank()) {
+                    return@post call.respond(HttpStatusCode.BadRequest, ApiError("invalid_name", "名称不能为空"))
+                }
+                if (tts.url.isBlank()) {
+                    return@post call.respond(HttpStatusCode.BadRequest, ApiError("invalid_url", "URL 不能为空"))
+                }
+                val saved = database.saveHttpTts(tts)
+                call.respond(saved)
+            }
+            delete("/{id}") {
+                if (auth.requireSession(call, true) == null) return@delete
+                val id = call.parameters["id"]?.toLongOrNull()
+                    ?: return@delete call.respond(HttpStatusCode.BadRequest, ApiError("invalid_id", "TTS ID 无效"))
+                val deleted = database.deleteHttpTts(id)
+                if (deleted) {
+                    call.respond(HttpStatusCode.NoContent)
+                } else {
+                    call.respond(HttpStatusCode.NotFound, ApiError("not_found", "未找到该 HTTP TTS"))
+                }
+            }
+            post("/import") {
+                if (auth.requireSession(call, true) == null) return@post
+                val list = call.receive<List<HttpTts>>()
+                val result = database.importHttpTts(list)
+                call.respond(result)
+            }
+            post("/test") {
+                if (auth.requireSession(call, true) == null) return@post
+                val req = call.receive<HttpTtsTestRequest>()
+                try {
+                    val (contentType, audioBytes) = httpTtsService.synthesize(
+                        tts = req.tts,
+                        text = req.text.ifBlank { "欢迎使用开源阅读自定义朗读" },
+                        speed = req.speed,
+                        voice = req.voice,
+                    )
+                    call.respondBytes(
+                        bytes = audioBytes,
+                        contentType = ContentType.parse(contentType),
+                        status = HttpStatusCode.OK,
+                    )
+                } catch (e: Exception) {
+                    call.application.log.warn("HTTP TTS test failed: {}", e.message)
+                    call.respond(HttpStatusCode.BadRequest, ApiError("tts_test_failed", e.message ?: "合成失败"))
                 }
             }
         }
@@ -1545,6 +1978,50 @@ internal fun tryCacheCover(coverCache: CoverCache, primaryUrl: String?, alternat
     return null
 }
 
+/**
+ * 取一本书的详情（`POST /books/details` 与封面深度回源补抓**共用同一份逻辑**）。
+ *
+ * 返回 null 表示「取不到」——书源不存在，或本地书不在书架；
+ * 书源侧的失败（[RuleExecutionException] 等）原样抛出，由调用方决定转成 HTTP 提示还是计入 failed。
+ * **不要在这里把异常吞掉**：`/books/details` 依赖它把书源错误转成明确提示（`source_execution_failed`）。
+ */
+internal fun fetchBookDetails(database: Database, runner: RuleRunner, sourceId: String, bookUrl: String): BookDetails? {
+    if (sourceId == LocalBookParser.LOC_BOOK_SOURCE_ID) {
+        val shelf = database.listBookshelf().firstOrNull { it.sourceId == sourceId && it.bookUrl == bookUrl } ?: return null
+        return BookDetails(
+            sourceId = LocalBookParser.LOC_BOOK_SOURCE_ID,
+            name = shelf.name,
+            author = shelf.author,
+            intro = null,
+            coverUrl = shelf.coverKey?.let { "/api/covers/$it" },
+            tocUrl = shelf.tocUrl,
+        )
+    }
+    val source = database.getSource(sourceId) ?: return null
+    return runner.details(source.json, bookUrl)
+}
+
+/**
+ * 深度补抓的第一步：回书源取**新的**封面地址。
+ *
+ * [fetchDetails] 是注入式接缝（生产环境就是 [fetchBookDetails]）——
+ * 与 [CoverCache] 的 `fetcher` 接缝同源：网络 I/O 不该出现在单测里。
+ * 任何失败（回源异常、书源没配封面规则、取到空值）都静默返回 null。
+ */
+internal fun resolveFreshCoverUrl(item: BookshelfItem, fetchDetails: (BookshelfItem) -> BookDetails?): String? =
+    runCatching { fetchDetails(item)?.coverUrl }.getOrNull()?.trim()?.takeIf { it.isNotEmpty() }
+
+/**
+ * 深度补抓的第二步：把新地址物化成服务端本地副本，并**同时**把 `cover_url` 更新成新地址。
+ *
+ * 注意这里走的是 [CoverCache.cache]——内置下载路径的魔数校验与 gzip 兜底解压都在它内部，
+ * 不要绕过（历史踩坑：gzip 字节当 JPEG 落盘 ⇒ 接口 200 但 `<img>` 是裂图）。
+ * 下载失败静默返回 null，由调用方计入 failed 并继续处理下一本。
+ */
+internal fun materializeCover(database: Database, coverCache: CoverCache, item: BookshelfItem, url: String): CachedCover? =
+    runCatching { coverCache.getIfCached(url) ?: coverCache.cache(url) }.getOrNull()
+        ?.takeIf { database.updateBookshelfCover(item.sourceId, item.bookUrl, it.key, it.contentType, coverUrl = url) }
+
 private fun jsonEvent(message: String): String = Json.encodeToString(message)
 
 /**
@@ -1556,6 +2033,9 @@ private suspend fun ApplicationCall.respondProxied(block: () -> ProxiedPayload) 
     response.headers.append(HttpHeaders.AccessControlAllowOrigin, "*")
     try {
         val payload = withContext(Dispatchers.IO) { block() }
+        // 透传上游的缓存元数据：此前一个都不转发，浏览器什么都缓存不了，
+        // 连 CDN 明确声明 `max-age=30672000, immutable` 的字体/JS/CSS 也被迫每次重下。
+        payload.cacheHeaders.forEach { (name, value) -> response.headers.append(name, value) }
         respondBytes(
             bytes = payload.body,
             contentType = runCatching { ContentType.parse(payload.contentType) }.getOrNull(),

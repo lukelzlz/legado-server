@@ -1,6 +1,7 @@
 package io.legado.server
 
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.JsonObject
 
 @Serializable data class ApiError(val code: String, val message: String)
 @Serializable data class LoginRequest(val password: String)
@@ -141,6 +142,25 @@ data class SourceBrowserCookieResponse(
     val cookies: Map<String, String>,
 )
 
+/**
+ * 书源自生成页面（设置中心 / 段评气泡）回传的设置结果。
+ *
+ * 页面里的 `#…-settings-result` 容器由代理层注入的采集脚本读取后 postMessage 给宿主，
+ * 宿主再原样送给服务端落库；等价于安卓端 `startBrowserAwait` 的返回体通道。
+ */
+@Serializable
+data class SourceBrowserResultRequest(
+    val token: String,
+    val settings: JsonObject,
+    val resultId: String = "",
+)
+
+@Serializable
+data class SourceBrowserResultResponse(
+    val saved: Boolean,
+    val keys: Int = 0,
+)
+
 data class SourceLoginStateRecord(
     val sourceId: String,
     val loginInfo: Map<String, String>,
@@ -174,6 +194,63 @@ data class SourceLoginStateRecord(
      */
     val sourceGroups: Int = 0,
 )
+/** 网络书源导入：预览请求。只给地址，拉取、SSRF 校验与解析全部在服务端完成。 */
+@Serializable data class NetworkImportPreviewRequest(val url: String)
+
+/**
+ * 预览列表里的一条书源。
+ *
+ * @param status `new`（新增）/ `update`（更新）/ `invalid`（不可导入）
+ * @param reason 仅 `invalid` 有值：直接来自 [SourceCodec.parse] 的报错，用于在弹窗里如实说明原因
+ */
+@Serializable data class NetworkImportPreviewItem(
+    val index: Int,
+    val name: String,
+    val url: String,
+    val status: String,
+    val reason: String? = null,
+)
+
+/**
+ * 预览响应：**只回传元数据**，完整书源原文留在服务端内存缓存里由 [token] 引用。
+ *
+ * 这样 383 条 / 1.63 MB 的集合不会在浏览器与服务端之间来回搬运两次（见 [ADR-023]）。
+ */
+@Serializable data class NetworkImportPreviewResponse(
+    val token: String,
+    val url: String,
+    val total: Int,
+    val newCount: Int,
+    val updateCount: Int,
+    val invalidCount: Int,
+    val sources: List<NetworkImportPreviewItem>,
+)
+
+/**
+ * 网络书源导入：确认请求。
+ *
+ * @param selected 预览列表里的**下标**（不是书源 id —— 集合里可能存在重复 id，用下标才无歧义）
+ * @param group 目标分组；为空表示**不改动**分组（新源落「未分组」，已有分组保持原样）
+ */
+@Serializable data class NetworkImportCommitRequest(
+    val token: String,
+    val selected: List<Int>,
+    val group: String? = null,
+)
+
+/**
+ * 本地书源文件预览请求。
+ *
+ * 只提交**原始文本**：解析、体积上限与最终落库 payload 全部由服务端产出
+ * （与 `POST /api/sources/import` 的信任边界相同）。
+ *
+ * @param label 文件名，仅用于日志与界面展示，不参与任何判定
+ */
+@Serializable data class LocalSourcePreviewRequest(
+    val content: String,
+    val label: String = "",
+)
+
 @Serializable data class SubscriptionWriteRequest(val url: String, val enabled: Boolean = true)
 @Serializable data class SourceSubscription(
     val id: Long,
@@ -263,6 +340,16 @@ data class SourceLoginStateRecord(
 @Serializable data class CoverRefreshRequest(
     val sourceId: String? = null,
     val bookUrl: String? = null,
+    /**
+     * 深度模式：对「`cover_key` 为空且 `cover_url` 非空」的书**先回书源取新地址再物化**。
+     *
+     * 存在的理由：番茄（fqnovelpic）等 CDN 的封面地址是**带签名的**（约 60 天过期），
+     * 历史数据里存的地址早已过期 ⇒ 服务器抓不到、客户端外链兜底也失效。
+     * 深度模式回源拿到的是**全新的可用地址**，并会把它一并写回 `cover_url`。
+     *
+     * 默认 false ⇒ 行为与不加本字段时**完全一致**（只在已有的 `cover_url` 上重试）。
+     */
+    val deep: Boolean = false,
 )
 
 @Serializable data class CoverRefreshResponse(
@@ -270,6 +357,39 @@ data class SourceLoginStateRecord(
     val refreshed: Int,
     val failed: Int,
     val skipped: Int,
+    /** 深度模式下**回源取到与库里不同的新地址**的条数（便于判断这次补抓是否真的靠回源救活）。 */
+    val resourced: Int = 0,
+)
+
+/**
+ * 本地书重新解析请求。留空 [sourceId]/[bookUrl] 表示「全部本地书」。
+ *
+ * 用于修复历史数据：解析器缺陷修复**之前**导入的本地书，目录与正文早已按旧逻辑落库。
+ */
+@Serializable data class LocalReparseRequest(
+    val sourceId: String? = null,
+    val bookUrl: String? = null,
+)
+
+/** 单本本地书的重新解析结果。[status] 取 `reparsed` / `skipped` / `failed`。 */
+@Serializable data class LocalReparseItem(
+    val bookUrl: String,
+    val name: String,
+    val chapters: Int,
+    val status: String,
+    /** 仅 `skipped`（缺原始文件等）与 `failed`（解析/写库异常）时给出原因。 */
+    val error: String? = null,
+)
+
+@Serializable data class LocalReparseResponse(
+    /** 命中的本地书总数 */
+    val total: Int,
+    val reparsed: Int,
+    val skipped: Int,
+    val failed: Int,
+    /** 本次重新写入的章节总数 */
+    val chapters: Int,
+    val items: List<LocalReparseItem> = emptyList(),
 )
 @Serializable data class BatchBookRecleanRequest(
     val books: List<BookRecleanRequest>,
@@ -299,6 +419,72 @@ data class SourceLoginStateRecord(
     val fileCount: Int = 0,
 )
 @Serializable data class ProgressSyncSettingsUpdate(val directoryName: String)
+
+// ---------------------------------------------------------------------------
+// 备份导出（Legado 格式 `backup<日期>-<设备名>.zip`）
+// ---------------------------------------------------------------------------
+/**
+ * 备份导出设置。
+ *
+ * @param exportDir  WebDAV 根目录下的相对目录，空串表示**根目录**（这样导出的 zip 会直接
+ *   出现在「文件管理」列表里，可当场下载，也能被手机 App 通过 WebDAV 取走）。默认 `legado`。
+ * @param deviceName 设备名后缀，拼在日期之后（`backup2026-09-30-web.zip`）。默认 `web`。
+ * @param autoExport **总开关**：关掉时下面三个子开关一律不生效。
+ * @param exportOnPageClose 关闭网页时自动导出一次。
+ * @param exportOnBookClose 关闭正在阅读的书时自动导出一次。
+ * @param scheduledExport 定时导出。
+ * @param scheduledTime 定时时刻，`HH:mm`（24 小时制），默认 `03:00`。
+ */
+@Serializable data class BackupExportSettings(
+    val exportDir: String = "legado",
+    val deviceName: String = "web",
+    val autoExport: Boolean = false,
+    val exportOnPageClose: Boolean = false,
+    val exportOnBookClose: Boolean = false,
+    val scheduledExport: Boolean = false,
+    val scheduledTime: String = "03:00",
+)
+
+/**
+ * 导出设置的**局部**更新：为 null 的字段表示「这次不改」。
+ *
+ * 页面上「导出路径」「设备名后缀」各有独立保存按钮，勾选类开关是勾了就存，
+ * 因此契约必须支持「改哪个存哪个」，不能整个覆盖。
+ */
+@Serializable data class BackupExportSettingsUpdate(
+    val exportDir: String? = null,
+    val deviceName: String? = null,
+    val autoExport: Boolean? = null,
+    val exportOnPageClose: Boolean? = null,
+    val exportOnBookClose: Boolean? = null,
+    val scheduledExport: Boolean? = null,
+    val scheduledTime: String? = null,
+)
+
+/**
+ * 自动导出的响应。
+ *
+ * `exported=false` 是**正常结果**（开关没开），不是错误 —— 前端在页面关闭时无条件上报，
+ * 是否真的导出由**服务端**判定（信任边界：客户端不该决定要不要写盘）。
+ */
+@Serializable data class BackupAutoExportResult(
+    val exported: Boolean,
+    val reason: String? = null,
+    val fileName: String? = null,
+    val path: String? = null,
+    val size: Long = 0,
+)
+
+/** 导出结果。`path` 是相对 WebDAV 根的路径，便于前端提示与定位。 */
+@Serializable data class BackupExportResult(
+    val fileName: String,
+    val path: String,
+    val size: Long,
+    val books: Int,
+    val sources: Int,
+    val bookmarks: Int,
+    val groups: Int,
+)
 @Serializable data class ProgressMergeRequest(
     val sourceId: String,
     val bookUrl: String,
@@ -335,8 +521,14 @@ data class SourceLoginStateRecord(
     val name: String,
     val author: String? = null,
     val coverUrl: String? = null,
+    val coverKey: String? = null,
     val groupName: String? = null,
     val alternateSources: List<SearchResult>? = null,
+)
+@Serializable data class CoverUploadResponse(
+    val coverKey: String,
+    val contentType: String,
+    val url: String,
 )
 data class CachedBookRequest(
     val sourceId: String,
@@ -456,6 +648,7 @@ data class TtsSpeakRequest(
     val customHeader: String? = null,
     val customMethod: String? = null,
     val customBody: String? = null,
+    val httpTtsId: Long? = null,
 )
 
 @Serializable
@@ -479,6 +672,7 @@ data class TtsSessionChunkRequest(
     val customHeader: String? = null,
     val customMethod: String? = null,
     val customBody: String? = null,
+    val httpTtsId: Long? = null,
 )
 
 @Serializable
@@ -556,6 +750,41 @@ data class ReplaceRulePreviewResponse(
     val cleanedText: String,
     val changed: Boolean,
     val appliedRules: List<String> = emptyList(),
+)
+
+@Serializable
+data class BatchReplaceRuleRequest(
+    val action: String, // "enable", "disable", "delete", "set_group"
+    val ids: List<String>,
+    val group: String? = null,
+)
+
+@Serializable
+data class BatchReplaceRuleResponse(
+    val ok: Boolean,
+    val affected: Int,
+    val action: String,
+    val message: String? = null,
+)
+
+@Serializable
+data class ReplaceRuleGroupSummary(
+    val name: String,
+    val ruleCount: Int,
+    val enabledCount: Int,
+)
+
+@Serializable
+data class ReplaceRuleGroupRenameRequest(
+    val from: String = "",
+    val to: String = "",
+)
+
+@Serializable
+data class ReplaceRuleGroupMutationResponse(
+    val ok: Boolean,
+    val affected: Int,
+    val message: String,
 )
 
 @Serializable
@@ -788,5 +1017,68 @@ data class LocalBookImportResponse(
     val failed: Int,
     val results: List<LocalBookImportItem> = emptyList(),
 )
+
+/** 语言偏好设置请求与响应 */
+@Serializable
+data class LocaleSettingRequest(
+    val locale: String,
+)
+
+@Serializable
+data class LocaleSettingResponse(
+    val locale: String?,
+)
+
+/** 自定义 HTTP TTS 规则，对齐 Legado httpTTS.json 规范 */
+@Serializable
+data class HttpTts(
+    val id: Long = 0L,
+    val name: String = "",
+    val url: String = "",
+    val header: String? = null,
+    val contentType: String? = null,
+    val concurrentRate: String? = null,
+    val loginUrl: String? = null,
+    val loginCheckJs: String? = null,
+    val loginUi: String? = null,
+    val jsLib: String? = null,
+    val enabledCookieJar: Boolean = false,
+    val lastUpdateTime: Long = 0L,
+)
+
+/** HTTP TTS 连通性测试请求 */
+@Serializable
+data class HttpTtsTestRequest(
+    val tts: HttpTts,
+    val text: String = "欢迎使用开源阅读自定义朗读",
+    val speed: Double = 1.0,
+    val voice: String = "",
+)
+
+/** HTTP TTS 导入响应 */
+@Serializable
+data class HttpTtsImportResponse(
+    val total: Int,
+    val imported: Int,
+    val failed: Int,
+)
+
+/** 书源发现分类结构 */
+@Serializable
+data class ExploreCategory(
+    val title: String,
+    val url: String? = null,
+    val subCategories: List<ExploreCategory> = emptyList(),
+)
+
+/** 带有发现页的书源摘要 */
+@Serializable
+data class ExploreSourceItem(
+    val id: String,
+    val name: String,
+    val group: String? = null,
+    val enabled: Boolean = true,
+)
+
 
 

@@ -4,6 +4,7 @@ import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.contentOrNull
 
@@ -89,6 +90,62 @@ object SourceCodec {
             hasLogin = hasLogin,
             json = normalizedJson,
         )
+    }
+
+    /**
+     * 把一份「书源集合」响应体拆成**逐条书源 JSON 字符串**。
+     *
+     * Legado 生态里同一个语义有五六种外层包装，必须全部兼容：
+     * 顶层数组、`{ data: [...] }`、`{ sources: [...] }`、`{ bookSources: [...] }`、
+     * `{ list: [...] }`，以及「单个书源对象」（某站直接返回一条源时）。
+     *
+     * **订阅更新与网络导入共用本函数**：两处各写一份解析器迟早会漂移
+     * （仓库既有教训：「同一语义要多路径生效 / 两处口径必须同源」）。
+     */
+    fun parseSourceList(body: String): List<String> {
+        val cleanBody = body.trim().removePrefix("\uFEFF")
+        val element = try { json.parseToJsonElement(cleanBody) } catch (_: Exception) { null }
+            ?: return parseLineDelimited(cleanBody)
+        val values = when (element) {
+            is JsonArray -> element
+            is JsonObject -> when {
+                element["data"] is JsonArray -> element["data"] as JsonArray
+                element["sources"] is JsonArray -> element["sources"] as JsonArray
+                element["bookSources"] is JsonArray -> element["bookSources"] as JsonArray
+                element["list"] is JsonArray -> element["list"] as JsonArray
+                else -> listOf(element)
+            }
+            // 顶层既不是数组也不是对象 ⇒ 一定不是书源集合，必须显式拒绝。
+            // ⚠️ 本对象的 `json` 是 `isLenient = true`（为兼容 Legado 的伪 JSON），
+            // 它会把 `<html>…</html>` 这类文本当成「未加引号的字符串」**解析成功**并返回字面量，
+            // 若在这里放行，HTML 错误页会被误判成「1 条不合格书源」而不是「该地址不是书源 JSON」。
+            else -> throw IllegalArgumentException("内容不是有效的书源集合")
+        }
+        return values.map { json.encodeToString(JsonElement.serializer(), it) }
+    }
+
+    /**
+     * 兜底：**JSONL / NDJSON**（一行一条 JSON）。
+     *
+     * 书源集合在网上也常以「每行一条」的形式分发，而严格 JSON 解析必然失败。
+     * ⚠️ 这个容忍度原先**只存在于前端**（本地导入用的 `parseSourceJsonText`），
+     * 服务端没有 ⇒「本地导入能用的文件，走网络导入或走服务端预览就报无效」。
+     * 按仓库「同一口径必须同源」的约定，把它上移到本函数，两侧共用一份解析器。
+     *
+     * 只有**至少解析出一行书源对象**才认；否则仍按「不是有效 JSON」拒绝，避免把任意文本当成书源。
+     *
+     * ⚠️ 必须 `as? JsonObject` 过滤：本对象的 `json` 是 `isLenient = true`，它会把 `这不是 JSON`
+     * 这类**未加引号的文本当成字符串字面量解析成功**。若只做 `runCatching`，任意多行文本都会
+     * 变成「N 条书源」，垃圾文件也能出预览（实测踩到）。一条书源必然是一个 JSON 对象。
+     */
+    private fun parseLineDelimited(cleanBody: String): List<String> {
+        val items = cleanBody.lineSequence()
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+            .mapNotNull { line -> runCatching { json.parseToJsonElement(line) }.getOrNull() as? JsonObject }
+            .toList()
+        require(items.isNotEmpty()) { "内容不是有效 JSON" }
+        return items.map { json.encodeToString(JsonElement.serializer(), it) }
     }
 
     /** 对外复用：把书源标识（可带 `#` / `##` 注解）归一化为服务端使用的 sourceId（备份导入时对齐书架 origin）。 */

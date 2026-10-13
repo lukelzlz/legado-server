@@ -5,6 +5,10 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.jsonObject
 import java.net.URI
 import java.nio.file.Files
 
@@ -221,8 +225,7 @@ class WebViewProxyTest {
     }
 
     @Test
-    fun `getSourceCookie prefers exact host and falls back to parent domain`() {
-        val db = tempDatabase()
+    fun `getSourceCookie prefers exact host and falls back to parent domain`() {        val db = tempDatabase()
         db.setSourceCookie("s1", "https://example.com/", "root=1")
         db.setSourceCookie("s1", "https://www.example.com/", "leaf=2")
 
@@ -237,5 +240,84 @@ class WebViewProxyTest {
         // 无关域名不得命中（旧实现用子串模糊匹配，会把 www.example.com 误配给 example.com.evil.net）
         assertNull(db.getSourceCookie("s1", "https://example.com.evil.net/book/1"))
         assertNull(db.getSourceCookie("s1", "https://notexample.com/book/1"))
+    }
+
+    @Test
+    fun `rewriteHtml injects settings collector only for pages with a result container`() {
+        val settingsPage = """
+            <html><head><title>书源设置</title></head><body>
+              <script id="source-settings-result" type="application/json"></script>
+              <script id="source-settings-final-result" type="application/json"></script>
+            </body></html>
+        """.trimIndent()
+
+        val out = WebViewProxy.rewriteHtml(settingsPage, base, "src-1", "tok")
+
+        assertTrue(out.contains("settings-collector"))
+        assertTrue(out.contains("legado-webview"))
+        assertTrue(out.contains("settings-result"))
+        assertTrue(out.contains("MutationObserver"))
+        // 采集脚本必须覆盖设置页与气泡页的结果容器
+        assertTrue(out.contains("source-settings-final-result"))
+        assertTrue(out.contains("bubble-settings-result"))
+
+        // 普通第三方页面不注入，避免无谓地往宿主发消息
+        val plain = WebViewProxy.rewriteHtml("<html><body>hi</body></html>", base, "src-1", "tok")
+        assertFalse(plain.contains("settings-collector"))
+    }
+
+    @Test
+    fun `bootstrap captures the real host before neutralizing frame busting`() {
+        val out = WebViewProxy.rewriteHtml("<html><body>hi</body></html>", base, "src-1", "tok")
+
+        // 一旦把 parent 指向自身，页面就再也无法 postMessage 给宿主，
+        // 因此必须在屏蔽 frame-busting 之前抓住真实宿主窗口
+        val captureIndex = out.indexOf("window.__legadoHost=HOST")
+        val neutralizeIndex = out.indexOf("Object.defineProperty(window,'parent'")
+        assertTrue("宿主引用必须在屏蔽 parent 之前捕获", captureIndex > 0 && captureIndex < neutralizeIndex)
+        assertTrue(out.contains("window.__legadoHost.postMessage"))
+    }
+
+    @Test
+    fun `normalizeSettingsResult mirrors the source script fallbacks`() {
+        val raw = Json.parseToJsonElement(
+            """{"tab":"听书","sources":"书旗","server":"https://v5.langge.uk",
+                "shuqi_tone_id":"默认音色","pstyle":0,"_settings_nonce":"1790742645198_843225"}""",
+        ).jsonObject
+
+        val normalized = WebViewProxy.normalizeSettingsResult(raw)!!
+
+        assertFalse("一次性 nonce 不能落库", normalized.containsKey("_settings_nonce"))
+        assertEquals("multi_role", (normalized["shuqi_tone_id"] as JsonPrimitive).content)
+        assertEquals("0", (normalized["pstyle"] as JsonPrimitive).content)
+        assertEquals("听书", (normalized["tab"] as JsonPrimitive).content)
+        assertEquals("https://v5.langge.uk", (normalized["server"] as JsonPrimitive).content)
+    }
+
+    @Test
+    fun `normalizeSettingsResult rejects unrelated or oversized payloads`() {
+        assertNull(WebViewProxy.normalizeSettingsResult(Json.parseToJsonElement("{}").jsonObject))
+        assertNull(WebViewProxy.normalizeSettingsResult(Json.parseToJsonElement("""{"foo":1}""").jsonObject))
+
+        val oversized = JsonObject(
+            mapOf(
+                "tab" to JsonPrimitive("小说"),
+                "blob" to JsonPrimitive("x".repeat(70_000)),
+            ),
+        )
+        assertNull(WebViewProxy.normalizeSettingsResult(oversized))
+    }
+
+    @Test
+    fun `hasTicket only accepts live tickets of the same source`() {
+        val proxy = WebViewProxy(tempDatabase())
+        val token = proxy.issueTicket("s1", """{"bookSourceUrl":"https://example.com"}""")
+
+        assertTrue(proxy.hasTicket("s1", token))
+        assertFalse("票据不能跨书源使用", proxy.hasTicket("s2", token))
+        assertFalse(proxy.hasTicket("s1", "deadbeef"))
+
+        proxy.revokeTicket(token)
+        assertFalse("已回收的票据必须失效", proxy.hasTicket("s1", token))
     }
 }

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import os from 'node:os'
+import { fileURLToPath } from 'node:url'
 
 process.env.NO_PROXY = '127.0.0.1,localhost'
 process.env.no_proxy = '127.0.0.1,localhost'
@@ -10,7 +11,7 @@ process.env.no_proxy = '127.0.0.1,localhost'
 const CHROME_PATH = process.env.CHROME_BIN || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
 const BASE_URL = process.env.TEST_BASE_URL || 'http://127.0.0.1:8095'
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'admin123'
-const ARTIFACT_DIR = process.env.ARTIFACT_DIR || '/Users/zhangran/.gemini/antigravity/brain/c2ace220-77ec-4e9c-ad15-bbfb0923260b'
+const ARTIFACT_DIR = process.env.ARTIFACT_DIR || path.resolve(os.tmpdir(), 'legado-artifacts')
 
 async function waitForServer(url: string, timeoutMs = 30000): Promise<void> {
   const start = Date.now()
@@ -81,7 +82,8 @@ async function run() {
   console.log('✅ Mock search book source registered')
 
   // 3. Upload test local book
-  const fixturePath = path.resolve('web/test/fixtures/变成魔女，但是她们都想跟我恋爱.txt')
+  const __dirname = path.dirname(fileURLToPath(import.meta.url))
+  const fixturePath = path.resolve(__dirname, 'fixtures/变成魔女，但是她们都想跟我恋爱.txt')
   const fileBytes = await fs.readFile(fixturePath)
   const formData = new FormData()
   formData.append('file', new Blob([fileBytes], { type: 'text/plain' }), '变成魔女，但是她们都想跟我恋爱.txt')

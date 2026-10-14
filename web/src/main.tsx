@@ -3131,7 +3131,7 @@ function App() {
       return (
         <div className={`app-shell theme-${settings.theme}`}>
           <ToastContainer />
-          <MangaReaderScreen openBook={reader.book} startIndex={reader.index} onClose={closeReader} />
+          <MangaReaderScreen openBook={reader.book} startIndex={reader.index} onClose={closeReader} theme={settings.theme} />
         </div>
       )
     }

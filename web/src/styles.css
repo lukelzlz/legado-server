@@ -5925,8 +5925,11 @@ mark.search-highlight { background: var(--accent-soft); color: var(--accent); fo
 }
 
 /* ---------------------------------------------------------------------------
-   漫画阅读器（方案 E · P0）
-   纵向瀑布 + 占位；宽高未知时用固定比例兜底（P1 的 manifest 会带上真实宽高）。
+   漫画阅读器（方案 E）
+   纵向连续阅读；宽高由 manifest 给出 ⇒ 用 aspect-ratio 占位，首屏不跳动。
+   ⚠️ 本块**只用主题变量**（--surface/--ink/--line/--muted/--accent/--canvas/--safe-*），
+   因此 light / paper / dark 三套主题切换零额外适配 —— 写死颜色会让夜间模式变"透光 + 隐形黑字"。
+   外壳、抽屉、设置项复用文本阅读器的既有 class，保证两个阅读器观感一致。
    --------------------------------------------------------------------------- */
 .manga-workspace .reader-header-title {
   display: flex;
@@ -5950,6 +5953,29 @@ mark.search-highlight { background: var(--accent-soft); color: var(--accent); fo
   color: var(--muted);
   font-variant-numeric: tabular-nums;
   padding: 0 6px;
+}
+
+/* 图片加载进度条：贴在悬浮顶栏下沿，只在"还没全部就绪"时出现 */
+.manga-progress-bar {
+  position: fixed;
+  top: calc(var(--safe-top) + 52px);
+  left: 0;
+  right: 0;
+  height: 2px;
+  z-index: 30;
+  background: var(--surface-muted);
+  pointer-events: none;
+}
+
+.manga-progress-bar i {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+  transition: width .2s ease-out;
+}
+
+.manga-workspace.toolbars-hidden .manga-progress-bar {
+  opacity: .4;
 }
 
 .manga-scroll {
@@ -5977,6 +6003,22 @@ mark.search-highlight { background: var(--accent-soft); color: var(--accent); fo
   width: 100%;
   height: auto;
   max-width: 100%;
+}
+
+/* 原始尺寸模式：按像素显示、允许横向拖动（跨页大图看细节） */
+.manga-workspace.is-fit-original .manga-scroll {
+  overflow-x: auto;
+}
+
+.manga-workspace.is-fit-original .manga-image-frame {
+  max-width: none;
+  width: max-content;
+  min-width: 100%;
+}
+
+.manga-workspace.is-fit-original .manga-image-frame img {
+  width: auto;
+  max-width: none;
 }
 
 .manga-image-failed {

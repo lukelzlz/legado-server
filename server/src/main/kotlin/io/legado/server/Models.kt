@@ -1166,5 +1166,20 @@ data class MangaCacheBookStat(
     val readyChapterCount: Int = 0,
 )
 
+/**
+ * 图片缓存总体统计（`GET /api/books/images/cache/stats`）。
+ *
+ * `totalBytes`（表内字节和）与 `diskBytes`（实际磁盘占用）**分开报**：
+ * 两者一旦明显漂移，就说明盘上有孤儿文件或表里有失效行 —— 排障时一眼可见。
+ */
+@Serializable
+data class MangaCacheStats(
+    val totalBytes: Long,
+    val quotaBytes: Long,
+    val imageCount: Int,
+    val diskBytes: Long,
+    val books: List<MangaCacheBookStat> = emptyList(),
+)
+
 
 

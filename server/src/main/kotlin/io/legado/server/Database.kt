@@ -831,6 +831,19 @@ class Database(private val path: String) : Closeable, AutoCloseable {
         }
     }
 
+    fun listMangaImagesByBook(sourceId: String, bookUrl: String): List<MangaImageRecord> = connect { db ->
+        db.prepareStatement(MANGA_IMAGE_SELECT + " where source_id=? and book_url=?").use {
+            it.setString(1, sourceId); it.setString(2, bookUrl)
+            it.executeQuery().use { rs -> buildList { while (rs.next()) add(rs.toMangaImage()) } }
+        }
+    }
+
+    fun listAllMangaImages(): List<MangaImageRecord> = connect { db ->
+        db.prepareStatement(MANGA_IMAGE_SELECT).use {
+            it.executeQuery().use { rs -> buildList { while (rs.next()) add(rs.toMangaImage()) } }
+        }
+    }
+
     /** 清空全部图片索引（`?all=true` 的清理入口）。返回受影响行数。 */
     fun deleteAllMangaImageRows(): Int = write { db ->
         db.createStatement().use { it.executeUpdate("delete from manga_image_cache") }

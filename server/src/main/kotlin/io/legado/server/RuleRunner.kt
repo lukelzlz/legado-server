@@ -553,6 +553,18 @@ class RuleRunner(private val responseFetcher: ((String) -> String)? = null, inte
         return raw.lines().map { it.trim() }.filter { it.isNotBlank() }
     }
 
+    /**
+     * 抓取**媒体资源**（漫画图片 / 有声书音频）时该用的请求头：书源 `header` + 登录头 + Cookie。
+     *
+     * 为什么要开这个 public 口子：媒体抓取发生在 `RuleRunner` 之外（`MangaImageFetcher`），
+     * 但它**必须与书源取数用同一份请求头**——漫画站/音频站的防盗链判的就是这套头，
+     * 少一个 `Referer` 或 Cookie 就是整章裂图，而且不会有任何报错。
+     *
+     * 解析失败一律返回空表（静默降级），绝不让头解析把抓取流程打断。
+     */
+    fun mediaHeaders(sourceJson: String, sourceId: String? = null): Map<String, String> =
+        runCatching { parseSourceHeaders(sourceJson.objectValue(), sourceId) }.getOrDefault(emptyMap())
+
     fun parseLoginUi(sourceJson: String): List<SourceLoginUiItem> {
         val source = sourceJson.objectValue()
         val sourceUrl = source.string("bookSourceUrl") ?: ""

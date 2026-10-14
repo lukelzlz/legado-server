@@ -6071,4 +6071,52 @@ mark.search-highlight { background: var(--accent-soft); color: var(--accent); fo
   padding: 24px 0 8px;
 }
 
+/* 缓存管理里的「服务端图片缓存」区块（P2）：与"本机 IndexedDB"区块分开显示。
+   同样只用主题变量，避免夜间模式出现"透光背景 + 隐形黑字"。 */
+.server-cache-section {
+  margin-top: 18px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+
+.server-cache-section .offline-book-actions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.server-cache-pin-badge {
+  margin-left: 6px;
+  padding: 0 6px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 500;
+  color: var(--accent-ink);
+  background: var(--accent-soft);
+  border: 1px solid var(--accent);
+}
+
+.server-cache-footer {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 12px;
+}
+
+.overview-quota {
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--muted);
+}
+
+.cache-drift-warning {
+  margin: 8px 0 0;
+  padding: 8px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: var(--surface-muted);
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
 

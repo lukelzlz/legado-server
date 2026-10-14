@@ -73,8 +73,11 @@ export type BookshelfWrite = { sourceId: string; bookUrl: string; name: string; 
 export type MangaImageStatus = 'pending' | 'ready' | 'failed'
 export type MangaImageItem = { index: number; key: string; status: MangaImageStatus; width?: number | null; height?: number | null }
 export type MangaChapterManifest = { sourceId: string; bookUrl: string; chapterUrl: string; title?: string | null; chapterIndex: number; total: number; ready: number; state: string; images: MangaImageItem[] }
-export type MangaCacheBookStat = { sourceId: string; bookUrl: string; name?: string | null; imageCount: number; totalBytes: number; chapterCount: number; readyChapterCount: number }
+export type MangaCacheBookStat = { sourceId: string; bookUrl: string; name?: string | null; imageCount: number; totalBytes: number; chapterCount: number; readyChapterCount: number; pinned: boolean }
 export type MangaCacheStats = { totalBytes: number; quotaBytes: number; imageCount: number; diskBytes: number; books: MangaCacheBookStat[] }
+/** 预取受理结果（P2）：`queued=false` 不是错误（开关关了/目录未缓存/区间为空）。 */
+export type MangaPrefetchResponse = { queued: boolean; chapters: number; reason?: string | null }
+export type MangaPrefetchStatus = { sourceId: string; bookUrl: string; running: boolean; done: number; planned: number; currentChapterIndex: number }
 
 // Safari momentum scrolling can schedule several saves while a production request is still in flight.
 // Serialize saves per book so an older response cannot arrive after a newer position and overwrite it.
@@ -515,6 +518,26 @@ export const api = {
   imageUrl: (key: string) => `/api/images/${key}`,
   /** 服务端图片缓存统计（与前端 CacheStorage 的统计**分开显示**）。 */
   imageCacheStats: () => request<MangaCacheStats>('/api/books/images/cache/stats'),
+  /**
+   * 后台预取（方案 E · P2 环节 E8）。
+   *
+   * `ahead` 是从 `fromChapterIndex` 起**再往后多少章**（0 = 只这一章）。
+   * 服务端返回 202 表示"已受理"，`queued=false` **不是错误**（开关关了/目录没缓存/区间为空），
+   * 因此调用方一律 fire-and-forget + 静默：预取失败绝不能影响阅读。
+   */
+  mangaPrefetch: (sourceId: string, bookUrl: string, fromChapterIndex: number, ahead = 0, pin = false) =>
+    request<MangaPrefetchResponse>('/api/books/images/prefetch', {
+      method: 'POST',
+      body: JSON.stringify({ sourceId, bookUrl, fromChapterIndex, ahead, pin }),
+    }),
+  /** 当前正在跑的预取（同一本书同时只有一条）。 */
+  mangaPrefetchStatus: () => request<MangaPrefetchStatus[]>('/api/books/images/prefetch'),
+  /** 「整本离线」免死金牌开关（GC 永不自动淘汰）。 */
+  pinMangaBook: (sourceId: string, bookUrl: string, pinned: boolean) =>
+    request<{ pinned: boolean }>(
+      `/api/books/images/cache/pin?sourceId=${encodeURIComponent(sourceId)}&bookUrl=${encodeURIComponent(bookUrl)}&pinned=${pinned}`,
+      { method: 'PUT' },
+    ),
   clearImageCache: (sourceId?: string, bookUrl?: string) =>
     request<void>(
       sourceId && bookUrl

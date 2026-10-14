@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
+import { api, type MangaCacheBookStat, type MangaCacheStats } from './api'
 import { Icon } from './icons'
 import {
   clearAllOffline,
@@ -20,7 +21,8 @@ function formatBytes(bytes: number): string {
   if (!bytes || bytes <= 0) return '0 KB'
   if (bytes < 1024) return `${bytes} B`
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
-  return `${(bytes / (1024 * 1024)).toFixed(2)} MB`
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(2)} MB`
+  return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`
 }
 
 export function OfflineCacheModal({ onClose }: OfflineCacheModalProps) {
@@ -29,6 +31,9 @@ export function OfflineCacheModal({ onClose }: OfflineCacheModalProps) {
   const [loading, setLoading] = useState(true)
   const [lruEnabled, setLruEnabled] = useState(isLruEvictEnabled)
   const [clearing, setClearing] = useState(false)
+  /** 服务端图片缓存（方案 E）：与上面的"本机 IndexedDB"**分开统计、分开显示** —— 否则用户无法判断空间被谁吃了。 */
+  const [serverStats, setServerStats] = useState<MangaCacheStats | null>(null)
+  const [serverBusy, setServerBusy] = useState(false)
 
   const loadStats = async () => {
     try {
@@ -41,9 +46,59 @@ export function OfflineCacheModal({ onClose }: OfflineCacheModalProps) {
     }
   }
 
+  const loadServerStats = async () => {
+    try {
+      setServerStats(await api.imageCacheStats())
+    } catch {
+      // 服务端缓存统计读不到（未登录/离线）不该让整个面板失败：本机部分仍然可用
+      setServerStats(null)
+    }
+  }
+
   useEffect(() => {
     void loadStats()
+    void loadServerStats()
   }, [])
+
+  const handlePinBook = async (book: MangaCacheBookStat) => {
+    try {
+      await api.pinMangaBook(book.sourceId, book.bookUrl, !book.pinned)
+      toast.success(
+        book.pinned
+          ? t('source.mangaUnpinned', '已取消「整本保留」，可被自动清理')
+          : t('source.mangaPinned', '已设为「整本保留」，不会被自动清理'),
+      )
+      await loadServerStats()
+    } catch {
+      toast.error(t('source.mangaPinFailed', '设置失败'))
+    }
+  }
+
+  const handleClearServerBook = async (book: MangaCacheBookStat) => {
+    const name = book.name || book.bookUrl
+    if (!window.confirm(t('source.confirmClearServerBook', { name, defaultValue: `确定清理《${name}》的服务端图片缓存吗？清理后需重新联网抓取。` }))) return
+    try {
+      await api.clearImageCache(book.sourceId, book.bookUrl)
+      toast.success(t('source.clearedServerBook', '已清理该书的服务端图片缓存'))
+      await loadServerStats()
+    } catch {
+      toast.error(t('source.clearFailed', '清理失败'))
+    }
+  }
+
+  const handleClearAllServer = async () => {
+    if (!window.confirm(t('source.confirmClearAllServer', '确定清空服务端全部图片缓存吗？所有漫画都需要重新联网抓取。'))) return
+    setServerBusy(true)
+    try {
+      await api.clearImageCache()
+      toast.success(t('source.clearedAllServer', '已清空服务端图片缓存'))
+      await loadServerStats()
+    } catch {
+      toast.error(t('source.clearAllFailed', '清空失败'))
+    } finally {
+      setServerBusy(false)
+    }
+  }
 
   const handleToggleLru = (e: React.ChangeEvent<HTMLInputElement>) => {
     const checked = e.target.checked
@@ -163,6 +218,86 @@ export function OfflineCacheModal({ onClose }: OfflineCacheModalProps) {
                       </div>
                     ))}
                   </div>
+                )}
+              </div>
+
+              {/*
+                服务端图片缓存（方案 E · P1/P2）。
+                与上面的本机 IndexedDB 缓存**必须分开显示**：两者都可能吃掉空间，
+                混成一个数字用户根本判断不出该清哪一个。
+              */}
+              <div className="offline-books-section server-cache-section">
+                <div className="offline-books-header">
+                  <span>{t('source.serverImageCacheTitle', '服务端图片缓存（漫画）')}</span>
+                  <small>{t('source.serverImageCacheHint', '与本机缓存分开统计')}</small>
+                </div>
+                {!serverStats ? (
+                  <p className="empty-notice">{t('source.serverImageCacheUnavailable', '暂无法读取服务端缓存状态（未登录或服务不可达）。')}</p>
+                ) : (
+                  <>
+                    <div className="cache-overview-card">
+                      <div className="overview-item">
+                        <span className="overview-label">{t('source.serverImageBytes', '服务端占用')}</span>
+                        <strong className="overview-value text-teal">
+                          {formatBytes(serverStats.diskBytes)}
+                          <small className="overview-quota"> / {formatBytes(serverStats.quotaBytes)}</small>
+                        </strong>
+                      </div>
+                      <div className="overview-divider" />
+                      <div className="overview-item">
+                        <span className="overview-label">{t('source.serverImageCount', '图片张数')}</span>
+                        <strong className="overview-value">{serverStats.imageCount}</strong>
+                      </div>
+                      <div className="overview-divider" />
+                      <div className="overview-item">
+                        <span className="overview-label">{t('source.serverImageBooks', '涉及书籍')}</span>
+                        <strong className="overview-value">{serverStats.books.length} {t('library.unitsBook', '本')}</strong>
+                      </div>
+                    </div>
+                    {serverStats.diskBytes > serverStats.totalBytes * 1.05 && (
+                      <p className="cache-drift-warning">
+                        {t('source.serverImageDrift', '磁盘占用与索引不一致（可能存在尚未回收的残片），执行一次清理即可。')}
+                      </p>
+                    )}
+                    {serverStats.books.length === 0 ? (
+                      <p className="empty-notice">{t('source.serverImageEmpty', '服务端暂无漫画图片缓存。在漫画阅读器里打开章节会自动缓存。')}</p>
+                    ) : (
+                      <div className="offline-books-list">
+                        {serverStats.books.map(book => (
+                          <div key={`${book.sourceId}::${book.bookUrl}`} className="offline-book-row">
+                            <div className="offline-book-meta">
+                              <strong>
+                                {book.name || book.bookUrl}
+                                {book.pinned && <span className="server-cache-pin-badge">{t('source.serverImagePinned', '整本保留')}</span>}
+                              </strong>
+                              <small>
+                                {book.imageCount} {t('source.serverImageUnit', '张')} · {formatBytes(book.totalBytes)}
+                                {' · '}{t('source.serverImageReadyChapters', { count: book.readyChapterCount, defaultValue: `已可离线 ${book.readyChapterCount} 章` })}
+                              </small>
+                            </div>
+                            <div className="offline-book-actions">
+                              <button type="button" className="subtle-button" onClick={() => void handlePinBook(book)}>
+                                {book.pinned ? t('source.serverImageUnpin', '取消保留') : t('source.serverImagePin', '整本保留')}
+                              </button>
+                              <button type="button" className="subtle-button danger-btn" onClick={() => void handleClearServerBook(book)}>
+                                {t('common.delete', '清除')}
+                              </button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    <div className="server-cache-footer">
+                      <button
+                        type="button"
+                        className="danger-button"
+                        disabled={serverBusy || serverStats.books.length === 0}
+                        onClick={() => void handleClearAllServer()}
+                      >
+                        {serverBusy ? t('source.clearing', '清空中...') : t('source.clearAllServerImageCache', '清空服务端图片缓存')}
+                      </button>
+                    </div>
+                  </>
                 )}
               </div>
             </div>

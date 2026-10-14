@@ -528,6 +528,9 @@ class RuleRunner(private val responseFetcher: ((String) -> String)? = null, inte
     internal fun splitImageUrls(raw: String?): List<String> {
         if (raw.isNullOrBlank()) return emptyList()
 
+        fun cleanImageUrl(url: String): String =
+            url.substringBefore(",{").substringBefore(",%7B").trim().trimEnd(',', ' ')
+
         // 1. 按 <img> 标签提取 src / data-src / data-original
         val doc = Jsoup.parse(raw)
         val imgs = doc.select("img")
@@ -536,7 +539,7 @@ class RuleRunner(private val responseFetcher: ((String) -> String)? = null, inte
                 (el.attr("data-src").takeIf { it.isNotBlank() }
                     ?: el.attr("data-original").takeIf { it.isNotBlank() }
                     ?: el.attr("src").takeIf { it.isNotBlank() })
-                    ?.trim()
+                    ?.let(::cleanImageUrl)
             }.filter { it.isNotBlank() }
         }
 
@@ -545,12 +548,12 @@ class RuleRunner(private val responseFetcher: ((String) -> String)? = null, inte
         if (trimmed.startsWith("[")) {
             val parsed = runCatching { Json.parseToJsonElement(trimmed) }.getOrNull() as? JsonArray
             if (parsed != null) {
-                return parsed.mapNotNull { element -> (element as? JsonPrimitive)?.contentOrNull?.trim() }.filter { it.isNotBlank() }
+                return parsed.mapNotNull { element -> (element as? JsonPrimitive)?.contentOrNull?.let(::cleanImageUrl) }.filter { it.isNotBlank() }
             }
         }
 
         // 3. 换行分隔（Legado 多元素 CSS / JSON 多值连接默认 "\n"）
-        return raw.lines().map { it.trim() }.filter { it.isNotBlank() }
+        return raw.lines().map(::cleanImageUrl).filter { it.isNotBlank() }
     }
 
     /**

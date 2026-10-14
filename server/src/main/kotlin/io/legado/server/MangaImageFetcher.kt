@@ -61,8 +61,8 @@ class MangaImageFetcher(
             val (contentType, raw) = injected(url, mediaHeaders, referer)
             return validate(raw, contentType, url)
         }
-
-        var uri = lenientUri(url)
+        val cleanUrl = url.substringBefore(",{").substringBefore(",%7B").trim().trimEnd(',', ' ')
+        var uri = lenientUri(cleanUrl)
         repeat(MAX_REDIRECTS) {
             val response = sendWithRetry(buildRequest(uri, mediaHeaders, referer))
             if (response.statusCode() in 300..399) {

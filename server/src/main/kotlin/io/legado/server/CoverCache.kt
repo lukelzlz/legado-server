@@ -8,9 +8,7 @@ import java.net.http.HttpRequest
 import java.net.http.HttpResponse
 import java.nio.file.Files
 import java.nio.file.Path
-import java.security.MessageDigest
 import java.time.Duration
-import java.util.zip.GZIPInputStream
 
 data class CachedCover(val key: String, val contentType: String)
 
@@ -80,24 +78,10 @@ class CoverCache(private val directory: Path, private val fetcher: ((String) -> 
     }
 
     /**
-     * 按**字节魔数**兜底解压，不依赖 `Content-Encoding` 响应头。
-     *
-     * 为什么必须在这里做（实测 SESSION-027）：
-     * `HttpResponse.BodyHandlers.ofByteArray()` **不会自动解压** gzip，
-     * 而上游图床对 `.jpg` 也会返回 `Content-Encoding: gzip`。
-     * 若直接落盘，磁盘上就是"Content-Type 是 image/jpeg、内容却是 gzip"的坏文件：
-     * 接口 HTTP 200、字节数正常，`<img>` 却**空白/裂图**
-     * （Chrome 中 `complete=true` 但 `naturalWidth=0`）。
-     *
-     * 按魔数判断比信任响应头更稳：上游偶尔谎报 `Content-Encoding`，
-     * 此时若强行解压反而会把**好数据弄坏**。
+     * 按**字节魔数**兜底解压 —— 已收敛到 [ImageBytes.decompressIfNeeded] 这一**唯一收口**，
+     * 漫画图片与有声书音频共用同一份实现（避免「gzip 假图片」类缺陷各修一遍）。
      */
-    private fun decompressIfNeeded(raw: ByteArray): ByteArray {
-        if (raw.size < 2) return raw
-        val gzipMagic = (raw[0].toInt() and 0xff) == 0x1f && (raw[1].toInt() and 0xff) == 0x8b
-        if (!gzipMagic) return raw
-        return runCatching { GZIPInputStream(raw.inputStream()).use { it.readAllBytes() } }.getOrDefault(raw)
-    }
+    private fun decompressIfNeeded(raw: ByteArray): ByteArray = ImageBytes.decompressIfNeeded(raw)
 
     private fun validate(uri: URI) {
         NetworkSecurity.resolveAndValidateSafeHttpTarget(uri, "封面")
@@ -108,37 +92,13 @@ class CoverCache(private val directory: Path, private val fetcher: ((String) -> 
      *
      * 之所以必须做：本项目的封面来自任意外部图床，响应头不可信。
      * 只有校验真实字节，才能保证「存进去的封面浏览器一定画得出来」。
+     * 实现已收敛到 [ImageBytes.looksLikeImage]。
      */
-    fun looksLikeImage(bytes: ByteArray): Boolean {
-        if (bytes.size < 12) return false
-        fun at(i: Int) = bytes[i].toInt() and 0xff
-        return when {
-            at(0) == 0xff && at(1) == 0xd8 && at(2) == 0xff -> true                       // JPEG
-            at(0) == 0x89 && at(1) == 0x50 && at(2) == 0x4e && at(3) == 0x47 -> true      // PNG
-            at(0) == 0x47 && at(1) == 0x49 && at(2) == 0x46 -> true                       // GIF
-            at(0) == 0x42 && at(1) == 0x4d -> true                                        // BMP
-            // WebP: "RIFF"...."WEBP"
-            at(0) == 0x52 && at(1) == 0x49 && at(2) == 0x46 && at(3) == 0x46 &&
-                at(8) == 0x57 && at(9) == 0x45 && at(10) == 0x42 && at(11) == 0x50 -> true
-            else -> false
-        }
-    }
+    fun looksLikeImage(bytes: ByteArray): Boolean = ImageBytes.looksLikeImage(bytes)
 
-    fun detectImageContentType(bytes: ByteArray): String? {
-        if (!looksLikeImage(bytes)) return null
-        fun at(i: Int) = bytes[i].toInt() and 0xff
-        return when {
-            at(0) == 0xff && at(1) == 0xd8 && at(2) == 0xff -> "image/jpeg"
-            at(0) == 0x89 && at(1) == 0x50 && at(2) == 0x4e && at(3) == 0x47 -> "image/png"
-            at(0) == 0x47 && at(1) == 0x49 && at(2) == 0x46 -> "image/gif"
-            at(0) == 0x42 && at(1) == 0x4d -> "image/bmp"
-            at(0) == 0x52 && at(1) == 0x49 && at(2) == 0x46 && at(3) == 0x46 &&
-                at(8) == 0x57 && at(9) == 0x45 && at(10) == 0x42 && at(11) == 0x50 -> "image/webp"
-            else -> "image/jpeg"
-        }
-    }
+    fun detectImageContentType(bytes: ByteArray): String? = ImageBytes.detectImageContentType(bytes)
 
-    fun sha256(value: String) = MessageDigest.getInstance("SHA-256").digest(value.toByteArray()).joinToString("") { "%02x".format(it) }
-    private fun sha256Bytes(bytes: ByteArray) = MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
-    private companion object { const val MAX_BYTES = 5 * 1024 * 1024 }
+    fun sha256(value: String) = ImageBytes.sha256(value)
+    private fun sha256Bytes(bytes: ByteArray) = ImageBytes.sha256Bytes(bytes)
+    private companion object { const val MAX_BYTES = ImageBytes.MAX_BYTES }
 }

@@ -1106,5 +1106,65 @@ data class MangaChapterManifest(
     val images: List<MangaImageItem>,
 )
 
+// ---------------------------------------------------------------------------
+// 漫画链路 · P1 服务端缓存（L1 字节索引 + L2 章节清单）
+// ---------------------------------------------------------------------------
+
+/**
+ * 一章的图片清单与「整章就绪度」（L2 视图层）。
+ *
+ * `ready == total` 才算整章可离线，目录才打绿点 `●` —— 这是**唯一口径**，
+ * 前端不要自己按「有清单就算缓存」判断（否则断网会看到半截裂图）。
+ */
+data class MangaChapterRecord(
+    val sourceId: String,
+    val bookUrl: String,
+    val chapterUrl: String,
+    /** 章节序号，滑窗 GC 的锚点计算必需（落后当前进度 N 章 ⇒ 第 1 顺位淘汰候选）。 */
+    val chapterIndex: Int = 0,
+    /** 免死金牌：用户手动「下载整本/离线」的章节，GC 永不自动淘汰。 */
+    val pinned: Boolean = false,
+    /** 有序上游 URL 数组的 JSON（**仅服务端可见，绝不下发前端**）。 */
+    val imagesJson: String,
+    val total: Int = 0,
+    val ready: Int = 0,
+    val skipped: Int = 0,
+    /** pending | partial | ready | failed */
+    val state: String = "pending",
+    val lastError: String? = null,
+    val createdAt: Long = 0,
+    val updatedAt: Long = 0,
+)
+
+/** 一张图片的字节索引（L1）。`cacheKey` 指向唯一字节副本；`urlHash` 是"哪个上游地址"的索引。 */
+data class MangaImageRecord(
+    /** sha256(sourceId + '|' + 上游URL)：**含 sourceId**，防跨源脏命中。 */
+    val urlHash: String,
+    /** sha256(字节)：图片文件的唯一副本名。 */
+    val cacheKey: String,
+    val sourceId: String,
+    val bookUrl: String,
+    val chapterUrl: String,
+    val upstreamUrl: String,
+    val contentType: String,
+    val byteSize: Long = 0,
+    val width: Int? = null,
+    val height: Int? = null,
+    val createdAt: Long = 0,
+    val lastAccessAt: Long = 0,
+)
+
+/** 按书聚合的缓存占用（缓存管理 UI 与 stats 接口用）。 */
+@Serializable
+data class MangaCacheBookStat(
+    val sourceId: String,
+    val bookUrl: String,
+    val name: String? = null,
+    val imageCount: Int,
+    val totalBytes: Long,
+    val chapterCount: Int = 0,
+    val readyChapterCount: Int = 0,
+)
+
 
 

@@ -87,11 +87,13 @@ export function MangaReaderScreen({ openBook, startIndex, onClose }: MangaReader
     setFailed(new Set())
     setActiveImage(0)
     restoredRef.current = false
-    void api.mangaManifest(openBook.details.sourceId, target.url, openBook.bookUrl, controller.signal)
+    void api.mangaManifest(openBook.details.sourceId, target.url, openBook.bookUrl, target.index, controller.signal)
       .then(result => {
         if (controller.signal.aborted) return
         const list = result?.images ?? []
         setImages(list)
+        // 服务端已标记过 failed 的图直接亮重试按钮，别让用户每次都白等一轮
+        setFailed(new Set(list.filter(item => item.status === 'failed').map(item => item.index)))
         if (list.length === 0) {
           // 明确报错，绝不静默留白（AGENTS.md：「静默丢数据」比抛错危险）
           setError(t('manga.emptyManifest', '图片规则未提取到任何图片，请检查该书源的正文规则'))
@@ -160,14 +162,17 @@ export function MangaReaderScreen({ openBook, startIndex, onClose }: MangaReader
     scrollRef.current?.scrollTo({ top: 0 })
   }, [chapters.length, chapterIndex, persist, activeImage, total])
 
+  const [retryTokens, setRetryTokens] = useState<Record<number, number>>({})
+
   const retryImage = useCallback((index: number) => {
     setFailed(prev => {
       const next = new Set(prev)
       next.delete(index)
       return next
     })
-    // 换一个查询串强制浏览器重新请求（服务端 P1 起换成定位地址后不再需要）
-    setImages(prev => prev.map(item => (item.index === index ? { ...item, url: `${item.url}${item.url.includes('?') ? '&' : '?'}_retry=${Date.now()}` } : item)))
+    // 通过 remount 该 <img> 强制浏览器重新发起请求（服务端会把 failed 的行重抓一次）。
+    // 刻意**不加** cache-busting 查询串：那会破坏 ETag/immutable 与 SW 的缓存键。
+    setRetryTokens(prev => ({ ...prev, [index]: (prev[index] ?? 0) + 1 }))
   }, [])
 
   return (
@@ -230,23 +235,24 @@ export function MangaReaderScreen({ openBook, startIndex, onClose }: MangaReader
         )}
         {!loading && !error && images.map(item => (
           <div
-            key={`${item.index}-${item.url}`}
+            key={`${item.index}-${retryTokens[item.index] ?? 0}`}
             className="manga-image-frame"
             ref={node => { imageRefs.current[item.index] = node }}
+            // manifest 给了真实宽高 ⇒ 占位就按真实比例，**首屏不跳动**（未知时退回 CSS 的 60vh 兜底）
+            style={item.width && item.height ? { aspectRatio: `${item.width} / ${item.height}`, minHeight: 0 } : undefined}
           >
             {failed.has(item.index) ? (
               <button type="button" className="manga-image-failed" onClick={() => retryImage(item.index)}>
                 <Icon name="image" />
                 <span>{t('manga.imageFailed', { index: item.index + 1, defaultValue: `第 ${item.index + 1} 张加载失败，点击重试` })}</span>
-                <small>{t('manga.imageFailedHint', '若反复失败，该图床很可能启用了防盗链（需要 Referer / Cookie），P1 服务端缓存会解决')}</small>
+                <small>{t('manga.imageFailedHint', '服务端已尝试带书源的 Referer/Cookie 代抓；反复失败通常意味着该源需要登录，或图床链接已失效')}</small>
               </button>
             ) : (
               <img
-                src={item.url}
+                src={api.imageUrl(item.key)}
                 alt={t('manga.imageAlt', { index: item.index + 1, defaultValue: `第 ${item.index + 1} 张` })}
                 loading={item.index < 3 ? 'eager' : 'lazy'}
                 decoding="async"
-                referrerPolicy="no-referrer"
                 onError={() => setFailed(prev => new Set(prev).add(item.index))}
               />
             )}

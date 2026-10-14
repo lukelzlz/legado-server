@@ -69,9 +69,12 @@ export type ProgressMergeResponse = { source: 'file' | 'database'; progress?: Re
 export type BookshelfItem = { sourceId: string; bookUrl: string; name: string; author?: string; tocUrl: string; coverKey?: string; coverUrl?: string; chapterIndex?: number; scrollPosition?: number; lastReadAt: number; cachedChapters: number; totalChapters: number; cacheState: 'idle' | 'caching' | 'ready' | 'failed'; cacheError?: string; completed: boolean; alternateSources?: SearchResult[]; groupName?: string; bookKind?: string }
 export type BookshelfWrite = { sourceId: string; bookUrl: string; name: string; author?: string; tocUrl: string; coverUrl?: string; alternateSources?: SearchResult[]; groupName?: string }
 
-/** 漫画章节清单（方案 E · P0）：`url` 暂为上游地址，前端直连渲染 */
-export type MangaImageItem = { index: number; url: string }
-export type MangaChapterManifest = { sourceId: string; bookUrl: string; chapterUrl: string; title?: string | null; total: number; images: MangaImageItem[] }
+/** 漫画清单项（P1）：**只有服务端 key**，上游地址留在服务端（防前端绕过缓存直连）。 */
+export type MangaImageStatus = 'pending' | 'ready' | 'failed'
+export type MangaImageItem = { index: number; key: string; status: MangaImageStatus; width?: number | null; height?: number | null }
+export type MangaChapterManifest = { sourceId: string; bookUrl: string; chapterUrl: string; title?: string | null; chapterIndex: number; total: number; ready: number; state: string; images: MangaImageItem[] }
+export type MangaCacheBookStat = { sourceId: string; bookUrl: string; name?: string | null; imageCount: number; totalBytes: number; chapterCount: number; readyChapterCount: number }
+export type MangaCacheStats = { totalBytes: number; quotaBytes: number; imageCount: number; diskBytes: number; books: MangaCacheBookStat[] }
 
 // Safari momentum scrolling can schedule several saves while a production request is still in flight.
 // Serialize saves per book so an older response cannot arrive after a newer position and overwrite it.
@@ -501,9 +504,24 @@ export const api = {
     request<SearchResult[]>('/api/search', { method: 'POST', body: JSON.stringify({ keyword, sourceIds, group }), signal }),
   details: (sourceId: string, bookUrl: string, signal?: AbortSignal) => request<BookDetails>('/api/books/details', { method: 'POST', body: JSON.stringify({ sourceId, bookUrl }), signal }),
   chapters: (sourceId: string, bookUrl: string, signal?: AbortSignal) => request<Chapter[]>('/api/books/chapters', { method: 'POST', body: JSON.stringify({ sourceId, bookUrl }), signal }),
-  /** 漫画章节图片清单（方案 E · P0）。P1 起服务端会换成定位地址，前端无需改动调用方式。 */
-  mangaManifest: (sourceId: string, chapterUrl: string, bookUrl?: string, signal?: AbortSignal) =>
-    request<MangaChapterManifest>('/api/books/images/manifest', { method: 'POST', body: JSON.stringify({ sourceId, chapterUrl, bookUrl }), signal }),
+  /**
+   * 漫画章节图片清单（方案 E · P1）。
+   * 返回**服务端 key + 状态 + 宽高**；图片本身走 `imageUrl(key)`。
+   * `chapterIndex` 供服务端滑窗 GC 计算阅读锚点。
+   */
+  mangaManifest: (sourceId: string, chapterUrl: string, bookUrl?: string, chapterIndex = 0, signal?: AbortSignal) =>
+    request<MangaChapterManifest>('/api/books/images/manifest', { method: 'POST', body: JSON.stringify({ sourceId, chapterUrl, bookUrl, chapterIndex }), signal }),
+  /** 服务端图片直出地址（同源、ETag + immutable，可被 Service Worker 长期缓存）。 */
+  imageUrl: (key: string) => `/api/images/${key}`,
+  /** 服务端图片缓存统计（与前端 CacheStorage 的统计**分开显示**）。 */
+  imageCacheStats: () => request<MangaCacheStats>('/api/books/images/cache/stats'),
+  clearImageCache: (sourceId?: string, bookUrl?: string) =>
+    request<void>(
+      sourceId && bookUrl
+        ? `/api/books/images/cache?sourceId=${encodeURIComponent(sourceId)}&bookUrl=${encodeURIComponent(bookUrl)}`
+        : '/api/books/images/cache?all=true',
+      { method: 'DELETE' },
+    ),
   content: async (sourceId: string, chapterUrl: string, bookUrl?: string, signal?: AbortSignal) => {
     try {
       const res = await request<{ title?: string; content: string }>('/api/books/content', { method: 'POST', body: JSON.stringify({ sourceId, chapterUrl, bookUrl }), signal })

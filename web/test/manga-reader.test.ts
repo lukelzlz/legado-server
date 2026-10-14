@@ -76,6 +76,32 @@ test('api client - 暴露 mangaManifest 且书架条目带 bookKind', () => {
   assert.ok(/BookshelfItem = \{[^}]*bookKind/.test(apiSource), 'BookshelfItem 必须透出 bookKind')
 })
 
+test('P1 契约 - 清单只给服务端 key，图片走 imageUrl，绝不泄露上游地址', () => {
+  const apiSource = read('../src/api.ts')
+  const screenSource = read('../src/MangaReaderScreen.tsx')
+
+  // 清单项必须是 { index, key, status, width, height } —— 不能再有上游 url
+  assert.ok(/MangaImageItem = \{[^}]*key: string/.test(apiSource), 'MangaImageItem 必须带 key')
+  assert.ok(/MangaImageItem = \{[^}]*status:/.test(apiSource), 'MangaImageItem 必须带状态')
+  assert.ok(!/MangaImageItem = \{[^}]*\burl\b/.test(apiSource), '清单项绝不能带上游 url 字段')
+
+  assert.equal(typeof api.imageUrl, 'function', 'api.imageUrl 必须存在')
+  assert.equal(api.imageUrl('a'.repeat(64)), `/api/images/${'a'.repeat(64)}`, 'imageUrl 必须拼出真实直出路由')
+  assert.ok(apiSource.includes("'/api/books/images/cache/stats'"), '必须暴露服务端缓存 stats')
+
+  // 阅读器只能用服务端地址，绝不能出现直连上游的写法
+  assert.ok(screenSource.includes('api.imageUrl('), '阅读器必须用服务端直出地址')
+  assert.ok(!screenSource.includes('item.url'), '阅读器不得再引用清单里的上游 url')
+})
+
+test('P1 契约 - 宽高占位与重试 remount（防跳动 / 不破坏 ETag 缓存键）', () => {
+  const source = read('../src/MangaReaderScreen.tsx')
+
+  assert.ok(source.includes('aspectRatio'), '必须用 manifest 给的宽高做占位比例，避免首屏跳动')
+  assert.ok(source.includes('retryTokens'), '重试必须靠 remount 而不是改 URL')
+  assert.ok(!source.includes('_retry='), '严禁用 cache-busting 查询串（会破坏 ETag/immutable 与 SW 缓存键）')
+})
+
 test('main.tsx - 按 bookKind 分派到漫画阅读器', () => {
   const source = read('../src/main.tsx')
 

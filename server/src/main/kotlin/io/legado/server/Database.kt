@@ -254,20 +254,25 @@ class Database(private val path: String) : Closeable, AutoCloseable {
                 create index if not exists idx_manga_chapter_pinned on manga_chapter_cache(pinned);
                 create table if not exists manga_image_cache (
                   url_hash       text primary key,
-                  cache_key      text not null,
+                  cache_key      text not null default '',
                   source_id      text not null,
                   book_url       text not null,
                   chapter_url    text not null,
+                  chapter_index  integer not null default 0,
+                  segment_index  integer not null default 0,
                   upstream_url   text not null,
-                  content_type   text not null,
+                  content_type   text not null default '',
                   byte_size      integer not null default 0,
                   width          integer,
                   height         integer,
+                  state          text not null default 'pending',
+                  last_error     text,
                   created_at     integer not null,
                   last_access_at integer not null
                 );
                 create index if not exists idx_manga_image_key on manga_image_cache(cache_key);
                 create index if not exists idx_manga_image_book on manga_image_cache(source_id, book_url);
+                create index if not exists idx_manga_image_chapter on manga_image_cache(source_id, book_url, chapter_url, segment_index);
                 create index if not exists idx_manga_image_access on manga_image_cache(last_access_at asc);
             """.trimIndent())
         }
@@ -275,6 +280,7 @@ class Database(private val path: String) : Closeable, AutoCloseable {
         migrateBookshelf(db)
         migrateSourceTable(db)
         migrateBookContentCache(db)
+        migrateMangaImageCache(db)
         healLocalBookCacheStatus(db)
         val userExists = db.prepareStatement("select 1 from app_user where id = 1").use { it.executeQuery().next() }
         if (!userExists) {
@@ -758,30 +764,88 @@ class Database(private val path: String) : Closeable, AutoCloseable {
     }
 
     /**
-     * 记录一次成功落盘（**先盘后表**：文件已经在磁盘上才写这行）。
+     * 记录一次成功落盘（**先盘后表**：文件已经在磁盘上才写这行），并把该行置为 `ready`。
      *
-     * `created_at` 与 `cache_key` 不参与 update：同一 URL 若字节变了（上游换图），
-     * 新 key 会覆盖旧值，但 `created_at` 保持首次时间，避免 GC 把"老图"当新图保护。
+     * `created_at` 不参与 update：同一 URL 若字节变了（上游换图），新 key 会覆盖旧值，
+     * 但创建时间保持首次，避免 GC 把"老图"当新图保护。
      */
     fun recordMangaImage(record: MangaImageRecord) = write { db ->
         val now = System.currentTimeMillis()
         db.prepareStatement(
-            """insert into manga_image_cache(url_hash,cache_key,source_id,book_url,chapter_url,upstream_url,content_type,byte_size,width,height,created_at,last_access_at)
-               values(?,?,?,?,?,?,?,?,?,?,?,?)
+            """insert into manga_image_cache(url_hash,cache_key,source_id,book_url,chapter_url,chapter_index,segment_index,upstream_url,content_type,byte_size,width,height,state,last_error,created_at,last_access_at)
+               values(?,?,?,?,?,?,?,?,?,?,?,?,'ready',null,?,?)
                on conflict(url_hash) do update set
                  cache_key=excluded.cache_key, source_id=excluded.source_id, book_url=excluded.book_url,
-                 chapter_url=excluded.chapter_url, upstream_url=excluded.upstream_url, content_type=excluded.content_type,
-                 byte_size=excluded.byte_size, width=excluded.width, height=excluded.height,
+                 chapter_url=excluded.chapter_url, chapter_index=excluded.chapter_index,
+                 segment_index=excluded.segment_index, upstream_url=excluded.upstream_url,
+                 content_type=excluded.content_type, byte_size=excluded.byte_size,
+                 width=excluded.width, height=excluded.height, state='ready', last_error=null,
                  last_access_at=excluded.last_access_at""",
         ).use {
             it.setString(1, record.urlHash); it.setString(2, record.cacheKey); it.setString(3, record.sourceId)
-            it.setString(4, record.bookUrl); it.setString(5, record.chapterUrl); it.setString(6, record.upstreamUrl)
-            it.setString(7, record.contentType); it.setLong(8, record.byteSize)
-            if (record.width != null) it.setInt(9, record.width) else it.setNull(9, java.sql.Types.INTEGER)
-            if (record.height != null) it.setInt(10, record.height) else it.setNull(10, java.sql.Types.INTEGER)
-            it.setLong(11, if (record.createdAt > 0) record.createdAt else now)
-            it.setLong(12, if (record.lastAccessAt > 0) record.lastAccessAt else now)
+            it.setString(4, record.bookUrl); it.setString(5, record.chapterUrl); it.setInt(6, record.chapterIndex)
+            it.setInt(7, record.segmentIndex); it.setString(8, record.upstreamUrl); it.setString(9, record.contentType)
+            it.setLong(10, record.byteSize)
+            if (record.width != null) it.setInt(11, record.width) else it.setNull(11, java.sql.Types.INTEGER)
+            if (record.height != null) it.setInt(12, record.height) else it.setNull(12, java.sql.Types.INTEGER)
+            it.setLong(13, if (record.createdAt > 0) record.createdAt else now)
+            it.setLong(14, if (record.lastAccessAt > 0) record.lastAccessAt else now)
             it.executeUpdate()
+        }
+    }
+
+    /**
+     * 清单阶段的**登记**（幂等批量）：把「这一章有哪些图、分别是什么 key」先落库，
+     * 但**不动 `state`** —— 已经 ready 的行不能被重新登记打回 pending。
+     *
+     * 为什么必须登记：对外 key 是 URL 派生的哈希、**不可逆**，服务端必须留着 `upstream_url`
+     * 才知道按需去哪个地址抓。
+     */
+    fun registerMangaImages(records: List<MangaImageRecord>): Int {
+        if (records.isEmpty()) return 0
+        return write { db ->
+            var affected = 0
+            db.autoCommit = false
+            try {
+                db.prepareStatement(
+                    """insert into manga_image_cache(url_hash,cache_key,source_id,book_url,chapter_url,chapter_index,segment_index,upstream_url,content_type,byte_size,state,created_at,last_access_at)
+                       values(?,?,?,?,?,?,?,?,'',0,'pending',?,?)
+                       on conflict(url_hash) do update set
+                         source_id=excluded.source_id, book_url=excluded.book_url,
+                         chapter_url=excluded.chapter_url, chapter_index=excluded.chapter_index,
+                         segment_index=excluded.segment_index, upstream_url=excluded.upstream_url""",
+                ).use { st ->
+                    val now = System.currentTimeMillis()
+                    records.forEach { r ->
+                        st.setString(1, r.urlHash); st.setString(2, r.cacheKey); st.setString(3, r.sourceId)
+                        st.setString(4, r.bookUrl); st.setString(5, r.chapterUrl); st.setInt(6, r.chapterIndex)
+                        st.setInt(7, r.segmentIndex); st.setString(8, r.upstreamUrl)
+                        st.setLong(9, now); st.setLong(10, now)
+                        st.addBatch()
+                    }
+                    affected = st.executeBatch().sum()
+                }
+                db.commit()
+                affected
+            } catch (error: Throwable) {
+                db.rollback(); throw error
+            } finally {
+                db.autoCommit = true
+            }
+        }
+    }
+
+    /** 某一章的全部图片行（按章节内序号排序）—— 清单接口的取数口径。 */
+    fun listMangaImagesForChapter(sourceId: String, bookUrl: String, chapterUrl: String): List<MangaImageRecord> = connect { db ->
+        db.prepareStatement(MANGA_IMAGE_SELECT + " where source_id=? and book_url=? and chapter_url=? order by segment_index asc").use {
+            it.setString(1, sourceId); it.setString(2, bookUrl); it.setString(3, chapterUrl)
+            it.executeQuery().use { rs -> buildList { while (rs.next()) add(rs.toMangaImage()) } }
+        }
+    }
+
+    fun markMangaImageFailed(urlHash: String, error: String?) = write { db ->
+        db.prepareStatement("update manga_image_cache set state='failed', last_error=? where url_hash=?").use {
+            it.setString(1, error?.take(500)); it.setString(2, urlHash); it.executeUpdate()
         }
     }
 
@@ -886,9 +950,9 @@ class Database(private val path: String) : Closeable, AutoCloseable {
 
     private fun java.sql.ResultSet.toMangaImage(): MangaImageRecord = MangaImageRecord(
         urlHash = getString(1), cacheKey = getString(2), sourceId = getString(3), bookUrl = getString(4),
-        chapterUrl = getString(5), upstreamUrl = getString(6), contentType = getString(7),
-        byteSize = getLong(8), width = getObject(9) as? Int, height = getObject(10) as? Int,
-        createdAt = getLong(11), lastAccessAt = getLong(12),
+        chapterUrl = getString(5), chapterIndex = getInt(6), segmentIndex = getInt(7), upstreamUrl = getString(8),
+        contentType = getString(9), byteSize = getLong(10), width = getObject(11) as? Int, height = getObject(12) as? Int,
+        state = getString(13), lastError = getString(14), createdAt = getLong(15), lastAccessAt = getLong(16),
     )
     fun recordCoverCache(coverKey: String, contentType: String = "image/*") = write { db ->
         db.prepareStatement("insert into cover_cache(cache_key,content_type) values(?,?) on conflict(cache_key) do update set content_type=excluded.content_type").use {
@@ -2853,6 +2917,34 @@ class Database(private val path: String) : Closeable, AutoCloseable {
             db.createStatement().use { it.executeUpdate("alter table book_content_cache add column raw_content text") }
         }
     }
+
+    /**
+     * 漫画图片索引的增量迁移（幂等）。
+     *
+     * 为什么需要它：`manga_image_cache` 在实现中途调整过形状 —— 从「只记已落盘的字节」
+     * 改成「**清单阶段先登记 pending 行**（因为对外 key 是 URL 派生的哈希、不可逆，
+     * 服务端必须留着 URL 才知道去哪抓），按需再填充字节」。开发期已经建过表的库必须能平滑加上新列。
+     */
+    private fun migrateMangaImageCache(db: Connection) {
+        val columns = db.createStatement().use { statement ->
+            statement.executeQuery("pragma table_info(manga_image_cache)").use { rs ->
+                buildSet { while (rs.next()) add(rs.getString("name")) }
+            }
+        }
+        if (columns.isEmpty()) return
+        if ("chapter_index" !in columns) {
+            db.createStatement().use { it.executeUpdate("alter table manga_image_cache add column chapter_index integer not null default 0") }
+        }
+        if ("segment_index" !in columns) {
+            db.createStatement().use { it.executeUpdate("alter table manga_image_cache add column segment_index integer not null default 0") }
+        }
+        if ("state" !in columns) {
+            db.createStatement().use { it.executeUpdate("alter table manga_image_cache add column state text not null default 'pending'") }
+        }
+        if ("last_error" !in columns) {
+            db.createStatement().use { it.executeUpdate("alter table manga_image_cache add column last_error text") }
+        }
+    }
     fun listHttpTts(query: String? = null): List<HttpTts> = connect { db ->
         val sql = if (!query.isNullOrBlank()) {
             "select id, name, url, header, content_type, concurrent_rate, login_url, login_check_js, login_ui, js_lib, enabled_cookie_jar, last_update_time from http_tts where name like ? or url like ? order by id asc"
@@ -2967,7 +3059,7 @@ class Database(private val path: String) : Closeable, AutoCloseable {
             "select source_id,book_url,chapter_url,chapter_index,pinned,images_json,total,ready,skipped,state,last_error,created_at,updated_at from manga_chapter_cache"
         /** 漫画图片索引的列顺序必须与 `toMangaImage()` 的取值下标逐一对齐。 */
         private const val MANGA_IMAGE_SELECT =
-            "select url_hash,cache_key,source_id,book_url,chapter_url,upstream_url,content_type,byte_size,width,height,created_at,last_access_at from manga_image_cache"
+            "select url_hash,cache_key,source_id,book_url,chapter_url,chapter_index,segment_index,upstream_url,content_type,byte_size,width,height,state,last_error,created_at,last_access_at from manga_image_cache"
         private const val PBKDF2_ITERATIONS = 600_000
         private const val SALT_BYTES = 16
         private const val HASH_BITS = 256

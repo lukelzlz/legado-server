@@ -73,6 +73,11 @@ fun Application.legadoApplication(config: ServerConfig = ServerConfig.fromEnviro
     routing {
         get("/healthz") { call.respond(mapOf("status" to "ok")) }
         val coverCache = CoverCache(config.coverCacheDirectory)
+        // 漫画 P1：L1 字节缓存 + 抓取收口（配额默认 10 GiB，见 ADR-028 的滑窗 GC 裁决）
+        val imageCache = ImageCache(config.imageCacheDirectory, database, config.imageCacheQuotaBytes) { message -> log.info(message) }
+        // ⚠️ 必须用具名参数：`log` 不是最后一个参数（后面还有测试注入接缝），
+        // 尾随 lambda 会绑到 `injectedFetcher` 上，导致类型不匹配。
+        val mangaImageFetcher = MangaImageFetcher(config, log = { message -> log.info(message) })
         authRoutes(auth)
         apiRoutes(
             database, auth, runner, coverCache, subscriptions, bookCache, edgeTts, ttsSessions,
@@ -81,6 +86,8 @@ fun Application.legadoApplication(config: ServerConfig = ServerConfig.fromEnviro
             BookProgressSync(config.webDavDirectory, database),
             webDavStorage,
             httpTtsService,
+            imageCache,
+            mangaImageFetcher,
         )
         webDavRoutes(auth, webDavStorage, database, coverCache)
         staticWeb()

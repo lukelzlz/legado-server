@@ -1088,22 +1088,44 @@ data class ExploreSourceItem(
 // 漫画（图片书源）章节清单 —— 方案 E · P0 解析打通
 // ---------------------------------------------------------------------------
 
-/** P0：单张图片的清单项。`url` 暂为上游 URL（前端直连，先能看）；P1 将替换为服务端定位地址。 */
+/**
+ * P1：单张图片的清单项。**只给服务端 key，绝不给上游 URL** ——
+ * 否则前端会绕过字节缓存直连（防盗链、离线、去重全部失效，属"死配置"类错误）。
+ */
 @Serializable
 data class MangaImageItem(
     val index: Int,
-    val url: String,
+    /** `GET /api/images/{key}` 的 key（= sha256(sourceId + '\n' + 上游URL)）。 */
+    val key: String,
+    /** pending | ready | failed */
+    val status: String,
+    val width: Int? = null,
+    val height: Int? = null,
 )
 
-/** 章节图片清单。P0 阶段 `images` 返回**有序上游 URL**，供前端直连；不再包含其它字段。 */
+/** 章节图片清单。P1 起 `images` 只含服务端 key 与状态；前端按 key 请求图片。 */
 @Serializable
 data class MangaChapterManifest(
     val sourceId: String,
     val bookUrl: String,
     val chapterUrl: String,
     val title: String? = null,
+    val chapterIndex: Int = 0,
     val total: Int,
+    /** 已就绪张数；`ready == total` ⇒ 整章可离线（目录绿点 `●`）。 */
+    val ready: Int = 0,
+    /** 整章状态：pending | partial | ready | failed */
+    val state: String = "pending",
     val images: List<MangaImageItem>,
+)
+
+/** 漫画清单请求。`chapterIndex` 由前端从目录带过来，用于滑窗 GC 的锚点计算。 */
+@Serializable
+data class MangaManifestRequest(
+    val sourceId: String,
+    val bookUrl: String? = null,
+    val chapterUrl: String = "",
+    val chapterIndex: Int = 0,
 )
 
 // ---------------------------------------------------------------------------
@@ -1138,18 +1160,25 @@ data class MangaChapterRecord(
 
 /** 一张图片的字节索引（L1）。`cacheKey` 指向唯一字节副本；`urlHash` 是"哪个上游地址"的索引。 */
 data class MangaImageRecord(
-    /** sha256(sourceId + '|' + 上游URL)：**含 sourceId**，防跨源脏命中。 */
+    /** sha256(sourceId + '\n' + 上游URL)：**含 sourceId**，防跨源脏命中。对外即 `/api/images/{key}` 里的 key。 */
     val urlHash: String,
-    /** sha256(字节)：图片文件的唯一副本名。 */
-    val cacheKey: String,
     val sourceId: String,
     val bookUrl: String,
     val chapterUrl: String,
+    /** 仅服务端可见，**绝不下发前端**（否则前端会绕过缓存直连，防盗链与离线全失效）。 */
     val upstreamUrl: String,
-    val contentType: String,
+    /** sha256(字节)；`state != ready` 时为空。 */
+    val cacheKey: String = "",
+    val chapterIndex: Int = 0,
+    /** 一章内第几张图（多分段/保序拼装用）。 */
+    val segmentIndex: Int = 0,
+    val contentType: String = "",
     val byteSize: Long = 0,
     val width: Int? = null,
     val height: Int? = null,
+    /** pending | ready | failed */
+    val state: String = "pending",
+    val lastError: String? = null,
     val createdAt: Long = 0,
     val lastAccessAt: Long = 0,
 )

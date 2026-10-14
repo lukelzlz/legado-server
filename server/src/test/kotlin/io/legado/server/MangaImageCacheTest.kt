@@ -21,6 +21,11 @@ import java.util.zip.GZIPOutputStream
  */
 class MangaImageCacheTest {
 
+    private companion object {
+        /** 与生产默认值一致（10 GiB，ADR-028 的滑窗 GC 裁决）。 */
+        const val TEST_QUOTA_BYTES = 10L * 1024 * 1024 * 1024
+    }
+
     // ------------------------------------------------------------------
     // ImageCache
     // ------------------------------------------------------------------
@@ -109,7 +114,7 @@ class MangaImageCacheTest {
         withCache { cache, _ ->
             cache.put("src-a", "book-1", "ch-1", "https://img.example/1.jpg", "image/jpeg", jpegBytes(800, 1200))
 
-            val stats = cache.stats(quotaBytes = 10L * 1024 * 1024 * 1024)
+            val stats = cache.stats()
             assertEquals(1, stats.imageCount)
             assertTrue(stats.totalBytes > 0)
             assertEquals(stats.totalBytes, stats.diskBytes)
@@ -182,7 +187,7 @@ class MangaImageCacheTest {
         val database = Database(dbPath)
         try {
             database.initialize("password-for-test")
-            block(ImageCache(dir, database), database)
+            block(ImageCache(dir, database, TEST_QUOTA_BYTES), database)
         } finally {
             // 必须先 close 再删：否则 Windows 上会因文件占用删不掉（本机 52 个既有失败的根因）
             database.close()

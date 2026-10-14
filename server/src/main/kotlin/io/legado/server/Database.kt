@@ -653,6 +653,49 @@ class Database(private val path: String) : Closeable, AutoCloseable {
         }
     }
 
+    /**
+     * 读书架上的书籍类型（`comic` / `novel`）。
+     *
+     * ⚠️ **不在书架上不是错误**：调用方要的是"这本书是不是漫画"，
+     * 不在书架上（例如从书源页直接打开）一律按 `novel` 处理，与 `BookshelfItem.bookKind` 的默认值同源。
+     */
+    fun getBookKind(sourceId: String, bookUrl: String): String = connect { db ->
+        db.prepareStatement("select book_kind from book_shelf where source_id=? and book_url=?").use {
+            it.setString(1, sourceId); it.setString(2, bookUrl)
+            it.executeQuery().use { rs -> if (rs.next()) rs.getString(1)?.trim()?.takeIf { it.isNotEmpty() } ?: "novel" else "novel" }
+        }
+    }
+
+    /**
+     * 这本书是否还在书架上。
+     *
+     * GC 的顺位 2 用它判「弃坑且已移出书架」；**查不到时调用方当作"在架"**（保守：不删比误删安全）。
+     */
+    fun shelfHasBook(sourceId: String, bookUrl: String): Boolean = connect { db ->
+        db.prepareStatement("select 1 from book_shelf where source_id=? and book_url=?").use {
+            it.setString(1, sourceId); it.setString(2, bookUrl)
+            it.executeQuery().use { rs -> rs.next() }
+        }
+    }
+
+    /**
+     * 全部阅读锚点（GC 用：判断"当前读到哪一章"）。
+     *
+     * 一次性取回而不是逐本书查：GC 需要给**每本有缓存的书**算保护窗口，
+     * 逐本 `getProgress` 是 N+1 次连接，在一堆书命中 GC 时会把读路径拖慢。
+     */
+    fun listReadingAnchors(): List<ReadingProgress> = connect { db ->
+        db.prepareStatement("select source_id,book_url,chapter_url,chapter_index,scroll_position,updated_at from reading_progress").use {
+            it.executeQuery().use { rs ->
+                buildList {
+                    while (rs.next()) {
+                        add(ReadingProgress(rs.getString(1), rs.getString(2), rs.getString(3), rs.getInt(4), rs.getDouble(5), rs.getLong(6)))
+                    }
+                }
+            }
+        }
+    }
+
     // ------------------------------------------------------------------
     // 漫画链路 · 章节清单（L2）
     // ------------------------------------------------------------------
@@ -883,6 +926,44 @@ class Database(private val path: String) : Closeable, AutoCloseable {
         }
     }
 
+    /**
+     * 全部「免死金牌」书（`pinned = 1`）。
+     *
+     * 返回 `(sourceId, bookUrl)` 集合而不是拼接字符串：拼接需要约定一个分隔符，
+     * 而书源 ID 允许任意非空字符串（AGENTS.md 记过：中文标识都会有），分隔符早晚撞上。
+     */
+    fun listPinnedMangaBooks(): Set<Pair<String, String>> = connect { db ->
+        db.prepareStatement("select distinct source_id, book_url from manga_chapter_cache where pinned=1").use {
+            it.executeQuery().use { rs -> buildSet { while (rs.next()) add(rs.getString(1) to rs.getString(2)) } }
+        }
+    }
+
+    /**
+     * 批量删除索引行（**GC 专用**）。
+     *
+     * 一条事务删一批：GC 一轮可能淘汰几百行，逐行 `deleteMangaImageRow` 就是几百次事务提交
+     * （GC 与阅读路径抢同一个写连接 ⇒ 前台接口卡顿）。
+     */
+    fun deleteMangaImageRows(urlHashes: List<String>): Int {
+        if (urlHashes.isEmpty()) return 0
+        return write { db ->
+            db.autoCommit = false
+            try {
+                var removed = 0
+                db.prepareStatement("delete from manga_image_cache where url_hash=?").use { statement ->
+                    urlHashes.forEach { hash -> statement.setString(1, hash); removed += statement.executeUpdate() }
+                }
+                db.commit()
+                removed
+            } catch (error: Throwable) {
+                db.rollback()
+                throw error
+            } finally {
+                db.autoCommit = true
+            }
+        }
+    }
+
     fun deleteMangaImageRow(urlHash: String) = write { db ->
         db.prepareStatement("delete from manga_image_cache where url_hash=?").use {
             it.setString(1, urlHash); it.executeUpdate()
@@ -916,12 +997,13 @@ class Database(private val path: String) : Closeable, AutoCloseable {
     fun mangaCacheStatsByBook(): List<MangaCacheBookStat> = connect { db ->
         db.prepareStatement(
             """select i.source_id, i.book_url, s.name, count(*) as image_count, coalesce(sum(i.byte_size),0) as total_bytes,
-                      coalesce(c.chapter_count,0), coalesce(c.ready_count,0)
+                      coalesce(c.chapter_count,0), coalesce(c.ready_count,0), coalesce(c.pinned,0)
                from manga_image_cache i
                left join book_shelf s on s.source_id = i.source_id and s.book_url = i.book_url
                left join (
                  select source_id, book_url, count(*) as chapter_count,
-                        sum(case when state='ready' then 1 else 0 end) as ready_count
+                        sum(case when state='ready' then 1 else 0 end) as ready_count,
+                        max(pinned) as pinned
                  from manga_chapter_cache group by source_id, book_url
                ) c on c.source_id = i.source_id and c.book_url = i.book_url
                group by i.source_id, i.book_url
@@ -934,6 +1016,7 @@ class Database(private val path: String) : Closeable, AutoCloseable {
                             sourceId = rs.getString(1), bookUrl = rs.getString(2), name = rs.getString(3),
                             imageCount = rs.getInt(4), totalBytes = rs.getLong(5),
                             chapterCount = rs.getInt(6), readyChapterCount = rs.getInt(7),
+                            pinned = rs.getInt(8) != 0,
                         ),
                     )
                 }

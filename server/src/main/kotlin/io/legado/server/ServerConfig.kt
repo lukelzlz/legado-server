@@ -33,12 +33,27 @@ data class ServerConfig(
      * （历史事故见 SESSION-025：418 本续做把服务打到 4 分钟超时）。
      */
     val maxGlobalImageFetches: Int = DEFAULT_MAX_GLOBAL_IMAGE_FETCHES,
+    /**
+     * 后台预取总开关（P2）。`LEGADO_MANGA_PREFETCH=false` 关掉 ⇒ 只按需抓当前可视图片。
+     *
+     * 关掉它是 P2 的**回滚开关**：预取是纯增强，关掉后阅读链路必须完全照常（这是设计约束，
+     * 所以预取的一切失败都只记日志、绝不冒泡到阅读接口）。
+     */
+    val mangaPrefetchEnabled: Boolean = true,
+    /**
+     * 图片缓存 GC 总开关（P2）。`LEGADO_MANGA_GC=false` 关掉 ⇒ 磁盘只增不减（排障用）。
+     */
+    val mangaGcEnabled: Boolean = true,
 ) {
     companion object {
         /** 默认 10 GiB（PR #45 `0ab69e2` 拍板）。 */
         const val DEFAULT_IMAGE_CACHE_QUOTA_GB: Double = 10.0
         const val DEFAULT_IMAGE_CACHE_QUOTA_BYTES: Long = (DEFAULT_IMAGE_CACHE_QUOTA_GB * 1024 * 1024 * 1024).toLong()
         const val DEFAULT_MAX_GLOBAL_IMAGE_FETCHES: Int = 6
+
+        /** GC 巡检间隔。占用检查很便宜（一条 `sum`），真正的全盘扫描只在超阈值时才发生。 */
+        const val IMAGE_GC_INTERVAL_MS: Long = 5 * 60 * 1000L
+
         fun fromEnvironment(env: Map<String, String> = System.getenv()): ServerConfig {
             val rawDataDir = env["LEGADO_DATA_DIR"] ?: run {
                 val rootData = Path.of("/data")
@@ -66,6 +81,8 @@ data class ServerConfig(
                     ?: DEFAULT_IMAGE_CACHE_QUOTA_BYTES,
                 maxGlobalImageFetches = env["LEGADO_MAX_GLOBAL_IMAGE_FETCHES"]?.toIntOrNull()
                     ?.takeIf { it > 0 } ?: DEFAULT_MAX_GLOBAL_IMAGE_FETCHES,
+                mangaPrefetchEnabled = env["LEGADO_MANGA_PREFETCH"]?.toBooleanStrictOrNull() ?: true,
+                mangaGcEnabled = env["LEGADO_MANGA_GC"]?.toBooleanStrictOrNull() ?: true,
             )
         }
     }

@@ -1193,6 +1193,8 @@ data class MangaCacheBookStat(
     val totalBytes: Long,
     val chapterCount: Int = 0,
     val readyChapterCount: Int = 0,
+    /** 免死金牌（用户手动"整本离线"）：缓存管理 UI 必须能看出"这本书为什么删不掉"。 */
+    val pinned: Boolean = false,
 )
 
 /**
@@ -1208,6 +1210,52 @@ data class MangaCacheStats(
     val imageCount: Int,
     val diskBytes: Long,
     val books: List<MangaCacheBookStat> = emptyList(),
+)
+
+// ---------------------------------------------------------------------------
+// 漫画链路 · P2 预取（环节 E8）
+// ---------------------------------------------------------------------------
+
+/**
+ * 预取请求（`POST /api/books/images/prefetch`）。
+ *
+ * `fromChapterIndex` 由前端从**自己的目录**带过来：服务端虽然也缓存了目录，
+ * 但前端此刻手里就有一份权威的、和用户看到的一致的章节列表，不必让服务端再猜一次。
+ */
+@Serializable
+data class MangaPrefetchRequest(
+    val sourceId: String,
+    val bookUrl: String? = null,
+    /** 起始章地址（用于回显与排障；真正的区间由 [fromChapterIndex] + [ahead] 决定）。 */
+    val chapterUrl: String? = null,
+    val fromChapterIndex: Int = 0,
+    /** 从起始章起预取多少章（含起始章）：`1` = 只本章；`50`/`100` = 目录里的"后 N 章"。 */
+    val ahead: Int = 1,
+    /**
+     * `true` = 用户手动"整本离线" ⇒ 顺手打 **pinned 免死金牌**（GC 永不自动淘汰）。
+     * 只有明确的用户动作才配得上免死金牌，滚动触发的自动预取一律 `false`。
+     */
+    val pin: Boolean = false,
+)
+
+/**
+ * 预取受理结果。**`queued=false` 不是错误**：可能是开关关了、目录未缓存或区间为空。
+ *
+ * 阅读器对它的唯一正确反应是"什么都不做"——预取是增强，失败绝不能冒泡给用户。
+ */
+@Serializable
+data class MangaPrefetchResponse(
+    val queued: Boolean,
+    val chapters: Int = 0,
+    val reason: String? = null,
+)
+
+/** pin 开关结果（`PUT /api/books/images/cache/pin`）。 */
+@Serializable
+data class MangaPinResponse(
+    val sourceId: String,
+    val bookUrl: String,
+    val pinned: Boolean,
 )
 
 

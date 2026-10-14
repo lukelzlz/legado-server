@@ -213,6 +213,38 @@ class ImageCache(
         }
     }
 
+    /** 磁盘物理占用。**配额管的是磁盘**（去重后同一份字节只占一份），因此配额判定用它。 */
+    fun physicalBytes(): Long = store.totalBytes()
+
+    /**
+     * 索引里登记的字节总量。
+     *
+     * 便宜（一条 `sum`），用作 GC 的**预筛**：一份字节被多个 `url_hash` 引用时它偏大
+     * ⇒ 只会让 GC 更早触发，绝不会漏触发，方向是安全的。
+     */
+    fun indexedBytes(): Long = database.sumMangaImageBytes()
+
+    /**
+     * GC 驱逐一批行（**先表后盘**），只删「引用计数为 0」的物理文件。
+     *
+     * @return 实际释放的磁盘字节数（用于把 `used` 递减，免得每轮都全盘扫描）
+     */
+    fun evictRows(rows: List<MangaImageRecord>): Long {
+        if (rows.isEmpty()) return 0L
+        database.deleteMangaImageRows(rows.map { it.urlHash })
+        var freed = 0L
+        rows.map { it.cacheKey }.filter { it.isNotBlank() }.distinct().forEach { cacheKey ->
+            runCatching {
+                if (database.countMangaImageRefs(cacheKey) == 0) {
+                    // 先量再删：删完再问大小恒为 0，上报的释放量会永远是 0
+                    val size = store.size(cacheKey) ?: 0L
+                    if (store.delete(cacheKey)) freed += size
+                }
+            }.onFailure { log("manga gc file delete failed: $cacheKey (${it.message})") }
+        }
+        return freed
+    }
+
     fun stats(): MangaCacheStats = MangaCacheStats(
         totalBytes = database.sumMangaImageBytes(),
         quotaBytes = quotaBytes,

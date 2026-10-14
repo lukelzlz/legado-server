@@ -11,6 +11,9 @@ import io.ktor.server.response.*
 import io.ktor.server.routing.*
 import io.ktor.server.sessions.*
 import io.ktor.server.websocket.*
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
 
 fun main(args: Array<String>) {
@@ -78,6 +81,29 @@ fun Application.legadoApplication(config: ServerConfig = ServerConfig.fromEnviro
         // ⚠️ 必须用具名参数：`log` 不是最后一个参数（后面还有测试注入接缝），
         // 尾随 lambda 会绑到 `injectedFetcher` 上，导致类型不匹配。
         val mangaImageFetcher = MangaImageFetcher(config, log = { message -> log.info(message) })
+        // 漫画 P2：滑窗 GC + 后台预取。
+        // GC 的"每次落盘后检查"落在预取循环与章节收口处（每张图都查一次是没必要的写放大）。
+        val imageGc = ImageCacheGc(database, imageCache, config.imageCacheQuotaBytes, config.mangaGcEnabled) { message -> log.info(message) }
+        val mangaPrefetch = MangaPrefetchService(
+            database = database,
+            runner = runner,
+            imageCache = imageCache,
+            fetcher = mangaImageFetcher,
+            scope = this@legadoApplication,
+            gc = imageGc,
+            enabled = config.mangaPrefetchEnabled,
+        ) { message -> log.info(message) }
+        if (config.mangaGcEnabled) {
+            // 定时巡检：不抓图的时候也要能收敛（例如用户手动改小了 LEGADO_MANGA_CACHE_MAX_GB）
+            val gcJob = launch {
+                while (isActive) {
+                    delay(ServerConfig.IMAGE_GC_INTERVAL_MS)
+                    imageGc.maybeRun()
+                }
+            }
+            environment.monitor.subscribe(ApplicationStopping) { gcJob.cancel() }
+            environment.monitor.subscribe(ApplicationStopped) { gcJob.cancel() }
+        }
         authRoutes(auth)
         apiRoutes(
             database, auth, runner, coverCache, subscriptions, bookCache, edgeTts, ttsSessions,
@@ -88,6 +114,7 @@ fun Application.legadoApplication(config: ServerConfig = ServerConfig.fromEnviro
             httpTtsService,
             imageCache,
             mangaImageFetcher,
+            mangaPrefetch,
         )
         webDavRoutes(auth, webDavStorage, database, coverCache)
         staticWeb()

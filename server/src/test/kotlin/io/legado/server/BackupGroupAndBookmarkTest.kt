@@ -205,23 +205,25 @@ class BackupGroupAndBookmarkTest {
     /**
      * 只导入「书还在书架上」的书签。
      *
-     * 真实数据：47 条书签里 **29 条挂在被过滤的书上**（本地图书/音频），
+     * 真实数据：47 条书签里有相当一部分挂在**本地图书**上（服务端读不到 ⇒ 不入架），
      * 那些书不在书架上，书签也就没有展示位置。
+     *
+     * ⚠️ 自方案 G2 的 G0 起，**音频（听书）不再被过滤** ⇒ 挂在音频书上的书签现在会被导入。
      */
     @Test
     fun `skips bookmarks whose book was filtered out`() {
-        val shelfKeys = setOf("保留的书\u0000作者A", "另一本\u0000作者B")
+        val shelfKeys = setOf("保留的书\u0000作者A", "另一本\u0000作者B", "听书\u0000作者D")
         val marks = listOf(
             BackupBookmarkEntry("保留的书", "作者A", 1, "第2章", 0, null, null, 1L),
-            BackupBookmarkEntry("本地书", "作者C", 1, "第2章", 0, null, null, 1L),   // 本地书被过滤
-            BackupBookmarkEntry("听书", "作者D", 1, "第2章", 0, null, null, 1L),     // 音频被过滤
+            BackupBookmarkEntry("本地书", "作者C", 1, "第2章", 0, null, null, 1L),   // 本地书仍被过滤
+            BackupBookmarkEntry("听书", "作者D", 1, "第2章", 0, null, null, 1L),     // 音频**已入架** ⇒ 保留
             BackupBookmarkEntry("另一本", "作者B", 5, "第6章", 0, null, null, 1L),
         )
 
         val kept = marks.filter { "${it.bookName}\u0000${it.bookAuthor.orEmpty()}" in shelfKeys }
-        assertEquals(2, kept.size)
-        assertEquals(2, marks.size - kept.size)
-        assertTrue(kept.all { it.bookName in setOf("保留的书", "另一本") })
+        assertEquals(3, kept.size)
+        assertEquals(1, marks.size - kept.size)
+        assertTrue(kept.all { it.bookName in setOf("保留的书", "另一本", "听书") })
     }
 
     /** 作者为 null 的书签也要能匹配（键里用空串占位）。 */
@@ -362,9 +364,9 @@ class BackupGroupAndBookmarkTest {
                     "[" + listOf(
                         book("在线书A", "作者A", 1),
                         book("在线书B", "作者B", 2),
-                        // 音频：应被过滤
+                        // 音频（听书）：**自方案 G2 的 G0 起不再被过滤**，必须正常入架
                         book("听书C", "作者C", 1, tab = "听书", type = 32),
-                        // 本地书：应被过滤
+                        // 本地书：仍应被过滤（bookUrl 指向手机本机，服务端读不到）
                         book("本地书D", "作者D", 2, type = 264, origin = "loc_book", bookUrlOverride = "content://x/y"),
                     ).joinToString(",") + "]",
                 )
@@ -397,17 +399,22 @@ class BackupGroupAndBookmarkTest {
                 parsed,
             )
 
-            assertEquals("应导入 2 本在线书", 2, summary.books)
+            assertEquals("应导入 3 本（2 在线书 + 1 音频书）", 3, summary.books)
             assertEquals("应跳过 1 本本地书", 1, summary.skippedLocal)
-            assertEquals("应跳过 1 本音频", 1, summary.skippedAudio)
-            assertEquals("只应导入 1 条书签（另 2 条挂在被过滤的书上）", 1, summary.bookmarks)
-            assertEquals("应报告跳过 2 条书签", 2, summary.bookmarksSkipped)
+            // G0（方案 G2）起音频不再被丢弃：这里恒为 0，且必须能在书架上查到它
+            assertEquals("音频不再被跳过", 0, summary.skippedAudio)
+            val audioBook = db.listBookshelf().firstOrNull { it.name == "听书C" }
+            assertNotNull("音频书必须真的入架", audioBook)
+            assertEquals("音频书的 book_kind 必须是 audio", "audio", audioBook!!.bookKind)
+            // 音频入架后它那条书签也就有了归属：只有挂在**本地书**上的那条被跳过
+            assertEquals("应导入 2 条书签（另一条挂在被过滤的本地书上）", 2, summary.bookmarks)
+            assertEquals("应报告跳过 1 条书签", 1, summary.bookmarksSkipped)
 
             // 分组：只导入有书的 FQ / 完结，不导入空的内置分组
             val groups = db.listBookGroups()
             assertEquals("只应有 FQ 与 完结 两个分组", 2, groups.size)
             assertEquals(setOf("FQ", "完结"), groups.map { it.name }.toSet())
-            assertEquals("FQ 应有 1 本书", 1, groups.first { it.name == "FQ" }.bookCount)
+            assertEquals("FQ 应有 2 本书（在线书A + 听书C）", 2, groups.first { it.name == "FQ" }.bookCount)
             assertEquals("完结 应有 1 本书", 1, groups.first { it.name == "完结" }.bookCount)
             assertTrue(
                 "空的内置分组（在读/全部）不应被导入",

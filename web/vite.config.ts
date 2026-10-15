@@ -139,6 +139,35 @@ export default defineConfig({
               cacheableResponse: { statuses: [0, 200] },
             },
           },
+          {
+            /**
+             * 有声书音频直出（方案 G2 · P3）。
+             *
+             * ⚠️ **必须与 `Routes.kt` 里真实注册的路由逐字对齐**：真实路径是
+             * `route("/api")` + `get("/audio/{key}")`，key 是 64 位小写 hex（sha256）。
+             * 写成 `/api/books/audio/...`（那是**清单**接口，是 POST）就会得到一条永不命中的死配置。
+             *
+             * ⚠️ 这里**刻意用精确正则**而不是 `startsWith('/api/audio/')`：
+             * `/api/audio/cache/stats`（GET，缓存统计）与 `/api/audio/cache/...`（pin/清理）
+             * 都以同一前缀开头 —— 用前缀匹配会把**统计接口**也塞进 CacheFirst，
+             * 于是缓存水位永远停在第一次的结果（点"清理"后界面纹丝不动）。
+             * 只认 64 位 hex 的那一刻就是音频字节本身。
+             *
+             * `CacheFirst` 对音频是安全的：key 是 URL 派生的稳定哈希，同一 key 的内容在我们
+             * 这一层不会变，且服务端已声明 `immutable`。**这也是"断网可听已缓存章"的落点**。
+             */
+            urlPattern: ({ url }: { url: URL }) => /^\/api\/audio\/[0-9a-f]{64}$/.test(url.pathname),
+            handler: 'CacheFirst',
+            options: {
+              cacheName: 'legado-audio',
+              // 音频是 10~60 MiB/章的大字节 ⇒ 条数与总时长都要收紧，避免把用户磁盘吃光
+              expiration: {
+                maxEntries: 400,
+                maxAgeSeconds: 90 * 24 * 60 * 60,
+              },
+              cacheableResponse: { statuses: [0, 200] },
+            },
+          },
         ],
       },
     }),

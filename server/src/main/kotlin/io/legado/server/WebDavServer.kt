@@ -45,7 +45,7 @@ private const val SUPPORTED_LOCK_XML =
     "<D:lockentry><D:lockscope><D:exclusive/></D:lockscope><D:locktype><D:write/></D:locktype></D:lockentry>"
 private const val DEFAULT_LOCK_SECONDS = 3600L
 private const val MAX_LOCK_SECONDS = 86_400L
-private const val COPY_BUFFER_BYTES = 64 * 1024
+// COPY_BUFFER_BYTES 已随 Range 直出一起挪到 ByteRangeServing.kt（两份实现必然漂移）
 private const val WEBDAV_XML_TYPE = "application/xml"
 private const val UPLOAD_TEMP_PREFIX = ".webdav-upload-"
 private val WEBDAV_XML = ContentType.parse(WEBDAV_XML_TYPE).withCharset(Charsets.UTF_8)
@@ -512,11 +512,6 @@ private class HeadOnlyContent(private val length: Long) : OutgoingContent.NoCont
     override val headers: Headers get() = Headers.build { append(HttpHeaders.ContentLength, length.toString()) }
 }
 
-internal sealed interface ByteRange {
-    data class Satisfiable(val start: Long, val endExclusive: Long) : ByteRange
-    data object Unsatisfiable : ByteRange
-}
-
 /**
  * 请求对应的 WebDAV 相对路径。
  * 注意：Ktor 的 `{path...}` 尾卡参数只捕获首段（/webdav/a/b 得到 "a"），因此这里从原始请求 URI 推导。
@@ -588,68 +583,14 @@ private suspend fun ApplicationCall.respondDavError(status: HttpStatusCode, cond
     )
 }
 
-/** GET 文件：支持单段 Range 断点续传，其余情况整文件流式下发。 */
+/**
+ * GET 文件：支持单段 Range 断点续传，其余情况整文件流式下发。
+ *
+ * 实现已**整体提取**到 [respondFileRange]（与有声书 `GET /api/audio/{key}` 共用同一份手写 Range），
+ * 这里只保留"WebDAV 不加 ETag / 不加 Cache-Control"这一点差异。
+ */
 private suspend fun ApplicationCall.respondFileContent(file: Path) {
-    val size = Files.size(file)
-    val contentType = ContentType.defaultForPath(file)
-    response.header(HttpHeaders.AcceptRanges, "bytes")
-    when (val range = parseByteRange(request.headers[HttpHeaders.Range], size)) {
-        is ByteRange.Unsatisfiable -> {
-            response.header(HttpHeaders.ContentRange, "bytes */$size")
-            respond(HttpStatusCode.RequestedRangeNotSatisfiable)
-        }
-        is ByteRange.Satisfiable -> {
-            response.header(HttpHeaders.ContentRange, "bytes ${range.start}-${range.endExclusive - 1}/$size")
-            respondBytesWriter(contentType, HttpStatusCode.PartialContent, range.endExclusive - range.start) {
-                writeFileRange(this, file, range.start, range.endExclusive)
-            }
-        }
-        null -> respondBytesWriter(contentType, HttpStatusCode.OK, size) {
-            writeFileRange(this, file, 0, size)
-        }
-    }
-}
-
-private suspend fun writeFileRange(output: ByteWriteChannel, file: Path, start: Long, endExclusive: Long) {
-    withContext(Dispatchers.IO) {
-        FileChannel.open(file, StandardOpenOption.READ).use { channel ->
-            channel.position(start)
-            val buffer = ByteBuffer.allocate(COPY_BUFFER_BYTES)
-            var remaining = endExclusive - start
-            while (remaining > 0) {
-                buffer.clear()
-                buffer.limit(minOf(buffer.capacity().toLong(), remaining).toInt())
-                val read = channel.read(buffer)
-                if (read <= 0) break
-                buffer.flip()
-                val bytes = ByteArray(read)
-                buffer.get(bytes)
-                output.writeFully(bytes)
-                remaining -= read
-            }
-            output.flush()
-        }
-    }
-}
-
-/** 解析单段 Range：返回 null 表示按整文件响应，Unsatisfiable 表示 416。 */
-internal fun parseByteRange(header: String?, size: Long): ByteRange? {
-    val value = header?.trim()?.removePrefix("bytes=")?.trim() ?: return null
-    if (value.isEmpty() || value.contains(',')) return null
-    val startText = value.substringBefore('-').trim()
-    val endText = value.substringAfter('-', "").trim()
-    if (size <= 0) return ByteRange.Unsatisfiable
-    if (startText.isEmpty()) {
-        val suffixLength = endText.toLongOrNull() ?: return null
-        if (suffixLength <= 0) return ByteRange.Unsatisfiable
-        return ByteRange.Satisfiable((size - suffixLength).coerceAtLeast(0), size)
-    }
-    val start = startText.toLongOrNull() ?: return null
-    if (start < 0 || start >= size) return ByteRange.Unsatisfiable
-    if (endText.isEmpty()) return ByteRange.Satisfiable(start, size)
-    val end = endText.toLongOrNull() ?: return null
-    if (end < start) return ByteRange.Unsatisfiable
-    return ByteRange.Satisfiable(start, minOf(end, size - 1) + 1)
+    respondFileRange(file, ContentType.defaultForPath(file))
 }
 
 private fun destinationPath(storage: WebDavStorage, header: String): Path? {

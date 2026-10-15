@@ -54,18 +54,22 @@ class BackupImporter(
         }
 
         // ------------------------------------------------------------------
-        // 过滤：本地图书 与 音频（听书）在服务端**没有可用能力**，不予导入。
+        // 过滤：**只有本地图书**在服务端没有可用能力，不予导入。
         //
         // - 本地图书：`bookUrl` 是 Android SAF 的 `content://` URI（或 `file://` / `webDav::`），
         //   指向**手机本机**的文件，服务端根本无法读取（表现为章节 0、正文空）。
-        // - 音频（听书）：内容源是 TTS 音频流，服务端只做文本阅读，导入后同样点不开。
+        // - 音频（听书）：**P0 起不再丢弃**（方案 G2 的 G0）。服务端现在能解析音频地址、
+        //   流式缓存字节并按 Range 直出给播放器；不放开的话后面所有环节都没有输入。
+        //   实测锚点：真实备份 434 条里音频 31 条（见 AGENTS.md 与 BackupImportAudioTest）。
         //
         // 判定严格遵循 `te/分类判别方法.md` 的规范（见 ShelfKind）：
         // 先判本地图书、再判 tab，且**不用扩展名/type 单独判定**。
         // ------------------------------------------------------------------
-        val shelf = parsedShelf.filter { it.kind == ShelfKind.ONLINE }
+        val shelf = parsedShelf.filter { it.kind != ShelfKind.LOCAL }
         val skippedLocal = parsedShelf.count { it.kind == ShelfKind.LOCAL }
-        val skippedAudio = parsedShelf.count { it.kind == ShelfKind.AUDIO }
+        // 恒为 0，但**保留这个字段**：前端契约不变（"已跳过 N"只在 > 0 时显示），
+        // 也避免有一天重新需要过滤时又要改一遍接口。
+        val skippedAudio = 0
 
         // 分组：只导入「有书的分组」。
         // Legado 内置的智能分组（groupId 为负：在读/未读/已读/小说/漫画/全部/本地/音频…）
@@ -74,8 +78,8 @@ class BackupImporter(
         val groups = parsedGroups.filter { it.groupName in usedGroupNames }
 
         // 书签：只导入「书还在书架上」的。
-        // 实测真实备份 47 条里 29 条挂在被过滤的书上（本地图书/音频），那些书不在书架上，
-        // 书签也就没有展示位置。
+        // 自 G0 放开音频后，只剩本地图书会被过滤（实测真实备份 47 条书签里 29 条曾挂在
+        // 被过滤的书上——音频那部分现在会正常导入）。
         val shelfKeys = shelf.map { "${it.name}\u0000${it.author.orEmpty()}" }.toSet()
         val bookmarks = parsedBookmarks.filter { "${it.bookName}\u0000${it.bookAuthor.orEmpty()}" in shelfKeys }
         val bookmarksSkipped = parsedBookmarks.size - bookmarks.size
@@ -259,6 +263,8 @@ class BackupImporter(
                 completed = false,
                 chapterIndex = book.number("durChapterIndex")?.toInt() ?: 0,
                 readAt = book.number("durChapterTime") ?: 0L,
+                // 只有有声书会用它（音频的 durChapterPos 就是毫秒）；文本/漫画刻意不用，见 BackupShelfEntry
+                chapterPos = book.number("durChapterPos")?.toInt() ?: 0,
                 kind = ShelfKind.of(book.text("bookUrl"), book.text("origin"), book.text("type"), book.text("kind")),
                 // 类型只看**书自己的说法**（载荷里的 `tab`）：`漫画` ⇒ comic、`听书` ⇒ audio；
                 // 没说的返回 null ⇒ **不写这一列**（按小说处理，已有行保留原值 = "已经和小说一样就跳过"）。

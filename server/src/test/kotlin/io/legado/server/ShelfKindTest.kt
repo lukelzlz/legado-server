@@ -217,8 +217,10 @@ class ShelfKindTest {
         assertEquals("音频应为 31", 31, entries.count { it == ShelfKind.AUDIO })
         assertEquals("在线小说应为 389", 389, entries.count { it == ShelfKind.ONLINE })
 
-        // 过滤后就只剩在线小说
-        val skipped = entries.count { it != ShelfKind.ONLINE }
-        assertEquals("应过滤 45 条（14 本地 + 31 音频）", 45, skipped)
+        // 分类总数核对（**分类**与**导入过滤**是两件事）：
+        // 自方案 G2 的 G0 起，导入侧只过滤 LOCAL；AUDIO 已成为一等类型（走有声书播放器）。
+        val nonOnline = entries.count { it != ShelfKind.ONLINE }
+        assertEquals("非在线类别共 45 条（14 本地 + 31 音频）", 45, nonOnline)
+        assertEquals("其中导入侧实际过滤的只有 14 条本地图书", 14, entries.count { it == ShelfKind.LOCAL })
     }
 }

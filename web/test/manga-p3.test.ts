@@ -27,7 +27,19 @@ test('P3 - SW 漫画缓存规则与真实路由逐字对齐（防死配置）', 
   assert.ok(vite.includes('legado-manga'), 'must 声明漫画缓存名')
   assert.ok(vite.includes("handler: 'CacheFirst'"), '图片按内容寻址 ⇒ CacheFirst 是安全的')
 
-  // 真的用同一套正则验证"匹配什么、不匹配什么"（而不是只做字符串包含）
+  // ⚠️ 必须用**函数**匹配 `url.pathname`，绝不能用 `/^\/api\//` 这类 RegExp：
+  // Workbox 的 RegExp 是拿**完整 URL**（`http://host/api/...`）去 match 的，带 `^/` 锚点永远不命中
+  // —— 实测（真实源 + 真实浏览器）三条运行时规则因此全是死配置：缓存里一条都没有，而 sw.js 里规则明明在。
+  assert.ok(
+    vite.includes('url.pathname.startsWith('),
+    'SW 规则必须用函数匹配 url.pathname（RegExp 拿完整 URL 匹配，^/ 锚点永不命中）',
+  )
+  assert.ok(
+    !vite.includes('urlPattern: /^\\/api\\/'),
+    '严禁再用锚定路径的 RegExp 写 urlPattern（死配置）',
+  )
+
+  // 真的用同一套语义验证"匹配什么、不匹配什么"（而不是只做字符串包含）
   const pattern = /^\/api\/images\//
   assert.ok(pattern.test(`/api/images/${'a'.repeat(64)}`), '必须命中真实图片地址')
   for (const wrong of ['/api/books/images/manifest', '/api/books/images/prefetch', '/api/books/images/cache/stats']) {
@@ -45,7 +57,10 @@ test('P3 - 编译产物 sw.js 里确实存在漫画缓存规则', () => {
   const sw = read('../dist/sw.js')
 
   assert.ok(sw.includes('legado-manga'), 'dist/sw.js 必须包含漫画缓存名')
-  assert.ok(sw.includes('/^\\/api\\/images\\//'), 'dist/sw.js 必须包含 /api/images/ 规则')
+  assert.ok(
+    sw.includes('pathname.startsWith') && sw.includes('/api/images/'),
+    'dist/sw.js 必须用 pathname 函数匹配（不是 RegExp）',
+  )
   assert.ok(sw.includes('CacheFirst'), 'dist/sw.js 必须是 CacheFirst')
   assert.ok(sw.includes('"GET"'), '必须显式限定 GET（清单/预取都是 POST，不能被缓存）')
 })

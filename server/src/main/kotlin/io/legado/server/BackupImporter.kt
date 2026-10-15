@@ -260,11 +260,13 @@ class BackupImporter(
                 chapterIndex = book.number("durChapterIndex")?.toInt() ?: 0,
                 readAt = book.number("durChapterTime") ?: 0L,
                 kind = ShelfKind.of(book.text("bookUrl"), book.text("origin"), book.text("type"), book.text("kind")),
-                // 刻意**不**按备份字段（`tab` / `type`）猜小说还是漫画：
-                // 那是"自动分类"，猜错的形态是「漫画被打成小说 ⇒ 进文字阅读器 ⇒ 打不开」，
-                // 而且用户完全看不出是被谁改的。类型只认书源自己的 `bookSourceType == 2`，
-                // 由导入结束时的 backfillBookKindFromSources() 统一落库（与启动期回填同一个实现）。
-                bookKind = null,
+                // 类型只看**书自己的说法**（载荷里的 `tab`）：`漫画` ⇒ comic、`听书` ⇒ audio；
+                // 没说的返回 null ⇒ **不写这一列**（按小说处理，已有行保留原值 = "已经和小说一样就跳过"）。
+                //
+                // ⚠️ 刻意**不**在这里读源声明：聚合源（如大灰狼）根本不声明 `bookSourceType`，
+                // 只认源声明会把里面的漫画全部判成小说（用户实测反馈）。
+                // 源声明作为**兜底**由导入结束后的 backfillBookKindFromSources() 统一处理。
+                bookKind = BookKind.resolveOrNull(null, book.text("bookUrl"), null),
                 groupName = groupId?.let { nameById[it] },
             )
         }

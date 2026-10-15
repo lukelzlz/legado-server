@@ -152,7 +152,9 @@ class MangaImagesTest {
     @Test
     fun `treats other or missing bookSourceType as novel`() {
         assertEquals(BookKind.NOVEL, BookKind.fromSourcePayload("""{"bookSourceType":0}"""))
-        assertEquals(BookKind.NOVEL, BookKind.fromSourcePayload("""{"bookSourceType":1}"""))
+        // 1 = 音频/听书（有声书支持后它不再等于小说了）
+        assertEquals(BookKind.AUDIO, BookKind.fromSourcePayload("""{"bookSourceType":1}"""))
+        assertEquals(BookKind.AUDIO, BookKind.fromSourcePayload("""{"bookSourceType":"1"}"""))
         assertEquals(BookKind.NOVEL, BookKind.fromSourcePayload("""{"bookSourceName":"没有类型字段"}"""))
         assertEquals(BookKind.NOVEL, BookKind.fromSourcePayload("不是 JSON"))
         assertEquals(BookKind.NOVEL, BookKind.fromSourcePayload(null))
@@ -162,7 +164,8 @@ class MangaImagesTest {
     fun `detects comic from legado backup tab`() {
         assertEquals(BookKind.COMIC, BookKind.fromTab("漫画"))
         assertEquals(BookKind.NOVEL, BookKind.fromTab("小说"))
-        assertEquals(BookKind.NOVEL, BookKind.fromTab("听书"))
+        // 听书 ⇒ 音频（有声书 G0 起成为一等类型）
+        assertEquals(BookKind.AUDIO, BookKind.fromTab("听书"))
         assertEquals(BookKind.NOVEL, BookKind.fromTab(null))
     }
 

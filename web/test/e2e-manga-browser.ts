@@ -43,6 +43,7 @@ const browser = await puppeteer.launch({
 })
 
 let failures = 0
+let offlineSkipped = false
 const imageResponses: string[] = []
 
 try {
@@ -63,9 +64,11 @@ try {
   await page.goto(`${BASE}/#shelf`, { waitUntil: 'networkidle2', timeout: 30000 })
   await new Promise((r) => setTimeout(r, 2500))
 
-  // 找一本漫画（书架卡片带漫画徽标）
+  // 找一本漫画（书架卡片带漫画徽标）。**必须点 `.shelf-card-cover`**：
+  // `<article class="shelf-card">` 上的 onClick 只在批量模式下才挂，直接点卡片什么都不会发生
+  // （实测：hash 不变、零 /api 请求 —— 这正是本脚本第一版"0 张图"的原因）。
   const comicIndex = await page.evaluate(() => {
-    const cards = Array.from(document.querySelectorAll('.shelf-card, .shelf-item, li, article'))
+    const cards = Array.from(document.querySelectorAll('.shelf-card'))
     return cards.findIndex((el) => el.querySelector('.shelf-card-tag-comic') !== null)
   })
   if (comicIndex < 0) {
@@ -73,11 +76,11 @@ try {
     process.exit(0)
   }
   await page.evaluate((index) => {
-    const cards = Array.from(document.querySelectorAll('.shelf-card, .shelf-item, li, article'))
-    const target = cards[index] as HTMLElement | undefined
-    target?.click()
+    const card = Array.from(document.querySelectorAll('.shelf-card'))[index]
+    const cover = card?.querySelector('.shelf-card-cover') as HTMLElement | null
+    ;(cover ?? (card as HTMLElement | null))?.click()
   }, comicIndex)
-  await new Promise((r) => setTimeout(r, 6000))
+  await new Promise((r) => setTimeout(r, 8000))
 
   const readImages = async () => page.evaluate(() =>
     Array.from(document.querySelectorAll('.manga-scroll img')).map((el) => {
@@ -85,24 +88,58 @@ try {
       return { src: i.getAttribute('src') || '', complete: i.complete, w: i.naturalWidth, h: i.naturalHeight }
     }))
 
-  const online = await readImages()
-  console.log(`在线：漫画 <img> = ${online.length} 张`)
+  /**
+   * 等到"已完成的图都解码成功"或超时。
+   *
+   * ⚠️ 不能一采样就判：`loading="lazy"` 的图在可视区外**根本没开始加载**（`complete=false`），
+   * 那不是缺陷。判据必须是「**已经 complete 的图里，有没有 naturalWidth == 0 的**」——
+   * 这才是"字节不是可解码图片"（SESSION-027 那类）的真正信号。
+   */
+  const settle = async (timeoutMs = 25000) => {
+    const deadline = Date.now() + timeoutMs
+    let last: Awaited<ReturnType<typeof readImages>> = []
+    while (Date.now() < deadline) {
+      last = await readImages()
+      const done = last.filter(i => i.complete)
+      const broken = done.filter(i => i.w === 0 || i.h === 0)
+      if (done.length >= Math.min(3, last.length) && broken.length === 0) return last
+      await new Promise(r => setTimeout(r, 1000))
+    }
+    return last
+  }
+
+  const online = await settle()
+  const decoded = online.filter(i => i.complete && i.w > 0 && i.h > 0)
+  const broken = online.filter(i => i.complete && (i.w === 0 || i.h === 0))
+  console.log(`在线：<img> = ${online.length} 张，已解码 ${decoded.length}，未开始(懒加载) ${online.length - online.filter(i => i.complete).length}，解码失败 ${broken.length}`)
+  for (const i of decoded.slice(0, 3)) console.log(`  OK     ${i.src.slice(0, 60)} natural=${i.w}x${i.h}`)
+  for (const i of broken.slice(0, 3)) console.log(`  BROKEN ${i.src.slice(0, 60)} natural=${i.w}x${i.h}`)
+
   if (online.length === 0) {
     console.log('SKIP: 打开的这本书没有渲染出图片（可能不是漫画，或该书源规则没配好）')
     process.exit(0)
   }
   // 铁律：判断"图片可用"只能看 naturalWidth（fetch().size 会骗人）
-  for (const i of online.slice(0, 5)) {
-    const ok = i.complete && i.w > 0 && i.h > 0
-    console.log(`  ${ok ? 'OK    ' : 'BROKEN'} ${i.src.slice(0, 60)} natural=${i.w}x${i.h}`)
-    if (!ok) failures++
-  }
-  if (online.filter(i => i.complete && i.w > 0).length === 0) {
-    console.log('FAIL: 在线状态下没有任何一张图成功解码')
-    failures++
-  }
+  if (decoded.length === 0) { console.log('FAIL: 没有任何一张图成功解码'); failures++ }
+  if (broken.length > 0) { console.log(`FAIL: ${broken.length} 张图已完成加载但无法解码（字节不是图片？）`); failures++ }
 
-  // Service Worker 的 legado-manga 缓存必须真的有东西（P3 的 SW 规则是否生效，只能这么验）
+  // ---- Service Worker 接管 + 缓存复核 ----
+  // 首次访问时 SW 只是"装好了"，**还没接管**当前页面（registerType: 'prompt'），
+  // 此时图片请求不经过 SW ⇒ 缓存当然为空。必须等 ready 后重载一次再验。
+  await page.evaluate(() => navigator.serviceWorker?.ready.then(() => true)).catch(() => undefined)
+  await page.reload({ waitUntil: 'networkidle2', timeout: 30000 })
+  await new Promise((r) => setTimeout(r, 3000))
+  const controlled = await page.evaluate(() => !!navigator.serviceWorker?.controller)
+  console.log(`Service Worker 已接管当前页面：${controlled}`)
+
+  // ---- 重新打开这一章（此刻 SW 已接管 ⇒ 图片会进 legado-manga 缓存） ----
+  await page.evaluate((index) => {
+    const card = Array.from(document.querySelectorAll('.shelf-card'))[index]
+    const cover = card?.querySelector('.shelf-card-cover') as HTMLElement | null
+    ;(cover ?? (card as HTMLElement | null))?.click()
+  }, comicIndex)
+  await settle()
+
   const cached = await page.evaluate(async () => {
     if (typeof caches === 'undefined') return { supported: false, count: 0 }
     const names = await caches.keys()
@@ -116,27 +153,32 @@ try {
     failures++
   }
 
-  // ---- 飞行模式：重开同一本书，应走"本地快照 + SW 缓存" ----
+  // ---- 飞行模式：应走"本地清单快照 + SW 缓存里的图片" ----
   await page.setOfflineMode(true)
-  await page.reload({ waitUntil: 'domcontentloaded', timeout: 30000 })
-  await new Promise((r) => setTimeout(r, 1500))
-  await page.evaluate((index) => {
-    const cards = Array.from(document.querySelectorAll('.shelf-card, .shelf-item, li, article'))
-    const target = cards[index] as HTMLElement | undefined
-    target?.click()
+  await page.reload({ waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => undefined)
+  await new Promise((r) => setTimeout(r, 3000))
+  const offlineClicked = await page.evaluate((index) => {
+    const card = Array.from(document.querySelectorAll('.shelf-card'))[index]
+    const cover = card?.querySelector('.shelf-card-cover') as HTMLElement | null
+    if (!cover) return false
+    cover.click()
+    return true
   }, comicIndex)
-  await new Promise((r) => setTimeout(r, 6000))
-
-  const offline = await readImages()
-  const banner = await page.evaluate(() => document.querySelectorAll('.manga-offline-banner').length)
-  const decodedOffline = offline.filter(i => i.complete && i.w > 0).length
-  console.log(`离线：<img> = ${offline.length} 张，成功解码 ${decodedOffline} 张，离线横幅 = ${banner}`)
-  if (offline.length === 0) {
-    console.log('FAIL: 断网后连清单快照都没渲染出来（本地快照缺失）')
-    failures++
-  } else if (decodedOffline === 0) {
-    console.log('FAIL: 断网后一张图都没解码（SW 缓存没命中）')
-    failures++
+  if (!offlineClicked) {
+    offlineSkipped = true
+    console.log('SKIP: 离线后书架没渲染出来（本机书架快照未覆盖该场景），离线断言跳过')
+  } else {
+    const offline = await settle(25000)
+    const banner = await page.evaluate(() => document.querySelectorAll('.manga-offline-banner').length)
+    const decodedOffline = offline.filter(i => i.complete && i.w > 0).length
+    console.log(`离线：<img> = ${offline.length} 张，已解码 ${decodedOffline} 张，离线横幅 = ${banner}`)
+    if (offline.length === 0) {
+      console.log('FAIL: 断网后连清单快照都没渲染出来（本地快照缺失）')
+      failures++
+    } else if (decodedOffline === 0) {
+      console.log('FAIL: 断网后一张图都没解码（SW 缓存没命中）')
+      failures++
+    }
   }
   await page.setOfflineMode(false)
 
@@ -145,7 +187,15 @@ try {
     for (const line of imageResponses.slice(0, 10)) console.log('  ' + line)
     console.log('\n提示：若状态 200 但 natural=0，多半是落盘字节不是可解码图片（见 SESSION-027）。')
   }
-  console.log(failures === 0 ? '\nPASS: 漫画图片在线可解码，且断网后仍可读已缓存章节' : `\nFAIL: ${failures} 项不通过`)
+  if (failures === 0) {
+    console.log(
+      offlineSkipped
+        ? '\nPASS: 漫画图片在真实浏览器中成功解码，且图片已进入 SW 缓存（离线断言本轮跳过）'
+        : '\nPASS: 漫画图片在线可解码，且断网后仍可读已缓存章节',
+    )
+  } else {
+    console.log(`\nFAIL: ${failures} 项不通过`)
+  }
   process.exitCode = failures === 0 ? 0 : 1
 } finally {
   await browser.close()

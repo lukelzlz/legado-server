@@ -1937,6 +1937,9 @@ class Database(private val path: String) : Closeable, AutoCloseable {
             where c.state in ('pending', 'caching')
               and s.book_url not like 'content://%'
               and s.book_url not like 'local://%'
+              -- 漫画/有声书不续做**文本**缓存：那是给文字阅读器用的（拉章节页抽正文），
+              -- 对图片/音频书只会 100% 失败并污染缓存状态（实测：一本漫画 10 章全失败）
+              and coalesce(s.book_kind, 'novel') = 'novel'
             """.trimIndent()
         ).use { query ->
             query.executeQuery().use { rs ->
@@ -2957,37 +2960,46 @@ class Database(private val path: String) : Closeable, AutoCloseable {
     }
 
     /**
-     * 一次性回填书架 `book_kind`：老书架上凡是来自 `bookSourceType == 2`（图片书源）的书标记为 comic。
+     * 一次性回填书架 `book_kind`：**书自己的 `tab` 优先，书源声明兜底**（见 [BookKind.resolveOrNull]）。
      *
-     * 「新数据不再出错」≠「老数据自动好了」（AGENTS.md）：此函数幂等，重复运行只会把 null/空值修好。
+     * 覆盖两类历史数据：老书架行 `book_kind` 为空；以及备份导入时"书自己没说类型"但书源声明了类型的行。
+     * 「新数据不再出错」≠「老数据自动好了」（AGENTS.md）：此函数幂等，只动 null/空值。
      */
     private fun backfillBookKind(db: Connection) {
-        val comics = mutableListOf<Pair<String, String>>()
+        val resolved = mutableListOf<Triple<String, String, String>>()
+        // 也覆盖**已被写成 'novel' 的历史行**：老逻辑只认源声明，把聚合源里的漫画写成了 novel
+        // （真实现场：用户书架上 15 本漫画全被写成 novel）。「新数据不再出错」≠「老数据自动好了」，
+        // 所以这里对 `novel` 也做一次幂等纠正 —— 判据是**书自己的 tab**，不是猜。
         db.prepareStatement(
-            "select s.source_id, s.book_url, src.payload from book_shelf s left join source src on src.id = s.source_id where s.book_kind is null or s.book_kind = ''",
+            """select s.source_id, s.book_url, s.book_kind, src.payload from book_shelf s
+               left join source src on src.id = s.source_id
+               where s.book_kind is null or s.book_kind = '' or s.book_kind = 'novel'""",
         ).use { st ->
             st.executeQuery().use { rs ->
                 while (rs.next()) {
-                    if (BookKind.fromSourcePayload(rs.getString(3)) == BookKind.COMIC) {
-                        comics.add(rs.getString(1) to rs.getString(2))
-                    }
+                    val sourceId = rs.getString(1)
+                    val bookUrl = rs.getString(2)
+                    val current = rs.getString(3)?.trim()?.lowercase().orEmpty()
+                    // 书自己的 tab 优先（聚合源不声明类型，只能靠这个）；都没有 ⇒ 不写
+                    val kind = BookKind.resolveOrNull(null, bookUrl, rs.getString(4)) ?: continue
+                    if (kind == current) continue // 已经是这个值 ⇒ 跳过，不做无谓写库
+                    resolved.add(Triple(sourceId, bookUrl, kind))
                 }
             }
         }
-        for ((sourceId, bookUrl) in comics) {
-            db.prepareStatement("update book_shelf set book_kind='comic' where source_id=? and book_url=?").use { u ->
-                u.setString(1, sourceId); u.setString(2, bookUrl); u.executeUpdate()
+        for ((sourceId, bookUrl, kind) in resolved) {
+            db.prepareStatement("update book_shelf set book_kind=? where source_id=? and book_url=?").use { u ->
+                u.setString(1, kind); u.setString(2, sourceId); u.setString(3, bookUrl); u.executeUpdate()
             }
         }
     }
 
     /**
-     * 立刻跑一次「按**书源自身声明**回填书籍类型」（备份导入后调用）。
+     * 立刻跑一次「书籍类型回填」（备份导入后调用）。
      *
      * ## 为什么需要它（而不是等下次启动）
-     * 备份导入**不再**按备份里的 `tab` 字段猜类型（那是"自动分类"，会猜错、还会把漫画送进文字阅读器）。
-     * 类型只认**书源自己的 `bookSourceType == 2`**——书源是权威。
-     * 但启动期回填要等下次重启才生效 ⇒ 导入完立刻点开一本漫画会先落到文字阅读器。
+     * 备份导入只按**书自己的 `tab`** 定类型；书自己没说、但书源确实声明了类型的书，
+     * 要等启动期回填才会被修正 ⇒ 导入完立刻点开那本漫画会先落到文字阅读器。
      * 因此导入流程结束时显式调一次（与启动期回填同一个实现，幂等）。
      */
     fun backfillBookKindFromSources() = write { db -> backfillBookKind(db) }

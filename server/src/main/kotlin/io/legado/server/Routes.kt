@@ -1062,10 +1062,13 @@ fun Route.apiRoutes(
                 ?: return@post call.respond(HttpStatusCode.NotFound, ApiError("not_found", "书源不存在"))
             val bookUrl = request.bookUrl ?: if (chapterUrl.startsWith("local://")) chapterUrl.substringBeforeLast('/') else ""
 
-            // 书源 payload 里 bookSourceType==2 ⇒ 本书是漫画，顺手把书架类型修好
+            // 书自身的类型说法（`tab=漫画`）或书源声明 ⇒ 顺手把书架类型修好
             // （修复「解析器识别之前加进书架的老漫画」——幂等回填）。
-            if (bookUrl.isNotBlank() && BookKind.fromSourcePayload(source.json) == BookKind.COMIC) {
-                database.setBookKindSilently(request.sourceId, bookUrl)
+            // ⚠️ 必须让**书自己**优先：聚合源不声明 `bookSourceType`，只看源声明会把漫画判成小说。
+            if (bookUrl.isNotBlank()) {
+                BookKind.resolveOrNull(null, bookUrl, source.json)?.let { kind ->
+                    database.setBookKindSilently(request.sourceId, bookUrl, kind)
+                }
             }
 
             // ① L2 命中：清单已在本地 ⇒ **完全不再回源抓章节页**（二次打开零上游请求）
@@ -1286,9 +1289,19 @@ fun Route.apiRoutes(
             val request = call.receive<BookshelfWriteRequest>()
             if (request.sourceId.isBlank() || request.bookUrl.isBlank() || request.name.isBlank() || request.tocUrl.isBlank()) { call.respond(HttpStatusCode.BadRequest, ApiError("invalid_bookshelf", "书架数据无效")); return@post }
             val immediateCover = tryFindCachedCover(coverCache, request.coverUrl, request.alternateSources)
-            val bookKind = database.getSource(request.sourceId)?.let { BookKind.fromSourcePayload(it.json).name.lowercase() } ?: "novel"
+            // 类型判定：**书自己的说法优先，源声明兜底**。
+            // ⚠️ 实测教训：聚合源（大灰狼）不声明 `bookSourceType`，但它里面有漫画频道；
+            // 只看源声明会把这些漫画判成小说 ⇒ 进文字阅读器 ⇒ 用户看到的是"漫画打不开"。
+            val bookKind = BookKind.resolve(
+                explicit = request.bookKind,
+                bookUrl = request.bookUrl,
+                sourcePayload = database.getSource(request.sourceId)?.json,
+            )
             val item = database.saveBookshelf(request.copy(bookKind = bookKind), immediateCover)
-            if (request.sourceId != LocalBookParser.LOC_BOOK_SOURCE_ID && !request.bookUrl.startsWith("local://")) {
+            // 漫画/有声书**不进文本章节缓存队列**：那是给文字阅读器用的（拉章节页→抽正文）。
+            // 实测：一本漫画被误判成小说时会跑 10 章文本缓存、10 章全失败，白刷上游还污染缓存状态。
+            val textBook = BookKind.from(bookKind) == BookKind.NOVEL
+            if (textBook && request.sourceId != LocalBookParser.LOC_BOOK_SOURCE_ID && !request.bookUrl.startsWith("local://")) {
                 bookCache.enqueue(CachedBookRequest(request.sourceId, request.bookUrl, request.tocUrl))
             } else {
                 database.ensureLocalBookStatusReady(request.sourceId, request.bookUrl)

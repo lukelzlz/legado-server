@@ -36,24 +36,35 @@ class BackupImportNoClassificationTest {
     }
 
     @Test
-    fun `does not guess comic from the backup tab field`() {
+    fun `comic tab on the book itself decides the kind, not the source declaration`() {
         withImport(
-            // 书源**没有**声明 bookSourceType（=0，文本书源），只是书的 tab 写着"漫画"
-            sources = """[{"bookSourceUrl":"https://manga.example.com","bookSourceName":"测试源","enabled":true}]""",
+            // 聚合源：**没有** bookSourceType 字段（真实数据就是这样）
+            sources = """[{"bookSourceUrl":"https://manga.example.com","bookSourceName":"聚合源","enabled":true}]""",
             shelf = """[{"name":"某漫画","author":"作者","bookUrl":"$comicTab","origin":"https://manga.example.com","tocUrl":"https://manga.example.com/book/1","group":0,"durChapterIndex":0,"durChapterTime":0}]""",
         ) { database, summary ->
             assertEquals("漫画书必须被导入，绝不能因为分类而被跳过", 1, summary.books)
             assertEquals(0, summary.skippedLocal)
             assertEquals(0, summary.skippedAudio)
-            assertNull(
-                "严禁按备份的 tab 猜类型（猜错就是漫画进文字阅读器）",
+            assertEquals(
+                "书自己的 tab=漫画 ⇒ 必须是 comic：只认源声明会把聚合源里的漫画判成小说（用户实测反馈）",
+                "comic",
                 database.rawBookKind("https://manga.example.com", comicTab),
             )
-            assertEquals(
-                "未分类的书按小说处理",
-                "novel",
-                database.getShelfBookByUrl(comicTab)?.bookKind,
+            assertEquals("comic", database.getShelfBookByUrl(comicTab)?.bookKind)
+        }
+    }
+
+    @Test
+    fun `leaves the kind empty when neither the book nor the source says anything`() {
+        withImport(
+            sources = """[{"bookSourceUrl":"https://novel.example.com","bookSourceName":"文本书源","enabled":true}]""",
+            shelf = """[{"name":"某小说","author":"作者","bookUrl":"https://novel.example.com/book/1","origin":"https://novel.example.com","tocUrl":"https://novel.example.com/book/1","group":0,"durChapterIndex":0,"durChapterTime":0}]""",
+        ) { database, _ ->
+            assertNull(
+                "谁都没说类型 ⇒ 不写库（按小说处理 = 已经和小说一样就跳过）",
+                database.rawBookKind("https://novel.example.com", "https://novel.example.com/book/1"),
             )
+            assertEquals("novel", database.getShelfBookByUrl("https://novel.example.com/book/1")?.bookKind)
         }
     }
 

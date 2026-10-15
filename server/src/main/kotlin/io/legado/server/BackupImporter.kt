@@ -87,6 +87,9 @@ class BackupImporter(
         // HTTP TTS 复用既有导入实现（天然幂等：同 id 覆盖）
         val ttsResult = database.importHttpTts(parsedTts)
         val library = database.importLibrary(shelf)
+        // 书源已经在库里了 ⇒ 立刻按**书源自身声明**回填类型（`bookSourceType == 2` ⇒ comic）。
+        // 不这么做的话，导入完点开一本漫画会先落到文字阅读器（要等下次重启才被启动期回填修好）。
+        database.backfillBookKindFromSources()
         // 分组必须在书架导入**之后**执行：它要把 book_shelf.group_name 补上对应分组名。
         database.importBookGroups(groups, shelf)
         val bookmarksImported = database.importBookmarks(bookmarks)
@@ -257,7 +260,11 @@ class BackupImporter(
                 chapterIndex = book.number("durChapterIndex")?.toInt() ?: 0,
                 readAt = book.number("durChapterTime") ?: 0L,
                 kind = ShelfKind.of(book.text("bookUrl"), book.text("origin"), book.text("type"), book.text("kind")),
-                bookKind = BookKind.fromTab(ShelfKind.decodeTab(book.text("bookUrl"))).name.lowercase(),
+                // 刻意**不**按备份字段（`tab` / `type`）猜小说还是漫画：
+                // 那是"自动分类"，猜错的形态是「漫画被打成小说 ⇒ 进文字阅读器 ⇒ 打不开」，
+                // 而且用户完全看不出是被谁改的。类型只认书源自己的 `bookSourceType == 2`，
+                // 由导入结束时的 backfillBookKindFromSources() 统一落库（与启动期回填同一个实现）。
+                bookKind = null,
                 groupName = groupId?.let { nameById[it] },
             )
         }

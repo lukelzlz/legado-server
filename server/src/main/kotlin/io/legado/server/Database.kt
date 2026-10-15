@@ -659,10 +659,18 @@ class Database(private val path: String) : Closeable, AutoCloseable {
      * ⚠️ **不在书架上不是错误**：调用方要的是"这本书是不是漫画"，
      * 不在书架上（例如从书源页直接打开）一律按 `novel` 处理，与 `BookshelfItem.bookKind` 的默认值同源。
      */
-    fun getBookKind(sourceId: String, bookUrl: String): String = connect { db ->
+    fun getBookKind(sourceId: String, bookUrl: String): String = rawBookKind(sourceId, bookUrl) ?: "novel"
+
+    /**
+     * 原始 `book_kind` 列（**不做默认值补齐**）：`null` / 空串表示"未分类"。
+     *
+     * `getBookKind` 会把未分类补成 `novel`，于是**分不清"没分类"与"明确是小说"**。
+     * 判断"导入到底写没写这一列"（即"已经一样就跳过"是否真的跳过）必须看原始值。
+     */
+    fun rawBookKind(sourceId: String, bookUrl: String): String? = connect { db ->
         db.prepareStatement("select book_kind from book_shelf where source_id=? and book_url=?").use {
             it.setString(1, sourceId); it.setString(2, bookUrl)
-            it.executeQuery().use { rs -> if (rs.next()) rs.getString(1)?.trim()?.takeIf { it.isNotEmpty() } ?: "novel" else "novel" }
+            it.executeQuery().use { rs -> if (rs.next()) rs.getString(1)?.trim()?.takeIf { value -> value.isNotEmpty() } else null }
         }
     }
 
@@ -2972,6 +2980,17 @@ class Database(private val path: String) : Closeable, AutoCloseable {
             }
         }
     }
+
+    /**
+     * 立刻跑一次「按**书源自身声明**回填书籍类型」（备份导入后调用）。
+     *
+     * ## 为什么需要它（而不是等下次启动）
+     * 备份导入**不再**按备份里的 `tab` 字段猜类型（那是"自动分类"，会猜错、还会把漫画送进文字阅读器）。
+     * 类型只认**书源自己的 `bookSourceType == 2`**——书源是权威。
+     * 但启动期回填要等下次重启才生效 ⇒ 导入完立刻点开一本漫画会先落到文字阅读器。
+     * 因此导入流程结束时显式调一次（与启动期回填同一个实现，幂等）。
+     */
+    fun backfillBookKindFromSources() = write { db -> backfillBookKind(db) }
     private fun migrateSourceTable(db: Connection) {
         val columns = db.createStatement().use { statement ->
             statement.executeQuery("pragma table_info(source)").use { rs ->

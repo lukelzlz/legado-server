@@ -944,8 +944,19 @@ data class BackupShelfEntry(
      * 未分组 / 找不到对应分组时为 null。
      */
     val groupName: String? = null,
-    /** 书的内容类型（novel/comic），用于导入时设定书架 book_kind 列。 */
-    val bookKind: String = "novel",
+    /**
+     * 书的内容类型（`novel`/`comic`）。
+     *
+     * ⚠️ **备份导入不再设置它**（恒为 null）：
+     * 备份里的 `tab` / `type` 只是手机端的展示分类，拿它猜"这本书是不是漫画"属于**自动分类**，
+     * 猜错的代价是**漫画被送进文字阅读器**（表现为"漫画打不开"，而不是报错）。
+     * 现在类型只认**书源自身声明**（`bookSourceType == 2`），由
+     * [Database.backfillBookKindFromSources] 在导入结束时统一落库；分组则完全按备份文件里的分组走。
+     *
+     * `null` ⇒ 不指定：新行留 NULL，已有行**保留原值**（`coalesce(excluded.book_kind, book_shelf.book_kind)`），
+     * 也就是"已经和小说一样（无需特殊分类）就跳过，不写库"。
+     */
+    val bookKind: String? = null,
 )
 
 /**

@@ -6071,6 +6071,25 @@ mark.search-highlight { background: var(--accent-soft); color: var(--accent); fo
   padding: 24px 0 8px;
 }
 
+/* 离线横幅（P3）：脱网读本地快照时必须显式告知，否则缺图会被当成 bug。 */
+.manga-offline-banner {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 6px 12px;
+  font-size: 12px;
+  color: var(--muted);
+  background: var(--surface-muted);
+  border-bottom: 1px solid var(--line);
+}
+
+.manga-offline-banner svg {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+}
+
 /* 缓存管理里的「服务端图片缓存」区块（P2）：与"本机 IndexedDB"区块分开显示。
    同样只用主题变量，避免夜间模式出现"透光背景 + 隐形黑字"。 */
 .server-cache-section {

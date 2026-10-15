@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { api, type MangaImageItem } from './api'
 import { Icon } from './icons'
+import { getMangaManifest, putMangaManifest, warmChapterImages } from './mangaOffline'
 import { OpenBook, VirtualChapterList } from './ReaderScreen'
 import { toast } from './Toast'
 import type { ReaderTheme } from './readerSettings'
@@ -103,6 +104,8 @@ export function MangaReaderScreen({ openBook, startIndex, onClose, theme }: Mang
   const [cachedChapters, setCachedChapters] = useState<Set<string>>(() => new Set())
   /** 用户手动"整本离线"进行中（只用于显示进度与轮询绿点）。 */
   const [offlineRunning, setOfflineRunning] = useState(false)
+  /** 当前渲染用的是**本地清单快照**（脱网回退），用于顶部横幅与失败文案区分。 */
+  const [offlineSnapshot, setOfflineSnapshot] = useState(false)
 
   const chapter = chapters[chapterIndex]
   const total = images.length
@@ -190,6 +193,7 @@ export function MangaReaderScreen({ openBook, startIndex, onClose, theme }: Mang
         if (controller.signal.aborted) return
         const list = result?.images ?? []
         setImages(list)
+        setOfflineSnapshot(false)
         // 服务端已标记过 failed 的图直接亮重试按钮，别让用户每次都白等一轮
         setFailed(new Set(list.filter(item => item.status === 'failed').map(item => item.index)))
         if (list.length === 0) {
@@ -197,14 +201,37 @@ export function MangaReaderScreen({ openBook, startIndex, onClose, theme }: Mang
           setError(t('manga.emptyManifest', '图片规则未提取到任何图片，请检查该书源的正文规则'))
         } else {
           persist(chapterIndex, 0, list.length)
+          // 清单快照 + **整章预热**（P3）：快照让脱网时还能渲染，预热把图片塞进 SW 缓存。
+          // 两者都失败静默：离线能力是增强项，绝不能在联网阅读时碍事。
+          void putMangaManifest({
+            sourceId: openBook.details.sourceId,
+            bookUrl: openBook.bookUrl,
+            chapterUrl: target.url,
+            chapterIndex: target.index,
+            title: target.title,
+            images: list,
+          })
+          void warmChapterImages(list.map(item => item.key), { signal: controller.signal })
         }
         // 后台预取本章（环节 E8 ②）。**刻意放在清单加载之后**：此刻 L2 清单已经落库，
         // 预取走的是缓存路径，不会再去解析一遍章节页（否则同一章会被抓两次）。
         void api.mangaPrefetch(openBook.details.sourceId, openBook.bookUrl, target.index, 0).catch(() => undefined)
       })
-      .catch((err: unknown) => {
+      .catch(async (err: unknown) => {
         if (controller.signal.aborted) return
+        // 脱网 / 服务不可达时的兜底：用本地清单快照照常渲染。
+        // 不做这一步的话，最难受的形态会出现——**图都在 SW 缓存里，界面却因为拿不到清单而全白**。
+        const snapshot = await getMangaManifest(openBook.details.sourceId, target.url)
+        if (controller.signal.aborted) return
+        if (snapshot && snapshot.images.length > 0) {
+          setImages(snapshot.images)
+          setFailed(new Set())
+          setOfflineSnapshot(true)
+          setError('')
+          return
+        }
         setImages([])
+        setOfflineSnapshot(false)
         setError(err instanceof Error ? err.message : t('manga.loadFailed', '图片清单加载失败'))
       })
       .finally(() => {
@@ -402,6 +429,14 @@ export function MangaReaderScreen({ openBook, startIndex, onClose, theme }: Mang
         </div>
       )}
 
+      {/* 离线横幅：**必须显式告诉用户"现在是脱网读的本地快照"**，否则缺图会被当成 bug */}
+      {offlineSnapshot && (
+        <div className="manga-offline-banner" role="status">
+          <Icon name="cloudDownload" />
+          <span>{t('manga.offlineBanner', '离线阅读：本章用的是本机已缓存的图片，缺图会明确标出')}</span>
+        </div>
+      )}
+
       {/* 目录抽屉：复用虚拟章节列表（当前章高亮由组件自己处理） */}
       <aside className={`reader-drawer reader-drawer-left ${activeDrawer === 'toc' ? 'open' : ''}`} aria-label={t('reader.tocDrawer', '目录抽屉')}>
         <header className="drawer-header">
@@ -536,7 +571,12 @@ export function MangaReaderScreen({ openBook, startIndex, onClose, theme }: Mang
               <button type="button" className="manga-image-failed" onClick={event => { event.stopPropagation(); retryImage(item.index) }}>
                 <Icon name="image" />
                 <span>{t('manga.imageFailed', { index: item.index + 1, defaultValue: `第 ${item.index + 1} 张加载失败，点击重试` })}</span>
-                <small>{t('manga.imageFailedHint', '服务端已尝试带书源的 Referer/Cookie 代抓；反复失败通常意味着该源需要登录，或图床链接已失效')}</small>
+                {/* 两种失败必须给不同的话：让人去"重新登录/换源"和让人去"联网"是完全不同的动作 */}
+                <small>
+                  {offlineSnapshot
+                    ? t('manga.imageMissingOffline', '该图没有缓存到本机（离线状态下拉不到）。联网后重试即可补上。')
+                    : t('manga.imageFailedHint', '服务端已尝试带书源的 Referer/Cookie 代抓；反复失败通常意味着该源需要登录，或图床链接已失效')}
+                </small>
               </button>
             ) : (
               <img

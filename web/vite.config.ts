@@ -110,6 +110,29 @@ export default defineConfig({
               },
             },
           },
+          {
+            /**
+             * 漫画图片（方案 E · P3）。
+             *
+             * ⚠️ **必须与 `Routes.kt` 里真实注册的直出路由逐字对齐**：真实路径是
+             * `route("/api")` + `get("/images/{key}")` ⇒ `/api/images/<sha256>`。
+             * 方案 E 原稿写的是 `/api/books/images/...`（那是还没落地的"定位 URL"形态），
+             * 照着抄会得到一条**永不命中的死配置**——封面就栽过一次（SESSION-027）。
+             *
+             * 用 `CacheFirst` 是安全的：图片按内容寻址（key = 字节哈希），内容变了 key 必变，
+             * 而且服务端已经声明 `immutable` 长缓存。
+             */
+            urlPattern: /^\/api\/images\//,
+            handler: 'CacheFirst',
+            options: {
+              cacheName: 'legado-manga',
+              expiration: {
+                maxEntries: 3000,
+                maxAgeSeconds: 180 * 24 * 60 * 60,
+              },
+              cacheableResponse: { statuses: [0, 200] },
+            },
+          },
         ],
       },
     }),

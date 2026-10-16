@@ -76,6 +76,19 @@ function IconButton({ label, icon, onClick }: { label: string; icon: Parameters<
   )
 }
 
+/**
+ * 图片框的 class。
+ *
+ * `is-loaded` 决定"60vh 占位高度还在不在"（见 `styles.css` 的无缝拼接规则）：加载完必须去掉占位，
+ * 否则每张短图上下都会空出一截底色 —— 纵向连读时那就是一道道"接缝"。
+ *
+ * 单独抽成纯函数，是为了让"**加载后确实带上了这个 class**"可被测试：
+ * 只改 CSS、而 TSX 忘了加 class 的话，无缝修复会**静默失效**（页面看起来毫无变化）。
+ */
+export function mangaImageFrameClass(isLoaded: boolean): string {
+  return isLoaded ? 'manga-image-frame is-loaded' : 'manga-image-frame'
+}
+
 export function MangaReaderScreen({ openBook, startIndex, onClose, theme }: MangaReaderScreenProps) {
   const { t } = useTranslation()
   const chapters = openBook.chapters
@@ -562,7 +575,9 @@ export function MangaReaderScreen({ openBook, startIndex, onClose, theme }: Mang
         {!loading && !error && images.map(item => (
           <div
             key={`${item.index}-${retryTokens[item.index] ?? 0}`}
-            className="manga-image-frame"
+            // is-loaded 让**占位高度只在图片真正加载出来之前生效**：
+            // 否则 60vh 的占位会在每张短图上下留出色带，纵向连续阅读时就是一道道"接缝"。
+            className={mangaImageFrameClass(loaded.has(item.index))}
             ref={node => { imageRefs.current[item.index] = node }}
             // manifest 给了真实宽高 ⇒ 占位就按真实比例，**首屏不跳动**（未知时退回 CSS 的 60vh 兜底）
             style={item.width && item.height ? { aspectRatio: `${item.width} / ${item.height}`, minHeight: 0 } : undefined}

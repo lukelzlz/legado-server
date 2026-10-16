@@ -30,13 +30,18 @@ fun main(args: Array<String>) {
 fun Application.legadoApplication(config: ServerConfig = ServerConfig.fromEnvironment()) {
     val database = Database(config.databasePath)
     database.initialize(config.initialAdminPassword)
-    // 缓存目录结构升级到 v2（书/章可读目录 + file_path）时的一次性清理：
-    // 旧布局按哈希散列落盘、与新语义不兼容，用户已拍板"清掉重下"（不写迁移逻辑）。
-    // **幂等**：第二次启动读到 cache_layout=v2 直接 no-op，不做任何磁盘扫描。
-    purgeLegacyCacheLayout(
+    // 缓存目录结构升级到 v3 的唯一入口（同一套 `app_setting.cache_layout` 版本判断）：
+    // - v2 → v3：漫画根 `images` 改名成 `comic`，动作是**移动**（布局没变 ⇒ 用户零数据损失），
+    //   顺带把封面文件名从 `covers/<key>` 改成 `covers/<书名 (书哈希).扩展名>`；
+    // - 更旧（v1 散列布局）→ 沿用既有裁决"清掉重下"（与新语义不兼容）；
+    // - **幂等**：第二次启动读到 cache_layout=v3 直接 no-op，不做任何磁盘扫描。
+    // 无论哪个版本，都会确保「小说插图」根目录存在（空目录，本次不实现写入）。
+    migrateCacheLayout(
         database = database,
-        imageRoot = config.imageCacheDirectory,
+        comicRoot = config.comicCacheDirectory,
+        illustrationRoot = config.illustrationCacheDirectory,
         audioRoot = config.audioCacheDirectory,
+        coverRoot = config.coverCacheDirectory,
         log = { message -> log.info(message) },
     )
     val auth = AuthService(database, config.secureCookies)
@@ -84,9 +89,11 @@ fun Application.legadoApplication(config: ServerConfig = ServerConfig.fromEnviro
     }
     routing {
         get("/healthz") { call.respond(mapOf("status" to "ok")) }
-        val coverCache = CoverCache(config.coverCacheDirectory)
+        // 封面缓存带库：文件名是 `书名 (书哈希).扩展名`，`file_path` 就是索引里那一列
+        // （拿不到库时只能按 key 命名/定位，那是上传接口等"还不知道属于哪本书"的场景）。
+        val coverCache = CoverCache(config.coverCacheDirectory, database = database)
         // 漫画 P1：L1 字节缓存 + 抓取收口（配额默认 10 GiB，见 ADR-028 的滑窗 GC 裁决）
-        val imageCache = ImageCache(config.imageCacheDirectory, database, config.imageCacheQuotaBytes) { message -> log.info(message) }
+        val imageCache = ImageCache(config.comicCacheDirectory, database, config.imageCacheQuotaBytes) { message -> log.info(message) }
         // ⚠️ 必须用具名参数：`log` 不是最后一个参数（后面还有测试注入接缝），
         // 尾随 lambda 会绑到 `injectedFetcher` 上，导致类型不匹配。
         val mangaImageFetcher = MangaImageFetcher(config, log = { message -> log.info(message) })

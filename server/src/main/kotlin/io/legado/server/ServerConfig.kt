@@ -13,9 +13,19 @@ data class ServerConfig(
     val initialAdminPassword: String?,
     val secureCookies: Boolean,
     /**
-     * 漫画图片字节缓存目录（L1 唯一副本）。默认 `<data>/images`，与封面 `covers` 平级。
+     * 漫画图片字节缓存目录（L1 唯一副本）。默认 `<data>/comic`，与封面 `covers` 平级。
+     *
+     * 落盘结构见 [ImageCache]：`<书名 (书哈希)>/<章节名 (章节哈希)>/8位分段号.扩展名`。
      */
-    val imageCacheDirectory: Path = coverCacheDirectory.resolveSibling("images"),
+    val comicCacheDirectory: Path = coverCacheDirectory.resolveSibling(COMIC_DIR_NAME),
+    /**
+     * **小说插图**缓存目录（预留，本次不实现写入）。默认 `<data>/images`，与 [comicCacheDirectory] 平级。
+     *
+     * 为什么必须与漫画分开：漫画缓存的读取定位是「扫目录名里的 `(书哈希)` / `(章节哈希)`」
+     * （见 [AtomicFileStore.findByNameFree]），插图若混进同一个根，两套语义会互相扫到。
+     * 启动时只保证这个目录**存在**（空目录），不写任何文件；写入实现留给后续改动。
+     */
+    val illustrationCacheDirectory: Path = coverCacheDirectory.resolveSibling(ILLUSTRATION_DIR_NAME),
     /**
      * 有声书音频缓存目录（方案 G2）。默认 `<data>/audio`。
      */
@@ -67,6 +77,14 @@ data class ServerConfig(
     val mangaGcEnabled: Boolean = true,
 ) {
     companion object {
+        /** 漫画缓存根目录名（**唯一来源**：默认路径与环境变量路径都引用它）。 */
+        const val COMIC_DIR_NAME = "comic"
+
+        /** 小说插图缓存根目录名（预留，不写入；改名时别把它与漫画根混起来）。 */
+        const val ILLUSTRATION_DIR_NAME = "images"
+
+        /** 封面缓存根目录名（`<书名 (书哈希).扩展名>`，见 [CoverCache]）。 */
+        const val COVER_DIR_NAME = "covers"
         /** 默认 10 GiB（PR #45 `0ab69e2` 拍板）。 */
         const val DEFAULT_IMAGE_CACHE_QUOTA_GB: Double = 10.0
         const val DEFAULT_IMAGE_CACHE_QUOTA_BYTES: Long = (DEFAULT_IMAGE_CACHE_QUOTA_GB * 1024 * 1024 * 1024).toLong()
@@ -97,12 +115,13 @@ data class ServerConfig(
                 host = env["LEGADO_HOST"] ?: "0.0.0.0",
                 port = env["LEGADO_PORT"]?.toIntOrNull() ?: 8080,
                 databasePath = env["LEGADO_DATABASE"] ?: dataDir.resolve("legado.sqlite").absolutePathString(),
-                coverCacheDirectory = dataDir.resolve("covers"),
+                coverCacheDirectory = dataDir.resolve(COVER_DIR_NAME),
                 webDavDirectory = dataDir.resolve("webdav"),
                 localBooksDirectory = dataDir.resolve("local_books"),
                 initialAdminPassword = env["ADMIN_PASSWORD"]?.takeIf { it.isNotBlank() },
                 secureCookies = env["LEGADO_SECURE_COOKIES"]?.toBooleanStrictOrNull() ?: true,
-                imageCacheDirectory = dataDir.resolve("images"),
+                comicCacheDirectory = dataDir.resolve(COMIC_DIR_NAME),
+                illustrationCacheDirectory = dataDir.resolve(ILLUSTRATION_DIR_NAME),
                 audioCacheDirectory = dataDir.resolve("audio"),
                 // 配额按 GB 配置（支持小数），默认 10 GiB —— 见 ADR-028 的滑窗 GC 裁决
                 imageCacheQuotaBytes = (env["LEGADO_MANGA_CACHE_MAX_GB"]?.toDoubleOrNull() ?: DEFAULT_IMAGE_CACHE_QUOTA_GB)

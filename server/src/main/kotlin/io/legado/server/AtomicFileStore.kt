@@ -44,6 +44,9 @@ class AtomicFileStore(val root: Path) {
     /** 进程内小缓存：`bookHash\n章节哈希 -> 实际章节目录名`。 */
     private val chapterDirCache = ConcurrentHashMap<String, String>()
 
+    /** 进程内小缓存：`哈希段 -> 扁平目录里的实际文件名`（封面根用，见 [findFlatByNameFree]）。 */
+    private val flatFileCache = ConcurrentHashMap<String, String>()
+
     /** 短哈希的校验模式：位数**只从常量来**，不写字面量。 */
     private val bookHashPattern = Regex("[0-9a-f]{${BOOK_HASH_LENGTH}}")
 
@@ -290,6 +293,40 @@ class AtomicFileStore(val root: Path) {
     }
 
     // ------------------------------------------------------------------
+    // 扁平目录的无中文定位（封面：`<书名 (书哈希).扩展名>`）
+    // ------------------------------------------------------------------
+
+    /**
+     * 扁平目录（封面根 `covers/`）的**无中文定位**：根目录下**文件名词干以 `(hash)` 结尾**的常规文件。
+     *
+     * 与 [findByNameFree] 同一套哲学：中文书名与扩展名都只是装饰，
+     * 定位只认 `(哈希)` 这一段 —— 用户把书名目录改成乱码、上游改标了扩展名都不影响命中；
+     * 反过来**哈希标记没了就判"不存在"**（宁重下，绝不瞎猜一个文件塞给用户）。
+     *
+     * @param hash 文件名里的哈希段：封面用 [bookCacheHash] 的 20 位产物；
+     *   拿不到书身份（上传封面/搜索页）时用内容 key（64 位 hex）—— 两者都在这里被接受。
+     */
+    fun findFlatByNameFree(hash: String): Path? {
+        val marker = hash.trim().lowercase()
+        if (!FLAT_HASH_PATTERN.matches(marker)) return null
+        flatFileCache[marker]?.let { cached ->
+            val path = normalizedRoot.resolve(cached)
+            if (Files.isRegularFile(path)) return path
+            flatFileCache.remove(marker)
+        }
+        val suffix = "($marker)"
+        val found = runCatching {
+            Files.list(normalizedRoot).use { entries ->
+                entries.filter { Files.isRegularFile(it) && it.fileName.toString().lowercase().substringBeforeLast('.').endsWith(suffix) }
+                    .findFirst()
+                    .orElse(null)
+            }
+        }.getOrNull() ?: return null
+        flatFileCache[marker] = found.fileName.toString()
+        return found
+    }
+
+    // ------------------------------------------------------------------
     // 统计与清理
     // ------------------------------------------------------------------
 
@@ -381,11 +418,25 @@ const val CACHE_UNNAMED = "未命名"
 /** 分段序号（文件名前缀）的补零宽度（**唯一来源**，任何地方不得再写 `%08d` 之类字面宽度）。 */
 const val CACHE_SEGMENT_INDEX_WIDTH = 8
 
-/** 缓存布局版本：`app_setting.cache_layout` 不等于它 ⇒ 启动时清一次旧布局。 */
+/** 缓存布局版本：`app_setting.cache_layout` 不等于它 ⇒ 启动时迁移一次旧布局。 */
 const val CACHE_LAYOUT_KEY = "cache_layout"
 
-/** 当前布局版本（书/章可读目录 + `file_path` 落库）。 */
-const val CACHE_LAYOUT_VERSION = "v2"
+/**
+ * 当前布局版本。
+ *
+ * - **v1**：散列两级目录（`images/<hash[0:2]>/<hash>`），与新语义不兼容。
+ * - **v2**：书/章可读目录 + `file_path` 落库（PR #50）。
+ * - **v3**（本次）：漫画根 `images` → `comic`（**布局本身没变，只改根目录名 ⇒ 移动，不清理**）
+ *   + 封面文件名从 `covers/<key>` 改成 `covers/<书名 (书哈希).扩展名>`。
+ */
+const val CACHE_LAYOUT_VERSION = "v3"
+
+/**
+ * 上一版（v2）的版本号：读到它就说明**只差"根目录改名 + 封面改名"**，
+ * 于是 v3 的动作是**移动**（用户零数据损失），而不是 v1 那种"清掉重下"。
+ */
+const val CACHE_LAYOUT_VERSION_V2 = "v2"
+
 
 private val CACHE_ILLEGAL_CHARS = setOf('\\', '/', ':', '*', '?', '"', '<', '>', '|')
 
@@ -436,6 +487,9 @@ fun contentExtension(contentType: String?): String {
 private val CONTENT_EXTENSIONS: Map<String, String> = buildMap {
     put("image/jpeg", "jpg"); put("image/png", "png"); put("image/webp", "webp")
     put("image/gif", "gif"); put("image/avif", "avif")
+    // SVG 也是真实类型（本地书导入时会生成 SVG 占位封面），老老实实写成 `.svg`：
+    // 映射里没有它的话会落成 `.bin`，而文件名说谎正是这套命名要消灭的东西。
+    put("image/svg+xml", "svg")
     put("audio/mpeg", "mp3"); put("audio/mp3", "mp3")
     put("audio/mp4", "m4a"); put("audio/x-m4a", "m4a"); put("audio/m4a", "m4a")
     put("video/mp4", "mp4")
@@ -492,6 +546,33 @@ fun chapterCacheFolder(title: String?, sourceId: String, bookUrl: String, chapte
 fun segmentFileName(segmentIndex: Int, contentType: String?): String =
     segmentPrefix(segmentIndex) + contentExtension(contentType)
 
+/**
+ * 封面文件名：`书名 (哈希).扩展名`（书名为空 ⇒ `未命名 (哈希).扩展名`）。
+ *
+ * 与书/章目录同一口径：**哈希段是读取定位的唯一依据**（见 [AtomicFileStore.findFlatByNameFree]），
+ * 书名只是给人看的；扩展名取真实类型（未知 `bin`）。
+ *
+ * @param hash 书名后面的哈希段：有书身份时是 [bookCacheHash]（20 位小写 hex）；
+ *   拿不到书身份（上传的封面、搜索页的书）时用内容 key（64 位 hex）—— 读取侧同样能定位。
+ */
+fun coverCacheFileName(name: String?, hash: String, contentType: String?): String =
+    coverCacheFileNameByExtension(name, hash, contentExtension(contentType))
+
+/**
+ * 同 [coverCacheFileName]，但扩展名**已经是真实扩展名**（如 `jpg`）。
+ *
+ * 为什么必须要这一支：改名/归位（`CoverCache.adopt`）时手上只有**现有文件名里的扩展名**，
+ * 再走一次「内容类型 → 扩展名」的映射会把 `png` 当成未知类型映射成 `bin`
+ * （实测踩过：归位后文件名从 `.png` 变成 `.bin`）。
+ */
+fun coverCacheFileNameByExtension(name: String?, hash: String, extension: String): String {
+    val safe = safeNameOrNull(name, CACHE_BOOK_NAME_MAX) ?: CACHE_UNNAMED
+    return "$safe ($hash).$extension"
+}
+
+/** 扁平定位（封面根）可接受的哈希段：20 位书哈希 ~ 64 位内容 key，纯小写 hex。 */
+private val FLAT_HASH_PATTERN = Regex("[0-9a-f]{${AtomicFileStore.BOOK_HASH_LENGTH},64}")
+
 /** 分段序号前缀（含分隔点）：**8 位补零**，供无中文定位做 `startsWith` 匹配。 */
 fun segmentPrefix(segmentIndex: Int): String =
     "%0${CACHE_SEGMENT_INDEX_WIDTH}d.".format(segmentIndex.coerceAtLeast(0))
@@ -541,30 +622,179 @@ class CachePathPlanner(private val database: Database) {
 }
 
 /**
- * 旧布局（散列两级目录）的**一次性清理**：读 `app_setting.cache_layout`，不是
- * [CACHE_LAYOUT_VERSION] 就清掉 audio/images 两个根目录下的常规文件与 `image/audio` 两张索引表，
- * 然后写入版本号。
+ * 缓存目录布局迁移的**唯一入口**（启动时调用一次，同一套 `app_setting.cache_layout` 版本判断）。
  *
- * 幂等：第二次启动读到 `v2` 直接 no-op（不做任何磁盘扫描）。
+ * 版本 → 动作：
+ * - `v3` ⇒ **no-op**（不扫盘、不查库）；
+ * - `v2` ⇒ **移动**：`images/` 下的现存文件原样搬到 `comic/`。
+ *   布局本身没变（还是「书/章可读目录 + 8 位分段号」，读取只认两个哈希与序号），
+ *   变的只有根目录名 ⇒ **用户数据零损失**，没有任何理由重下；
+ * - 更旧（v1/未设置）⇒ 沿用 PR #50 的裁决：散列两级目录与新语义不兼容、**清掉重下**；
+ * - 封面改名（`covers/<key>` → `covers/<书名 (书哈希).扩展名>`）对所有版本都做一次；
+ * - 收尾：写入新版本号，并保证「小说插图」根目录存在（空目录，本次不实现写入）。
  *
- * @return 本次是否真的清理过（供日志与测试断言）
+ * @return 本次是否真的动过盘（供日志与测试断言）
  */
-fun purgeLegacyCacheLayout(
+fun migrateCacheLayout(
     database: Database,
-    imageRoot: Path,
+    comicRoot: Path,
+    illustrationRoot: Path,
     audioRoot: Path,
+    coverRoot: Path,
     log: (String) -> Unit = {},
 ): Boolean {
-    if (database.getSetting(CACHE_LAYOUT_KEY) == CACHE_LAYOUT_VERSION) return false
-    val images = AtomicFileStore(imageRoot).purgeAll()
+    // 插图根与版本无关：**每次启动**都保证它存在（预留目录，空着即可）。
+    runCatching { Files.createDirectories(illustrationRoot) }
+        .onFailure { log("小说插图目录创建失败：$illustrationRoot（${it.message}）") }
+    val current = database.getSetting(CACHE_LAYOUT_KEY)
+    if (current == CACHE_LAYOUT_VERSION) return false
+    if (current == CACHE_LAYOUT_VERSION_V2) {
+        // 只改了根目录名 ⇒ 移动，绝不清理（v2 的"清掉重下"是针对 v1 的散列布局，别张冠李戴）
+        val moved = moveCacheRoot(illustrationRoot, comicRoot, log)
+        val covers = migrateCoverFileNames(database, coverRoot, log)
+        database.setSetting(CACHE_LAYOUT_KEY, CACHE_LAYOUT_VERSION)
+        log(
+            "缓存目录结构升级到 $CACHE_LAYOUT_VERSION：漫画根 images -> comic " +
+                "(移动文件=${moved.files}, 字节=${moved.bytes}, 跳过=${moved.skipped}, 失败=${moved.failed}) " +
+                "封面改名(改名=${covers.renamed}, 跳过=${covers.skipped}, 失败=${covers.failed})",
+        )
+        return true
+    }
+    // v1（散列两级目录）与 v2 的新语义不兼容 ⇒ 用户已拍板"清掉重下"。
+    // 注意：v1 的文件躺在**旧根 `images/`** 里（也就是现在的插图预留根），所以清的是它。
+    val legacyImages = AtomicFileStore(illustrationRoot).purgeAll()
+    val comics = AtomicFileStore(comicRoot).purgeAll()
     val audio = AtomicFileStore(audioRoot).purgeAll()
     val imageRows = database.deleteAllMangaImageRows()
     val audioRows = database.deleteAllAudioRows()
+    val covers = migrateCoverFileNames(database, coverRoot, log)
     database.setSetting(CACHE_LAYOUT_KEY, CACHE_LAYOUT_VERSION)
     log(
         "缓存目录结构升级到 $CACHE_LAYOUT_VERSION：清理旧布局 " +
-            "images(文件=${images.files}, 字节=${images.bytes}, 行=$imageRows) " +
-            "audio(文件=${audio.files}, 字节=${audio.bytes}, 行=$audioRows)",
+            "images(文件=${legacyImages.files}, 字节=${legacyImages.bytes}) " +
+            "comic(文件=${comics.files}, 字节=${comics.bytes}, 行=$imageRows) " +
+            "audio(文件=${audio.files}, 字节=${audio.bytes}, 行=$audioRows) " +
+            "封面改名(改名=${covers.renamed}, 跳过=${covers.skipped}, 失败=${covers.failed})",
     )
     return true
 }
+
+/** 一次「缓存根改名」的战果：移动了多少文件/字节、跳过多少、失败多少。 */
+data class MoveResult(val files: Int, val bytes: Long, val skipped: Int, val failed: Int)
+
+/**
+ * 把 [from] 下的**全部常规文件**（保持相对路径）**移动**到 [to]。
+ *
+ * 语义（与"清掉重下"严格区分）：
+ * - 目标已存在同名文件 ⇒ **跳过并计数**（`Files.move` 刻意**不给** `REPLACE_EXISTING`：
+ *   宁可少移一个，也不能拿半路的字节盖掉用户已有的缓存）；
+ * - 单个文件失败 ⇒ [runCatching] 记日志并计数，**绝不抛错**（缓存迁移不允许阻断启动）；
+ * - [from] 目录本身**保留**：v3 里它就是「小说插图」的预留根，只是被搬空了。
+ */
+fun moveCacheRoot(from: Path, to: Path, log: (String) -> Unit = {}): MoveResult {
+    if (!Files.isDirectory(from)) {
+        runCatching { Files.createDirectories(to) }
+        return MoveResult(0, 0, 0, 0)
+    }
+    runCatching { Files.createDirectories(to) }
+    val normalizedTarget = to.normalize()
+    var files = 0
+    var bytes = 0L
+    var skipped = 0
+    var failed = 0
+    val victims = runCatching {
+        Files.walk(from).use { paths -> paths.filter { Files.isRegularFile(it) }.toList() }
+    }.getOrDefault(emptyList())
+    victims.forEach { source ->
+        val relative = from.relativize(source)
+        val target = normalizedTarget.resolve(relative).normalize()
+        if (!target.startsWith(normalizedTarget)) {
+            failed++
+            log("缓存迁移失败（越出目标根目录，已跳过）：$source")
+            return@forEach
+        }
+        // 先量大小：移动成功后源文件已不在，只能从目标侧量（这里直接量源，等价）
+        val size = runCatching { Files.size(source) }.getOrDefault(0L)
+        runCatching {
+            if (Files.exists(target)) {
+                skipped++
+                return@runCatching
+            }
+            Files.createDirectories(target.parent)
+            Files.move(source, target)
+            files++
+            bytes += size
+        }.onFailure {
+            failed++
+            log("缓存迁移失败：$source -> $target（${it.message}）")
+        }
+    }
+    // 搬空的旧章节目录壳子一并收走，但**保留 from 本身**（插图预留根必须存在且为空）
+    runCatching {
+        val emptyDirs = Files.walk(from).use { paths -> paths.filter { Files.isDirectory(it) && it != from }.toList() }
+        emptyDirs.sortedDescending().forEach { dir -> runCatching { Files.deleteIfExists(dir) } }
+    }
+    return MoveResult(files, bytes, skipped, failed)
+}
+
+/** 封面改名的战果。 */
+data class CoverMigrationResult(val renamed: Int, val skipped: Int, val failed: Int)
+
+/**
+ * 封面文件从 `covers/<key>`（无扩展名）改名成 `covers/<书名 (书哈希).扩展名>`。
+ *
+ * **只改名，不删也不改内容**：
+ * - 能对上书架条目（`book_shelf.cover_key = key`）⇒ 用它的书名 +
+ *   `sha256(sourceId + "\n" + bookUrl)` 前 [AtomicFileStore.BOOK_HASH_LENGTH] 位；
+ * - 对不上书架的孤儿封面（约 196 个里可能有几个）⇒ **留在原处**。两条理由任一条都足以定案：
+ *   ① 这种封面**没有书身份**（既无 sourceId 也无 bookUrl），"书哈希"在数学上就算不出来；
+ *   ② 它本来就以 `<key>`（内容/URL 哈希）命名，而读取侧的最后一档兜底**正是** `covers/<key>`
+ *      ⇒ 留在原处零损失；硬凑一个名字反而要另造一套哈希口径。
+ * - 目标同名已存在 ⇒ 跳过且**不删原件**（宁可留一份冗余，也不赌两个文件等价）；
+ * - 单张失败 ⇒ 记日志计数，绝不阻断启动。
+ */
+fun migrateCoverFileNames(database: Database, coverRoot: Path, log: (String) -> Unit = {}): CoverMigrationResult {
+    val store = AtomicFileStore(coverRoot)
+    var renamed = 0
+    var skipped = 0
+    var failed = 0
+    database.listCoverCache().forEach { row ->
+        val legacy = store.resolveOrNull(row.cacheKey) ?: return@forEach
+        if (!Files.isRegularFile(legacy)) return@forEach
+        runCatching {
+            val owner = database.coverOwners(row.cacheKey).firstOrNull()
+            if (owner == null) {
+                skipped++
+                log("封面改名跳过（无书架引用，留在原处）：${row.cacheKey}")
+                return@runCatching
+            }
+            val bytes = Files.readAllBytes(legacy)
+            // 扩展名以**真实字节**为准：`cover_cache.content_type` 历史上有 "image/*" 这种占位值，
+            // 直接拿它映射会得到 `.bin`（本来是一张好端端的 jpg）。
+            val relative = coverCacheFileName(
+                owner.name,
+                bookCacheHash(owner.sourceId, owner.bookUrl),
+                ImageBytes.detectImageContentType(bytes) ?: row.contentType,
+            )
+            if (relative == row.cacheKey) {
+                skipped++
+                return@runCatching
+            }
+            val target = store.resolve(relative)
+            if (Files.exists(target)) {
+                skipped++
+                log("封面改名跳过（目标已存在，未覆盖）：$relative")
+                return@runCatching
+            }
+            Files.createDirectories(target.parent)
+            Files.move(legacy, target)
+            database.updateCoverFilePath(row.cacheKey, relative)
+            renamed++
+        }.onFailure {
+            failed++
+            log("封面改名失败：${row.cacheKey}（${it.message}）")
+        }
+    }
+    return CoverMigrationResult(renamed, skipped, failed)
+}
+

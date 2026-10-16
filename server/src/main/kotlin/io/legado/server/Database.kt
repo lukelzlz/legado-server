@@ -128,7 +128,8 @@ class Database(private val path: String) : Closeable, AutoCloseable {
                   primary key (source_id, book_url)
                 );
                 create table if not exists cover_cache (
-                  cache_key text primary key, content_type text not null
+                  cache_key text primary key, content_type text not null,
+                  file_path text not null default ''
                 );
                 create table if not exists app_setting (
                   key text primary key, value text not null, updated_at integer not null
@@ -1453,11 +1454,86 @@ class Database(private val path: String) : Closeable, AutoCloseable {
         state = getString(13), lastError = getString(14), createdAt = getLong(15), lastAccessAt = getLong(16),
         filePath = getString(17).orEmpty(),
     )
-    fun recordCoverCache(coverKey: String, contentType: String = "image/*") = write { db ->
-        db.prepareStatement("insert into cover_cache(cache_key,content_type) values(?,?) on conflict(cache_key) do update set content_type=excluded.content_type").use {
+    /**
+     * 登记一张封面副本（`file_path` 可选）。
+     *
+     * [filePath] 缺省/空 ⇒ **保留已有值**（`coalesce(nullif(...))`，与 `manga_image_cache` 同一手法）：
+     * 既有调用点（上传接口等）只关心 key 与类型，不该顺手把快路径擦掉。
+     */
+    fun recordCoverCache(coverKey: String, contentType: String = "image/*", filePath: String? = null) = write { db ->
+        db.prepareStatement("insert into cover_cache(cache_key,content_type,file_path) values(?,?,?) on conflict(cache_key) do update set content_type=excluded.content_type, file_path=coalesce(nullif(excluded.file_path,''), cover_cache.file_path)").use {
             it.setString(1, coverKey)
             it.setString(2, contentType)
+            it.setString(3, filePath.orEmpty())
             it.executeUpdate()
+        }
+    }
+
+    /** 某张封面记下的相对路径（快路径）。没有记录或列为空 ⇒ null。 */
+    fun coverFilePath(coverKey: String): String? = connect { db ->
+        db.prepareStatement("select file_path from cover_cache where cache_key=?").use {
+            it.setString(1, coverKey)
+            it.executeQuery().use { rs -> if (rs.next()) rs.getString(1)?.takeIf { path -> path.isNotBlank() } else null }
+        }
+    }
+
+    /** 无中文定位命中后的**回填**：把快路径修好（下次直出少一次扫盘）。 */
+    fun updateCoverFilePath(coverKey: String, filePath: String) = write { db ->
+        db.prepareStatement("update cover_cache set file_path=? where cache_key=?").use {
+            it.setString(1, filePath)
+            it.setString(2, coverKey)
+            it.executeUpdate()
+        }
+    }
+
+    /** 清掉快路径（封面文件被删除时调用，免得留一个指向空气的路径）。 */
+    fun clearCoverFilePath(coverKey: String) = write { db ->
+        db.prepareStatement("update cover_cache set file_path='' where cache_key=?").use {
+            it.setString(1, coverKey)
+            it.executeUpdate()
+        }
+    }
+
+    /**
+     * 某个相对路径当前**被哪些 key 认领**（`cover_cache.file_path = ?`）。
+     *
+     * 用途只有一个：封面按「书哈希」兜底定位时，同一本书可能有两张封面（换过图的常见形态），
+     * 而 `书名 (书哈希).扩展名` 这个命名**天生容不下两版**。于是：
+     * - **读**：候选文件若已被别的 key 认领 ⇒ 跳过（宁可判"没有"、回源重下，也绝不返回另一版字节）；
+     * - **写**：覆盖同名文件前先把别的 key 的快路径清掉（那条路径装的不再是它的字节了）。
+     */
+    fun coverFilePathHolders(filePath: String): List<String> = connect { db ->
+        db.prepareStatement("select cache_key from cover_cache where file_path=?").use {
+            it.setString(1, filePath)
+            it.executeQuery().use { rs -> buildList { while (rs.next()) add(rs.getString(1)) } }
+        }
+    }
+
+    /** 全部封面索引行（布局迁移用：key + 类型 + 已记的相对路径）。 */
+    fun listCoverCache(): List<CoverCacheRow> = connect { db ->
+        db.prepareStatement("select cache_key,content_type,file_path from cover_cache").use { st ->
+            st.executeQuery().use { rs ->
+                buildList {
+                    while (rs.next()) add(CoverCacheRow(rs.getString(1), rs.getString(2).orEmpty(), rs.getString(3).orEmpty()))
+                }
+            }
+        }
+    }
+
+    /**
+     * 引用某张封面的书架条目（按最近阅读倒序）。
+     *
+     * 这是封面读取的**兜底依据**：路径失效时用它的 `sourceId`/`bookUrl` 算出书哈希，
+     * 再去封面根里按 `(书哈希)` 无中文扫描 —— 中文书名被改名也不会失联。
+     */
+    fun coverOwners(coverKey: String): List<CoverOwner> = connect { db ->
+        db.prepareStatement("select name, source_id, book_url from book_shelf where cover_key=? order by last_read_at desc").use {
+            it.setString(1, coverKey)
+            it.executeQuery().use { rs ->
+                buildList {
+                    while (rs.next()) add(CoverOwner(rs.getString(1).orEmpty(), rs.getString(2), rs.getString(3)))
+                }
+            }
         }
     }
 
@@ -3583,7 +3659,9 @@ class Database(private val path: String) : Closeable, AutoCloseable {
      * `AtomicFileStore.findByNameFree`），所以即使这一列为空也不会读不到文件。
      */
     private fun migrateCacheFilePaths(db: Connection) {
-        listOf("manga_image_cache", "audio_cache").forEach { table ->
+        // `cover_cache` 同列同理：封面文件名从 `covers/<key>` 改成 `<书名 (书哈希).扩展名>` 后，
+        // 行必须记住自己落在哪；读取侧同样有兜底（哈希段无中文扫描 + 旧形态 `covers/<key>`）。
+        listOf("manga_image_cache", "audio_cache", "cover_cache").forEach { table ->
             val columns = db.createStatement().use { statement ->
                 statement.executeQuery("pragma table_info($table)").use { rs ->
                     buildSet { while (rs.next()) add(rs.getString("name")) }

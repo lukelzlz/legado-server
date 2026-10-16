@@ -70,8 +70,13 @@ class CoverUploadRoutesTest {
 
                 // Verify file exists on disk
                 val key = Json.decodeFromString<Map<String, String>>(uploadJson)["coverKey"]!!
-                val coverFile = tempDir.resolve(key)
-                assertTrue(Files.exists(coverFile))
+                // v3：封面文件名不再是 `covers/<key>`，而是 `未命名 (<key>).png`
+                // —— 上传这一刻还不知道这张图属于哪本书；与书籍关联时由 `adopt` 归位成 `书名 (书哈希).png`
+                assertTrue(
+                    "上传的封面必须带扩展名落盘，实际目录：${Files.list(tempDir).use { it.map { p -> p.fileName.toString() }.toList() }}",
+                    Files.exists(tempDir.resolve("$CACHE_UNNAMED ($key).png")),
+                )
+                assertNotNull("按 key 必须能定位到它", CoverCache(tempDir).file(key))
 
                 // 3. Update bookshelf info with uploaded coverKey
                 val db = Database(dbPath)

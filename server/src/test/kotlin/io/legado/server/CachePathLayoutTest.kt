@@ -243,16 +243,19 @@ class CachePathLayoutTest {
     }
 
     @Test
-    fun `legacy layout purge is one shot and clears both rows and files`() {
+    fun `legacy v1 layout purge is one shot and clears both rows and files`() {
         val dir = Files.createTempDirectory("legado-cache-layout-purge")
         val database = Database(dir.resolve("legado.sqlite").toString())
         try {
             database.initialize("password-for-test")
-            val imageRoot = dir.resolve("images")
+            // v1（散列两级目录）的文件躺在**旧根 `images/`** 里 —— 也就是现在的「小说插图」预留根
+            val illustrationRoot = dir.resolve("images")
+            val comicRoot = dir.resolve("comic")
             val audioRoot = dir.resolve("audio")
-            val imageStore = AtomicFileStore(imageRoot)
+            val legacyImageStore = AtomicFileStore(illustrationRoot)
+            val comicStore = AtomicFileStore(comicRoot)
             val audioStore = AtomicFileStore(audioRoot)
-            imageStore.write("ab/deadbeef.jpg", ByteArray(7))
+            legacyImageStore.write("ab/deadbeef.jpg", ByteArray(7))
             audioStore.write("cd/deadbeef.mp3", ByteArray(9))
             database.registerMangaImages(listOf(MangaImageRecord(urlHash = "h1", sourceId = "s", bookUrl = "b", chapterUrl = "c", upstreamUrl = "u")))
             database.registerAudioTracks(
@@ -262,17 +265,27 @@ class CachePathLayoutTest {
             assertEquals(1, database.countMangaImages())
             assertEquals(1, database.countAudioTracks())
 
-            assertTrue("非 v2 布局必须清一次", purgeLegacyCacheLayout(database, imageRoot, audioRoot))
+            assertTrue(
+                "v1 散列布局与新语义不兼容 ⇒ 必须清一次（v2→v3 才是移动）",
+                migrateCacheLayout(database, comicRoot, illustrationRoot, audioRoot, dir.resolve("covers")),
+            )
             assertEquals(0, database.countMangaImages())
             assertEquals(0, database.countAudioTracks())
-            assertEquals(0L, imageStore.totalBytes())
+            assertEquals(0L, legacyImageStore.totalBytes())
             assertEquals(0L, audioStore.totalBytes())
+            assertEquals(0L, comicStore.totalBytes())
             assertEquals(CACHE_LAYOUT_VERSION, database.getSetting(CACHE_LAYOUT_KEY))
+            // 插图预留根必须存在且为空（清干净了才有资格当插图的落点）
+            assertTrue("插图预留根必须存在", Files.isDirectory(illustrationRoot))
+            assertEquals("插图预留根必须为空", 0L, legacyImageStore.totalBytes())
 
             // 第二次启动：既不清表也不扫盘（no-op）
-            imageStore.write("ab/new.jpg", ByteArray(3))
-            assertFalse("v2 之后必须 no-op", purgeLegacyCacheLayout(database, imageRoot, audioRoot))
-            assertTrue("no-op 不能顺手删掉新布局的文件", imageStore.exists("ab/new.jpg"))
+            comicStore.write("ab/new.jpg", ByteArray(3))
+            assertFalse(
+                "v3 之后必须 no-op",
+                migrateCacheLayout(database, comicRoot, illustrationRoot, audioRoot, dir.resolve("covers")),
+            )
+            assertTrue("no-op 不能顺手删掉新布局的文件", comicStore.exists("ab/new.jpg"))
         } finally {
             database.close()
             runCatching { Files.deleteIfExists(dir.resolve("legado.sqlite")) }
@@ -329,8 +342,8 @@ class CachePathLayoutTest {
             val source = "src-a"
             val book = "https://a.example/book/1"
             val chapter = "https://a.example/ch/1"
-            val cache = ImageCache(dir.resolve("images"), database)
-            val store = AtomicFileStore(dir.resolve("images"))
+            val cache = ImageCache(dir.resolve("comic"), database)
+            val store = AtomicFileStore(dir.resolve("comic"))
             val stored = cache.put(source, book, chapter, "https://img.example/a.jpg", "image/jpeg", jpegBytes(100, 100), chapterIndex = 0)
             val relative = database.findMangaImageByUrlHash(stored.urlHash)!!.filePath
             assertNotNull("正常情况必须命中", cache.fileFor(stored.cacheKey))
@@ -376,8 +389,8 @@ class CachePathLayoutTest {
             val book = "https://a.example/book/1"
             val chapterA = "$book/chapter/1"
             val chapterB = "$book/chapter/2"
-            val cache = ImageCache(dir.resolve("images"), database)
-            val store = AtomicFileStore(dir.resolve("images"))
+            val cache = ImageCache(dir.resolve("comic"), database)
+            val store = AtomicFileStore(dir.resolve("comic"))
             val jpegA = jpegBytes(100, 100)
             val jpegB = jpegBytes(200, 200)
 
@@ -462,6 +475,12 @@ class CachePathLayoutTest {
         val database = Database(root.resolve("legado.sqlite").toString())
         try {
             database.initialize("password-for-test")
+            // 启动迁移的**真实入口**（与 `Application.legadoApplication` 同源）：
+            // 它会保证「小说插图」根目录存在，并把漫画根钉在 `comic` 上。
+            assertTrue(
+                "启动迁移必须真的跑过（版本未设置 ⇒ 清一次旧布局并写下版本号）",
+                migrateCacheLayout(database, root.resolve("comic"), root.resolve("images"), root.resolve("audio"), root.resolve("covers")),
+            )
 
             // 书架名字 + TOC 标题是目录名的来源（取不到也有兜底，见上面的纯函数用例）
             val audioSource = "https://audio.example"
@@ -505,12 +524,24 @@ class CachePathLayoutTest {
             )
             database.saveTocCache(imageSource, imageBook, listOf(Chapter(1, "第1话", imageChapter)))
 
-            val imageCache = ImageCache(root.resolve("images"), database)
-            val stored = imageCache.put(imageSource, imageBook, imageChapter, "https://img.example/1.jpg", "image/jpeg", jpegBytes(), chapterIndex = 1)
+            val imageCache = ImageCache(root.resolve("comic"), database)
+            val stored = imageCache.put(imageSource, imageBook, imageChapter, "https://img.example/1.jpg", "image/jpeg", jpegBytes(), chapterIndex = 1, segmentIndex = 1)
             val expectedImage = "${bookCacheFolder("某漫画", imageSource, imageBook)}/" +
-                "${chapterCacheFolder("第1话", imageSource, imageBook, imageChapter)}/${segmentFileName(0, "image/jpeg")}"
+                "${chapterCacheFolder("第1话", imageSource, imageBook, imageChapter)}/${segmentFileName(1, "image/jpeg")}"
             assertEquals(expectedImage, database.findMangaImageByUrlHash(stored.urlHash)?.filePath)
-            assertTrue(Files.isRegularFile(root.resolve("images").resolve(expectedImage)))
+            assertTrue(Files.isRegularFile(root.resolve("comic").resolve(expectedImage)))
+
+            // 封面：`covers/<书名 (书哈希).扩展名>`（第 3 版新增；哈希与书目录同一个函数）
+            val coversDir = root.resolve("covers")
+            val coverCache = CoverCache(coversDir, database, { "image/jpeg" to jpegBytes() })
+            val cover = coverCache.cache("https://img.example/cover.jpg", CoverBookRef("某漫画", imageSource, imageBook))
+            val expectedCover = coverCacheFileName("某漫画", bookCacheHash(imageSource, imageBook), "image/jpeg")
+            assertEquals(expectedCover, database.coverFilePath(cover.key))
+            assertTrue(Files.isRegularFile(coversDir.resolve(expectedCover)))
+
+            // 插图预留根：必须存在且**空**（本次不实现写入）
+            val illustrationRoot = root.resolve("images")
+            assertEquals("images 必须留给小说插图，不能被漫画占用", 0L, AtomicFileStore(illustrationRoot).totalBytes())
 
             println("[cache-layout-e2e] 绝对根目录: ${root.toAbsolutePath()}")
             listFiles(root).forEach { println("  $it") }
@@ -550,7 +581,7 @@ class CachePathLayoutTest {
             )
 
             // 图片同理：把 file_path 指歪，read/fileFor 仍然命中并回填
-            val imageCache = ImageCache(dir.resolve("images"), database)
+            val imageCache = ImageCache(dir.resolve("comic"), database)
             val stored = imageCache.put(source, book, chapter, "https://img.example/1.jpg", "image/jpeg", jpegBytes(), chapterIndex = 1)
             val imageRow = database.findMangaImageByUrlHash(stored.urlHash)!!
             database.updateMangaImageFilePath(stored.urlHash, "不存在 (deadbeef)/不存在 (beefdead)/00000001.jpg")

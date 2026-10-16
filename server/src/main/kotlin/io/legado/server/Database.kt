@@ -228,12 +228,59 @@ class Database(private val path: String) : Closeable, AutoCloseable {
                   last_update_time integer not null
                 );
                 create index if not exists idx_http_tts_name on http_tts(name);
+                -- ------------------------------------------------------------------
+                -- 漫画链路（方案 E）：
+                --   manga_chapter_cache = 章节图片清单 + 整章就绪度（L2 视图层）
+                --   manga_image_cache   = 图片字节索引（L1 唯一副本 + GC 依据）
+                -- 详见 docs/proposals/PROPOSAL-028-* 与 docs/decisions/ADR-028-*
+                -- ------------------------------------------------------------------
+                create table if not exists manga_chapter_cache (
+                  source_id     text not null,
+                  book_url      text not null,
+                  chapter_url   text not null,
+                  chapter_index integer not null default 0,
+                  pinned        integer not null default 0,
+                  images_json   text not null,
+                  total         integer not null default 0,
+                  ready         integer not null default 0,
+                  skipped       integer not null default 0,
+                  state         text not null default 'pending',
+                  last_error    text,
+                  created_at    integer not null,
+                  updated_at    integer not null,
+                  primary key (source_id, book_url, chapter_url)
+                );
+                create index if not exists idx_manga_chapter_state on manga_chapter_cache(source_id, book_url, state);
+                create index if not exists idx_manga_chapter_pinned on manga_chapter_cache(pinned);
+                create table if not exists manga_image_cache (
+                  url_hash       text primary key,
+                  cache_key      text not null default '',
+                  source_id      text not null,
+                  book_url       text not null,
+                  chapter_url    text not null,
+                  chapter_index  integer not null default 0,
+                  segment_index  integer not null default 0,
+                  upstream_url   text not null,
+                  content_type   text not null default '',
+                  byte_size      integer not null default 0,
+                  width          integer,
+                  height         integer,
+                  state          text not null default 'pending',
+                  last_error     text,
+                  created_at     integer not null,
+                  last_access_at integer not null
+                );
+                create index if not exists idx_manga_image_key on manga_image_cache(cache_key);
+                create index if not exists idx_manga_image_book on manga_image_cache(source_id, book_url);
+                create index if not exists idx_manga_image_chapter on manga_image_cache(source_id, book_url, chapter_url, segment_index);
+                create index if not exists idx_manga_image_access on manga_image_cache(last_access_at asc);
             """.trimIndent())
         }
         migrateReadingProgress(db)
         migrateBookshelf(db)
         migrateSourceTable(db)
         migrateBookContentCache(db)
+        migrateMangaImageCache(db)
         healLocalBookCacheStatus(db)
         val userExists = db.prepareStatement("select 1 from app_user where id = 1").use { it.executeQuery().next() }
         if (!userExists) {
@@ -592,13 +639,412 @@ class Database(private val path: String) : Closeable, AutoCloseable {
             //
             // cover_key 反过来改成「已有副本优先」：重复加入书架（例如再次从书源页打开）不该顶掉
             // 已经物化好的封面，手动选好的封面同理。
-            db.prepareStatement("""insert into book_shelf(source_id,book_url,name,author,toc_url,cover_url,cover_key,last_read_at,alternate_sources,group_name) values(?,?,?,?,?,?,?,?,?,?)
-                on conflict(source_id,book_url) do update set name=excluded.name,author=excluded.author,toc_url=excluded.toc_url,cover_url=coalesce(excluded.cover_url,book_shelf.cover_url),cover_key=coalesce(book_shelf.cover_key,excluded.cover_key),last_read_at=excluded.last_read_at,alternate_sources=coalesce(excluded.alternate_sources,book_shelf.alternate_sources),group_name=coalesce(excluded.group_name,book_shelf.group_name)""").use {
-                it.setString(1, request.sourceId); it.setString(2, request.bookUrl); it.setString(3, cleanName); it.setString(4, request.author); it.setString(5, request.tocUrl); it.setString(6, request.coverUrl?.trim()?.takeIf { u -> u.isNotEmpty() && !isSelfCoverReference(u, cover?.key) }); it.setString(7, cover?.key); it.setLong(8, now); it.setString(9, altJson); it.setString(10, cleanGroup); it.executeUpdate()
+            db.prepareStatement("""insert into book_shelf(source_id,book_url,name,author,toc_url,cover_url,cover_key,last_read_at,alternate_sources,group_name,book_kind) values(?,?,?,?,?,?,?,?,?,?,?)
+                on conflict(source_id,book_url) do update set name=excluded.name,author=excluded.author,toc_url=excluded.toc_url,cover_url=coalesce(excluded.cover_url,book_shelf.cover_url),cover_key=coalesce(book_shelf.cover_key,excluded.cover_key),last_read_at=excluded.last_read_at,alternate_sources=coalesce(excluded.alternate_sources,book_shelf.alternate_sources),group_name=coalesce(excluded.group_name,book_shelf.group_name),book_kind=coalesce(excluded.book_kind,book_shelf.book_kind)""").use {
+                it.setString(1, request.sourceId); it.setString(2, request.bookUrl); it.setString(3, cleanName); it.setString(4, request.author); it.setString(5, request.tocUrl); it.setString(6, request.coverUrl?.trim()?.takeIf { u -> u.isNotEmpty() && !isSelfCoverReference(u, cover?.key) }); it.setString(7, cover?.key); it.setLong(8, now); it.setString(9, altJson); it.setString(10, cleanGroup); it.setString(11, request.bookKind); it.executeUpdate()
             }
             db.commit(); getBookshelf(db, request.sourceId, request.bookUrl)!!
         } catch (error: Throwable) { db.rollback(); throw error } finally { db.autoCommit = true }
     }
+    /** 静默回填书架类型（用于解析器在后端识别到漫画时的幂等修正）。 */
+    fun setBookKindSilently(sourceId: String, bookUrl: String, kind: String = "comic") = write { db ->
+        db.prepareStatement("update book_shelf set book_kind=? where source_id=? and book_url=?").use {
+            it.setString(1, kind); it.setString(2, sourceId); it.setString(3, bookUrl); it.executeUpdate()
+        }
+    }
+
+    /**
+     * 读书架上的书籍类型（`comic` / `novel`）。
+     *
+     * ⚠️ **不在书架上不是错误**：调用方要的是"这本书是不是漫画"，
+     * 不在书架上（例如从书源页直接打开）一律按 `novel` 处理，与 `BookshelfItem.bookKind` 的默认值同源。
+     */
+    fun getBookKind(sourceId: String, bookUrl: String): String = rawBookKind(sourceId, bookUrl) ?: "novel"
+
+    /**
+     * 原始 `book_kind` 列（**不做默认值补齐**）：`null` / 空串表示"未分类"。
+     *
+     * `getBookKind` 会把未分类补成 `novel`，于是**分不清"没分类"与"明确是小说"**。
+     * 判断"导入到底写没写这一列"（即"已经一样就跳过"是否真的跳过）必须看原始值。
+     */
+    fun rawBookKind(sourceId: String, bookUrl: String): String? = connect { db ->
+        db.prepareStatement("select book_kind from book_shelf where source_id=? and book_url=?").use {
+            it.setString(1, sourceId); it.setString(2, bookUrl)
+            it.executeQuery().use { rs -> if (rs.next()) rs.getString(1)?.trim()?.takeIf { value -> value.isNotEmpty() } else null }
+        }
+    }
+
+    /**
+     * 这本书是否还在书架上。
+     *
+     * GC 的顺位 2 用它判「弃坑且已移出书架」；**查不到时调用方当作"在架"**（保守：不删比误删安全）。
+     */
+    fun shelfHasBook(sourceId: String, bookUrl: String): Boolean = connect { db ->
+        db.prepareStatement("select 1 from book_shelf where source_id=? and book_url=?").use {
+            it.setString(1, sourceId); it.setString(2, bookUrl)
+            it.executeQuery().use { rs -> rs.next() }
+        }
+    }
+
+    /**
+     * 全部阅读锚点（GC 用：判断"当前读到哪一章"）。
+     *
+     * 一次性取回而不是逐本书查：GC 需要给**每本有缓存的书**算保护窗口，
+     * 逐本 `getProgress` 是 N+1 次连接，在一堆书命中 GC 时会把读路径拖慢。
+     */
+    fun listReadingAnchors(): List<ReadingProgress> = connect { db ->
+        db.prepareStatement("select source_id,book_url,chapter_url,chapter_index,scroll_position,updated_at from reading_progress").use {
+            it.executeQuery().use { rs ->
+                buildList {
+                    while (rs.next()) {
+                        add(ReadingProgress(rs.getString(1), rs.getString(2), rs.getString(3), rs.getInt(4), rs.getDouble(5), rs.getLong(6)))
+                    }
+                }
+            }
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // 漫画链路 · 章节清单（L2）
+    // ------------------------------------------------------------------
+
+    fun getMangaChapter(sourceId: String, bookUrl: String, chapterUrl: String): MangaChapterRecord? = connect { db ->
+        db.prepareStatement(MANGA_CHAPTER_SELECT + " where source_id=? and book_url=? and chapter_url=?").use {
+            it.setString(1, sourceId); it.setString(2, bookUrl); it.setString(3, chapterUrl)
+            it.executeQuery().use { rs -> if (rs.next()) rs.toMangaChapter() else null }
+        }
+    }
+
+    fun listMangaChaptersForBook(sourceId: String, bookUrl: String): List<MangaChapterRecord> = connect { db ->
+        db.prepareStatement(MANGA_CHAPTER_SELECT + " where source_id=? and book_url=? order by chapter_index asc").use {
+            it.setString(1, sourceId); it.setString(2, bookUrl)
+            it.executeQuery().use { rs -> buildList { while (rs.next()) add(rs.toMangaChapter()) } }
+        }
+    }
+
+    /**
+     * 写入/覆盖某章的清单。
+     *
+     * `created_at` **不参与 update**：重解析清单不应让「创建时间」漂移（它同时被 GC 当作
+     * 「这本书多久没碰过」的兜底信号）。
+     */
+    fun saveMangaChapter(record: MangaChapterRecord) = write { db ->
+        val now = System.currentTimeMillis()
+        db.prepareStatement(
+            """insert into manga_chapter_cache(source_id,book_url,chapter_url,chapter_index,pinned,images_json,total,ready,skipped,state,last_error,created_at,updated_at)
+               values(?,?,?,?,?,?,?,?,?,?,?,?,?)
+               on conflict(source_id,book_url,chapter_url) do update set
+                 chapter_index=excluded.chapter_index, pinned=excluded.pinned, images_json=excluded.images_json,
+                 total=excluded.total, ready=excluded.ready, skipped=excluded.skipped, state=excluded.state,
+                 last_error=excluded.last_error, updated_at=excluded.updated_at""",
+        ).use {
+            it.setString(1, record.sourceId); it.setString(2, record.bookUrl); it.setString(3, record.chapterUrl)
+            it.setInt(4, record.chapterIndex); it.setInt(5, if (record.pinned) 1 else 0)
+            it.setString(6, record.imagesJson); it.setInt(7, record.total); it.setInt(8, record.ready)
+            it.setInt(9, record.skipped); it.setString(10, record.state); it.setString(11, record.lastError)
+            it.setLong(12, if (record.createdAt > 0) record.createdAt else now); it.setLong(13, now)
+            it.executeUpdate()
+        }
+    }
+
+    /** 只更新就绪度与状态（每张图落盘后调用；不动 `images_json`）。 */
+    fun updateMangaChapterProgress(
+        sourceId: String,
+        bookUrl: String,
+        chapterUrl: String,
+        ready: Int,
+        skipped: Int,
+        state: String,
+        lastError: String? = null,
+    ) = write { db ->
+        db.prepareStatement(
+            "update manga_chapter_cache set ready=?, skipped=?, state=?, last_error=?, updated_at=? where source_id=? and book_url=? and chapter_url=?",
+        ).use {
+            it.setInt(1, ready); it.setInt(2, skipped); it.setString(3, state); it.setString(4, lastError)
+            it.setLong(5, System.currentTimeMillis())
+            it.setString(6, sourceId); it.setString(7, bookUrl); it.setString(8, chapterUrl)
+            it.executeUpdate()
+        }
+    }
+
+    /** 目录绿点 `●` 的唯一口径：**整章全部图片都落盘**才返回该章。 */
+    fun listReadyMangaChapterUrls(sourceId: String, bookUrl: String): List<String> = connect { db ->
+        db.prepareStatement("select chapter_url from manga_chapter_cache where source_id=? and book_url=? and state='ready' order by chapter_index asc").use {
+            it.setString(1, sourceId); it.setString(2, bookUrl)
+            it.executeQuery().use { rs -> buildList { while (rs.next()) add(rs.getString(1)) } }
+        }
+    }
+
+    fun countMangaChapters(sourceId: String, bookUrl: String): Int = connect { db ->
+        db.prepareStatement("select count(*) from manga_chapter_cache where source_id=? and book_url=?").use {
+            it.setString(1, sourceId); it.setString(2, bookUrl)
+            it.executeQuery().use { rs -> if (rs.next()) rs.getInt(1) else 0 }
+        }
+    }
+
+    fun countReadyMangaChapters(sourceId: String, bookUrl: String): Int = connect { db ->
+        db.prepareStatement("select count(*) from manga_chapter_cache where source_id=? and book_url=? and state='ready'").use {
+            it.setString(1, sourceId); it.setString(2, bookUrl)
+            it.executeQuery().use { rs -> if (rs.next()) rs.getInt(1) else 0 }
+        }
+    }
+
+    /** 手动「整本离线（pinned）」开关：GC 免死金牌。 */
+    fun setMangaBookPinned(sourceId: String, bookUrl: String, pinned: Boolean) = write { db ->
+        db.prepareStatement("update manga_chapter_cache set pinned=?, updated_at=? where source_id=? and book_url=?").use {
+            it.setInt(1, if (pinned) 1 else 0); it.setLong(2, System.currentTimeMillis())
+            it.setString(3, sourceId); it.setString(4, bookUrl); it.executeUpdate()
+        }
+    }
+
+    fun deleteMangaChapters(sourceId: String, bookUrl: String): Int = write { db ->
+        db.prepareStatement("delete from manga_chapter_cache where source_id=? and book_url=?").use {
+            it.setString(1, sourceId); it.setString(2, bookUrl); it.executeUpdate()
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // 漫画链路 · 图片字节索引（L1）
+    // ------------------------------------------------------------------
+
+    fun findMangaImageByUrlHash(urlHash: String): MangaImageRecord? = connect { db ->
+        db.prepareStatement(MANGA_IMAGE_SELECT + " where url_hash=?").use {
+            it.setString(1, urlHash)
+            it.executeQuery().use { rs -> if (rs.next()) rs.toMangaImage() else null }
+        }
+    }
+
+    /**
+     * 记录一次成功落盘（**先盘后表**：文件已经在磁盘上才写这行），并把该行置为 `ready`。
+     *
+     * `created_at` 不参与 update：同一 URL 若字节变了（上游换图），新 key 会覆盖旧值，
+     * 但创建时间保持首次，避免 GC 把"老图"当新图保护。
+     */
+    fun recordMangaImage(record: MangaImageRecord) = write { db ->
+        val now = System.currentTimeMillis()
+        db.prepareStatement(
+            """insert into manga_image_cache(url_hash,cache_key,source_id,book_url,chapter_url,chapter_index,segment_index,upstream_url,content_type,byte_size,width,height,state,last_error,created_at,last_access_at)
+               values(?,?,?,?,?,?,?,?,?,?,?,?,'ready',null,?,?)
+               on conflict(url_hash) do update set
+                 cache_key=excluded.cache_key, source_id=excluded.source_id, book_url=excluded.book_url,
+                 chapter_url=excluded.chapter_url, chapter_index=excluded.chapter_index,
+                 segment_index=excluded.segment_index, upstream_url=excluded.upstream_url,
+                 content_type=excluded.content_type, byte_size=excluded.byte_size,
+                 width=excluded.width, height=excluded.height, state='ready', last_error=null,
+                 last_access_at=excluded.last_access_at""",
+        ).use {
+            it.setString(1, record.urlHash); it.setString(2, record.cacheKey); it.setString(3, record.sourceId)
+            it.setString(4, record.bookUrl); it.setString(5, record.chapterUrl); it.setInt(6, record.chapterIndex)
+            it.setInt(7, record.segmentIndex); it.setString(8, record.upstreamUrl); it.setString(9, record.contentType)
+            it.setLong(10, record.byteSize)
+            if (record.width != null) it.setInt(11, record.width) else it.setNull(11, java.sql.Types.INTEGER)
+            if (record.height != null) it.setInt(12, record.height) else it.setNull(12, java.sql.Types.INTEGER)
+            it.setLong(13, if (record.createdAt > 0) record.createdAt else now)
+            it.setLong(14, if (record.lastAccessAt > 0) record.lastAccessAt else now)
+            it.executeUpdate()
+        }
+    }
+
+    /**
+     * 清单阶段的**登记**（幂等批量）：把「这一章有哪些图、分别是什么 key」先落库，
+     * 但**不动 `state`** —— 已经 ready 的行不能被重新登记打回 pending。
+     *
+     * 为什么必须登记：对外 key 是 URL 派生的哈希、**不可逆**，服务端必须留着 `upstream_url`
+     * 才知道按需去哪个地址抓。
+     */
+    fun registerMangaImages(records: List<MangaImageRecord>): Int {
+        if (records.isEmpty()) return 0
+        return write { db ->
+            var affected = 0
+            db.autoCommit = false
+            try {
+                db.prepareStatement(
+                    """insert into manga_image_cache(url_hash,cache_key,source_id,book_url,chapter_url,chapter_index,segment_index,upstream_url,content_type,byte_size,state,created_at,last_access_at)
+                       values(?,?,?,?,?,?,?,?,'',0,'pending',?,?)
+                       on conflict(url_hash) do update set
+                         source_id=excluded.source_id, book_url=excluded.book_url,
+                         chapter_url=excluded.chapter_url, chapter_index=excluded.chapter_index,
+                         segment_index=excluded.segment_index, upstream_url=excluded.upstream_url""",
+                ).use { st ->
+                    val now = System.currentTimeMillis()
+                    records.forEach { r ->
+                        st.setString(1, r.urlHash); st.setString(2, r.cacheKey); st.setString(3, r.sourceId)
+                        st.setString(4, r.bookUrl); st.setString(5, r.chapterUrl); st.setInt(6, r.chapterIndex)
+                        st.setInt(7, r.segmentIndex); st.setString(8, r.upstreamUrl)
+                        st.setLong(9, now); st.setLong(10, now)
+                        st.addBatch()
+                    }
+                    affected = st.executeBatch().sum()
+                }
+                db.commit()
+                affected
+            } catch (error: Throwable) {
+                db.rollback(); throw error
+            } finally {
+                db.autoCommit = true
+            }
+        }
+    }
+
+    /** 某一章的全部图片行（按章节内序号排序）—— 清单接口的取数口径。 */
+    fun listMangaImagesForChapter(sourceId: String, bookUrl: String, chapterUrl: String): List<MangaImageRecord> = connect { db ->
+        db.prepareStatement(MANGA_IMAGE_SELECT + " where source_id=? and book_url=? and chapter_url=? order by segment_index asc").use {
+            it.setString(1, sourceId); it.setString(2, bookUrl); it.setString(3, chapterUrl)
+            it.executeQuery().use { rs -> buildList { while (rs.next()) add(rs.toMangaImage()) } }
+        }
+    }
+
+    fun markMangaImageFailed(urlHash: String, error: String?) = write { db ->
+        db.prepareStatement("update manga_image_cache set state='failed', last_error=? where url_hash=?").use {
+            it.setString(1, error?.take(500)); it.setString(2, urlHash); it.executeUpdate()
+        }
+    }
+
+    fun touchMangaImage(urlHash: String, at: Long = System.currentTimeMillis()) = write { db ->
+        db.prepareStatement("update manga_image_cache set last_access_at=? where url_hash=?").use {
+            it.setLong(1, at); it.setString(2, urlHash); it.executeUpdate()
+        }
+    }
+
+    /** 引用计数：同一份字节可能被多个上游 URL 引用 ⇒ 删文件前必须先问它。 */
+    fun countMangaImageRefs(cacheKey: String): Int = connect { db ->
+        db.prepareStatement("select count(*) from manga_image_cache where cache_key=?").use {
+            it.setString(1, cacheKey)
+            it.executeQuery().use { rs -> if (rs.next()) rs.getInt(1) else 0 }
+        }
+    }
+
+    fun sumMangaImageBytes(): Long = connect { db ->
+        db.prepareStatement("select coalesce(sum(byte_size),0) from manga_image_cache").use {
+            it.executeQuery().use { rs -> if (rs.next()) rs.getLong(1) else 0L }
+        }
+    }
+
+    fun countMangaImages(): Int = connect { db ->
+        db.prepareStatement("select count(*) from manga_image_cache").use {
+            it.executeQuery().use { rs -> if (rs.next()) rs.getInt(1) else 0 }
+        }
+    }
+
+    /** GC 候选（按最后访问时间升序）。滑窗分档的**筛选**在 `ImageCacheGc` 里做（需读进度锚点）。 */
+    fun listMangaImagesByLastAccess(limit: Int): List<MangaImageRecord> = connect { db ->
+        db.prepareStatement(MANGA_IMAGE_SELECT + " order by last_access_at asc limit ?").use {
+            it.setInt(1, limit)
+            it.executeQuery().use { rs -> buildList { while (rs.next()) add(rs.toMangaImage()) } }
+        }
+    }
+
+    /**
+     * 全部「免死金牌」书（`pinned = 1`）。
+     *
+     * 返回 `(sourceId, bookUrl)` 集合而不是拼接字符串：拼接需要约定一个分隔符，
+     * 而书源 ID 允许任意非空字符串（AGENTS.md 记过：中文标识都会有），分隔符早晚撞上。
+     */
+    fun listPinnedMangaBooks(): Set<Pair<String, String>> = connect { db ->
+        db.prepareStatement("select distinct source_id, book_url from manga_chapter_cache where pinned=1").use {
+            it.executeQuery().use { rs -> buildSet { while (rs.next()) add(rs.getString(1) to rs.getString(2)) } }
+        }
+    }
+
+    /**
+     * 批量删除索引行（**GC 专用**）。
+     *
+     * 一条事务删一批：GC 一轮可能淘汰几百行，逐行 `deleteMangaImageRow` 就是几百次事务提交
+     * （GC 与阅读路径抢同一个写连接 ⇒ 前台接口卡顿）。
+     */
+    fun deleteMangaImageRows(urlHashes: List<String>): Int {
+        if (urlHashes.isEmpty()) return 0
+        return write { db ->
+            db.autoCommit = false
+            try {
+                var removed = 0
+                db.prepareStatement("delete from manga_image_cache where url_hash=?").use { statement ->
+                    urlHashes.forEach { hash -> statement.setString(1, hash); removed += statement.executeUpdate() }
+                }
+                db.commit()
+                removed
+            } catch (error: Throwable) {
+                db.rollback()
+                throw error
+            } finally {
+                db.autoCommit = true
+            }
+        }
+    }
+
+    fun deleteMangaImageRow(urlHash: String) = write { db ->
+        db.prepareStatement("delete from manga_image_cache where url_hash=?").use {
+            it.setString(1, urlHash); it.executeUpdate()
+        }
+    }
+
+    fun deleteMangaImageRowsByBook(sourceId: String, bookUrl: String): Int = write { db ->
+        db.prepareStatement("delete from manga_image_cache where source_id=? and book_url=?").use {
+            it.setString(1, sourceId); it.setString(2, bookUrl); it.executeUpdate()
+        }
+    }
+
+    fun listMangaImagesByBook(sourceId: String, bookUrl: String): List<MangaImageRecord> = connect { db ->
+        db.prepareStatement(MANGA_IMAGE_SELECT + " where source_id=? and book_url=?").use {
+            it.setString(1, sourceId); it.setString(2, bookUrl)
+            it.executeQuery().use { rs -> buildList { while (rs.next()) add(rs.toMangaImage()) } }
+        }
+    }
+
+    fun listAllMangaImages(): List<MangaImageRecord> = connect { db ->
+        db.prepareStatement(MANGA_IMAGE_SELECT).use {
+            it.executeQuery().use { rs -> buildList { while (rs.next()) add(rs.toMangaImage()) } }
+        }
+    }
+
+    /** 清空全部图片索引（`?all=true` 的清理入口）。返回受影响行数。 */
+    fun deleteAllMangaImageRows(): Int = write { db ->
+        db.createStatement().use { it.executeUpdate("delete from manga_image_cache") }
+    }
+
+    fun mangaCacheStatsByBook(): List<MangaCacheBookStat> = connect { db ->
+        db.prepareStatement(
+            """select i.source_id, i.book_url, s.name, count(*) as image_count, coalesce(sum(i.byte_size),0) as total_bytes,
+                      coalesce(c.chapter_count,0), coalesce(c.ready_count,0), coalesce(c.pinned,0)
+               from manga_image_cache i
+               left join book_shelf s on s.source_id = i.source_id and s.book_url = i.book_url
+               left join (
+                 select source_id, book_url, count(*) as chapter_count,
+                        sum(case when state='ready' then 1 else 0 end) as ready_count,
+                        max(pinned) as pinned
+                 from manga_chapter_cache group by source_id, book_url
+               ) c on c.source_id = i.source_id and c.book_url = i.book_url
+               group by i.source_id, i.book_url
+               order by total_bytes desc""",
+        ).use { st ->
+            st.executeQuery().use { rs ->
+                buildList {
+                    while (rs.next()) add(
+                        MangaCacheBookStat(
+                            sourceId = rs.getString(1), bookUrl = rs.getString(2), name = rs.getString(3),
+                            imageCount = rs.getInt(4), totalBytes = rs.getLong(5),
+                            chapterCount = rs.getInt(6), readyChapterCount = rs.getInt(7),
+                            pinned = rs.getInt(8) != 0,
+                        ),
+                    )
+                }
+            }
+        }
+    }
+
+    private fun java.sql.ResultSet.toMangaChapter(): MangaChapterRecord = MangaChapterRecord(
+        sourceId = getString(1), bookUrl = getString(2), chapterUrl = getString(3),
+        chapterIndex = getInt(4), pinned = getInt(5) != 0, imagesJson = getString(6),
+        total = getInt(7), ready = getInt(8), skipped = getInt(9), state = getString(10),
+        lastError = getString(11), createdAt = getLong(12), updatedAt = getLong(13),
+    )
+
+    private fun java.sql.ResultSet.toMangaImage(): MangaImageRecord = MangaImageRecord(
+        urlHash = getString(1), cacheKey = getString(2), sourceId = getString(3), bookUrl = getString(4),
+        chapterUrl = getString(5), chapterIndex = getInt(6), segmentIndex = getInt(7), upstreamUrl = getString(8),
+        contentType = getString(9), byteSize = getLong(10), width = getObject(11) as? Int, height = getObject(12) as? Int,
+        state = getString(13), lastError = getString(14), createdAt = getLong(15), lastAccessAt = getLong(16),
+    )
     fun recordCoverCache(coverKey: String, contentType: String = "image/*") = write { db ->
         db.prepareStatement("insert into cover_cache(cache_key,content_type) values(?,?) on conflict(cache_key) do update set content_type=excluded.content_type").use {
             it.setString(1, coverKey)
@@ -645,8 +1091,8 @@ class Database(private val path: String) : Closeable, AutoCloseable {
             }
         }
     }
-    fun listBookshelf(): List<BookshelfItem> = connect { db -> db.prepareStatement("""select s.source_id,s.book_url,s.name,s.author,s.toc_url,s.cover_key,p.chapter_index,p.scroll_position,s.last_read_at,coalesce(c.cached_chapters,0),coalesce(c.total_chapters,0),coalesce(c.state,'idle'),c.last_error,s.completed,s.alternate_sources,s.group_name,s.cover_url from book_shelf s left join reading_progress p on p.source_id=s.source_id and p.book_url=s.book_url left join book_cache_status c on c.source_id=s.source_id and c.book_url=s.book_url order by s.last_read_at desc""").use { query -> query.executeQuery().use { rs -> buildList { while (rs.next()) add(rs.toShelf()) } } } }
-    fun getShelfBookByUrl(bookUrl: String): BookshelfItem? = connect { db -> db.prepareStatement("""select s.source_id,s.book_url,s.name,s.author,s.toc_url,s.cover_key,p.chapter_index,p.scroll_position,s.last_read_at,coalesce(c.cached_chapters,0),coalesce(c.total_chapters,0),coalesce(c.state,'idle'),c.last_error,s.completed,s.alternate_sources,s.group_name,s.cover_url from book_shelf s left join reading_progress p on p.source_id=s.source_id and p.book_url=s.book_url left join book_cache_status c on c.source_id=s.source_id and c.book_url=s.book_url where s.book_url=?""").use { it.setString(1, bookUrl); it.executeQuery().use { rs -> if (rs.next()) rs.toShelf() else null } } }
+    fun listBookshelf(): List<BookshelfItem> = connect { db -> db.prepareStatement("""select s.source_id,s.book_url,s.name,s.author,s.toc_url,s.cover_key,p.chapter_index,p.scroll_position,s.last_read_at,coalesce(c.cached_chapters,0),coalesce(c.total_chapters,0),coalesce(c.state,'idle'),c.last_error,s.completed,s.alternate_sources,s.group_name,s.cover_url,s.book_kind from book_shelf s left join reading_progress p on p.source_id=s.source_id and p.book_url=s.book_url left join book_cache_status c on c.source_id=s.source_id and c.book_url=s.book_url order by s.last_read_at desc""").use { query -> query.executeQuery().use { rs -> buildList { while (rs.next()) add(rs.toShelf()) } } } }
+    fun getShelfBookByUrl(bookUrl: String): BookshelfItem? = connect { db -> db.prepareStatement("""select s.source_id,s.book_url,s.name,s.author,s.toc_url,s.cover_key,p.chapter_index,p.scroll_position,s.last_read_at,coalesce(c.cached_chapters,0),coalesce(c.total_chapters,0),coalesce(c.state,'idle'),c.last_error,s.completed,s.alternate_sources,s.group_name,s.cover_url,s.book_kind from book_shelf s left join reading_progress p on p.source_id=s.source_id and p.book_url=s.book_url left join book_cache_status c on c.source_id=s.source_id and c.book_url=s.book_url where s.book_url=?""").use { it.setString(1, bookUrl); it.executeQuery().use { rs -> if (rs.next()) rs.toShelf() else null } } }
     fun setBookshelfCompleted(sourceId: String, bookUrl: String, completed: Boolean): BookshelfItem? = write { db ->
         db.prepareStatement("update book_shelf set completed=? where source_id=? and book_url=?").use {
             it.setInt(1, if (completed) 1 else 0); it.setString(2, sourceId); it.setString(3, bookUrl); it.executeUpdate()
@@ -783,9 +1229,9 @@ class Database(private val path: String) : Closeable, AutoCloseable {
             db.prepareStatement("delete from book_toc_cache where source_id=? and (toc_url=? or toc_url like ?)").use { it.setString(1, oldSourceId); it.setString(2, oldBookUrl); it.setString(3, "%$oldBookUrl%"); it.executeUpdate() }
             cover?.let { value -> db.prepareStatement("insert into cover_cache(cache_key,content_type) values(?,?) on conflict(cache_key) do update set content_type=excluded.content_type").use { it.setString(1, value.key); it.setString(2, value.contentType); it.executeUpdate() } }
             val newCoverKey = cover?.key ?: oldCover
-            db.prepareStatement("""insert into book_shelf(source_id,book_url,name,author,toc_url,cover_url,cover_key,last_read_at,alternate_sources,group_name) values(?,?,?,?,?,?,?,?,?,?)
-                on conflict(source_id,book_url) do update set name=excluded.name,author=excluded.author,toc_url=excluded.toc_url,cover_url=coalesce(excluded.cover_url,book_shelf.cover_url),cover_key=coalesce(excluded.cover_key,book_shelf.cover_key),last_read_at=excluded.last_read_at,alternate_sources=excluded.alternate_sources,group_name=coalesce(excluded.group_name,book_shelf.group_name)""").use {
-                it.setString(1, request.sourceId); it.setString(2, request.bookUrl); it.setString(3, request.name); it.setString(4, request.author); it.setString(5, request.tocUrl); it.setString(6, request.coverUrl); it.setString(7, newCoverKey); it.setLong(8, now); it.setString(9, altJson); it.setString(10, cleanGroup); it.executeUpdate()
+            db.prepareStatement("""insert into book_shelf(source_id,book_url,name,author,toc_url,cover_url,cover_key,last_read_at,alternate_sources,group_name,book_kind) values(?,?,?,?,?,?,?,?,?,?,?)
+                on conflict(source_id,book_url) do update set name=excluded.name,author=excluded.author,toc_url=excluded.toc_url,cover_url=coalesce(excluded.cover_url,book_shelf.cover_url),cover_key=coalesce(excluded.cover_key,book_shelf.cover_key),last_read_at=excluded.last_read_at,alternate_sources=excluded.alternate_sources,group_name=coalesce(excluded.group_name,book_shelf.group_name),book_kind=coalesce(excluded.book_kind,book_shelf.book_kind)""").use {
+                it.setString(1, request.sourceId); it.setString(2, request.bookUrl); it.setString(3, request.name); it.setString(4, request.author); it.setString(5, request.tocUrl); it.setString(6, request.coverUrl); it.setString(7, newCoverKey); it.setLong(8, now); it.setString(9, altJson); it.setString(10, cleanGroup); it.setString(11, request.bookKind); it.executeUpdate()
             }
             val orphan = oldCover?.takeIf { value -> value != newCoverKey && db.prepareStatement("select 1 from book_shelf where cover_key=?").use { it.setString(1, value); !it.executeQuery().next() } }
             orphan?.let { value -> db.prepareStatement("delete from cover_cache where cache_key=?").use { it.setString(1, value); it.executeUpdate() } }
@@ -1491,6 +1937,9 @@ class Database(private val path: String) : Closeable, AutoCloseable {
             where c.state in ('pending', 'caching')
               and s.book_url not like 'content://%'
               and s.book_url not like 'local://%'
+              -- 漫画/有声书不续做**文本**缓存：那是给文字阅读器用的（拉章节页抽正文），
+              -- 对图片/音频书只会 100% 失败并污染缓存状态（实测：一本漫画 10 章全失败）
+              and coalesce(s.book_kind, 'novel') = 'novel'
             """.trimIndent()
         ).use { query ->
             query.executeQuery().use { rs ->
@@ -1575,12 +2024,13 @@ class Database(private val path: String) : Closeable, AutoCloseable {
             try {
                 db.prepareStatement("select 1 from book_shelf where source_id = ? and book_url = ?").use { existing ->
                     db.prepareStatement("""
-                        insert into book_shelf(source_id,book_url,name,author,toc_url,cover_url,cover_key,last_read_at,completed,alternate_sources)
-                        values(?,?,?,?,?,?,null,?,?,null)
+                        insert into book_shelf(source_id,book_url,name,author,toc_url,cover_url,cover_key,last_read_at,completed,alternate_sources,book_kind)
+                        values(?,?,?,?,?,?,null,?,?,null,?)
                         on conflict(source_id,book_url) do update set
                           name=excluded.name, author=excluded.author, toc_url=excluded.toc_url,
                           cover_url=coalesce(excluded.cover_url,book_shelf.cover_url),
-                          last_read_at=excluded.last_read_at, completed=book_shelf.completed
+                          last_read_at=excluded.last_read_at, completed=book_shelf.completed,
+                          book_kind=coalesce(excluded.book_kind,book_shelf.book_kind)
                     """.trimIndent()).use { save ->
                         entries.forEach { entry ->
                             existing.setString(1, entry.sourceId); existing.setString(2, entry.bookUrl)
@@ -1589,6 +2039,7 @@ class Database(private val path: String) : Closeable, AutoCloseable {
                             save.setString(4, entry.author); save.setString(5, entry.tocUrl); save.setString(6, entry.coverUrl)
                             save.setLong(7, if (entry.readAt > 0) entry.readAt else now)
                             save.setInt(8, if (entry.completed) 1 else 0)
+                            save.setString(9, entry.bookKind)
                             save.addBatch()
                         }
                         save.executeBatch()
@@ -2188,6 +2639,7 @@ class Database(private val path: String) : Closeable, AutoCloseable {
             alternateSources = altSources,
             groupName = runCatching { getString(16) }.getOrNull()?.trim()?.takeIf { it.isNotEmpty() },
             coverUrl = runCatching { getString(17) }.getOrNull()?.trim()?.takeIf { it.isNotEmpty() },
+            bookKind = runCatching { getString(18) }.getOrNull()?.trim()?.takeIf { it.isNotEmpty() } ?: "novel",
         )
     }
     private fun java.sql.ResultSet.toReplaceRule(): ReplaceRule = ReplaceRule(
@@ -2470,7 +2922,7 @@ class Database(private val path: String) : Closeable, AutoCloseable {
         }
     }
 
-    private fun getBookshelf(db: Connection, sourceId: String, bookUrl: String): BookshelfItem? = db.prepareStatement("""select s.source_id,s.book_url,s.name,s.author,s.toc_url,s.cover_key,p.chapter_index,p.scroll_position,s.last_read_at,coalesce(c.cached_chapters,0),coalesce(c.total_chapters,0),coalesce(c.state,'idle'),c.last_error,s.completed,s.alternate_sources,s.group_name,s.cover_url from book_shelf s left join reading_progress p on p.source_id=s.source_id and p.book_url=s.book_url left join book_cache_status c on c.source_id=s.source_id and c.book_url=s.book_url where s.source_id=? and s.book_url=?""").use { it.setString(1, sourceId); it.setString(2, bookUrl); it.executeQuery().use { rs -> if (rs.next()) rs.toShelf() else null } }
+    private fun getBookshelf(db: Connection, sourceId: String, bookUrl: String): BookshelfItem? = db.prepareStatement("""select s.source_id,s.book_url,s.name,s.author,s.toc_url,s.cover_key,p.chapter_index,p.scroll_position,s.last_read_at,coalesce(c.cached_chapters,0),coalesce(c.total_chapters,0),coalesce(c.state,'idle'),c.last_error,s.completed,s.alternate_sources,s.group_name,s.cover_url,s.book_kind from book_shelf s left join reading_progress p on p.source_id=s.source_id and p.book_url=s.book_url left join book_cache_status c on c.source_id=s.source_id and c.book_url=s.book_url where s.source_id=? and s.book_url=?""").use { it.setString(1, sourceId); it.setString(2, bookUrl); it.executeQuery().use { rs -> if (rs.next()) rs.toShelf() else null } }
 
     /**
      * 判断 `coverUrl` 是否为本服务自己的封面接口地址（自引用）。
@@ -2503,7 +2955,54 @@ class Database(private val path: String) : Closeable, AutoCloseable {
         if ("completed" !in columns) db.createStatement().use { it.executeUpdate("alter table book_shelf add column completed integer not null default 0") }
         if ("alternate_sources" !in columns) db.createStatement().use { it.executeUpdate("alter table book_shelf add column alternate_sources text") }
         if ("group_name" !in columns) db.createStatement().use { it.executeUpdate("alter table book_shelf add column group_name text") }
+        if ("book_kind" !in columns) db.createStatement().use { it.executeUpdate("alter table book_shelf add column book_kind text") }
+        backfillBookKind(db)
     }
+
+    /**
+     * 一次性回填书架 `book_kind`：**书自己的 `tab` 优先，书源声明兜底**（见 [BookKind.resolveOrNull]）。
+     *
+     * 覆盖两类历史数据：老书架行 `book_kind` 为空；以及备份导入时"书自己没说类型"但书源声明了类型的行。
+     * 「新数据不再出错」≠「老数据自动好了」（AGENTS.md）：此函数幂等，只动 null/空值。
+     */
+    private fun backfillBookKind(db: Connection) {
+        val resolved = mutableListOf<Triple<String, String, String>>()
+        // 也覆盖**已被写成 'novel' 的历史行**：老逻辑只认源声明，把聚合源里的漫画写成了 novel
+        // （真实现场：用户书架上 15 本漫画全被写成 novel）。「新数据不再出错」≠「老数据自动好了」，
+        // 所以这里对 `novel` 也做一次幂等纠正 —— 判据是**书自己的 tab**，不是猜。
+        db.prepareStatement(
+            """select s.source_id, s.book_url, s.book_kind, src.payload from book_shelf s
+               left join source src on src.id = s.source_id
+               where s.book_kind is null or s.book_kind = '' or s.book_kind = 'novel'""",
+        ).use { st ->
+            st.executeQuery().use { rs ->
+                while (rs.next()) {
+                    val sourceId = rs.getString(1)
+                    val bookUrl = rs.getString(2)
+                    val current = rs.getString(3)?.trim()?.lowercase().orEmpty()
+                    // 书自己的 tab 优先（聚合源不声明类型，只能靠这个）；都没有 ⇒ 不写
+                    val kind = BookKind.resolveOrNull(null, bookUrl, rs.getString(4)) ?: continue
+                    if (kind == current) continue // 已经是这个值 ⇒ 跳过，不做无谓写库
+                    resolved.add(Triple(sourceId, bookUrl, kind))
+                }
+            }
+        }
+        for ((sourceId, bookUrl, kind) in resolved) {
+            db.prepareStatement("update book_shelf set book_kind=? where source_id=? and book_url=?").use { u ->
+                u.setString(1, kind); u.setString(2, sourceId); u.setString(3, bookUrl); u.executeUpdate()
+            }
+        }
+    }
+
+    /**
+     * 立刻跑一次「书籍类型回填」（备份导入后调用）。
+     *
+     * ## 为什么需要它（而不是等下次启动）
+     * 备份导入只按**书自己的 `tab`** 定类型；书自己没说、但书源确实声明了类型的书，
+     * 要等启动期回填才会被修正 ⇒ 导入完立刻点开那本漫画会先落到文字阅读器。
+     * 因此导入流程结束时显式调一次（与启动期回填同一个实现，幂等）。
+     */
+    fun backfillBookKindFromSources() = write { db -> backfillBookKind(db) }
     private fun migrateSourceTable(db: Connection) {
         val columns = db.createStatement().use { statement ->
             statement.executeQuery("pragma table_info(source)").use { rs ->
@@ -2530,6 +3029,34 @@ class Database(private val path: String) : Closeable, AutoCloseable {
         }
         if ("raw_content" !in columns) {
             db.createStatement().use { it.executeUpdate("alter table book_content_cache add column raw_content text") }
+        }
+    }
+
+    /**
+     * 漫画图片索引的增量迁移（幂等）。
+     *
+     * 为什么需要它：`manga_image_cache` 在实现中途调整过形状 —— 从「只记已落盘的字节」
+     * 改成「**清单阶段先登记 pending 行**（因为对外 key 是 URL 派生的哈希、不可逆，
+     * 服务端必须留着 URL 才知道去哪抓），按需再填充字节」。开发期已经建过表的库必须能平滑加上新列。
+     */
+    private fun migrateMangaImageCache(db: Connection) {
+        val columns = db.createStatement().use { statement ->
+            statement.executeQuery("pragma table_info(manga_image_cache)").use { rs ->
+                buildSet { while (rs.next()) add(rs.getString("name")) }
+            }
+        }
+        if (columns.isEmpty()) return
+        if ("chapter_index" !in columns) {
+            db.createStatement().use { it.executeUpdate("alter table manga_image_cache add column chapter_index integer not null default 0") }
+        }
+        if ("segment_index" !in columns) {
+            db.createStatement().use { it.executeUpdate("alter table manga_image_cache add column segment_index integer not null default 0") }
+        }
+        if ("state" !in columns) {
+            db.createStatement().use { it.executeUpdate("alter table manga_image_cache add column state text not null default 'pending'") }
+        }
+        if ("last_error" !in columns) {
+            db.createStatement().use { it.executeUpdate("alter table manga_image_cache add column last_error text") }
         }
     }
     fun listHttpTts(query: String? = null): List<HttpTts> = connect { db ->
@@ -2641,6 +3168,12 @@ class Database(private val path: String) : Closeable, AutoCloseable {
     }
     companion object {
         private const val SESSION_TTL = 30L * 24 * 60 * 60 * 1000
+        /** 漫画章节清单的列顺序必须与 `toMangaChapter()` 的取值下标逐一对齐。 */
+        private const val MANGA_CHAPTER_SELECT =
+            "select source_id,book_url,chapter_url,chapter_index,pinned,images_json,total,ready,skipped,state,last_error,created_at,updated_at from manga_chapter_cache"
+        /** 漫画图片索引的列顺序必须与 `toMangaImage()` 的取值下标逐一对齐。 */
+        private const val MANGA_IMAGE_SELECT =
+            "select url_hash,cache_key,source_id,book_url,chapter_url,chapter_index,segment_index,upstream_url,content_type,byte_size,width,height,state,last_error,created_at,last_access_at from manga_image_cache"
         private const val PBKDF2_ITERATIONS = 600_000
         private const val SALT_BYTES = 16
         private const val HASH_BITS = 256

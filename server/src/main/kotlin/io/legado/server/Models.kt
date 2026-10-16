@@ -507,6 +507,7 @@ data class SourceLoginStateRecord(
     val coverUrl: String? = null,
     val alternateSources: List<SearchResult>? = null,
     val groupName: String? = null,
+    val bookKind: String? = null,
 )
 @Serializable data class BookshelfSourceSwitchRequest(
     val oldSourceId: String,
@@ -575,6 +576,7 @@ data class CachedBookRequest(
     val completed: Boolean = false,
     val alternateSources: List<SearchResult> = emptyList(),
     val groupName: String? = null,
+    val bookKind: String = "novel",
 )
 
 @Serializable
@@ -942,6 +944,19 @@ data class BackupShelfEntry(
      * 未分组 / 找不到对应分组时为 null。
      */
     val groupName: String? = null,
+    /**
+     * 书的内容类型（`novel`/`comic`）。
+     *
+     * ⚠️ **备份导入不再设置它**（恒为 null）：
+     * 备份里的 `tab` / `type` 只是手机端的展示分类，拿它猜"这本书是不是漫画"属于**自动分类**，
+     * 猜错的代价是**漫画被送进文字阅读器**（表现为"漫画打不开"，而不是报错）。
+     * 现在类型只认**书源自身声明**（`bookSourceType == 2`），由
+     * [Database.backfillBookKindFromSources] 在导入结束时统一落库；分组则完全按备份文件里的分组走。
+     *
+     * `null` ⇒ 不指定：新行留 NULL，已有行**保留原值**（`coalesce(excluded.book_kind, book_shelf.book_kind)`），
+     * 也就是"已经和小说一样（无需特殊分类）就跳过，不写库"。
+     */
+    val bookKind: String? = null,
 )
 
 /**
@@ -1078,6 +1093,180 @@ data class ExploreSourceItem(
     val name: String,
     val group: String? = null,
     val enabled: Boolean = true,
+)
+
+// ---------------------------------------------------------------------------
+// 漫画（图片书源）章节清单 —— 方案 E · P0 解析打通
+// ---------------------------------------------------------------------------
+
+/**
+ * P1：单张图片的清单项。**只给服务端 key，绝不给上游 URL** ——
+ * 否则前端会绕过字节缓存直连（防盗链、离线、去重全部失效，属"死配置"类错误）。
+ */
+@Serializable
+data class MangaImageItem(
+    val index: Int,
+    /** `GET /api/images/{key}` 的 key（= sha256(sourceId + '\n' + 上游URL)）。 */
+    val key: String,
+    /** pending | ready | failed */
+    val status: String,
+    val width: Int? = null,
+    val height: Int? = null,
+)
+
+/** 章节图片清单。P1 起 `images` 只含服务端 key 与状态；前端按 key 请求图片。 */
+@Serializable
+data class MangaChapterManifest(
+    val sourceId: String,
+    val bookUrl: String,
+    val chapterUrl: String,
+    val title: String? = null,
+    val chapterIndex: Int = 0,
+    val total: Int,
+    /** 已就绪张数；`ready == total` ⇒ 整章可离线（目录绿点 `●`）。 */
+    val ready: Int = 0,
+    /** 整章状态：pending | partial | ready | failed */
+    val state: String = "pending",
+    val images: List<MangaImageItem>,
+)
+
+/** 漫画清单请求。`chapterIndex` 由前端从目录带过来，用于滑窗 GC 的锚点计算。 */
+@Serializable
+data class MangaManifestRequest(
+    val sourceId: String,
+    val bookUrl: String? = null,
+    val chapterUrl: String = "",
+    val chapterIndex: Int = 0,
+)
+
+// ---------------------------------------------------------------------------
+// 漫画链路 · P1 服务端缓存（L1 字节索引 + L2 章节清单）
+// ---------------------------------------------------------------------------
+
+/**
+ * 一章的图片清单与「整章就绪度」（L2 视图层）。
+ *
+ * `ready == total` 才算整章可离线，目录才打绿点 `●` —— 这是**唯一口径**，
+ * 前端不要自己按「有清单就算缓存」判断（否则断网会看到半截裂图）。
+ */
+data class MangaChapterRecord(
+    val sourceId: String,
+    val bookUrl: String,
+    val chapterUrl: String,
+    /** 章节序号，滑窗 GC 的锚点计算必需（落后当前进度 N 章 ⇒ 第 1 顺位淘汰候选）。 */
+    val chapterIndex: Int = 0,
+    /** 免死金牌：用户手动「下载整本/离线」的章节，GC 永不自动淘汰。 */
+    val pinned: Boolean = false,
+    /** 有序上游 URL 数组的 JSON（**仅服务端可见，绝不下发前端**）。 */
+    val imagesJson: String,
+    val total: Int = 0,
+    val ready: Int = 0,
+    val skipped: Int = 0,
+    /** pending | partial | ready | failed */
+    val state: String = "pending",
+    val lastError: String? = null,
+    val createdAt: Long = 0,
+    val updatedAt: Long = 0,
+)
+
+/** 一张图片的字节索引（L1）。`cacheKey` 指向唯一字节副本；`urlHash` 是"哪个上游地址"的索引。 */
+data class MangaImageRecord(
+    /** sha256(sourceId + '\n' + 上游URL)：**含 sourceId**，防跨源脏命中。对外即 `/api/images/{key}` 里的 key。 */
+    val urlHash: String,
+    val sourceId: String,
+    val bookUrl: String,
+    val chapterUrl: String,
+    /** 仅服务端可见，**绝不下发前端**（否则前端会绕过缓存直连，防盗链与离线全失效）。 */
+    val upstreamUrl: String,
+    /** sha256(字节)；`state != ready` 时为空。 */
+    val cacheKey: String = "",
+    val chapterIndex: Int = 0,
+    /** 一章内第几张图（多分段/保序拼装用）。 */
+    val segmentIndex: Int = 0,
+    val contentType: String = "",
+    val byteSize: Long = 0,
+    val width: Int? = null,
+    val height: Int? = null,
+    /** pending | ready | failed */
+    val state: String = "pending",
+    val lastError: String? = null,
+    val createdAt: Long = 0,
+    val lastAccessAt: Long = 0,
+)
+
+/** 按书聚合的缓存占用（缓存管理 UI 与 stats 接口用）。 */
+@Serializable
+data class MangaCacheBookStat(
+    val sourceId: String,
+    val bookUrl: String,
+    val name: String? = null,
+    val imageCount: Int,
+    val totalBytes: Long,
+    val chapterCount: Int = 0,
+    val readyChapterCount: Int = 0,
+    /** 免死金牌（用户手动"整本离线"）：缓存管理 UI 必须能看出"这本书为什么删不掉"。 */
+    val pinned: Boolean = false,
+)
+
+/**
+ * 图片缓存总体统计（`GET /api/books/images/cache/stats`）。
+ *
+ * `totalBytes`（表内字节和）与 `diskBytes`（实际磁盘占用）**分开报**：
+ * 两者一旦明显漂移，就说明盘上有孤儿文件或表里有失效行 —— 排障时一眼可见。
+ */
+@Serializable
+data class MangaCacheStats(
+    val totalBytes: Long,
+    val quotaBytes: Long,
+    val imageCount: Int,
+    val diskBytes: Long,
+    val books: List<MangaCacheBookStat> = emptyList(),
+)
+
+// ---------------------------------------------------------------------------
+// 漫画链路 · P2 预取（环节 E8）
+// ---------------------------------------------------------------------------
+
+/**
+ * 预取请求（`POST /api/books/images/prefetch`）。
+ *
+ * `fromChapterIndex` 由前端从**自己的目录**带过来：服务端虽然也缓存了目录，
+ * 但前端此刻手里就有一份权威的、和用户看到的一致的章节列表，不必让服务端再猜一次。
+ */
+@Serializable
+data class MangaPrefetchRequest(
+    val sourceId: String,
+    val bookUrl: String? = null,
+    /** 起始章地址（用于回显与排障；真正的区间由 [fromChapterIndex] + [ahead] 决定）。 */
+    val chapterUrl: String? = null,
+    val fromChapterIndex: Int = 0,
+    /** 从起始章起预取多少章（含起始章）：`1` = 只本章；`50`/`100` = 目录里的"后 N 章"。 */
+    val ahead: Int = 1,
+    /**
+     * `true` = 用户手动"整本离线" ⇒ 顺手打 **pinned 免死金牌**（GC 永不自动淘汰）。
+     * 只有明确的用户动作才配得上免死金牌，滚动触发的自动预取一律 `false`。
+     */
+    val pin: Boolean = false,
+)
+
+/**
+ * 预取受理结果。**`queued=false` 不是错误**：可能是开关关了、目录未缓存或区间为空。
+ *
+ * 阅读器对它的唯一正确反应是"什么都不做"——预取是增强，失败绝不能冒泡给用户。
+ */
+@Serializable
+data class MangaPrefetchResponse(
+    val queued: Boolean,
+    val chapters: Int = 0,
+    val reason: String? = null,
+)
+
+/** pin 开关结果（`PUT /api/books/images/cache/pin`）。 */
+@Serializable
+data class MangaPinResponse(
+    val sourceId: String,
+    val bookUrl: String,
+    val pinned: Boolean,
 )
 
 

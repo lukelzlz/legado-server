@@ -4,6 +4,8 @@
  * localStorage for bookshelf snapshots and offline reading progress queues.
  */
 
+import { clearMangaManifests } from './mangaOffline'
+
 export interface OfflineChapterRecord {
   key: string // `${sourceId}::${bookUrl}::${chapterUrl}`
   sourceId: string
@@ -234,6 +236,9 @@ export async function getOfflineStorageStats(): Promise<OfflineStorageStats> {
  * Clears offline chapters for a specific book
  */
 export async function clearOfflineBook(sourceId: string, bookUrl: string): Promise<number> {
+  // 漫画的清单快照也要一起清：否则用户点了"清除本机缓存"，漫画那边还留着元数据，
+  // 表现为「清不干净」（而且要等下一个人来问为什么）。SW 里的图片字节由 SW 自己的配额策略负责。
+  void clearMangaManifests(sourceId, bookUrl)
   const db = await openDb()
 
   return new Promise((resolve, reject) => {
@@ -268,6 +273,8 @@ export async function clearOfflineBook(sourceId: string, bookUrl: string): Promi
  * Clears all offline chapters
  */
 export async function clearAllOffline(): Promise<void> {
+  // 同 clearOfflineBook：本机"全部清空"必须把漫画清单快照一起带走
+  void clearMangaManifests()
   const db = await openDb()
 
   return new Promise((resolve, reject) => {

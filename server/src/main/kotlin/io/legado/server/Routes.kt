@@ -22,6 +22,8 @@ import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
+import kotlinx.serialization.builtins.ListSerializer
+import kotlinx.serialization.builtins.serializer
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -62,6 +64,12 @@ fun Route.apiRoutes(
      */
     webDavStorage: WebDavStorage = WebDavStorage(Path.of(".data/webdav")),
     httpTtsService: HttpTtsService = HttpTtsService(database),
+    /** 漫画图片的 L1 字节缓存（方案 E · P1）。 */
+    imageCache: ImageCache,
+    /** 漫画图片抓取收口（全局限流 + 书源头 + Referer/Cookie + SSRF）。 */
+    mangaImageFetcher: MangaImageFetcher,
+    /** 漫画图片后台预取（方案 E · P2）。可为 null ⇒ 视为关闭。 */
+    mangaPrefetch: MangaPrefetchService? = null,
 ) {
     val webView = WebViewProxy(database)
 
@@ -1038,6 +1046,240 @@ fun Route.apiRoutes(
                 }
             }
         }
+        post("/books/images/manifest") {
+            if (auth.requireSession(call) == null) return@post
+            val request = call.receive<MangaManifestRequest>()
+            if (request.sourceId.isBlank()) {
+                call.respond(HttpStatusCode.BadRequest, ApiError("invalid_manga", "缺少书源"))
+                return@post
+            }
+            val chapterUrl = request.chapterUrl
+            if (chapterUrl.isBlank()) {
+                call.respond(HttpStatusCode.BadRequest, ApiError("invalid_manga", "缺少章节地址"))
+                return@post
+            }
+            val source = database.getSource(request.sourceId)
+                ?: return@post call.respond(HttpStatusCode.NotFound, ApiError("not_found", "书源不存在"))
+            val bookUrl = request.bookUrl ?: if (chapterUrl.startsWith("local://")) chapterUrl.substringBeforeLast('/') else ""
+
+            // 书自身的类型说法（`tab=漫画`）或书源声明 ⇒ 顺手把书架类型修好
+            // （修复「解析器识别之前加进书架的老漫画」——幂等回填）。
+            // ⚠️ 必须让**书自己**优先：聚合源不声明 `bookSourceType`，只看源声明会把漫画判成小说。
+            if (bookUrl.isNotBlank()) {
+                BookKind.resolveOrNull(null, bookUrl, source.json)?.let { kind ->
+                    database.setBookKindSilently(request.sourceId, bookUrl, kind)
+                }
+            }
+
+            // ① L2 命中：清单已在本地 ⇒ **完全不再回源抓章节页**（二次打开零上游请求）
+            val existing = database.getMangaChapter(request.sourceId, bookUrl, chapterUrl)
+            val urls: List<String> = existing?.let { decodeMangaImageUrls(it.imagesJson) }
+                ?: run {
+                    // ② 首次解析：失败一律 502 `source_execution_failed` + 真实原因，与
+                    // `/books/content` 一致（抛 500「服务器内部错误」会把「书源规则没配好」
+                    // 伪装成「服务端故障」，是最容易误导排障的形态）。
+                    val parsed = runCatching { runner.mangaImages(source.json, chapterUrl) }
+                    val failure = parsed.exceptionOrNull()
+                    if (failure != null) {
+                        call.respond(
+                            HttpStatusCode.BadGateway,
+                            ApiError("source_execution_failed", failure.message ?: "图片清单解析失败"),
+                        )
+                        return@post
+                    }
+                    val list = parsed.getOrThrow()
+                    database.saveMangaChapter(
+                        MangaChapterRecord(
+                            sourceId = request.sourceId,
+                            bookUrl = bookUrl,
+                            chapterUrl = chapterUrl,
+                            chapterIndex = request.chapterIndex,
+                            imagesJson = encodeMangaImageUrls(list),
+                            total = list.size,
+                            state = "pending",
+                        ),
+                    )
+                    list
+                }
+
+            // ③ 登记 (key → 上游地址) 并刷新整章就绪度。
+            // 清单只回 **key**：上游 URL 留在服务端，否则前端会绕过字节缓存直连
+            //（防盗链、离线、去重全部失效，属"死配置"类错误）。
+            imageCache.registerChapter(request.sourceId, bookUrl, chapterUrl, request.chapterIndex, urls)
+            imageCache.refreshChapterReadiness(request.sourceId, bookUrl, chapterUrl)
+            val rows = imageCache.chapterRows(request.sourceId, bookUrl, chapterUrl)
+            val chapter = database.getMangaChapter(request.sourceId, bookUrl, chapterUrl)
+
+            call.respond(
+                MangaChapterManifest(
+                    sourceId = request.sourceId,
+                    bookUrl = bookUrl,
+                    chapterUrl = chapterUrl,
+                    title = null, // 章节标题由前端从自己的目录里取，不必服务端回查
+                    chapterIndex = request.chapterIndex,
+                    total = rows.size,
+                    ready = rows.count { it.state == "ready" },
+                    state = chapter?.state ?: "pending",
+                    images = rows.map {
+                        MangaImageItem(
+                            index = it.segmentIndex,
+                            key = it.urlHash,
+                            status = it.state,
+                            width = it.width,
+                            height = it.height,
+                        )
+                    },
+                ),
+            )
+        }
+        /**
+         * 图片直出（**按需抓取 + 唯一字节副本**）。
+         *
+         * 首次请求某个 key 时服务端才去抓（受全局闸门约束），抓完落盘并直出；
+         * 之后同 key 一律走本地文件。`ETag = cacheKey`（内容哈希）⇒ 可 `immutable`：
+         * 内容变了 key 必变，所以浏览器/中间层可以放心长期缓存。
+         */
+        get("/images/{key}") {
+            if (auth.requireSession(call) == null) return@get
+            val key = call.parameters["key"].orEmpty()
+            if (!key.matches(MANGA_IMAGE_KEY_PATTERN)) {
+                call.respond(HttpStatusCode.NotFound, ApiError("not_found", "图片 key 无效"))
+                return@get
+            }
+
+            var row = imageCache.getByKey(key)
+            if (row == null) {
+                // 未就绪 ⇒ 用登记时留下的上游地址按需抓取（这是 key 不可逆的代价，也是它的防护）
+                val pending = imageCache.rowByKey(key)
+                    ?: return@get call.respond(HttpStatusCode.NotFound, ApiError("not_found", "该 key 未登记（可能章节清单已清空）"))
+                val sourceJson = database.getSource(pending.sourceId)?.json
+                if (sourceJson == null) {
+                    imageCache.markFailed(key, "书源不存在")
+                    return@get call.respond(HttpStatusCode.NotFound, ApiError("not_found", "书源不存在"))
+                }
+                // 防盗链的命门：Referer 必须是**章节页**，并与书源 header/Cookie 一起发
+                val fetched = mangaImageFetcher.fetch(
+                    upstreamUrl = pending.upstreamUrl,
+                    mediaHeaders = runner.mediaHeaders(sourceJson, pending.sourceId),
+                    referer = pending.chapterUrl.takeIf { it.startsWith("http") },
+                )
+                if (fetched == null) {
+                    imageCache.markFailed(key, "上游抓取失败或内容不是图片")
+                    imageCache.refreshChapterReadiness(pending.sourceId, pending.bookUrl, pending.chapterUrl)
+                    call.respond(HttpStatusCode.BadGateway, ApiError("image_fetch_failed", "图片抓取失败"))
+                    return@get
+                }
+                imageCache.put(
+                    sourceId = pending.sourceId,
+                    bookUrl = pending.bookUrl,
+                    chapterUrl = pending.chapterUrl,
+                    upstreamUrl = pending.upstreamUrl,
+                    contentType = fetched.contentType,
+                    bytes = fetched.bytes,
+                    chapterIndex = pending.chapterIndex,
+                    segmentIndex = pending.segmentIndex,
+                )
+                imageCache.refreshChapterReadiness(pending.sourceId, pending.bookUrl, pending.chapterUrl)
+                row = imageCache.rowByKey(key)
+                    ?: return@get call.respond(HttpStatusCode.InternalServerError, ApiError("cache_error", "图片落盘后索引丢失"))
+            }
+
+            val file = imageCache.fileFor(row.cacheKey)
+                ?: return@get call.respond(HttpStatusCode.NotFound, ApiError("not_found", "图片文件不存在"))
+            call.response.headers.append(HttpHeaders.ETag, "\"${row.cacheKey}\"")
+            call.response.headers.append(HttpHeaders.CacheControl, "private, max-age=31536000, immutable")
+            if (call.request.headers[HttpHeaders.IfNoneMatch]?.contains(row.cacheKey) == true) {
+                call.respond(HttpStatusCode.NotModified)
+                return@get
+            }
+            call.respond(LocalFileContent(file.toFile(), ContentType.parse(row.contentType.ifBlank { "image/jpeg" })))
+        }
+        get("/books/images/cache/stats") {
+            if (auth.requireSession(call) == null) return@get
+            call.respond(imageCache.stats())
+        }
+        /**
+         * 后台预取（环节 E8）。
+         *
+         * **幂等且随时可重复调用**：同一本书的重复请求不会新起并行任务，而是让正在跑的循环改目标
+         * （见 `MangaPrefetchService.drain`）。返回 `202 Accepted` 表示"已受理"而非"已完成"。
+         */
+        post("/books/images/prefetch") {
+            if (auth.requireSession(call, true) == null) return@post
+            val request = call.receive<MangaPrefetchRequest>()
+            if (request.sourceId.isBlank()) {
+                call.respond(HttpStatusCode.BadRequest, ApiError("invalid_manga", "缺少书源"))
+                return@post
+            }
+            val bookUrl = request.bookUrl?.takeIf { it.isNotBlank() }
+                ?: run {
+                    call.respond(HttpStatusCode.BadRequest, ApiError("invalid_manga", "缺少书籍地址"))
+                    return@post
+                }
+            val service = mangaPrefetch
+            if (service == null || !service.enabled) {
+                // 关闭 ≠ 报错：阅读器对它的唯一正确反应是"什么都不做"
+                call.respond(HttpStatusCode.Accepted, MangaPrefetchResponse(false, 0, "prefetch_disabled"))
+                return@post
+            }
+            val chapters = service.enqueue(
+                sourceId = request.sourceId,
+                bookUrl = bookUrl,
+                fromChapterIndex = request.fromChapterIndex,
+                ahead = request.ahead,
+                pin = request.pin,
+            )
+            if (request.pin && chapters > 0) {
+                // 「整本离线」= 免死金牌，越早打越好：中途重启也不至于被 GC 从半本开始删
+                database.setMangaBookPinned(request.sourceId, bookUrl, true)
+            }
+            call.respond(
+                HttpStatusCode.Accepted,
+                MangaPrefetchResponse(chapters > 0, chapters, if (chapters > 0) null else "nothing_to_prefetch"),
+            )
+        }
+        get("/books/images/prefetch") {
+            if (auth.requireSession(call) == null) return@get
+            call.respond(mangaPrefetch?.status() ?: emptyList<MangaPrefetchStatus>())
+        }
+        /**
+         * 「整本离线」免死金牌开关（环节 E12）。
+         *
+         * 只有**用户显式动作**才配得上它：自动预取绝不会自己打 pin（否则配额很快被"永久保留"吃光）。
+         */
+        put("/books/images/cache/pin") {
+            if (auth.requireSession(call, true) == null) return@put
+            val sourceId = call.request.queryParameters["sourceId"]
+            val bookUrl = call.request.queryParameters["bookUrl"]
+            val pinned = call.request.queryParameters["pinned"]?.toBooleanStrictOrNull() ?: true
+            if (sourceId.isNullOrBlank() || bookUrl.isNullOrBlank()) {
+                call.respond(HttpStatusCode.BadRequest, ApiError("invalid_manga", "缺少书籍标识"))
+                return@put
+            }
+            database.setMangaBookPinned(sourceId, bookUrl, pinned)
+            call.respond(MangaPinResponse(sourceId, bookUrl, pinned))
+        }
+        delete("/books/images/cache") {
+            if (auth.requireSession(call, true) == null) return@delete
+            if (call.request.queryParameters["all"]?.toBooleanStrictOrNull() == true) {
+                // 先停预取再清：否则清理刚删完，还在跑的预取又把它抓回来（用户看到"清不干净"）
+                mangaPrefetch?.cancelAll()
+                imageCache.deleteAll()
+                call.respond(HttpStatusCode.NoContent)
+                return@delete
+            }
+            val sourceId = call.request.queryParameters["sourceId"]
+            val bookUrl = call.request.queryParameters["bookUrl"]
+            if (sourceId.isNullOrBlank() || bookUrl.isNullOrBlank()) {
+                call.respond(HttpStatusCode.BadRequest, ApiError("invalid_manga", "缺少书籍标识"))
+                return@delete
+            }
+            mangaPrefetch?.cancel(sourceId, bookUrl)
+            imageCache.deleteBook(sourceId, bookUrl)
+            // 清单也一起清：否则下次打开会拿着一张"零图片"的空清单
+            database.deleteMangaChapters(sourceId, bookUrl)
+            call.respond(HttpStatusCode.NoContent)
+        }
         get("/bookshelf") {
             if (auth.requireSession(call) == null) return@get
             call.respond(database.listBookshelf())
@@ -1047,8 +1289,19 @@ fun Route.apiRoutes(
             val request = call.receive<BookshelfWriteRequest>()
             if (request.sourceId.isBlank() || request.bookUrl.isBlank() || request.name.isBlank() || request.tocUrl.isBlank()) { call.respond(HttpStatusCode.BadRequest, ApiError("invalid_bookshelf", "书架数据无效")); return@post }
             val immediateCover = tryFindCachedCover(coverCache, request.coverUrl, request.alternateSources)
-            val item = database.saveBookshelf(request, immediateCover)
-            if (request.sourceId != LocalBookParser.LOC_BOOK_SOURCE_ID && !request.bookUrl.startsWith("local://")) {
+            // 类型判定：**书自己的说法优先，源声明兜底**。
+            // ⚠️ 实测教训：聚合源（大灰狼）不声明 `bookSourceType`，但它里面有漫画频道；
+            // 只看源声明会把这些漫画判成小说 ⇒ 进文字阅读器 ⇒ 用户看到的是"漫画打不开"。
+            val bookKind = BookKind.resolve(
+                explicit = request.bookKind,
+                bookUrl = request.bookUrl,
+                sourcePayload = database.getSource(request.sourceId)?.json,
+            )
+            val item = database.saveBookshelf(request.copy(bookKind = bookKind), immediateCover)
+            // 漫画/有声书**不进文本章节缓存队列**：那是给文字阅读器用的（拉章节页→抽正文）。
+            // 实测：一本漫画被误判成小说时会跑 10 章文本缓存、10 章全失败，白刷上游还污染缓存状态。
+            val textBook = BookKind.from(bookKind) == BookKind.NOVEL
+            if (textBook && request.sourceId != LocalBookParser.LOC_BOOK_SOURCE_ID && !request.bookUrl.startsWith("local://")) {
                 bookCache.enqueue(CachedBookRequest(request.sourceId, request.bookUrl, request.tocUrl))
             } else {
                 database.ensureLocalBookStatusReady(request.sourceId, request.bookUrl)
@@ -1204,7 +1457,13 @@ fun Route.apiRoutes(
                 call.respond(HttpStatusCode.BadRequest, ApiError("invalid_bookshelf", "缺少书籍标识"))
                 return@get
             }
-            val cachedUrls = database.cachedChapterUrls(sourceId, bookUrl).toList()
+            // 绿点的唯一口径：文本书看 "正文已缓存"，漫画看 "整章图片全部落盘"（state='ready'）。
+            // 契约（路径 / 字段名）**完全不变**，只是服务端按 kind 换数据源 —— 前端与 SW 无需改。
+            val cachedUrls = if (BookKind.from(database.getBookKind(sourceId, bookUrl)) == BookKind.COMIC) {
+                database.listReadyMangaChapterUrls(sourceId, bookUrl)
+            } else {
+                database.cachedChapterUrls(sourceId, bookUrl).toList()
+            }
             val total = database.getTocCache(sourceId, bookUrl)?.size ?: 0
             call.respond(CachedChaptersResponse(sourceId, bookUrl, cachedUrls, cachedUrls.size, total))
         }
@@ -1404,8 +1663,10 @@ fun Route.apiRoutes(
             if (request.oldSourceId.isBlank() || request.oldBookUrl.isBlank() || book.sourceId.isBlank() || book.bookUrl.isBlank() || book.name.isBlank() || book.tocUrl.isBlank()) { call.respond(HttpStatusCode.BadRequest, ApiError("invalid_bookshelf", "书架数据无效")); return@post }
             val altList = (request.alternateSources ?: emptyList()) + (book.alternateSources ?: emptyList())
             val cover = tryCacheCover(coverCache, book.coverUrl, altList)
+            val bookKind = database.getSource(book.sourceId)?.let { BookKind.fromSourcePayload(it.json).name.lowercase() } ?: "novel"
+            val bookWithKind = book.copy(bookKind = bookKind)
             bookCache.cancel(request.oldSourceId, request.oldBookUrl)
-            val (item, orphan) = database.switchBookshelf(request.oldSourceId, request.oldBookUrl, book, cover, request.alternateSources)
+            val (item, orphan) = database.switchBookshelf(request.oldSourceId, request.oldBookUrl, bookWithKind, cover, request.alternateSources)
             orphan?.let(coverCache::delete)
             bookCache.enqueue(CachedBookRequest(book.sourceId, book.bookUrl, book.tocUrl))
             call.respond(item)
@@ -1943,6 +2204,17 @@ internal suspend fun <T, R> boundedConcurrentMap(values: List<T>, limit: Int, ac
     val semaphore = Semaphore(limit.coerceAtLeast(1))
     values.map { value -> async { semaphore.withPermit { action(value) } } }.awaitAll()
 }
+
+/** 图片 key = sha256 的十六进制（64 位）。非法 key 直接 404，绝不拿它去拼路径。 */
+private val MANGA_IMAGE_KEY_PATTERN = Regex("[0-9a-f]{64}")
+private val mangaImagesJson = Json { ignoreUnknownKeys = true }
+
+/** 章节图片清单（有序上游 URL 数组）的序列化 —— **仅服务端可见**，绝不下发前端。 */
+internal fun encodeMangaImageUrls(urls: List<String>): String =
+    mangaImagesJson.encodeToString(ListSerializer(String.serializer()), urls)
+
+internal fun decodeMangaImageUrls(json: String): List<String>? =
+    runCatching { mangaImagesJson.decodeFromString(ListSerializer(String.serializer()), json) }.getOrNull()
 
 private suspend fun ApplicationCall.respondCatching(block: suspend () -> Any) {
     try { respond(block()) }

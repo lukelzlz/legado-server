@@ -87,6 +87,9 @@ class BackupImporter(
         // HTTP TTS 复用既有导入实现（天然幂等：同 id 覆盖）
         val ttsResult = database.importHttpTts(parsedTts)
         val library = database.importLibrary(shelf)
+        // 书源已经在库里了 ⇒ 立刻按**书源自身声明**回填类型（`bookSourceType == 2` ⇒ comic）。
+        // 不这么做的话，导入完点开一本漫画会先落到文字阅读器（要等下次重启才被启动期回填修好）。
+        database.backfillBookKindFromSources()
         // 分组必须在书架导入**之后**执行：它要把 book_shelf.group_name 补上对应分组名。
         database.importBookGroups(groups, shelf)
         val bookmarksImported = database.importBookmarks(bookmarks)
@@ -257,6 +260,13 @@ class BackupImporter(
                 chapterIndex = book.number("durChapterIndex")?.toInt() ?: 0,
                 readAt = book.number("durChapterTime") ?: 0L,
                 kind = ShelfKind.of(book.text("bookUrl"), book.text("origin"), book.text("type"), book.text("kind")),
+                // 类型只看**书自己的说法**（载荷里的 `tab`）：`漫画` ⇒ comic、`听书` ⇒ audio；
+                // 没说的返回 null ⇒ **不写这一列**（按小说处理，已有行保留原值 = "已经和小说一样就跳过"）。
+                //
+                // ⚠️ 刻意**不**在这里读源声明：聚合源（如大灰狼）根本不声明 `bookSourceType`，
+                // 只认源声明会把里面的漫画全部判成小说（用户实测反馈）。
+                // 源声明作为**兜底**由导入结束后的 backfillBookKindFromSources() 统一处理。
+                bookKind = BookKind.resolveOrNull(null, book.text("bookUrl"), null),
                 groupName = groupId?.let { nameById[it] },
             )
         }

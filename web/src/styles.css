@@ -744,6 +744,7 @@ mark.search-highlight { background: var(--accent-soft); color: var(--accent); fo
 .shelf-card-badge.caching { background: rgba(204, 130, 10, 0.9); color: #fff; }
 .shelf-card-badge.failed { background: rgba(210, 45, 45, 0.88); color: #fff; }
 .shelf-card-tag-local { position: absolute; top: 8px; left: 8px; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: 600; background: rgba(14, 116, 144, 0.9); color: #fff; letter-spacing: 0.5px; backdrop-filter: blur(6px); box-shadow: 0 2px 6px rgba(0,0,0,.15); }
+.shelf-card-tag-comic { position: absolute; top: 8px; right: 8px; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: 600; background: rgba(180, 83, 9, 0.92); color: #fff; letter-spacing: 0.5px; backdrop-filter: blur(6px); box-shadow: 0 2px 6px rgba(0,0,0,.15); }
 .shelf-header-actions { display: flex; align-items: center; gap: 12px; }
 .shelf-import-btn { display: inline-flex; align-items: center; gap: 6px; padding: 6px 14px; border-radius: 8px; font-size: 13px; font-weight: 550; cursor: pointer; border: 1px solid var(--line); background: var(--surface); color: var(--ink); transition: all .15s ease; }
 .shelf-import-btn:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
@@ -5921,6 +5922,220 @@ mark.search-highlight { background: var(--accent-soft); color: var(--accent); fo
   .explore-book-grid {
     grid-template-columns: 1fr;
   }
+}
+
+/* ---------------------------------------------------------------------------
+   漫画阅读器（方案 E）
+   纵向连续阅读；宽高由 manifest 给出 ⇒ 用 aspect-ratio 占位，首屏不跳动。
+   ⚠️ 本块**只用主题变量**（--surface/--ink/--line/--muted/--accent/--canvas/--safe-*），
+   因此 light / paper / dark 三套主题切换零额外适配 —— 写死颜色会让夜间模式变"透光 + 隐形黑字"。
+   外壳、抽屉、设置项复用文本阅读器的既有 class，保证两个阅读器观感一致。
+   --------------------------------------------------------------------------- */
+.manga-workspace .reader-header-title {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+}
+
+.manga-header-chapter {
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--muted);
+  max-width: 60vw;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.manga-counter {
+  font-size: 12px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  padding: 0 6px;
+}
+
+/* 图片加载进度条：贴在悬浮顶栏下沿，只在"还没全部就绪"时出现 */
+.manga-progress-bar {
+  position: fixed;
+  top: calc(var(--safe-top) + 52px);
+  left: 0;
+  right: 0;
+  height: 2px;
+  z-index: 30;
+  background: var(--surface-muted);
+  pointer-events: none;
+}
+
+.manga-progress-bar i {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+  transition: width .2s ease-out;
+}
+
+.manga-workspace.toolbars-hidden .manga-progress-bar {
+  opacity: .4;
+}
+
+.manga-scroll {
+  height: 100vh;
+  height: 100dvh;
+  overflow-y: auto;
+  overscroll-behavior: none;
+  padding: calc(var(--safe-top) + 56px) 0 calc(var(--safe-bottom) + 88px);
+  background: var(--surface-muted);
+  -webkit-overflow-scrolling: touch;
+}
+
+.manga-image-frame {
+  width: 100%;
+  max-width: 900px;
+  margin: 0 auto 6px;
+  min-height: 60vh;
+  display: grid;
+  place-items: center;
+  background: var(--surface);
+}
+
+.manga-image-frame img {
+  display: block;
+  width: 100%;
+  height: auto;
+  max-width: 100%;
+}
+
+/* 原始尺寸模式：按像素显示、允许横向拖动（跨页大图看细节） */
+.manga-workspace.is-fit-original .manga-scroll {
+  overflow-x: auto;
+}
+
+.manga-workspace.is-fit-original .manga-image-frame {
+  max-width: none;
+  width: max-content;
+  min-width: 100%;
+}
+
+.manga-workspace.is-fit-original .manga-image-frame img {
+  width: auto;
+  max-width: none;
+}
+
+.manga-image-failed {
+  width: 100%;
+  min-height: 40vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 24px;
+  border: 1px dashed var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.manga-image-failed svg {
+  width: 28px;
+  opacity: .6;
+}
+
+.manga-image-failed small {
+  max-width: 32em;
+  text-align: center;
+  line-height: 1.5;
+  opacity: .8;
+}
+
+.manga-error-box {
+  max-width: 560px;
+  margin: 15vh auto 0;
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  align-items: center;
+  text-align: center;
+}
+
+.manga-error-actions {
+  display: flex;
+  gap: 10px;
+}
+
+.manga-end-of-chapter {
+  display: flex;
+  justify-content: center;
+  padding: 24px 0 8px;
+}
+
+/* 离线横幅（P3）：脱网读本地快照时必须显式告知，否则缺图会被当成 bug。 */
+.manga-offline-banner {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 6px 12px;
+  font-size: 12px;
+  color: var(--muted);
+  background: var(--surface-muted);
+  border-bottom: 1px solid var(--line);
+}
+
+.manga-offline-banner svg {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+}
+
+/* 缓存管理里的「服务端图片缓存」区块（P2）：与"本机 IndexedDB"区块分开显示。
+   同样只用主题变量，避免夜间模式出现"透光背景 + 隐形黑字"。 */
+.server-cache-section {
+  margin-top: 18px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+
+.server-cache-section .offline-book-actions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.server-cache-pin-badge {
+  margin-left: 6px;
+  padding: 0 6px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 500;
+  color: var(--accent-ink);
+  background: var(--accent-soft);
+  border: 1px solid var(--accent);
+}
+
+.server-cache-footer {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 12px;
+}
+
+.overview-quota {
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--muted);
+}
+
+.cache-drift-warning {
+  margin: 8px 0 0;
+  padding: 8px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: var(--surface-muted);
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.5;
 }
 
 

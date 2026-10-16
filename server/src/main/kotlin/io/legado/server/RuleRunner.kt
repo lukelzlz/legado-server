@@ -474,6 +474,100 @@ class RuleRunner(private val responseFetcher: ((String) -> String)? = null, inte
         }
     }
 
+    /**
+     * 解析一章漫画的**有序图片 URL 清单**——方案 E · 方案 A 的解析层复用。
+     *
+     * 与 [content] 共享 fetch / 规则链 / JS 沙箱，**唯一差异是最后一步**：
+     * `content()` 做文本净化 → 单行文本；
+     * `mangaImages()` 做 URL 拆分 → 有序 URL 列表。
+     *
+     * @return 有序去重后的全量上游图片 URL（空列表意味着规则未提取到图片）。
+     */
+    fun mangaImages(sourceJson: String, chapterUrl: String, bookName: String? = null): List<String> {
+        val source = sourceJson.objectValue()
+        val sourceUrl = source.string("bookSourceUrl")
+
+        // JS 书源（mainJs）：走 JsSourceRunner 取回文本，再尝试从文本中提取图片 URL
+        if (source.string("mainJs")?.isNotBlank() == true) {
+            val result = JsSourceRunner(this, source).content(chapterUrl)
+            return splitImageUrls(result.content)
+        }
+
+        return jsSandbox.withSourceContext(
+            sourceContext(source, sourceUrl).let { it.copy(chapterUrl = chapterUrl) },
+        ) {
+            val rule = source.objectValue("ruleContent") ?: throw RuleExecutionException("该书源未配置 ruleContent")
+            val dataPayload = dataUrlPayload(chapterUrl)
+            val body: String
+            val root: NodeValue
+            if (dataPayload != null) {
+                body = dataPayload
+                root = NodeValue.json(dataPayload)
+            } else {
+                val (url, options) = splitUrlOptions(chapterUrl)
+                val mergedOptions = mergeOptions(parseSourceHeaders(source, sourceUrl), options)
+                body = fetchUrl(url, mergedOptions, null, sourceUrl, database)
+                root = NodeValue.document(body)
+            }
+            val raw = root.value(rule.string("content"), jsSandbox, body, chapterUrl)?.trim() ?: ""
+            val urls = splitImageUrls(raw).map { it.absolute(chapterUrl) }
+            // 保序去重（同一张图重现时保留首次位置）
+            val seen = mutableSetOf<String>()
+            urls.filter { it.isNotBlank() && seen.add(it) }
+        }
+    }
+
+    /**
+     * 从规则求值所得的字符串中提取有序图片 URL。
+     *
+     * 三种来源（按优先级）：
+     * 1. HTML 片段里的 `<img>` 标签：优先用 `data-src` / `data-original`（懒加载兼容），否则用 `src`；
+     * 2. JSON 数组字符串：`["url1","url2"]`；
+     * 3. 换行分隔的纯文本 URL 列表（Legado 多值选择器默认 `\n` 连接）。
+     */
+    internal fun splitImageUrls(raw: String?): List<String> {
+        if (raw.isNullOrBlank()) return emptyList()
+
+        fun cleanImageUrl(url: String): String =
+            url.substringBefore(",{").substringBefore(",%7B").trim().trimEnd(',', ' ')
+
+        // 1. 按 <img> 标签提取 src / data-src / data-original
+        val doc = Jsoup.parse(raw)
+        val imgs = doc.select("img")
+        if (imgs.isNotEmpty()) {
+            return imgs.mapNotNull { el ->
+                (el.attr("data-src").takeIf { it.isNotBlank() }
+                    ?: el.attr("data-original").takeIf { it.isNotBlank() }
+                    ?: el.attr("src").takeIf { it.isNotBlank() })
+                    ?.let(::cleanImageUrl)
+            }.filter { it.isNotBlank() }
+        }
+
+        // 2. JSON 数组字符串
+        val trimmed = raw.trim()
+        if (trimmed.startsWith("[")) {
+            val parsed = runCatching { Json.parseToJsonElement(trimmed) }.getOrNull() as? JsonArray
+            if (parsed != null) {
+                return parsed.mapNotNull { element -> (element as? JsonPrimitive)?.contentOrNull?.let(::cleanImageUrl) }.filter { it.isNotBlank() }
+            }
+        }
+
+        // 3. 换行分隔（Legado 多元素 CSS / JSON 多值连接默认 "\n"）
+        return raw.lines().map(::cleanImageUrl).filter { it.isNotBlank() }
+    }
+
+    /**
+     * 抓取**媒体资源**（漫画图片 / 有声书音频）时该用的请求头：书源 `header` + 登录头 + Cookie。
+     *
+     * 为什么要开这个 public 口子：媒体抓取发生在 `RuleRunner` 之外（`MangaImageFetcher`），
+     * 但它**必须与书源取数用同一份请求头**——漫画站/音频站的防盗链判的就是这套头，
+     * 少一个 `Referer` 或 Cookie 就是整章裂图，而且不会有任何报错。
+     *
+     * 解析失败一律返回空表（静默降级），绝不让头解析把抓取流程打断。
+     */
+    fun mediaHeaders(sourceJson: String, sourceId: String? = null): Map<String, String> =
+        runCatching { parseSourceHeaders(sourceJson.objectValue(), sourceId) }.getOrDefault(emptyMap())
+
     fun parseLoginUi(sourceJson: String): List<SourceLoginUiItem> {
         val source = sourceJson.objectValue()
         val sourceUrl = source.string("bookSourceUrl") ?: ""

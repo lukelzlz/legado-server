@@ -1,4 +1,4 @@
-import { CSSProperties, PointerEvent as ReactPointerEvent, useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import React, { CSSProperties, PointerEvent as ReactPointerEvent, useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { flushSync } from 'react-dom'
 import { useTranslation } from 'react-i18next'
 import { api, BookDetails, Chapter, ReadingProgress, SearchResult } from './api'
@@ -35,7 +35,7 @@ import {
   putOfflineChapter,
 } from './offlineStorage'
 
-export type OpenBook = { details: BookDetails; bookUrl: string; chapters: Chapter[]; progress?: ReadingProgress }
+export type OpenBook = { details: BookDetails; bookUrl: string; chapters: Chapter[]; progress?: ReadingProgress; bookKind?: string }
 
 /**
  * 滚动排障用的渲染采样开关（localStorage: `legado-scroll-debug` = '1'）。

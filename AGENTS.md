@@ -244,6 +244,7 @@ AI 与人类协作时必须明确当前达到的完成度阶梯，严禁混淆�
 
 - **[本地书/解析] Jsoup 里「用换行标记块级边界」必须用非空白占位符，否则整章静默压成一行**：`doc.select("p, div, br, …").prepend("\n\n")` 看似可行，但 `Element.text()` 会对每个文本节点做空白归一化（`\n`/`\t` → 空格），插进去的换行**一个都活不下来** ⇒ 阅读页完全无分段、而目录/字数全部正常，除了肉眼阅读极难发现。正确做法是用**非空白占位符**（字面量 `\n` 两字符）标记块级边界，取完 `text()` 后再统一 `replace` 回真换行（见 `LocalBookParser.htmlToText()`）。回归测试：`LocalBookParserTest`（相邻 `<p>` / 嵌套 `<div>` / `<br>` 三种边界 + `head` 的 `<title>` 不得进正文）。
 - **[数据修复] 解析结果一旦落库，解析器就不再是唯一真相——修解析器必须同时给存量数据留幂等回填入口**：本地书的目录与正文是在**导入那一刻**解析落库的（`book_toc_cache` / `book_content_cache`），所以解析器修好后老书不会自动变好，而段落边界属于**不可逆丢失**的信息（替换净化规则也救不回来）。回填入口的设计要点：① 用 `local_books/<bookId>.<ext>` 里留存的原始文件重解析，用户不必重新上传；② 只重写目录/正文/缓存状态，**绝不触碰 `book_shelf`**（用户手工改过的书名/作者/分组/封面）与 `reading_progress`；③ 保持 `local://<bookId>` 不变 ⇒ 进度与书签自动延续；④ 幂等、可单本可整批、逐本返回 `reparsed/skipped/failed` 与原因；⑤ **不做启动自动迁移**——整本重解析要把大 EPUB 读进内存，会在启动时制造资源尖峰（对照 SESSION-025）。见 `POST /api/bookshelf/reparse-local` 与 `Database.replaceLocalBookCache()`。
+- **[媒体缓存/GC] 围绕阅读锚点的滑窗保护与已读历史优先淘汰**：严禁粗暴按「是否未读」淘汰漫画与音频缓存，否则即将阅读的前瞻章节会被优先删光导致断流卡顿；必须采用滑窗模型：① 已读完历史章节（落后进度 > 5 章且完成度 > 80%）第一顺位淘汰，腾挪最大冷空间；② 弃坑孤立预取（超 14 天未访问且非书架）第二顺位淘汰；③ 当前在读的后方前瞻预取（未来 5~15 章）受滑窗强保护；④ 用户置顶整本下载享免死金牌（Pinned）。
 
 ---
 
@@ -280,6 +281,7 @@ AI 与人类协作时必须明确当前达到的完成度阶梯，严禁混淆�
 | PROPOSAL-025 | 书源发现页（Explore）与多维分类浏览体系（Issue #24：exploreUrl 全语法解析 + ruleExplore/ruleSearch 继承回退 + 发现选项卡与加架直读） | [`docs/proposals/PROPOSAL-025-source-explore-page.md`](docs/proposals/PROPOSAL-025-source-explore-page.md) | Accepted |
 | PROPOSAL-026 | 连续滚动模式升级为无限瀑布流与虚拟窗口阅读引擎（类似 Twitter 瀑布流：无缝向下追加 + 视口章节感知 + 远端虚拟卸载） | [`docs/proposals/PROPOSAL-026-reader-infinite-waterfall-stream-virtual-scroll.md`](docs/proposals/PROPOSAL-026-reader-infinite-waterfall-stream-virtual-scroll.md) | Accepted |
 | PROPOSAL-027 | 替换净化规则批量管理、分组管理与操作按钮视觉体系化重构 (Issue #35) | [`docs/proposals/PROPOSAL-027-replace-rules-batch-and-group-management.md`](docs/proposals/PROPOSAL-027-replace-rules-batch-and-group-management.md) | Tested |
+| PROPOSAL-028 | 漫画（图片书源）端到端支持与内嵌内容寻址缓存体系 (方案E · 原版规则完全适配) | [`docs/proposals/PROPOSAL-028-manga-support-and-content-addressed-cache.md`](docs/proposals/PROPOSAL-028-manga-support-and-content-addressed-cache.md) | Draft (P0 主干已实现) |
 
 ### 架构决策记录 (ADR)
 | 编号 | 决策标题 | 关联文档 | 状态 |
@@ -311,6 +313,7 @@ AI 与人类协作时必须明确当前达到的完成度阶梯，严禁混淆�
 | ADR-025 | 书源发现页（Explore）服务端解析管线与响应式 UI架构 | [`docs/decisions/ADR-025-source-explore-parsing-and-ui.md`](docs/decisions/ADR-025-source-explore-parsing-and-ui.md) | Accepted |
 | ADR-026 | 连续滚动模式采用章节流追加与视口虚拟窗口架构（章节流水线 + 哨兵预载 + IntersectionObserver 视口锚定 + Spacer 卸载保护） | [`docs/decisions/ADR-026-reader-infinite-waterfall-stream-virtual-scroll.md`](docs/decisions/ADR-026-reader-infinite-waterfall-stream-virtual-scroll.md) | Accepted |
 | ADR-027 | 替换净化规则批量事务契约与字符串列分组状态机架构 | [`docs/decisions/ADR-027-replace-rules-batch-and-group-management.md`](docs/decisions/ADR-027-replace-rules-batch-and-group-management.md) | Accepted |
+| ADR-028 | 采用单进程内嵌式双层内容寻址缓存体系 (方案E) 完全整合适配原版漫画规则 | [`docs/decisions/ADR-028-embedded-content-addressed-manga-cache.md`](docs/decisions/ADR-028-embedded-content-addressed-manga-cache.md) | Proposed |
 
 ### 工作记忆与历史推演归档 (Sessions Chronicle)
 | 日期 / ID | 类型 | 标题 / 议题 | 关联文档 | 状态 |

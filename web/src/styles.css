@@ -6213,8 +6213,9 @@ mark.search-highlight { background: var(--accent-soft); color: var(--accent); fo
 .audiobook-error-box { width: 100%; }
 .audiobook-audio { display: none; }
 .audiobook-offline-banner { position: relative; z-index: 3; }
-.audiobook-bottom-controls { position: relative; z-index: 3; flex-shrink: 0; display: grid; grid-template-columns: repeat(5, 1fr); gap: 4px; padding: 10px 8px calc(10px + var(--safe-bottom)); border-top: 1px solid var(--line); background: color-mix(in srgb, var(--surface) 92%, transparent); }
-.audiobook-feature { display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 6px 4px; border: 0; border-radius: 8px; background: none; color: var(--muted); font-size: 10px; cursor: pointer; transition: color .15s ease, background .15s ease; }
+.audiobook-bottom-controls { position: relative; z-index: 3; flex-shrink: 0; display: flex; gap: 4px; padding: 10px 8px calc(10px + var(--safe-bottom)); border-top: 1px solid var(--line); background: color-mix(in srgb, var(--surface) 92%, transparent); }
+.audiobook-feature { flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 6px 4px; border: 0; border-radius: 8px; background: none; color: var(--muted); font-size: 10px; cursor: pointer; transition: color .15s ease, background .15s ease; }
+.audiobook-feature > span { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .audiobook-feature:hover, .audiobook-feature.active { color: var(--accent); background: var(--accent-soft); }
 .audiobook-feature-value { display: grid; place-items: center; min-height: 20px; font-size: 13px; font-weight: 600; font-variant-numeric: tabular-nums; }
 .audiobook-feature-value svg { width: 18px; height: 18px; }

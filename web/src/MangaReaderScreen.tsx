@@ -475,6 +475,55 @@ export function MangaReaderScreen({ openBook, startIndex, onClose, theme }: Mang
           autoScrollKey={activeDrawer === 'toc' ? 1 : 0}
           cachedUrlsSet={cachedChapters}
         />
+        {/* 缓存底栏：把「离线缓存」搬到**目录抽屉**里（与小说阅读器的目录底栏同构）。
+            放在列表之后 = 底部固定，不用滚动就能点；点击**不关抽屉**，这样后台缓存跑起来时
+            列表里的绿点当场可见（用户要的就是这个观感："像小说的那个一样"）。 */}
+        <footer className="drawer-footer">
+          <div className="cache-range-btn-grid">
+            <button
+              type="button"
+              className="cache-range-btn"
+              disabled={offlineRunning}
+              title={t('manga.offlineCurrentTitle', '缓存当前这一章的全部图片')}
+              onClick={() => requestOffline(0)}
+            >
+              {t('manga.offlineCurrent', '本章')}
+            </button>
+            <button
+              type="button"
+              className="cache-range-btn"
+              disabled={offlineRunning}
+              title={t('reader.cacheNext50Title', '缓存当前章节后续 50 章')}
+              onClick={() => requestOffline(50)}
+            >
+              {t('reader.cacheNext50', '后 50 章')}
+            </button>
+            <button
+              type="button"
+              className="cache-range-btn"
+              disabled={offlineRunning}
+              title={t('reader.cacheNext100Title', '缓存当前章节后续 100 章')}
+              onClick={() => requestOffline(100)}
+            >
+              {t('reader.cacheNext100', '后 100 章')}
+            </button>
+            <button
+              type="button"
+              className="cache-range-btn"
+              disabled={offlineRunning}
+              title={t('manga.offlineAllTitle', '缓存整本漫画（GC 永不自动淘汰）')}
+              onClick={() => requestOffline(chapters.length)}
+            >
+              {t('reader.cacheAll', '全本缓存')}
+            </button>
+          </div>
+          {/* 绿点图例**必须留着**：它是"哪些章已可离线读"的唯一解释 */}
+          <small className="setting-hint">
+            {offlineRunning
+              ? t('manga.offlineRunning', '正在后台缓存，目录里绿点表示该章已可离线阅读')
+              : t('manga.offlineHint', { count: cachedChapters.size, defaultValue: `已离线 ${cachedChapters.size} 章 · 绿点表示整章可离线阅读` })}
+          </small>
+        </footer>
       </aside>
 
       {/* 设置抽屉：直接复用文本阅读器的设置排版（setting-section / page-modes / setting-hint） */}
@@ -513,41 +562,6 @@ export function MangaReaderScreen({ openBook, startIndex, onClose, theme }: Mang
               </button>
             </div>
             <small className="setting-hint">{t('manga.immersiveHint', '自动隐藏时单击画面可唤出工具条')}</small>
-          </section>
-          {/* 离线缓存：复用文本阅读器的同一套按钮网格与文案键（观感一致，不新造一套） */}
-          <section className="setting-section">
-            <span className="setting-label">{t('manga.offlineCache', '离线缓存')}</span>
-            <div className="cache-range-btn-grid">
-              <button
-                type="button"
-                className="cache-range-btn"
-                title={t('manga.offlineCurrentTitle', '缓存当前这一章的全部图片')}
-                onClick={() => requestOffline(0)}
-              >
-                {t('manga.offlineCurrent', '本章')}
-              </button>
-              <button
-                type="button"
-                className="cache-range-btn"
-                title={t('reader.cacheNext50Title', '缓存当前章节后续 50 章')}
-                onClick={() => requestOffline(50)}
-              >
-                {t('reader.cacheNext50', '后 50 章')}
-              </button>
-              <button
-                type="button"
-                className="cache-range-btn"
-                title={t('manga.offlineAllTitle', '缓存整本漫画（GC 永不自动淘汰）')}
-                onClick={() => requestOffline(chapters.length)}
-              >
-                {t('reader.cacheAll', '全本缓存')}
-              </button>
-            </div>
-            <small className="setting-hint">
-              {offlineRunning
-                ? t('manga.offlineRunning', '正在后台缓存，目录里绿点表示该章已可离线阅读')
-                : t('manga.offlineHint', { count: cachedChapters.size, defaultValue: `已离线 ${cachedChapters.size} 章 · 绿点表示整章可离线阅读` })}
-            </small>
           </section>
         </div>
       </aside>

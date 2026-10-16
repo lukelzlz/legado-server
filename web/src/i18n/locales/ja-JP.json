@@ -410,6 +410,13 @@
     "cacheRunning": "バックグラウンドでキャッシュ中。目次の緑点はオフライン再生可能な章です",
     "cacheHint": "オフライン済み {{chapters}} 章 · サーバーキャッシュ {{tracks}} セグメント（{{size}}）"
   },
+  "manga": {
+    "offlineCurrent": "この章",
+    "offlineCurrentTitle": "現在の章の画像をすべてキャッシュ",
+    "offlineAllTitle": "漫画全体をキャッシュ（GC で自動削除されません）",
+    "offlineHint": "{{count}} 章をオフライン保存済み · 緑の点は章全体をオフラインで読めることを示します",
+    "offlineRunning": "バックグラウンドでキャッシュ中。目次の緑の点はその章をオフラインで読めることを示します"
+  },
   "reader": {
     "catalog": "目次",
     "bookmarks": "しおり",

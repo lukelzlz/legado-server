@@ -410,6 +410,13 @@
     "cacheRunning": "正在后台缓存，目录里绿点表示该章已可离线播放",
     "cacheHint": "已离线 {{chapters}} 章 · 服务端缓存 {{tracks}} 段（{{size}}）"
   },
+  "manga": {
+    "offlineCurrent": "本章",
+    "offlineCurrentTitle": "缓存当前这一章的全部图片",
+    "offlineAllTitle": "缓存整本漫画（GC 永不自动淘汰）",
+    "offlineHint": "已离线 {{count}} 章 · 绿点表示整章可离线阅读",
+    "offlineRunning": "正在后台缓存，目录里绿点表示该章已可离线阅读"
+  },
   "reader": {
     "catalog": "目录",
     "bookmarks": "书签",

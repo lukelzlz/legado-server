@@ -410,6 +410,13 @@
     "cacheRunning": "正在背景快取，目錄裡綠點表示該章已可離線播放",
     "cacheHint": "已離線 {{chapters}} 章 · 伺服器快取 {{tracks}} 段（{{size}}）"
   },
+  "manga": {
+    "offlineCurrent": "本章",
+    "offlineCurrentTitle": "快取當前這一章的全部圖片",
+    "offlineAllTitle": "快取整本漫畫（GC 永不自動淘汰）",
+    "offlineHint": "已離線 {{count}} 章 · 綠點表示整章可離線閱讀",
+    "offlineRunning": "正在背景快取，目錄裡綠點表示該章已可離線閱讀"
+  },
   "reader": {
     "catalog": "目錄",
     "bookmarks": "書籤",

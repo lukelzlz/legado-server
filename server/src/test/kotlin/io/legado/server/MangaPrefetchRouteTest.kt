@@ -57,6 +57,8 @@ class MangaPrefetchRouteTest {
                 cover = null,
             )
             seed.saveTocCache(sourceId, bookUrl, listOf(Chapter(0, "第 1 话", "ch-0")))
+            // 预置数据等价于"已经升级到 v2 布局的既有部署"：否则启动清理会按 v2 语义清掉预置缓存
+            seed.setSetting(CACHE_LAYOUT_KEY, CACHE_LAYOUT_VERSION)
             seed.saveMangaChapter(
                 MangaChapterRecord(
                     sourceId = sourceId, bookUrl = bookUrl, chapterUrl = "ch-0", chapterIndex = 0,

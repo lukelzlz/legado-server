@@ -268,7 +268,8 @@ class Database(private val path: String) : Closeable, AutoCloseable {
                   state          text not null default 'pending',
                   last_error     text,
                   created_at     integer not null,
-                  last_access_at integer not null
+                  last_access_at integer not null,
+                  file_path      text not null default ''
                 );
                 create index if not exists idx_manga_image_key on manga_image_cache(cache_key);
                 create index if not exists idx_manga_image_book on manga_image_cache(source_id, book_url);
@@ -298,7 +299,8 @@ class Database(private val path: String) : Closeable, AutoCloseable {
                   pinned         integer not null default 0,
                   listened       integer not null default 0,
                   created_at     integer not null,
-                  last_access_at integer not null
+                  last_access_at integer not null,
+                  file_path      text not null default ''
                 );
                 -- 刻意**不是**唯一索引：书源换了某一段的地址时，新 key 会挂在同一个 segment_index 上，
                 -- 唯一索引会让那次 upsert 直接抛异常（一次书源变更 ⇒ 整章打不开）。
@@ -315,6 +317,7 @@ class Database(private val path: String) : Closeable, AutoCloseable {
         migrateSourceTable(db)
         migrateBookContentCache(db)
         migrateMangaImageCache(db)
+        migrateCacheFilePaths(db)
         healLocalBookCacheStatus(db)
         val userExists = db.prepareStatement("select 1 from app_user where id = 1").use { it.executeQuery().next() }
         if (!userExists) {
@@ -871,15 +874,15 @@ class Database(private val path: String) : Closeable, AutoCloseable {
     fun recordMangaImage(record: MangaImageRecord) = write { db ->
         val now = System.currentTimeMillis()
         db.prepareStatement(
-            """insert into manga_image_cache(url_hash,cache_key,source_id,book_url,chapter_url,chapter_index,segment_index,upstream_url,content_type,byte_size,width,height,state,last_error,created_at,last_access_at)
-               values(?,?,?,?,?,?,?,?,?,?,?,?,'ready',null,?,?)
+            """insert into manga_image_cache(url_hash,cache_key,source_id,book_url,chapter_url,chapter_index,segment_index,upstream_url,content_type,byte_size,width,height,state,last_error,created_at,last_access_at,file_path)
+               values(?,?,?,?,?,?,?,?,?,?,?,?,'ready',null,?,?,?)
                on conflict(url_hash) do update set
                  cache_key=excluded.cache_key, source_id=excluded.source_id, book_url=excluded.book_url,
                  chapter_url=excluded.chapter_url, chapter_index=excluded.chapter_index,
                  segment_index=excluded.segment_index, upstream_url=excluded.upstream_url,
                  content_type=excluded.content_type, byte_size=excluded.byte_size,
                  width=excluded.width, height=excluded.height, state='ready', last_error=null,
-                 last_access_at=excluded.last_access_at""",
+                 last_access_at=excluded.last_access_at, file_path=coalesce(nullif(excluded.file_path,''), manga_image_cache.file_path)""",
         ).use {
             it.setString(1, record.urlHash); it.setString(2, record.cacheKey); it.setString(3, record.sourceId)
             it.setString(4, record.bookUrl); it.setString(5, record.chapterUrl); it.setInt(6, record.chapterIndex)
@@ -889,6 +892,8 @@ class Database(private val path: String) : Closeable, AutoCloseable {
             if (record.height != null) it.setInt(12, record.height) else it.setNull(12, java.sql.Types.INTEGER)
             it.setLong(13, if (record.createdAt > 0) record.createdAt else now)
             it.setLong(14, if (record.lastAccessAt > 0) record.lastAccessAt else now)
+            // 空路径只是"不知道"，不是"没有文件"：绝不能把已有行的可用路径抹成空
+            it.setString(15, record.filePath)
             it.executeUpdate()
         }
     }
@@ -960,6 +965,66 @@ class Database(private val path: String) : Closeable, AutoCloseable {
             it.setString(1, cacheKey)
             it.executeQuery().use { rs -> if (rs.next()) rs.getInt(1) else 0 }
         }
+    }
+
+    /**
+     * 路径引用计数：**删物理文件前的判据**。
+     *
+     * 内容寻址时代问的是 `cache_key`（同一份字节被多个 URL 共用）；现在每段落自己的文件，
+     * 判据换成 `file_path` —— 万一两行指向同一个文件（历史数据/极端重名），也不能误删。
+     */
+    fun countMangaImagePaths(filePath: String): Int = connect { db ->
+        db.prepareStatement("select count(*) from manga_image_cache where file_path=?").use {
+            it.setString(1, filePath)
+            it.executeQuery().use { rs -> if (rs.next()) rs.getInt(1) else 0 }
+        }
+    }
+
+    /** 无中文定位命中的**回填**：把 `file_path` 这条快路径修好（下次直出少一次扫盘）。 */
+    fun updateMangaImageFilePath(urlHash: String, filePath: String) = write { db ->
+        db.prepareStatement("update manga_image_cache set file_path=? where url_hash=?").use {
+            it.setString(1, filePath); it.setString(2, urlHash); it.executeUpdate()
+        }
+    }
+
+    /**
+     * 取「任一引用该字节的行」（`fileFor(cacheKey)` 口径）。
+     *
+     * 返回行而不是路径：快路径失效时调用方还要拿它的 `sourceId/bookUrl/chapterIndex/segmentIndex`
+     * 退到无中文定位，不会因为 `file_path` 过期就判定"文件不存在"。
+     */
+    fun findMangaImageByCacheKey(cacheKey: String): MangaImageRecord? = connect { db ->
+        db.prepareStatement(MANGA_IMAGE_SELECT + " where cache_key=? limit 1").use {
+            it.setString(1, cacheKey)
+            it.executeQuery().use { rs -> if (rs.next()) rs.toMangaImage() else null }
+        }
+    }
+
+    /**
+     * 书名（缓存目录用）。
+     *
+     * 书**不在书架**上也要能落盘 ⇒ 返回 null，调用方用短哈希兜底，绝不因此失败。
+     */
+    fun cacheBookName(sourceId: String, bookUrl: String): String? = connect { db ->
+        db.prepareStatement("select name from book_shelf where source_id=? and book_url=?").use {
+            it.setString(1, sourceId); it.setString(2, bookUrl)
+            it.executeQuery().use { rs -> if (rs.next()) rs.getString(1) else null }
+        }
+    }
+
+    /**
+     * 章节标题（缓存目录用）：先按 `tocUrl = bookUrl` / `bookUrl + "/toc"` 两种形态查 TOC 缓存，
+     * 按章节地址匹配、退而按序号匹配；都拿不到再退到 `getChapterTitle`（like 兜底）。
+     *
+     * 一律允许返回 null —— **标题只是给人看的装饰**，取不到就只用 8 位章节号。
+     */
+    fun cacheChapterTitle(sourceId: String, bookUrl: String, chapterUrl: String, chapterIndex: Int): String? {
+        val chapters = getTocCache(sourceId, bookUrl) ?: getTocCache(sourceId, "$bookUrl/toc")
+        val title = chapters?.let { list ->
+            list.firstOrNull { it.url == chapterUrl }?.title
+                ?: list.firstOrNull { it.index == chapterIndex }?.title
+        }
+        return title?.takeIf { it.isNotBlank() } ?: getChapterTitle(sourceId, bookUrl, chapterUrl)
     }
 
     fun sumMangaImageBytes(): Long = connect { db ->
@@ -1163,15 +1228,16 @@ class Database(private val path: String) : Closeable, AutoCloseable {
     fun recordAudioTrack(record: AudioCacheRecord) = write { db ->
         val now = System.currentTimeMillis()
         db.prepareStatement(
-            """insert into audio_cache(cache_key,source_id,book_url,chapter_url,chapter_index,segment_index,upstream_url,headers_json,content_type,byte_size,duration_ms,state,last_error,pinned,listened,created_at,last_access_at)
-               values(?,?,?,?,?,?,?,?,?,?,?,'ready',null,?,?,?,?)
+            """insert into audio_cache(cache_key,source_id,book_url,chapter_url,chapter_index,segment_index,upstream_url,headers_json,content_type,byte_size,duration_ms,state,last_error,pinned,listened,created_at,last_access_at,file_path)
+               values(?,?,?,?,?,?,?,?,?,?,?,'ready',null,?,?,?,?,?)
                on conflict(cache_key) do update set
                  source_id=excluded.source_id, book_url=excluded.book_url, chapter_url=excluded.chapter_url,
                  chapter_index=excluded.chapter_index, segment_index=excluded.segment_index,
                  upstream_url=excluded.upstream_url, headers_json=excluded.headers_json,
                  content_type=excluded.content_type, byte_size=excluded.byte_size,
                  duration_ms=excluded.duration_ms, state='ready', last_error=null,
-                 last_access_at=excluded.last_access_at""",
+                 last_access_at=excluded.last_access_at,
+                 file_path=coalesce(nullif(excluded.file_path,''), audio_cache.file_path)""",
         ).use {
             it.setString(1, record.cacheKey); it.setString(2, record.sourceId); it.setString(3, record.bookUrl)
             it.setString(4, record.chapterUrl); it.setInt(5, record.chapterIndex); it.setInt(6, record.segmentIndex)
@@ -1180,6 +1246,8 @@ class Database(private val path: String) : Closeable, AutoCloseable {
             it.setInt(12, if (record.pinned) 1 else 0); it.setInt(13, if (record.listened) 1 else 0)
             it.setLong(14, if (record.createdAt > 0) record.createdAt else now)
             it.setLong(15, if (record.lastAccessAt > 0) record.lastAccessAt else now)
+            // 空路径只是"不知道"，不是"没有文件"：绝不能把已有行的可用路径抹成空
+            it.setString(16, record.filePath)
             it.executeUpdate()
         }
     }
@@ -1271,6 +1339,21 @@ class Database(private val path: String) : Closeable, AutoCloseable {
         }
     }
 
+    /** 路径引用计数：删物理文件前的判据（同 `countMangaImagePaths`）。 */
+    fun countAudioPaths(filePath: String): Int = connect { db ->
+        db.prepareStatement("select count(*) from audio_cache where file_path=?").use {
+            it.setString(1, filePath)
+            it.executeQuery().use { rs -> if (rs.next()) rs.getInt(1) else 0 }
+        }
+    }
+
+    /** 无中文定位命中的**回填**（同 `updateMangaImageFilePath`）。 */
+    fun updateAudioFilePath(cacheKey: String, filePath: String) = write { db ->
+        db.prepareStatement("update audio_cache set file_path=? where cache_key=?").use {
+            it.setString(1, filePath); it.setString(2, cacheKey); it.executeUpdate()
+        }
+    }
+
     fun deleteAudioRowsByBook(sourceId: String, bookUrl: String): Int = write { db ->
         db.prepareStatement("delete from audio_cache where source_id=? and book_url=?").use {
             it.setString(1, sourceId); it.setString(2, bookUrl); it.executeUpdate()
@@ -1353,7 +1436,7 @@ class Database(private val path: String) : Closeable, AutoCloseable {
         chapterIndex = getInt(5), segmentIndex = getInt(6), upstreamUrl = getString(7), headersJson = getString(8),
         contentType = getString(9), byteSize = getLong(10), durationMs = getLong(11), state = getString(12),
         lastError = getString(13), pinned = getInt(14) != 0, listened = getInt(15) != 0,
-        createdAt = getLong(16), lastAccessAt = getLong(17),
+        createdAt = getLong(16), lastAccessAt = getLong(17), filePath = getString(18).orEmpty(),
     )
 
     private fun java.sql.ResultSet.toMangaChapter(): MangaChapterRecord = MangaChapterRecord(
@@ -1368,6 +1451,7 @@ class Database(private val path: String) : Closeable, AutoCloseable {
         chapterUrl = getString(5), chapterIndex = getInt(6), segmentIndex = getInt(7), upstreamUrl = getString(8),
         contentType = getString(9), byteSize = getLong(10), width = getObject(11) as? Int, height = getObject(12) as? Int,
         state = getString(13), lastError = getString(14), createdAt = getLong(15), lastAccessAt = getLong(16),
+        filePath = getString(17).orEmpty(),
     )
     fun recordCoverCache(coverKey: String, contentType: String = "image/*") = write { db ->
         db.prepareStatement("insert into cover_cache(cache_key,content_type) values(?,?) on conflict(cache_key) do update set content_type=excluded.content_type").use {
@@ -3490,6 +3574,27 @@ class Database(private val path: String) : Closeable, AutoCloseable {
             db.createStatement().use { it.executeUpdate("alter table manga_image_cache add column last_error text") }
         }
     }
+
+    /**
+     * 缓存落盘相对路径（`file_path`）的增量迁移（幂等）。
+     *
+     * 缓存目录从「散列两级目录」改成「书/章可读目录」后，行必须记住自己落在哪 ——
+     * 但**它只是快路径缓存**：读取定位还有第二级（无中文的哈希+序号扫描，见
+     * `AtomicFileStore.findByNameFree`），所以即使这一列为空也不会读不到文件。
+     */
+    private fun migrateCacheFilePaths(db: Connection) {
+        listOf("manga_image_cache", "audio_cache").forEach { table ->
+            val columns = db.createStatement().use { statement ->
+                statement.executeQuery("pragma table_info($table)").use { rs ->
+                    buildSet { while (rs.next()) add(rs.getString("name")) }
+                }
+            }
+            if (columns.isEmpty()) return@forEach
+            if ("file_path" !in columns) {
+                db.createStatement().use { it.executeUpdate("alter table $table add column file_path text not null default ''") }
+            }
+        }
+    }
     fun listHttpTts(query: String? = null): List<HttpTts> = connect { db ->
         val sql = if (!query.isNullOrBlank()) {
             "select id, name, url, header, content_type, concurrent_rate, login_url, login_check_js, login_ui, js_lib, enabled_cookie_jar, last_update_time from http_tts where name like ? or url like ? order by id asc"
@@ -3613,10 +3718,10 @@ class Database(private val path: String) : Closeable, AutoCloseable {
             "select source_id,book_url,chapter_url,chapter_index,pinned,images_json,total,ready,skipped,state,last_error,created_at,updated_at from manga_chapter_cache"
         /** 漫画图片索引的列顺序必须与 `toMangaImage()` 的取值下标逐一对齐。 */
         private const val MANGA_IMAGE_SELECT =
-            "select url_hash,cache_key,source_id,book_url,chapter_url,chapter_index,segment_index,upstream_url,content_type,byte_size,width,height,state,last_error,created_at,last_access_at from manga_image_cache"
+            "select url_hash,cache_key,source_id,book_url,chapter_url,chapter_index,segment_index,upstream_url,content_type,byte_size,width,height,state,last_error,created_at,last_access_at,file_path from manga_image_cache"
         /** 音频索引的列顺序必须与 `toAudioCache()` 的取值下标逐一对齐。 */
         private const val AUDIO_SELECT =
-            "select cache_key,source_id,book_url,chapter_url,chapter_index,segment_index,upstream_url,headers_json,content_type,byte_size,duration_ms,state,last_error,pinned,listened,created_at,last_access_at from audio_cache"
+            "select cache_key,source_id,book_url,chapter_url,chapter_index,segment_index,upstream_url,headers_json,content_type,byte_size,duration_ms,state,last_error,pinned,listened,created_at,last_access_at,file_path from audio_cache"
         private const val PBKDF2_ITERATIONS = 600_000
         private const val SALT_BYTES = 16
         private const val HASH_BITS = 256

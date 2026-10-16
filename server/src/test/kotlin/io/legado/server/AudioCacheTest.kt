@@ -69,7 +69,7 @@ class AudioCacheTest {
             var threw = false
             try {
                 // 「先盘后表」的反面：磁盘上没有文件就写 ready ⇒ 播放器拿到 404 而数据库看起来正常
-                cache.markReady(rows[0], "audio/mpeg", 123)
+                cache.markReady(rows[0], "audio/mpeg", 123, cache.relativePathFor(rows[0], "audio/mpeg"))
             } catch (e: IllegalArgumentException) {
                 threw = true
             }
@@ -81,8 +81,7 @@ class AudioCacheTest {
     fun `drops the row when the file disappeared instead of pretending a hit`() {
         withCache { cache, database ->
             val rows = cache.registerChapter(SOURCE, BOOK, CHAPTER, 0, specs("a.mp3"))
-            writeBytes(cache, rows[0].cacheKey, mp3Bytes(1024))
-            cache.markReady(rows[0], "audio/mpeg", 1024)
+            writeReady(cache, rows[0], mp3Bytes(1024))
             assertNotNull("落盘后必须命中", cache.getByKey(rows[0].cacheKey))
 
             Files.deleteIfExists(cache.fileFor(rows[0].cacheKey)!!)
@@ -96,8 +95,7 @@ class AudioCacheTest {
     fun `re-registering a chapter never resets ready rows back to pending`() {
         withCache { cache, _ ->
             val first = cache.registerChapter(SOURCE, BOOK, CHAPTER, 0, specs("a.mp3", "b.mp3"))
-            writeBytes(cache, first[0].cacheKey, mp3Bytes(2048))
-            cache.markReady(first[0], "audio/mpeg", 2048)
+            writeReady(cache, first[0], mp3Bytes(2048))
 
             // 二次打开同一章（清单重新登记）——ready 绝不能被重置，否则每播一次都重新下载
             val again = cache.registerChapter(SOURCE, BOOK, CHAPTER, 0, specs("a.mp3", "b.mp3"))
@@ -117,8 +115,7 @@ class AudioCacheTest {
     fun `re-registering prunes stale keys when the source changed the audio url`() {
         withCache { cache, database ->
             val before = cache.registerChapter(SOURCE, BOOK, CHAPTER, 0, specs("old.mp3"))
-            writeBytes(cache, before[0].cacheKey, mp3Bytes(512))
-            cache.markReady(before[0], "audio/mpeg", 512)
+            writeReady(cache, before[0], mp3Bytes(512))
 
             // 书源换了这一段的地址 ⇒ 旧 key 必须被清掉（否则永远占盘，且"整章就绪度"永远凑不齐）
             val after = cache.registerChapter(SOURCE, BOOK, CHAPTER, 0, specs("new.mp3"))
@@ -136,13 +133,11 @@ class AudioCacheTest {
             assertEquals("pending", cache.chapterState(rows))
             assertEquals("还没整章就绪 ⇒ 绿点口径里不该有它", emptyList<String>(), database.readyAudioChapters(SOURCE, BOOK))
 
-            writeBytes(cache, rows[0].cacheKey, mp3Bytes(256))
-            cache.markReady(rows[0], "audio/mpeg", 256)
+            writeReady(cache, rows[0], mp3Bytes(256))
             assertEquals("还有分段没落定 ⇒ pending（不是 partial）", "pending", cache.chapterState(cache.chapterRows(SOURCE, BOOK, CHAPTER)))
             assertEquals("没凑齐就不算离线可用", emptyList<String>(), database.readyAudioChapters(SOURCE, BOOK))
 
-            writeBytes(cache, rows[1].cacheKey, mp3Bytes(256))
-            cache.markReady(rows[1], "audio/mpeg", 256)
+            writeReady(cache, rows[1], mp3Bytes(256))
             assertEquals("ready", cache.chapterState(cache.chapterRows(SOURCE, BOOK, CHAPTER)))
             assertEquals("整章就绪才进绿点口径", listOf(CHAPTER), database.readyAudioChapters(SOURCE, BOOK))
         }
@@ -152,8 +147,7 @@ class AudioCacheTest {
     fun `duration update ignores zero so a later unknown read cannot wipe a known value`() {
         withCache { cache, _ ->
             val rows = cache.registerChapter(SOURCE, BOOK, CHAPTER, 0, specs("a.mp3"))
-            writeBytes(cache, rows[0].cacheKey, mp3Bytes(128))
-            cache.markReady(rows[0], "audio/mpeg", 128)
+            writeReady(cache, rows[0], mp3Bytes(128))
 
             cache.updateDuration(rows[0].cacheKey, 183_452)
             assertEquals(183_452L, cache.rowByKey(rows[0].cacheKey)!!.durationMs)
@@ -167,8 +161,7 @@ class AudioCacheTest {
     fun `reports stats with table and disk bytes`() {
         withCache { cache, _ ->
             val rows = cache.registerChapter(SOURCE, BOOK, CHAPTER, 0, specs("a.mp3"))
-            writeBytes(cache, rows[0].cacheKey, mp3Bytes(4096))
-            cache.markReady(rows[0], "audio/mpeg", 4096)
+            writeReady(cache, rows[0], mp3Bytes(4096))
 
             val stats = cache.stats()
             assertEquals(1, stats.trackCount)
@@ -184,8 +177,7 @@ class AudioCacheTest {
     fun `delete removes index and bytes`() {
         withCache { cache, _ ->
             val rows = cache.registerChapter(SOURCE, BOOK, CHAPTER, 0, specs("a.mp3"))
-            writeBytes(cache, rows[0].cacheKey, mp3Bytes(64))
-            cache.markReady(rows[0], "audio/mpeg", 64)
+            writeReady(cache, rows[0], mp3Bytes(64))
             val file = cache.fileFor(rows[0].cacheKey)!!
 
             assertEquals(1, cache.deleteKey(rows[0].cacheKey))
@@ -193,8 +185,7 @@ class AudioCacheTest {
             assertFalse("文件必须一起删（先表后盘）", Files.exists(file))
 
             val more = cache.registerChapter(SOURCE, BOOK, CHAPTER, 0, specs("b.mp3"))
-            writeBytes(cache, more[0].cacheKey, mp3Bytes(64))
-            cache.markReady(more[0], "audio/mpeg", 64)
+            writeReady(cache, more[0], mp3Bytes(64))
             assertEquals(1, cache.deleteBook(SOURCE, BOOK))
             assertEquals(0, cache.stats().trackCount)
             assertEquals(0L, cache.physicalBytes())
@@ -213,19 +204,24 @@ class AudioCacheTest {
             val rows = cache.registerChapter(SOURCE, BOOK, CHAPTER, 0, specs("a.mp3"))
 
             val outcome = runBlocking {
-                fetcher.fetchInto("https://a.example/a.mp3", emptyMap(), CHAPTER, null, cache.store, rows[0].cacheKey)
+                fetcher.fetchInto(
+                    "https://a.example/a.mp3", emptyMap(), CHAPTER, null, cache.store,
+                    cache.targetFor(rows[0]),
+                )
             }
 
             assertTrue("抓取必须成功：$outcome", outcome is AudioFetchOutcome.Success)
             val success = outcome as AudioFetchOutcome.Success
             assertEquals("audio/mpeg", success.contentType)
             assertEquals(bytes.size.toLong(), success.byteSize)
-            cache.markReady(rows[0], success.contentType, success.byteSize)
+            cache.markReady(rows[0], success.contentType, success.byteSize, success.filePath)
 
             val hit = cache.getByKey(rows[0].cacheKey)
             assertNotNull("落盘后必须命中（二次播放零上游请求）", hit)
             assertEquals(bytes.size.toLong(), hit!!.byteSize)
             assertEquals("文件内容必须是完整的原始字节", bytes.size.toLong(), Files.size(cache.fileFor(hit.cacheKey)!!))
+            // 成品路径必须是**可读目录 + 8 位分段号 + 真实扩展名**（本书源只有一段 ⇒ 序号 0）
+            assertTrue("落盘相对路径必须可读：${success.filePath}", success.filePath.endsWith("/00000000.mp3"))
         }
     }
 
@@ -236,7 +232,7 @@ class AudioCacheTest {
             val rows = cache.registerChapter(SOURCE, BOOK, CHAPTER, 0, specs("a.mp3"))
 
             val outcome = runBlocking {
-                fetcher.fetchInto("https://a.example/a.mp3", emptyMap(), null, null, cache.store, rows[0].cacheKey)
+                fetcher.fetchInto("https://a.example/a.mp3", emptyMap(), null, null, cache.store, cache.targetFor(rows[0]))
             }
 
             assertTrue("错误页必须被拒绝：$outcome", outcome is AudioFetchOutcome.Failure)
@@ -258,7 +254,8 @@ class AudioCacheTest {
             val wavRows = cache.registerChapter(SOURCE, BOOK, CHAPTER, 0, specs("a.wav"))
             val wavOutcome = runBlocking {
                 fetcherReturning("audio/wav", wavBytes(8192)).fetchInto(
-                    "https://a.example/a.wav", emptyMap(), CHAPTER, null, cache.store, wavRows[0].cacheKey,
+                    "https://a.example/a.wav", emptyMap(), CHAPTER, null, cache.store,
+                    cache.targetFor(wavRows[0]),
                 )
             }
             assertTrue("WAV 必须被接受：$wavOutcome", wavOutcome is AudioFetchOutcome.Success)
@@ -267,7 +264,8 @@ class AudioCacheTest {
             val flacRows = cache.registerChapter(SOURCE, BOOK, "ch-flac", 1, specs("a.flac"))
             val flacOutcome = runBlocking {
                 fetcherReturning("audio/flac", flacBytes()).fetchInto(
-                    "https://a.example/a.flac", emptyMap(), CHAPTER, null, cache.store, flacRows[0].cacheKey,
+                    "https://a.example/a.flac", emptyMap(), CHAPTER, null, cache.store,
+                    cache.targetFor(flacRows[0]),
                 )
             }
             assertTrue(
@@ -285,7 +283,7 @@ class AudioCacheTest {
             val rows = cache.registerChapter(SOURCE, BOOK, CHAPTER, 0, specs("a.ape"))
 
             val outcome = runBlocking {
-                fetcher.fetchInto("https://a.example/a.ape", emptyMap(), null, null, cache.store, rows[0].cacheKey)
+                fetcher.fetchInto("https://a.example/a.ape", emptyMap(), null, null, cache.store, cache.targetFor(rows[0]))
             }
 
             val failure = outcome as? AudioFetchOutcome.Failure
@@ -303,7 +301,7 @@ class AudioCacheTest {
             val rows = cache.registerChapter(SOURCE, BOOK, CHAPTER, 0, specs("a.mp3"))
 
             val outcome = runBlocking {
-                fetcher.fetchInto("https://a.example/a.mp3", emptyMap(), null, null, cache.store, rows[0].cacheKey)
+                fetcher.fetchInto("https://a.example/a.mp3", emptyMap(), null, null, cache.store, cache.targetFor(rows[0]))
             }
 
             assertTrue("魔数指出是 MP3 就必须接受：$outcome", outcome is AudioFetchOutcome.Success)
@@ -319,10 +317,10 @@ class AudioCacheTest {
             val rows = cache.registerChapter(SOURCE, BOOK, CHAPTER, 0, specs("a.mp3"))
 
             val outcome = runBlocking {
-                fetcher.fetchInto("https://a.example/a.mp3", emptyMap(), null, null, cache.store, rows[0].cacheKey)
+                fetcher.fetchInto("https://a.example/a.mp3", emptyMap(), null, null, cache.store, cache.targetFor(rows[0]))
             }
             val success = outcome as AudioFetchOutcome.Success
-            cache.markReady(rows[0], success.contentType, success.byteSize)
+            cache.markReady(rows[0], success.contentType, success.byteSize, success.filePath)
 
             val file = cache.fileFor(rows[0].cacheKey)!!
             assertTrue("落盘的必须是解压后的音频（gzip 假数据是 SESSION-027 的老坑）", Files.size(file) == mp3.size.toLong())
@@ -340,7 +338,7 @@ class AudioCacheTest {
             val rows = cache.registerChapter(SOURCE, BOOK, CHAPTER, 0, specs("a.mp3"))
 
             val outcome = runBlocking {
-                fetcher.fetchInto("https://a.example/a.mp3", emptyMap(), null, null, cache.store, rows[0].cacheKey)
+                fetcher.fetchInto("https://a.example/a.mp3", emptyMap(), null, null, cache.store, cache.targetFor(rows[0]))
             }
 
             assertTrue("超过 200 MiB 必须失败", outcome is AudioFetchOutcome.Failure)
@@ -359,7 +357,7 @@ class AudioCacheTest {
             val rows = cache.registerChapter(SOURCE, BOOK, CHAPTER, 0, specs("a.mp3"))
 
             val outcome = runBlocking {
-                fetcher.fetchInto("https://a.example/a.mp3", emptyMap(), null, null, cache.store, rows[0].cacheKey)
+                fetcher.fetchInto("https://a.example/a.mp3", emptyMap(), null, null, cache.store, cache.targetFor(rows[0]))
             }
 
             // 音频与漫画的差别：**必须带原因回给前端**（整章听不了时用户要知道下一步做什么）
@@ -400,7 +398,7 @@ class AudioCacheTest {
                     CHAPTER,
                     rows[0].headersJson,
                     cache.store,
-                    rows[0].cacheKey,
+                    cache.targetFor(rows[0]),
                 )
             }
 
@@ -423,24 +421,23 @@ class AudioCacheTest {
 
     private fun specs(vararg urls: String): List<AudioTrackSpec> = urls.map { AudioTrackSpec("https://a.example/$it") }
 
-    /** 直接落盘（绕开网络）：把"已经抓过一次"的状态预置出来。 */
-    private fun writeBytes(cache: AudioCache, cacheKey: String, bytes: ByteArray) {
-        cache.store.writeStream(cacheKey) { it.write(bytes) }
-    }
+    /**
+     * 直接落盘 + 翻牌（绕开网络）：把"已经抓过一次"的状态预置出来。
+     *
+     * 路径装配走生产同一份代码（`AudioCache.putReady`），绝不在这里自己拼目录。
+     */
+    private fun writeReady(cache: AudioCache, row: AudioCacheRecord, bytes: ByteArray, contentType: String = "audio/mpeg"): String =
+        cache.putReady(row, contentType, bytes)
 
     /**
      * 是否有残留的 `tmp_*.part`。
      *
      * 中转文件必须**一个都不剩**：半截文件被读到就是"播到一半断流"，且极难复现与排查。
      */
-    private fun hasTempFiles(cache: AudioCache): Boolean {
-        val anyKey = "0".repeat(64)
-        val shard = cache.store.pathFor(anyKey).parent
-        val root = shard.parent
-        return Files.walk(root).use { paths ->
+    private fun hasTempFiles(cache: AudioCache): Boolean =
+        Files.walk(cache.store.root).use { paths ->
             paths.anyMatch { Files.isRegularFile(it) && it.fileName.toString().endsWith(".part") }
         }
-    }
 
     private fun fetcherReturning(contentType: String, bytes: ByteArray): AudioFetcher =
         AudioFetcher(testConfig(), injectedFetcher = { _, _, _, _ -> contentType to bytes })

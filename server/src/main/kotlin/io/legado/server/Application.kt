@@ -30,6 +30,15 @@ fun main(args: Array<String>) {
 fun Application.legadoApplication(config: ServerConfig = ServerConfig.fromEnvironment()) {
     val database = Database(config.databasePath)
     database.initialize(config.initialAdminPassword)
+    // 缓存目录结构升级到 v2（书/章可读目录 + file_path）时的一次性清理：
+    // 旧布局按哈希散列落盘、与新语义不兼容，用户已拍板"清掉重下"（不写迁移逻辑）。
+    // **幂等**：第二次启动读到 cache_layout=v2 直接 no-op，不做任何磁盘扫描。
+    purgeLegacyCacheLayout(
+        database = database,
+        imageRoot = config.imageCacheDirectory,
+        audioRoot = config.audioCacheDirectory,
+        log = { message -> log.info(message) },
+    )
     val auth = AuthService(database, config.secureCookies)
     val subscriptions = SubscriptionService(database) { message -> log.info(message) }
     val runner = RuleRunner(database = database)

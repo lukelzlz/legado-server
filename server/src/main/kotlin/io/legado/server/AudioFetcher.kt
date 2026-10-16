@@ -17,7 +17,12 @@ import java.util.zip.GZIPInputStream
 
 /** 一次音频抓取的结果。**失败带原因**（不像漫画那样静默返回 null）——见 [Failure] 的说明。 */
 sealed interface AudioFetchOutcome {
-    data class Success(val contentType: String, val byteSize: Long) : AudioFetchOutcome
+    /**
+     * @param filePath 成品落盘的**相对路径**（含由真实 `content_type` 决定的扩展名，
+     *   如 `十日终焉 (3f9c21ab7d0412e8c9f0)/00000499 真正的生路/00000001.mp3`）——
+     *   调用方要把它写进 `audio_cache.file_path`（快路径缓存）。
+     */
+    data class Success(val contentType: String, val byteSize: Long, val filePath: String) : AudioFetchOutcome
 
     /**
      * 失败。
@@ -73,6 +78,9 @@ class AudioFetcher(
      * @param mediaHeaders 书源 header + 登录头 + Cookie（`RuleRunner.mediaHeaders()` 产出）
      * @param referer      章节页地址 —— 音频站防盗链的主判据
      * @param trackHeadersJson 该段专属请求头（`url,{"headers":{…}}` 的 `headers` 部分），优先级最高
+     * @param target 落盘目标（目录 + 成品名生成器）：`.part` 与成品同目录，保证原子转正；
+     *   名字由**真实内容类型**决定（音频扩展名只有拿到头部字节才知道），而目录/命名策略
+     *   收口在 `AudioCache.targetFor`（含病理冲突时的哈希兜底）。
      */
     suspend fun fetchInto(
         upstreamUrl: String,
@@ -80,12 +88,12 @@ class AudioFetcher(
         referer: String?,
         trackHeadersJson: String?,
         store: AtomicFileStore,
-        cacheKey: String,
+        target: AudioTarget,
     ): AudioFetchOutcome = gate.withPermit {
         val host = runCatching { URI(upstreamUrl.trim()).host.orEmpty() }.getOrDefault("")
         val hostGate = hostGates.computeIfAbsent(host) { Semaphore(1) }
         hostGate.withPermit {
-            runCatching { fetchOnce(upstreamUrl, mediaHeaders, referer, trackHeadersJson, store, cacheKey) }
+            runCatching { fetchOnce(upstreamUrl, mediaHeaders, referer, trackHeadersJson, store, target) }
                 .getOrElse { error ->
                     log("audio fetch failed: $upstreamUrl (${error.message})")
                     AudioFetchOutcome.Failure(error.message ?: "上游抓取失败")
@@ -99,12 +107,12 @@ class AudioFetcher(
         referer: String?,
         trackHeadersJson: String?,
         store: AtomicFileStore,
-        cacheKey: String,
+        target: AudioTarget,
     ): AudioFetchOutcome {
         val headers = mergeHeaders(mediaHeaders, trackHeadersJson)
         injectedFetcher?.let { injected ->
             val (declaredType, bytes) = injected(url, headers, referer, trackHeadersJson)
-            return persist(store, cacheKey, bytes.inputStream(), declaredType, url)
+            return persist(store, target, bytes.inputStream(), declaredType, url)
         }
         val cleanUrl = url.trim()
         var uri = lenientUri(cleanUrl)
@@ -129,26 +137,30 @@ class AudioFetcher(
                 "音频分段声明大小 ${declaredLength / 1024 / 1024} MiB 超过 ${AudioBytes.MAX_SEGMENT_BYTES / 1024 / 1024} MiB 上限"
             }
             response.body().use { body ->
-                return persist(store, cacheKey, body, declaredType, uri.toString())
+                return persist(store, target, body, declaredType, uri.toString())
             }
         }
         throw IllegalArgumentException("音频重定向次数超过限制（最后状态 $lastStatus）")
     }
 
     /**
-     * 流式落盘 + 弱校验。**校验发生在"原子移动之前"**：不合格就抛错，
-     * `AtomicFileStore.writeStream` 会删掉临时文件 ⇒ 绝不会留下半截或坏内容的"成品"。
+     * 流式落盘 + 弱校验。**校验发生在"原子转正之前"**：不合格就抛错，
+     * 临时文件被清理 ⇒ 绝不会留下半截或坏内容的"成品"。
+     *
+     * 为什么是**两段式**（`stage` → `commit`）：成品名里的扩展名来自**真实内容类型**，
+     * 而内容类型要等读到头部字节才知道。`.part` 与成品同目录，`commit` 仍是
+     * `ATOMIC_MOVE + REPLACE_EXISTING`。
      */
     private fun persist(
         store: AtomicFileStore,
-        cacheKey: String,
+        target: AudioTarget,
         raw: java.io.InputStream,
         declaredType: String,
         finalUrl: String,
     ): AudioFetchOutcome {
         val head = ByteArray(AudioBytes.HEAD_BYTES)
         var headLength = 0
-        val written = store.writeStream(cacheKey) { output ->
+        val staged = store.stage(target.directory) { output ->
             val source = decompressStreamIfNeeded(raw)
             source.use { input ->
                 val buffer = ByteArray(COPY_BUFFER_BYTES)
@@ -170,8 +182,15 @@ class AudioFetcher(
             }
             validate(head, headLength, declaredType, finalUrl)
         }
-        val contentType = AudioBytes.resolveContentType(head.copyOf(headLength), declaredType)
-        return AudioFetchOutcome.Success(AudioBytes.normalizeContentType(contentType), written)
+        val contentType = AudioBytes.normalizeContentType(AudioBytes.resolveContentType(head.copyOf(headLength), declaredType))
+        // 成品名由落盘目标给出（正常：8 位分段号 + 真实扩展名；退化行：哈希 key 本身）
+        val filePath = try {
+            staged.commit(target.nameOf(contentType))
+        } catch (error: Throwable) {
+            staged.discard()
+            throw error
+        }
+        return AudioFetchOutcome.Success(contentType, staged.bytes, filePath)
     }
 
     /** 唯一校验收口（真实网络路径与注入路径共用）。 */

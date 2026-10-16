@@ -1208,7 +1208,7 @@ fun Route.apiRoutes(
                     ?: return@get call.respond(HttpStatusCode.InternalServerError, ApiError("cache_error", "图片落盘后索引丢失"))
             }
 
-            val file = imageCache.fileFor(row.cacheKey)
+            val file = imageCache.fileFor(row)
                 ?: return@get call.respond(HttpStatusCode.NotFound, ApiError("not_found", "图片文件不存在"))
             call.response.headers.append(HttpHeaders.ETag, "\"${row.cacheKey}\"")
             call.response.headers.append(HttpHeaders.CacheControl, "private, max-age=31536000, immutable")
@@ -1431,7 +1431,7 @@ fun Route.apiRoutes(
                     referer = pending.chapterUrl.takeIf { it.startsWith("http") },
                     trackHeadersJson = pending.headersJson,
                     store = audioCache.store,
-                    cacheKey = key,
+                    target = audioCache.targetFor(pending),
                 )
                 when (outcome) {
                     is AudioFetchOutcome.Failure -> {
@@ -1441,14 +1441,14 @@ fun Route.apiRoutes(
                         return@get
                     }
                     is AudioFetchOutcome.Success -> {
-                        audioCache.markReady(pending, outcome.contentType, outcome.byteSize)
+                        audioCache.markReady(pending, outcome.contentType, outcome.byteSize, outcome.filePath)
                         row = audioCache.rowByKey(key)
                             ?: return@get call.respond(HttpStatusCode.InternalServerError, ApiError("cache_error", "音频落盘后索引丢失"))
                     }
                 }
             }
 
-            val file = audioCache.fileFor(row.cacheKey)
+            val file = audioCache.fileFor(row)
                 ?: return@get call.respond(HttpStatusCode.NotFound, ApiError("not_found", "音频文件不存在"))
             call.respondFileRange(
                 file = file,

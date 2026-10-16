@@ -15,7 +15,7 @@ import java.util.zip.GZIPOutputStream
  * P1 的两个公共件：`ImageBytes`（字节判读唯一收口）与 `AtomicFileStore`（原子落盘）。
  *
  * 这些用例锁定的都是**静默失败**：gzip 假图片（接口 200 却裂图）、半截文件、
- * 非法 key 拼路径抛异常。它们不会报错，只会让用户看到裂图或播放中途断流。
+ * 越界路径被静默拼出来（写到缓存根之外）。它们不会报错，只会让用户看到裂图或播放中途断流。
  */
 class MediaCachePrimitivesTest {
 
@@ -105,22 +105,26 @@ class MediaCachePrimitivesTest {
         return AtomicFileStore(root) to root
     }
 
-    private val key = "a".repeat(64)
-    private val otherKey = "b".repeat(64)
+    /** 一条合法的可读相对路径（书/章目录 + 8 位分段号，与生产写入完全同形）。 */
+    private val relative = "十日终焉 (3f9c21ab7d0412e8c9f0)/真正的生路 (a1b2c3d4e5f60718293a)/00000001.mp3"
+    private val otherRelative = "某漫画 (ab12cd34ef5609a7b1d2)/第1话 (9f3a1c07b2e4d6a8c0f1)/00000002.jpg"
 
     @Test
     fun `writes and reads back bytes without leaving part files`() {
         val (store, root) = tempStore()
         try {
             val payload = "图片字节".toByteArray()
-            store.write(key, payload)
+            store.write(relative, payload)
 
-            assertTrue(store.exists(key))
-            assertArrayEquals(payload, store.read(key))
-            assertEquals(payload.size.toLong(), store.size(key))
+            assertTrue(store.exists(relative))
+            assertArrayEquals(payload, store.read(relative))
+            assertEquals(payload.size.toLong(), store.size(relative))
 
-            // 两级散列目录
-            assertTrue("必须落在 <root>/<key[0:2]>/<key>", store.pathFor(key).toString().replace('\\', '/').endsWith("/aa/$key"))
+            // 相对路径原样落在缓存根目录下（用户要的「方便本地查看」）
+            assertTrue(
+                "必须落在 <root>/<书名 (短哈希)>/<章节目录>/<分段名>",
+                store.resolve(relative).toString().replace('\\', '/').endsWith("/$relative"),
+            )
             // 绝不能留下 .part 临时文件
             val leftovers = Files.walk(root).use { paths ->
                 paths.filter { it.fileName.toString().endsWith(".part") }.count()
@@ -135,42 +139,44 @@ class MediaCachePrimitivesTest {
     fun `streaming write counts bytes and commits atomically`() {
         val (store, root) = tempStore()
         try {
-            val written = store.writeStream(key) { out ->
+            val written = store.writeStream(relative) { out ->
                 repeat(1000) { out.write(byteArrayOf(1, 2, 3, 4)) }
             }
             assertEquals(4000L, written)
-            assertEquals(4000L, store.size(key))
+            assertEquals(4000L, store.size(relative))
         } finally {
             root.toFile().deleteRecursively()
         }
     }
 
     @Test
-    fun `rejects non hex keys instead of building a bogus path`() {
+    fun `rejects paths that escape the cache root instead of building a bogus path`() {
         val (store, root) = tempStore()
         try {
             // AGENTS.md：用户数据拼路径会抛 InvalidPathException，必须提前拒绝
-            assertFalse(store.exists("书\n名.jpg"))
+            assertFalse(store.exists("../escape"))
             assertNull(store.read("../../etc/passwd"))
-            assertEquals(false, store.delete("zz"))
+            assertNull(store.read("/etc/passwd"))
+            assertNull(store.read("C:/Windows/system32/cmd.exe"))
+            assertNull(store.read("a/../../b"))
+            assertEquals(false, store.delete("does/not/exist"))
             var threw = false
-            try { store.pathFor("../escape") } catch (e: IllegalArgumentException) { threw = true }
-            assertTrue("非法 key 必须显式抛错，而不是静默拼出路径", threw)
+            try { store.resolve("../escape") } catch (e: IllegalArgumentException) { threw = true }
+            assertTrue("越界路径必须显式抛错，而不是静默拼出路径", threw)
         } finally {
             root.toFile().deleteRecursively()
         }
     }
 
     @Test
-    fun `lists keys and totals bytes skipping part files`() {
+    fun `totals bytes skipping part files`() {
         val (store, root) = tempStore()
         try {
-            store.write(key, ByteArray(10))
-            store.write(otherKey, ByteArray(5))
-            // 手工塞一个 .part：统计与列举都必须跳过它
-            Files.write(store.pathFor(key).resolveSibling("tmp_x.part"), ByteArray(999))
+            store.write(relative, ByteArray(10))
+            store.write(otherRelative, ByteArray(5))
+            // 手工塞一个 .part：统计与清理的口径都要认得它
+            Files.write(store.resolve(relative).resolveSibling("tmp_x.part"), ByteArray(999))
 
-            assertEquals(setOf(key, otherKey), store.listKeys().toSet())
             assertEquals(15L, store.totalBytes())
         } finally {
             root.toFile().deleteRecursively()
@@ -181,10 +187,10 @@ class MediaCachePrimitivesTest {
     fun `delete removes the file`() {
         val (store, root) = tempStore()
         try {
-            store.write(key, ByteArray(3))
-            assertTrue(store.delete(key))
-            assertFalse(store.exists(key))
-            assertNull(store.read(key))
+            store.write(relative, ByteArray(3))
+            assertTrue(store.delete(relative))
+            assertFalse(store.exists(relative))
+            assertNull(store.read(relative))
         } finally {
             root.toFile().deleteRecursively()
         }

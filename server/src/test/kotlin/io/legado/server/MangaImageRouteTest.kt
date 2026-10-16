@@ -46,6 +46,8 @@ class MangaImageRouteTest {
         var urlHash: String
         try {
             seed.initialize("test-password-1234")
+            // 预置数据等价于"已经升级到 v2 布局的既有部署"：否则启动清理会按 v2 语义把预置缓存清掉
+            seed.setSetting(CACHE_LAYOUT_KEY, CACHE_LAYOUT_VERSION)
             val cache = ImageCache(dataDir.resolve("images"), seed)
             val stored = cache.put(sourceId, bookUrl, chapterUrl, upstream, "image/jpeg", jpegBytes(800, 1200))
             urlHash = stored.urlHash

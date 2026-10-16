@@ -311,6 +311,13 @@ data class SourceLoginStateRecord(
     val intro: String? = null,
     val coverUrl: String? = null,
     val tocUrl: String,
+    /**
+     * 书籍变量（Legado `Book.variable` 解析后的键值表）。
+     *
+     * 前端「编辑书籍信息」里的**书籍变量**设置栏要读它（编辑 `custom`），
+     * 而书源规则侧读的是同一份数据（见 `RuleRunner.BookContext`）。
+     */
+    val variables: Map<String, String> = emptyMap(),
 )
 @Serializable data class Chapter(val index: Int, val title: String, val url: String)
 @Serializable data class ContentRequest(val sourceId: String, val chapterUrl: String = "", val bookUrl: String? = null)
@@ -537,6 +544,17 @@ data class SourceLoginStateRecord(
     val coverKey: String? = null,
     val groupName: String? = null,
     val alternateSources: List<SearchResult>? = null,
+    /**
+     * 书籍变量里的 **`custom` 键的新值**（对齐 Legado 的 `putCustomVariable(value)`）。
+     *
+     * - `null`  ⇒ **不动**已有变量（弹窗只改书名/作者时绝不能顺手清空音色设置）；
+     * - `""` 与任意字符串 ⇒ 写入该键（空串读出来就是空串，与"没有这个键"对 `book.getVariable('custom')`
+     *   的返回值**完全一致**，因此不必区分）。
+     *
+     * 刻意**不**让前端提交整张变量表的 JSON：键名 `custom` 的语义在 Legado 里是定死的，
+     * 让服务端做合并（而不是信任前端拼的 JSON）才能保证"编辑音色"永远不会误删别的键。
+     */
+    val customVariable: String? = null,
 )
 @Serializable data class CoverUploadResponse(
     val coverKey: String,
@@ -589,6 +607,16 @@ data class CachedBookRequest(
     val alternateSources: List<SearchResult> = emptyList(),
     val groupName: String? = null,
     val bookKind: String = "novel",
+    /**
+     * **书籍变量**（Legado `Book.variable`）—— 一个 JSON 对象字符串，键值都是字符串。
+     *
+     * 用途（对齐开源阅读 `legado-with-MD3` 的做法）：书源规则在 JS 里用
+     * `book.getVariable('custom')` 读取书籍级变量，最典型的场景就是**切换听书音色/朗读者**
+     * （如 `🍅大灰狼聚合` 源的注释：「详情页会显示本书可用音色及数字编号，**右上角书籍变量填写编号**即可切换」）。
+     * `custom` 在 Legado 里是一等公民（`getCustomVariable()` / `putCustomVariable()`），
+     * 前端编辑弹窗只编辑它，但底层存的始终是**整张表**的 JSON。
+     */
+    val variable: String? = null,
 )
 
 @Serializable
@@ -982,6 +1010,13 @@ data class BackupShelfEntry(
      * 也就是"已经和小说一样（无需特殊分类）就跳过，不写库"。
      */
     val bookKind: String? = null,
+    /**
+     * 书籍变量（Legado `Book.variable`，JSON 对象字符串）。
+     *
+     * 手机端备份的 `bookshelf.json` 里就有这个字段，且**正是音色/朗读者选择的落点**
+     * （见 `BookshelfItem.variable`）。不导入它，用户换设备后就丢了听书音色设置。
+     */
+    val variable: String? = null,
 )
 
 /**

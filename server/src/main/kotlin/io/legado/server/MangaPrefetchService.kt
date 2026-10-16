@@ -147,9 +147,12 @@ class MangaPrefetchService(
             return cachedUrls.size
         }
         val source = database.getSource(sourceId) ?: return 0
-        val parsed = runCatching { runner.mangaImages(source.json, chapter.url) }
+        // 预取与在线阅读走**同一份**规则上下文（含书籍变量）；否则"手动点开能看、后台预取却取到别的结果"。
+        val book = database.bookContext(sourceId, bookUrl)
+        val parsed = runCatching { runner.mangaImages(source.json, chapter.url, bookName = null, book = book) }
             .onFailure { log("manga prefetch manifest failed: ${chapter.url} (${it.message})") }
             .getOrNull() ?: return 0
+        database.persistBookVariables(book)
         if (parsed.isEmpty()) return 0
         runCatching {
             database.saveMangaChapter(

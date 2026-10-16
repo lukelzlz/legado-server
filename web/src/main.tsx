@@ -25,7 +25,7 @@ import { SourceGroupManagerModal } from './SourceGroupManagerModal'
 import { SearchScopeBar } from './SearchScopeBar'
 import { PwaManager } from './PwaManager'
 import { ErrorBoundary } from './ErrorBoundary'
-import { flushOfflineProgress } from './offlineStorage'
+import { clearOfflineBook, flushOfflineProgress } from './offlineStorage'
 import { toast, ToastContainer } from './Toast'
 import './styles.css'
 import './i18n'
@@ -1838,6 +1838,7 @@ function BookManageModal({
   onCancelCache,
   onToggleCompleted,
   onUpdateInfo,
+  onClearCache,
   onRemove,
 }: {
   item: BookshelfItem
@@ -1848,6 +1849,7 @@ function BookManageModal({
   onCancelCache: () => void
   onToggleCompleted: () => void
   onUpdateInfo: (updated: BookshelfItem) => void
+  onClearCache: () => void
   onRemove: () => void
 }) {
   const { t } = useTranslation()
@@ -2030,6 +2032,18 @@ function BookManageModal({
             <div className="action-text">
               <strong>{item.completed ? t('shelf.markAsReading', '恢复为正在阅读') : t('shelf.markAsCompleted', '标记为已读完')}</strong>
               <small>{item.completed ? t('shelf.markAsReadingDesc', '状态恢复为正在阅读') : t('shelf.markAsCompletedDesc', '状态标记为已读完')}</small>
+            </div>
+            <Icon name="arrowRight" />
+          </button>
+
+          {/* 「清除缓存」与「移出书架」同为**危险动作**（都不可逆、都要重新联网下载），
+              因此共用 danger 红色配色；但语义严格区分：本行只回收磁盘，书还在书架上、
+              进度与封面都不动。 */}
+          <button className="manage-action-row danger" onClick={() => { onClose(); onClearCache() }}>
+            <div className="action-icon"><Icon name="trash" /></div>
+            <div className="action-text">
+              <strong>{t('shelf.clearCache', '清除缓存')}</strong>
+              <small>{t('shelf.clearCacheDesc', '清除本书已下载的图片、音频与正文缓存（含本机离线）')}</small>
             </div>
             <Icon name="arrowRight" />
           </button>
@@ -2419,6 +2433,53 @@ function ShelfPage({ onOpen }: { onOpen: (item: BookshelfItem) => void }) {
     } catch (error) {
       toast.error(error instanceof Error ? error.message : t('shelf.cancelCacheFailed', '取消缓存失败'))
     }
+  }
+
+  /**
+   * 清除单本书**已下载的缓存**（服务端图片 / 音频 / 离线正文 + 本机的离线正文）。
+   *
+   * 刻意**不动**阅读进度、书架记录与封面——那是「移出书架」的职责；本动作只回收磁盘，
+   * 清完这本书还在书架上、还能接着读。
+   *
+   * **作用域严格按书**（用户口径：「只清这本书的」）：四个清理步骤全部只带
+   * `item.sourceId` + `item.bookUrl`，绝不波及别的书；本机那一份复用
+   * `clearOfflineBook(sourceId, bookUrl)`（IndexedDB `by_book` 索引，见该函数注释），
+   * 它同时也带走这本书的漫画清单快照，同样只按书。
+   *
+   * 四步**串行**调用并分别记账：只报「全成功」或「具体哪一部分没清掉」，
+   * 绝不因为前一个失败就静默跳过后面三个（否则用户会以为已经清干净了）。
+   */
+  const clearCache = async (item: BookshelfItem) => {
+    if (!confirm(t('shelf.clearCacheConfirm', '清除《{{name}}》已下载的缓存吗？\n\n将清除：图片缓存、音频缓存、正文缓存（含本机离线）。\n不会影响：阅读进度、书架记录、封面。\n清除后需重新联网下载，确定继续吗？', { name: item.name }))) return
+    const failedParts: string[] = []
+    try {
+      await api.clearImageCache(item.sourceId, item.bookUrl)
+    } catch {
+      failedParts.push(t('shelf.clearCachePartImages', '图片缓存'))
+    }
+    try {
+      await api.clearAudioCache(item.sourceId, item.bookUrl)
+    } catch {
+      failedParts.push(t('shelf.clearCachePartAudio', '音频缓存'))
+    }
+    try {
+      await api.clearBookCacheData(item.sourceId, item.bookUrl)
+    } catch {
+      failedParts.push(t('shelf.clearCachePartContent', '正文缓存'))
+    }
+    try {
+      // 本机 IndexedDB 里的离线正文（「本机离线缓存管理」用的同一套存储）。按书删，不做全清。
+      await clearOfflineBook(item.sourceId, item.bookUrl)
+    } catch {
+      failedParts.push(t('shelf.clearCachePartLocal', '本机离线正文'))
+    }
+    if (failedParts.length === 0) {
+      toast.success(t('shelf.clearCacheSuccess', '《{{name}}》缓存已清除', { name: item.name }))
+    } else {
+      toast.warning(t('shelf.clearCachePartial', '《{{name}}》部分缓存未清除：{{parts}}，可稍后重试', { name: item.name, parts: failedParts.join('、') }))
+    }
+    // 离线章数已归零：回书架拉一次最新状态，缓存进度条才不会停在旧值上
+    void load()
   }
 
   const handleSwitchShelfSource = async (chosen: { result: SearchResult; chapters: Chapter[]; targetChapterIndex: number }) => {
@@ -2914,6 +2975,7 @@ function ShelfPage({ onOpen }: { onOpen: (item: BookshelfItem) => void }) {
             setManagingItem(updated)
             void load()
           }}
+          onClearCache={() => clearCache(managingItem)}
           onRemove={() => remove(managingItem)}
         />
       )}

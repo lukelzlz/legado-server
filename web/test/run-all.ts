@@ -33,6 +33,7 @@ import './source-group-search.test.ts'
 import './source-group-manager.test.ts'
 import './search-scope-bar.test.ts'
 import './ShelfGrouping.test.ts'
+import './ShelfClearCache.test.ts'
 import './source-settings-result.test.ts'
 import './network-import.test.ts'
 

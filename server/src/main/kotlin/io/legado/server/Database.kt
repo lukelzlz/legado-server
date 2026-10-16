@@ -1091,8 +1091,8 @@ class Database(private val path: String) : Closeable, AutoCloseable {
             }
         }
     }
-    fun listBookshelf(): List<BookshelfItem> = connect { db -> db.prepareStatement("""select s.source_id,s.book_url,s.name,s.author,s.toc_url,s.cover_key,p.chapter_index,p.scroll_position,s.last_read_at,coalesce(c.cached_chapters,0),coalesce(c.total_chapters,0),coalesce(c.state,'idle'),c.last_error,s.completed,s.alternate_sources,s.group_name,s.cover_url,s.book_kind from book_shelf s left join reading_progress p on p.source_id=s.source_id and p.book_url=s.book_url left join book_cache_status c on c.source_id=s.source_id and c.book_url=s.book_url order by s.last_read_at desc""").use { query -> query.executeQuery().use { rs -> buildList { while (rs.next()) add(rs.toShelf()) } } } }
-    fun getShelfBookByUrl(bookUrl: String): BookshelfItem? = connect { db -> db.prepareStatement("""select s.source_id,s.book_url,s.name,s.author,s.toc_url,s.cover_key,p.chapter_index,p.scroll_position,s.last_read_at,coalesce(c.cached_chapters,0),coalesce(c.total_chapters,0),coalesce(c.state,'idle'),c.last_error,s.completed,s.alternate_sources,s.group_name,s.cover_url,s.book_kind from book_shelf s left join reading_progress p on p.source_id=s.source_id and p.book_url=s.book_url left join book_cache_status c on c.source_id=s.source_id and c.book_url=s.book_url where s.book_url=?""").use { it.setString(1, bookUrl); it.executeQuery().use { rs -> if (rs.next()) rs.toShelf() else null } } }
+    fun listBookshelf(): List<BookshelfItem> = connect { db -> db.prepareStatement("""select s.source_id,s.book_url,s.name,s.author,s.toc_url,s.cover_key,p.chapter_index,p.scroll_position,s.last_read_at,coalesce(c.cached_chapters,0),coalesce(c.total_chapters,0),coalesce(c.state,'idle'),c.last_error,s.completed,s.alternate_sources,s.group_name,s.cover_url,s.book_kind,s.variable from book_shelf s left join reading_progress p on p.source_id=s.source_id and p.book_url=s.book_url left join book_cache_status c on c.source_id=s.source_id and c.book_url=s.book_url order by s.last_read_at desc""").use { query -> query.executeQuery().use { rs -> buildList { while (rs.next()) add(rs.toShelf()) } } } }
+    fun getShelfBookByUrl(bookUrl: String): BookshelfItem? = connect { db -> db.prepareStatement("""select s.source_id,s.book_url,s.name,s.author,s.toc_url,s.cover_key,p.chapter_index,p.scroll_position,s.last_read_at,coalesce(c.cached_chapters,0),coalesce(c.total_chapters,0),coalesce(c.state,'idle'),c.last_error,s.completed,s.alternate_sources,s.group_name,s.cover_url,s.book_kind,s.variable from book_shelf s left join reading_progress p on p.source_id=s.source_id and p.book_url=s.book_url left join book_cache_status c on c.source_id=s.source_id and c.book_url=s.book_url where s.book_url=?""").use { it.setString(1, bookUrl); it.executeQuery().use { rs -> if (rs.next()) rs.toShelf() else null } } }
     fun setBookshelfCompleted(sourceId: String, bookUrl: String, completed: Boolean): BookshelfItem? = write { db ->
         db.prepareStatement("update book_shelf set completed=? where source_id=? and book_url=?").use {
             it.setInt(1, if (completed) 1 else 0); it.setString(2, sourceId); it.setString(3, bookUrl); it.executeUpdate()
@@ -1171,6 +1171,25 @@ class Database(private val path: String) : Closeable, AutoCloseable {
                 }
             }
             orphan?.let { value -> db.prepareStatement("delete from cover_cache where cache_key=?").use { it.setString(1, value); it.executeUpdate() } }
+
+            // 书籍变量：只在**显式给了 custom 值**时才动（null = 不动），
+            // 且做的是**合并**（其余键原样保留）—— 对齐 Legado 的 `putCustomVariable()`。
+            // 这样「只改书名点保存」绝不会顺手清掉听书音色。
+            request.customVariable?.let { value ->
+                val merged = parseBookVariables(
+                    db.prepareStatement("select variable from book_shelf where source_id=? and book_url=?").use {
+                        it.setString(1, request.sourceId); it.setString(2, request.bookUrl)
+                        it.executeQuery().use { rs -> if (rs.next()) rs.getString(1) else null }
+                    },
+                ).toMutableMap()
+                merged[CUSTOM_VARIABLE_KEY] = value
+                db.prepareStatement("update book_shelf set variable=? where source_id=? and book_url=?").use {
+                    it.setString(1, Json.encodeToString(merged.toMap()))
+                    it.setString(2, request.sourceId); it.setString(3, request.bookUrl)
+                    it.executeUpdate()
+                }
+            }
+
             db.commit()
             getBookshelf(db, request.sourceId, request.bookUrl)
         } catch (error: Throwable) {
@@ -2024,13 +2043,15 @@ class Database(private val path: String) : Closeable, AutoCloseable {
             try {
                 db.prepareStatement("select 1 from book_shelf where source_id = ? and book_url = ?").use { existing ->
                     db.prepareStatement("""
-                        insert into book_shelf(source_id,book_url,name,author,toc_url,cover_url,cover_key,last_read_at,completed,alternate_sources,book_kind)
-                        values(?,?,?,?,?,?,null,?,?,null,?)
+                        insert into book_shelf(source_id,book_url,name,author,toc_url,cover_url,cover_key,last_read_at,completed,alternate_sources,book_kind,variable)
+                        values(?,?,?,?,?,?,null,?,?,null,?,?)
                         on conflict(source_id,book_url) do update set
                           name=excluded.name, author=excluded.author, toc_url=excluded.toc_url,
                           cover_url=coalesce(excluded.cover_url,book_shelf.cover_url),
                           last_read_at=excluded.last_read_at, completed=book_shelf.completed,
-                          book_kind=coalesce(excluded.book_kind,book_shelf.book_kind)
+                          book_kind=coalesce(excluded.book_kind,book_shelf.book_kind),
+                          -- 书籍变量：备份里没有就**保留本机已有的**（用户可能刚在这台机器上改过音色）
+                          variable=coalesce(excluded.variable,book_shelf.variable)
                     """.trimIndent()).use { save ->
                         entries.forEach { entry ->
                             existing.setString(1, entry.sourceId); existing.setString(2, entry.bookUrl)
@@ -2040,6 +2061,7 @@ class Database(private val path: String) : Closeable, AutoCloseable {
                             save.setLong(7, if (entry.readAt > 0) entry.readAt else now)
                             save.setInt(8, if (entry.completed) 1 else 0)
                             save.setString(9, entry.bookKind)
+                            save.setString(10, entry.variable?.takeIf { it.isNotBlank() })
                             save.addBatch()
                         }
                         save.executeBatch()
@@ -2640,8 +2662,78 @@ class Database(private val path: String) : Closeable, AutoCloseable {
             groupName = runCatching { getString(16) }.getOrNull()?.trim()?.takeIf { it.isNotEmpty() },
             coverUrl = runCatching { getString(17) }.getOrNull()?.trim()?.takeIf { it.isNotEmpty() },
             bookKind = runCatching { getString(18) }.getOrNull()?.trim()?.takeIf { it.isNotEmpty() } ?: "novel",
+            variable = runCatching { getString(19) }.getOrNull()?.trim()?.takeIf { it.isNotEmpty() },
         )
     }
+
+    // ------------------------------------------------------------------
+    // 书籍变量（Legado `Book.variable` / `book.getVariable()`）
+    //
+    // 存储形态**逐字对齐开源阅读**（`legado-with-MD3` 的 `BaseBook`）：
+    //   `variable` 列 = `GSON.toJson(variableMap)` ⇒ 一个 JSON 对象字符串，键值都是字符串。
+    // 读取语义也对齐 `RuleDataInterface.getVariable()`：**键不存在返回空串**（不是 "null"）。
+    // ------------------------------------------------------------------
+
+    /** 原始 JSON（前端编辑弹窗与备份导出用）。行不存在 / 从未设置过 ⇒ null。 */
+    fun getBookVariable(sourceId: String, bookUrl: String): String? = connect { db ->
+        db.prepareStatement("select variable from book_shelf where source_id=? and book_url=?").use {
+            it.setString(1, sourceId); it.setString(2, bookUrl)
+            it.executeQuery().use { rs -> if (rs.next()) rs.getString(1)?.trim()?.takeIf { v -> v.isNotEmpty() } else null }
+        }
+    }
+
+    /** 解析后的键值表（`book.getVariable(key)` 的取值来源）。**任何脏 JSON 都退化为空表**，绝不抛。 */
+    fun getBookVariables(sourceId: String, bookUrl: String): Map<String, String> =
+        parseBookVariables(getBookVariable(sourceId, bookUrl))
+
+    /**
+     * 写入整张变量表。
+     *
+     * ⚠️ 空表写 `null` 而不是 `"{}"`：与 Legado 的"从未设置过"保持同一种形态，
+     * 也让 `book.variable` 在"确实没有变量"时保持假值（书源里 `if (!book.variable)` 这类判空才成立）。
+     */
+    fun saveBookVariables(sourceId: String, bookUrl: String, variables: Map<String, String>): Boolean = write { db ->
+        val payload = if (variables.isEmpty()) null else Json.encodeToString(variables)
+        db.prepareStatement("update book_shelf set variable=? where source_id=? and book_url=?").use {
+            it.setString(1, payload); it.setString(2, sourceId); it.setString(3, bookUrl)
+            it.executeUpdate() > 0
+        }
+    }
+
+    /**
+     * 写入**原始 JSON 字符串**（不做解析）。
+     *
+     * 用于两类场景：备份导入要原样搬运手机端的 `variable`；以及测试/排障要构造脏数据。
+     * 常规写入请走 [saveBookVariables]（它会做空表归一化）。
+     */
+    fun saveBookVariable(sourceId: String, bookUrl: String, raw: String?): Boolean = write { db ->
+        db.prepareStatement("update book_shelf set variable=? where source_id=? and book_url=?").use {
+            it.setString(1, raw?.trim()?.takeIf { value -> value.isNotEmpty() })
+            it.setString(2, sourceId); it.setString(3, bookUrl)
+            it.executeUpdate() > 0
+        }
+    }
+
+    /** `putCustomVariable(value)`：只为 `custom` 一个键做合并，其余键**原样保留**（对齐 Legado）。 */
+    fun saveCustomVariable(sourceId: String, bookUrl: String, value: String?): Boolean {
+        if (value == null) return false
+        val merged = parseBookVariables(getBookVariable(sourceId, bookUrl)).toMutableMap()
+        merged[CUSTOM_VARIABLE_KEY] = value
+        return saveBookVariables(sourceId, bookUrl, merged)
+    }
+
+    /** 容错解析：非法 JSON / 非字符串值一律丢弃（书源写坏了不能把书架读崩）。 */
+    private fun parseBookVariables(raw: String?): Map<String, String> {
+        if (raw.isNullOrBlank()) return emptyMap()
+        return runCatching {
+            val obj = Json.parseToJsonElement(raw) as? JsonObject ?: return@runCatching emptyMap()
+            obj.mapNotNull { (key, element) ->
+                val text = (element as? JsonPrimitive)?.contentOrNull ?: return@mapNotNull null
+                key to text
+            }.toMap()
+        }.getOrDefault(emptyMap())
+    }
+
     private fun java.sql.ResultSet.toReplaceRule(): ReplaceRule = ReplaceRule(
         id = getString(1),
         name = getString(2),
@@ -2922,7 +3014,7 @@ class Database(private val path: String) : Closeable, AutoCloseable {
         }
     }
 
-    private fun getBookshelf(db: Connection, sourceId: String, bookUrl: String): BookshelfItem? = db.prepareStatement("""select s.source_id,s.book_url,s.name,s.author,s.toc_url,s.cover_key,p.chapter_index,p.scroll_position,s.last_read_at,coalesce(c.cached_chapters,0),coalesce(c.total_chapters,0),coalesce(c.state,'idle'),c.last_error,s.completed,s.alternate_sources,s.group_name,s.cover_url,s.book_kind from book_shelf s left join reading_progress p on p.source_id=s.source_id and p.book_url=s.book_url left join book_cache_status c on c.source_id=s.source_id and c.book_url=s.book_url where s.source_id=? and s.book_url=?""").use { it.setString(1, sourceId); it.setString(2, bookUrl); it.executeQuery().use { rs -> if (rs.next()) rs.toShelf() else null } }
+    private fun getBookshelf(db: Connection, sourceId: String, bookUrl: String): BookshelfItem? = db.prepareStatement("""select s.source_id,s.book_url,s.name,s.author,s.toc_url,s.cover_key,p.chapter_index,p.scroll_position,s.last_read_at,coalesce(c.cached_chapters,0),coalesce(c.total_chapters,0),coalesce(c.state,'idle'),c.last_error,s.completed,s.alternate_sources,s.group_name,s.cover_url,s.book_kind,s.variable from book_shelf s left join reading_progress p on p.source_id=s.source_id and p.book_url=s.book_url left join book_cache_status c on c.source_id=s.source_id and c.book_url=s.book_url where s.source_id=? and s.book_url=?""").use { it.setString(1, sourceId); it.setString(2, bookUrl); it.executeQuery().use { rs -> if (rs.next()) rs.toShelf() else null } }
 
     /**
      * 判断 `coverUrl` 是否为本服务自己的封面接口地址（自引用）。
@@ -2956,6 +3048,9 @@ class Database(private val path: String) : Closeable, AutoCloseable {
         if ("alternate_sources" !in columns) db.createStatement().use { it.executeUpdate("alter table book_shelf add column alternate_sources text") }
         if ("group_name" !in columns) db.createStatement().use { it.executeUpdate("alter table book_shelf add column group_name text") }
         if ("book_kind" !in columns) db.createStatement().use { it.executeUpdate("alter table book_shelf add column book_kind text") }
+        // 书籍变量（Legado `Book.variable`）：JSON 对象字符串，供书源 JS 的 `book.getVariable(...)` 读取。
+        // 幂等：老库补列，新库由 create table 之外的这条也安全（列已存在则跳过）。
+        if ("variable" !in columns) db.createStatement().use { it.executeUpdate("alter table book_shelf add column variable text") }
         backfillBookKind(db)
     }
 
@@ -3167,6 +3262,15 @@ class Database(private val path: String) : Closeable, AutoCloseable {
         return try { SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256").generateSecret(spec).encoded } finally { spec.clearPassword() }
     }
     companion object {
+        /**
+         * 书籍变量里承载"自定义值"的键名。
+         *
+         * **对齐开源阅读**（`legado-with-MD3` 的 `BaseBook.putCustomVariable()`/`getCustomVariable()`）：
+         * 那里把它做成一等公民，编辑 UI 也只编辑它。实测最常见的用途就是听书音色/朗读者
+         * （`🍅大灰狼聚合` 源：`book.getVariable('custom')` 取音色编号）。
+         */
+        const val CUSTOM_VARIABLE_KEY = "custom"
+
         private const val SESSION_TTL = 30L * 24 * 60 * 60 * 1000
         /** 漫画章节清单的列顺序必须与 `toMangaChapter()` 的取值下标逐一对齐。 */
         private const val MANGA_CHAPTER_SELECT =

@@ -282,6 +282,7 @@ AI 与人类协作时必须明确当前达到的完成度阶梯，严禁混淆�
 | PROPOSAL-026 | 连续滚动模式升级为无限瀑布流与虚拟窗口阅读引擎（类似 Twitter 瀑布流：无缝向下追加 + 视口章节感知 + 远端虚拟卸载） | [`docs/proposals/PROPOSAL-026-reader-infinite-waterfall-stream-virtual-scroll.md`](docs/proposals/PROPOSAL-026-reader-infinite-waterfall-stream-virtual-scroll.md) | Accepted |
 | PROPOSAL-027 | 替换净化规则批量管理、分组管理与操作按钮视觉体系化重构 (Issue #35) | [`docs/proposals/PROPOSAL-027-replace-rules-batch-and-group-management.md`](docs/proposals/PROPOSAL-027-replace-rules-batch-and-group-management.md) | Tested |
 | PROPOSAL-028 | 漫画（图片书源）端到端支持与内嵌内容寻址缓存体系 (方案E · 原版规则完全适配) | [`docs/proposals/PROPOSAL-028-manga-support-and-content-addressed-cache.md`](docs/proposals/PROPOSAL-028-manga-support-and-content-addressed-cache.md) | Draft (P0 主干已实现) |
+| PROPOSAL-030 | 书籍变量（书籍级自定义变量）与听书朗读者切换（对齐开源阅读 `book.getVariable`） | [`docs/proposals/PROPOSAL-030-book-variables-and-narrator-switching.md`](docs/proposals/PROPOSAL-030-book-variables-and-narrator-switching.md) | Implemented (待验收) |
 
 ### 架构决策记录 (ADR)
 | 编号 | 决策标题 | 关联文档 | 状态 |
@@ -314,6 +315,7 @@ AI 与人类协作时必须明确当前达到的完成度阶梯，严禁混淆�
 | ADR-026 | 连续滚动模式采用章节流追加与视口虚拟窗口架构（章节流水线 + 哨兵预载 + IntersectionObserver 视口锚定 + Spacer 卸载保护） | [`docs/decisions/ADR-026-reader-infinite-waterfall-stream-virtual-scroll.md`](docs/decisions/ADR-026-reader-infinite-waterfall-stream-virtual-scroll.md) | Accepted |
 | ADR-027 | 替换净化规则批量事务契约与字符串列分组状态机架构 | [`docs/decisions/ADR-027-replace-rules-batch-and-group-management.md`](docs/decisions/ADR-027-replace-rules-batch-and-group-management.md) | Accepted |
 | ADR-028 | 采用单进程内嵌式双层内容寻址缓存体系 (方案E) 完全整合适配原版漫画规则 | [`docs/decisions/ADR-028-embedded-content-addressed-manga-cache.md`](docs/decisions/ADR-028-embedded-content-addressed-manga-cache.md) | Proposed |
+| ADR-030 | 书籍变量以 `book_shelf.variable`（JSON 字符串列）+ `custom` 键承载，逐条对齐开源阅读语义 | [`docs/decisions/ADR-030-book-variable-json-column-and-custom-key.md`](docs/decisions/ADR-030-book-variable-json-column-and-custom-key.md) | Accepted |
 
 ### 工作记忆与历史推演归档 (Sessions Chronicle)
 | 日期 / ID | 类型 | 标题 / 议题 | 关联文档 | 状态 |
@@ -413,6 +415,7 @@ AI 与人类协作时必须明确当前达到的完成度阶梯，严禁混淆�
 | 2026-10-04 | Feat | **书籍编辑弹窗支持自定义本地封面上传与图片魔数强校验 (Issue #38)**：① 服务端新增 `POST /api/covers/upload` 端点，支持会话鉴权与 CSRF 校验，单文件限制 ≤ 5MB；② `CoverCache` 导出 `detectImageContentType` 严格根据前导魔数验证（JPG/PNG/GIF/WebP/BMP），拒绝任意非图片文件上传，落盘即时记录 `cover_cache` 表；③ `updateBookshelfInfo` 支持可选 `coverKey`，在清除封面时同步置空；④ 前端编辑弹窗在封面区域提供「上传本地封面」次级按钮与提示文案，支持即时预览与回退恢复，补齐全量四语国际化。新增前后端单测 100% 通过 | [`docs/sessions/SESSION-045-custom-cover-upload.md`](docs/sessions/SESSION-045-custom-cover-upload.md) | Tested |
 | 2026-10-05 | Feat | **审查 PR #42：滚动阅读统一为连续流 + 等高占位，根治章界跳动与上滑回跳 (Issue #40)**：① 彻底摒弃三章窗口平移与内核分流（删除 readerScrollWindow/readerScrollStrategy），收敛为单套连续流引擎；② 视口上方超 3 章收缩为实测等高占位块，文档高度恒定不坍缩，消解滚动补偿与浏览器强制 clamp 冲突；③ 上滑同步从预加载缓存换回正文，实现无缝回看上一章末尾；④ 上下各预载 2 章缓冲；⑤ 修复 WebKit text-wrap: pretty 引发的移动端正文右侧反常 40px 留白。前端 208 项单测全绿，服务端零回归 | [`docs/sessions/SESSION-046-reader-continuous-scroll-stream-and-placeholders.md`](docs/sessions/SESSION-046-reader-continuous-scroll-stream-and-placeholders.md) | Tested |
 | 2026-10-08 | Fix | **修复本地书 EPUB 正文段落全部丢失（Jsoup 空白归一化）+ 新增存量本地书幂等重新解析入口**：① `LocalBookParser` 的 HTML→文本改块级边界为非空白占位符，根治「整章压成一行、阅读页无分段」（真机 6 本 EPUB 换行数 `0 → 21742 / 52344 / 98468 / 88960 / 136746 / 173236`，章节数完全不变）；② 新增 `POST /api/bookshelf/reparse-local`，用 `local_books` 留存的原始文件重新解析并回填目录/正文，只重写缓存、保留书架元数据与阅读进度（`local://<bookId>` 不变），幂等且逐本报告；③ 前端书架管理弹窗新增「重新解析本地文件」按钮（仅本地书可见）并补齐四语。新增 `LocalBookParserTest` 2 项回归用例，服务端 442 用例 0 失败（基线 440/0，逐条比对零回归）、前端 209 项全绿 | [`docs/sessions/SESSION-047-local-book-epub-paragraph-loss.md`](docs/sessions/SESSION-047-local-book-epub-paragraph-loss.md) | Tested |
+| 2026-10-16 | Feat | **书籍变量（对齐开源阅读 `book.getVariable`）与听书朗读者切换**：① `book_shelf.variable`（JSON 字符串列，幂等迁移）+ `custom` 键一等公民（`putCustomVariable` 语义：只合并该键、其余保留）；② `book` 桥接补全 `variable`/`variableMap`/`getVariable`（缺失返回**空串**）/`putVariable`，并把 `BookContext`（name/author/tocUrl/kind/type）贯穿 `details`/`chapters`/`content`/`mangaImages` 与离线缓存、漫画预取；③ `PUT /api/bookshelf/info` 新增 `customVariable`（缺省=不动）；④ 「编辑书籍信息」弹窗新增**书籍变量**栏 + 四语 i18n；⑤ 备份 `bookshelf.json` 的 `variable` 导入导出双向（导入 `coalesce` 保护本机值）。定位到"该能力一直静默失效"与"沙箱桥接漏挂载 ⇒ 规则静默回退"两个真实缺陷，见 [SESSION-048](docs/sessions/SESSION-048-book-variables-silent-fallback.md)。验证：`BookVariableTest`(12) + `BookVariableRoutesTest` 全绿；全量 `:server:test` 523/57 与基线 510/57 **失败集合完全一致**。 | [PROPOSAL-030](docs/proposals/PROPOSAL-030-book-variables-and-narrator-switching.md) | Implemented |
 
 ---
 
@@ -456,3 +459,6 @@ This repository is dedicated to the standalone Legado Server ecosystem: the stan
 - 以分层方式逐步构建系统。先实现能够端到端运行的最小版本，再在已有可用产品的基础上逐项增加新能力。绝不要为了尚未完成的复杂设计而牺牲一个可正常运行的产品。
 - 保持组件模块化，并清晰分离各项职责（服务端解析、前端交互、数据持久化各司其职）。
 - 当成熟且维护良好的库能够降低整体复杂度或提高可靠性时，应优先使用。除非有明确理由，否则不要重复实现常见功能。
+
+- **[沙箱/致命] 给桥接对象加成员时「声明 ≠ 可见」：漏挂载会让书源规则**静默回退**，日志里什么都没有**：实现书籍变量时，`book.variableMap` 的对象建好、键值也写进去了，**却忘了 `ScriptableObject.putProperty(book, "variableMap", ...)`**。宿主侧完全合法（不报错），JS 侧只是一个 `undefined`：书源里 `book.variableMap["custom"]` 抛 TypeError，`<js>` 求值失败后正文规则**自动回退到抓页面正文**分支 ⇒ 用户看到"规则没生效"，而**日志一片安静**。**唯一可靠的兜底是"从 JS 侧真的读一次"的用例**（断言 `typeof book.variableMap`、`book.getVariable(...)` 的真实返回值），因为漏挂载在宿主语言里是合法的。同类风险点：任何 `putProperty` 的"新增成员"改动。
+- **[Legado 兼容] 书籍变量（`book.getVariable`）的语义要照抄开源阅读，别自己发明**：`legado-with-MD3` 的 `BaseBook.variable` 是 **JSON 字符串**（`GSON.toJson(variableMap)`），`RuleDataInterface.getVariable(key)` 取不到时返回**空串**（不是 `"null"`），`custom` 是一等公民（`putCustomVariable/getCustomVariable`）且编辑 UI 只编辑它。本仓库此前 `getVariable` 返回 `"null"` —— 那是**巧合可用**（书源恰好写了 `if (x == "null")` 兼容），不是契约。**参照实现在工作区 `legado-with-MD3/` 里，先读再用。**

@@ -34,6 +34,67 @@ import java.util.zip.GZIPInputStream
 import java.util.zip.InflaterInputStream
 
 /**
+ * 一本书在**规则执行期**的上下文 —— 即开源阅读里 JS 能看到的那个 `book` 对象。
+ *
+ * 为什么必须显式传：`sourceContext()` 原本只装书源信息（sourceId/jsLib），于是书源 JS 里
+ * `book.name` / `book.author` / `book.bookUrl` / `book.getVariable('custom')` 全是**空值**。
+ * 实测代价最大的一处就是听书音色：`🍅大灰狼聚合` 源用 `book.getVariable('custom')` 取音色编号，
+ * 空值 ⇒ 永远只能用默认音色，而用户在书籍变量里填什么都没用。
+ *
+ * [variables] 刻意是**可变**的：规则里可能 `book.putVariable(...)`（Legado 里这会随
+ * `saveBook` 落库），调用方在规则跑完后比对并写回。
+ */
+data class BookContext(
+    val sourceId: String,
+    val bookUrl: String,
+    val name: String? = null,
+    val author: String? = null,
+    val tocUrl: String? = null,
+    /** `novel` / `comic` / `audio`（[BookKind] 的 wire 值）。 */
+    val kind: String? = null,
+    /** 书籍变量表（Legado `Book.variableMap`）。 */
+    val variables: MutableMap<String, String> = mutableMapOf(),
+) {
+    /** Legado 的 `Book.type`：0=文本 1=音频 2=图像（书源里 `book.type` 会按它分派）。 */
+    val numericType: Int
+        get() = when (kind?.lowercase()) {
+            "audio" -> 1
+            "comic" -> 2
+            else -> 0
+        }
+}
+
+/**
+ * 从库里装配一本书的规则执行上下文（含书籍变量）。
+ *
+ * 书架里没有这本书（例如从搜索页直接进详情）时**依然返回上下文**：书名/作者取不到，
+ * 但变量表可以（`getBookVariables` 会返回空表），这样行为与 Legado 一致而不会抛错。
+ */
+internal fun Database.bookContext(sourceId: String, bookUrl: String): BookContext {
+    val shelf = getShelfBookByUrl(bookUrl)?.takeIf { it.sourceId == sourceId }
+    return BookContext(
+        sourceId = sourceId,
+        bookUrl = bookUrl,
+        name = shelf?.name,
+        author = shelf?.author,
+        tocUrl = shelf?.tocUrl,
+        kind = shelf?.bookKind,
+        variables = getBookVariables(sourceId, bookUrl).toMutableMap(),
+    )
+}
+
+/**
+ * 把规则执行期间对书籍变量的修改落库（Legado 里 `book.putVariable(...)` 会随 `saveBook` 落库）。
+ *
+ * **只在真的变了才写**：正文/目录每次都要跑规则，无脑写库会让高频路径多出无谓的写事务。
+ */
+internal fun Database.persistBookVariables(book: BookContext) {
+    if (getBookVariables(book.sourceId, book.bookUrl) != book.variables) {
+        saveBookVariables(book.sourceId, book.bookUrl, book.variables)
+    }
+}
+
+/**
  * A deliberately small, server-safe subset of Legado's declarative source protocol.
  * It keeps execution away from Android APIs and rejects private-network targets.
  */
@@ -270,7 +331,7 @@ class RuleRunner(private val responseFetcher: ((String) -> String)? = null, inte
      * 注意：Legado 约定里 `loginUrl` 可以不是网址，而是**整段登录用 JS**（聚合源普遍如此），
      * 其中的工具函数同样会被正文/目录规则调用，因此也要并入脚本库。
      */
-    private fun sourceContext(source: JsonObject, sourceUrl: String?): JsExecutionContext {
+    private fun sourceContext(source: JsonObject, sourceUrl: String?, book: BookContext? = null): JsExecutionContext {
         val library = buildString {
             source.string("jsLib")?.takeIf { it.isNotBlank() }?.let { append(it) }
             val loginScript = source.string("loginUrl")?.takeIf { it.isNotBlank() && !it.trim().startsWith("http") }
@@ -279,13 +340,26 @@ class RuleRunner(private val responseFetcher: ((String) -> String)? = null, inte
                 append(loginScript)
             }
         }.takeIf { it.isNotBlank() }
-        return JsExecutionContext(sourceId = sourceUrl, database = database, jsLib = library)
+        // 书籍上下文一并注入：书源 JS 里的 `book.getVariable('custom')`（听书音色）就靠它。
+        // 传 null 时保持原行为（各字段为空串），搜索等"还没有具体书"的场景走这条。
+        return JsExecutionContext(
+            sourceId = sourceUrl,
+            database = database,
+            jsLib = library,
+            bookUrl = book?.bookUrl,
+            bookName = book?.name,
+            bookAuthor = book?.author,
+            bookTocUrl = book?.tocUrl,
+            bookType = book?.numericType,
+            bookKind = book?.kind,
+            bookVariables = book?.variables ?: mutableMapOf(),
+        )
     }
 
-    fun details(sourceJson: String, bookUrl: String): BookDetails {
+    fun details(sourceJson: String, bookUrl: String, book: BookContext? = null): BookDetails {
         val source = sourceJson.objectValue()
-        source.string("mainJs")?.takeIf { it.isNotBlank() }?.let { return JsSourceRunner(this, source).details(bookUrl) }
-        return jsSandbox.withSourceContext(sourceContext(source, source.string("bookSourceUrl"))) {
+        source.string("mainJs")?.takeIf { it.isNotBlank() }?.let { return JsSourceRunner(this, source).details(bookUrl, book) }
+        return jsSandbox.withSourceContext(sourceContext(source, source.string("bookSourceUrl"), book)) {
             declarativeDetails(source, bookUrl)
         }
     }
@@ -355,11 +429,11 @@ class RuleRunner(private val responseFetcher: ((String) -> String)? = null, inte
         )
     }
 
-    fun chapters(sourceJson: String, tocUrl: String): List<Chapter> {
+    fun chapters(sourceJson: String, tocUrl: String, book: BookContext? = null): List<Chapter> {
         val source = sourceJson.objectValue()
-        source.string("mainJs")?.takeIf { it.isNotBlank() }?.let { return JsSourceRunner(this, source).chapters(tocUrl) }
+        source.string("mainJs")?.takeIf { it.isNotBlank() }?.let { return JsSourceRunner(this, source).chapters(tocUrl, book) }
         val sourceUrl = source.string("bookSourceUrl")
-        return jsSandbox.withSourceContext(sourceContext(source, sourceUrl)) {
+        return jsSandbox.withSourceContext(sourceContext(source, sourceUrl, book)) {
             val rule = source.objectValue("ruleToc") ?: throw RuleExecutionException("该书源未配置 ruleToc")
             val listRule = rule.string("chapterList") ?: throw RuleExecutionException("缺少 ruleToc.chapterList")
             val dataPayload = dataUrlPayload(tocUrl)
@@ -404,14 +478,14 @@ class RuleRunner(private val responseFetcher: ((String) -> String)? = null, inte
         JsonNull -> null
     }
 
-    fun content(sourceJson: String, chapterUrl: String, bookName: String? = null): ChapterContent {
+    fun content(sourceJson: String, chapterUrl: String, bookName: String? = null, book: BookContext? = null): ChapterContent {
         val source = sourceJson.objectValue()
         val sourceUrl = source.string("bookSourceUrl")
         val sourceName = source.string("bookSourceName")
         val replaceRules = database?.getEnabledReplaceRulesForScope(bookName, sourceUrl, sourceName).orEmpty()
 
         if (source.string("mainJs")?.isNotBlank() == true) {
-            val result = JsSourceRunner(this, source).content(chapterUrl)
+            val result = JsSourceRunner(this, source).content(chapterUrl, book)
             val rawTitle = result.title
             val rawContent = result.content
             if (replaceRules.isEmpty()) return ChapterContent(rawTitle, rawContent, rawTitle, rawContent)
@@ -421,7 +495,7 @@ class RuleRunner(private val responseFetcher: ((String) -> String)? = null, inte
         }
 
         return jsSandbox.withSourceContext(
-            sourceContext(source, sourceUrl).let { it.copy(chapterUrl = chapterUrl) },
+            sourceContext(source, sourceUrl, book).let { it.copy(chapterUrl = chapterUrl) },
         ) {
             val rule = source.objectValue("ruleContent") ?: throw RuleExecutionException("该书源未配置 ruleContent")
             // 聚合源的章节地址同样是 data: 参数载体，正文由内容规则自行取回
@@ -483,7 +557,7 @@ class RuleRunner(private val responseFetcher: ((String) -> String)? = null, inte
      *
      * @return 有序去重后的全量上游图片 URL（空列表意味着规则未提取到图片）。
      */
-    fun mangaImages(sourceJson: String, chapterUrl: String, bookName: String? = null): List<String> {
+    fun mangaImages(sourceJson: String, chapterUrl: String, bookName: String? = null, book: BookContext? = null): List<String> {
         val source = sourceJson.objectValue()
         val sourceUrl = source.string("bookSourceUrl")
 
@@ -494,7 +568,7 @@ class RuleRunner(private val responseFetcher: ((String) -> String)? = null, inte
         }
 
         return jsSandbox.withSourceContext(
-            sourceContext(source, sourceUrl).let { it.copy(chapterUrl = chapterUrl) },
+            sourceContext(source, sourceUrl, book).let { it.copy(chapterUrl = chapterUrl) },
         ) {
             val rule = source.objectValue("ruleContent") ?: throw RuleExecutionException("该书源未配置 ruleContent")
             val dataPayload = dataUrlPayload(chapterUrl)
@@ -1111,15 +1185,15 @@ private class JsSourceRunner(private val runner: RuleRunner, private val source:
         val url = book.string("bookUrl") ?: return@mapNotNull null
         SearchResult(source.string("bookSourceUrl")!!, book.string("name") ?: return@mapNotNull null, book.string("author"), url, book.string("coverUrl"), book.string("intro"))
     }
-    fun details(bookUrl: String): BookDetails {
-        val value = callOptional("getBookInfo", arrayOf(bookObject(bookUrl)))?.jsonObjectOrEmpty() ?: JsonObject(emptyMap())
+    fun details(bookUrl: String, book: BookContext? = null): BookDetails {
+        val value = callOptional("getBookInfo", arrayOf(bookObject(bookUrl, book)))?.jsonObjectOrEmpty() ?: JsonObject(emptyMap())
         val name = sanitizeBookName(value.string("name"))
         return BookDetails(source.string("bookSourceUrl")!!, name.ifBlank { "未命名书籍" }, value.string("author"), value.string("intro"), value.string("coverUrl"), value.string("tocUrl") ?: bookUrl)
     }
-    fun chapters(tocUrl: String): List<Chapter> = call("getChapters", arrayOf(bookObject(tocUrl))).jsonArray().mapIndexedNotNull { index, value ->
+    fun chapters(tocUrl: String, book: BookContext? = null): List<Chapter> = call("getChapters", arrayOf(bookObject(tocUrl, book))).jsonArray().mapIndexedNotNull { index, value ->
         val chapter = Json.parseToJsonElement(value).jsonObject; val url = chapter.string("url") ?: return@mapIndexedNotNull null; Chapter(index, chapter.string("title") ?: "第 ${index + 1} 章", url)
     }
-    fun content(chapterUrl: String): ChapterContent = ChapterContent(content = call("getContent", arrayOf(chapterObject(chapterUrl), bookObject(""), null)).trim().also { if (it.isBlank()) throw RuleExecutionException("JS书源正文为空") })
+    fun content(chapterUrl: String, book: BookContext? = null): ChapterContent = ChapterContent(content = call("getContent", arrayOf(chapterObject(chapterUrl), bookObject("", book), null)).trim().also { if (it.isBlank()) throw RuleExecutionException("JS书源正文为空") })
 
     private fun call(name: String, args: Array<Any?>): String = callOptional(name, args) ?: throw RuleExecutionException("JS书源缺少函数 $name")
     private fun callOptional(name: String, args: Array<Any?>): String? {
@@ -1161,7 +1235,22 @@ private class JsSourceRunner(private val runner: RuleRunner, private val source:
         is List<*> -> Context.getCurrentContext().newArray(scope, value.map { toJsValue(it, scope) }.toTypedArray())
         else -> Context.javaToJS(value, scope)
     }
-    private fun bookObject(url: String) = mapOf("bookUrl" to url, "tocUrl" to url)
+    /**
+     * JS 书源（`mainJs`）看到的 `book` 对象。
+     *
+     * 与声明式书源的沙箱 `book` 桥接保持**同一份字段**（含 `variable` 变量表 JSON 与 `name/author/kind`），
+     * 否则同一本书在两种书源形态下行为不一致 —— 这类"只在某一条路径生效"的差异最难排查。
+     */
+    private fun bookObject(url: String, book: BookContext? = null): Map<String, Any?> = mapOf(
+        "bookUrl" to url,
+        "tocUrl" to url,
+        "name" to (book?.name ?: ""),
+        "author" to (book?.author ?: ""),
+        "kind" to (book?.kind ?: ""),
+        "type" to (book?.numericType ?: 0),
+        "variable" to (book?.variables?.takeIf { it.isNotEmpty() }?.let { Json.encodeToString(it) } ?: ""),
+        "variableMap" to (book?.variables ?: emptyMap<String, String>()),
+    )
     private fun chapterObject(url: String) = mapOf("url" to url)
     private fun String.jsonArray(): List<String> = (Json.parseToJsonElement(this) as? JsonArray)?.map { it.toString() } ?: throw RuleExecutionException("JS书源返回值必须是数组")
     private fun String.jsonObjectOrEmpty(): JsonObject = runCatching { Json.parseToJsonElement(this).jsonObject }.getOrDefault(JsonObject(emptyMap()))

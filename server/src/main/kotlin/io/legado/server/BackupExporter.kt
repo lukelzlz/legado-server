@@ -256,6 +256,9 @@ class BackupExporter(private val database: Database) {
         put("totalChapterNum", JsonPrimitive(book.totalChapters))
         // type 8 = 在线小说（服务端只处理这一类；本地书 264 / 音频 24 在导入时已被过滤）
         put("type", JsonPrimitive(8))
+        // 书籍变量（Legado `Book.variable`）：**必须导出**，否则换设备后听书音色/朗读者设置就丢了。
+        // 字段顺序按 Legado 实体声明顺序，`variable` 在 `type` 之后、`wordCount` 之前。
+        book.variable?.takeIf { it.isNotBlank() }?.let { put("variable", JsonPrimitive(it)) }
     }
 
     // ------------------------------------------------------------------ 排版

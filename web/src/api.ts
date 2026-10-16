@@ -13,7 +13,7 @@ export type SourceRecord = { id: string; json: string; version: number; updatedA
 export type SearchResult = { sourceId: string; name: string; author?: string; bookUrl: string; coverUrl?: string; intro?: string }
 export type ExploreSourceItem = { id: string; name: string; group?: string | null; enabled: boolean }
 export type ExploreCategory = { title: string; url?: string | null; subCategories: ExploreCategory[] }
-export type BookDetails = { sourceId: string; name: string; author?: string; intro?: string; coverUrl?: string; tocUrl: string; alternateSources?: SearchResult[] }
+export type BookDetails = { sourceId: string; name: string; author?: string; intro?: string; coverUrl?: string; tocUrl: string; alternateSources?: SearchResult[]; variables?: Record<string, string> }
 export type Chapter = { index: number; title: string; url: string }
 export type ReadingProgress = { sourceId: string; bookUrl: string; chapterUrl: string; chapterIndex: number; scrollPosition: number; updatedAt: number }
 /** 手机端进度文件（bookProgress/*.json）同步配置 */
@@ -66,7 +66,7 @@ export type BackupExportResult = {
   groups: number
 }
 export type ProgressMergeResponse = { source: 'file' | 'database'; progress?: ReadingProgress; fileFound: boolean; alignedIndex?: number }
-export type BookshelfItem = { sourceId: string; bookUrl: string; name: string; author?: string; tocUrl: string; coverKey?: string; coverUrl?: string; chapterIndex?: number; scrollPosition?: number; lastReadAt: number; cachedChapters: number; totalChapters: number; cacheState: 'idle' | 'caching' | 'ready' | 'failed'; cacheError?: string; completed: boolean; alternateSources?: SearchResult[]; groupName?: string; bookKind?: string }
+export type BookshelfItem = { sourceId: string; bookUrl: string; name: string; author?: string; tocUrl: string; coverKey?: string; coverUrl?: string; chapterIndex?: number; scrollPosition?: number; lastReadAt: number; cachedChapters: number; totalChapters: number; cacheState: 'idle' | 'caching' | 'ready' | 'failed'; cacheError?: string; completed: boolean; alternateSources?: SearchResult[]; groupName?: string; bookKind?: string; variable?: string }
 export type BookshelfWrite = { sourceId: string; bookUrl: string; name: string; author?: string; tocUrl: string; coverUrl?: string; alternateSources?: SearchResult[]; groupName?: string }
 
 /** 漫画清单项（P1）：**只有服务端 key**，上游地址留在服务端（防前端绕过缓存直连）。 */
@@ -627,7 +627,9 @@ export const api = {
    */
   reparseLocalBooks: (filter?: { sourceId?: string; bookUrl?: string }) =>
     request<LocalReparseResponse>('/api/bookshelf/reparse-local', { method: 'POST', body: JSON.stringify(filter ?? {}) }),
-  updateBookshelfInfo: (data: { sourceId: string; bookUrl: string; name: string; author?: string; coverUrl?: string; coverKey?: string; groupName?: string; alternateSources?: SearchResult[] }) => request<BookshelfItem>('/api/bookshelf/info', { method: 'PUT', body: JSON.stringify(data) }),
+  // customVariable：书籍变量里的 `custom` 键（Legado 的 `putCustomVariable`）。
+  // 省略 = 不动已有变量；传字符串 = 写入。有声书用它切换朗读者/音色。
+  updateBookshelfInfo: (data: { sourceId: string; bookUrl: string; name: string; author?: string; coverUrl?: string; coverKey?: string; groupName?: string; alternateSources?: SearchResult[]; customVariable?: string }) => request<BookshelfItem>('/api/bookshelf/info', { method: 'PUT', body: JSON.stringify(data) }),
   switchBookshelfSource: (value: BookshelfSourceSwitch) => request<BookshelfItem>('/api/bookshelf/switch-source', { method: 'POST', body: JSON.stringify(value) }),
   importLocalBooks: async (files: File[]): Promise<LocalBookImportResponse> => {
     const formData = new FormData()

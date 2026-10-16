@@ -23,6 +23,7 @@ import { OfflineCacheModal } from './OfflineCacheModal'
 import { SourceHealthModal } from './SourceHealthModal'
 import { SourceGroupManagerModal } from './SourceGroupManagerModal'
 import { SearchScopeBar } from './SearchScopeBar'
+import { ShelfKindTag } from './ShelfKindTag'
 import { PwaManager } from './PwaManager'
 import { ErrorBoundary } from './ErrorBoundary'
 import { flushOfflineProgress } from './offlineStorage'
@@ -2761,8 +2762,7 @@ function ShelfPage({ onOpen }: { onOpen: (item: BookshelfItem) => void }) {
                     <span className="cover-fallback">{item.name.slice(0, 1)}</span>
                   )}
                   {isLocal && <span className="shelf-card-tag-local">{t('shelf.localTag', '本地')}</span>}
-                  {item.bookKind === 'comic' && <span className="shelf-card-tag-comic">{t('shelf.comicTag', '漫画')}</span>}
-                  {item.bookKind === 'audio' && <span className="shelf-card-tag-audio">{t('shelf.audioTag', '听书')}</span>}
+                  <ShelfKindTag bookKind={item.bookKind} />
                   {badge && <span className={`shelf-card-badge ${item.cacheState}`}>{badge}</span>}
                   {isCaching && (
                     <div className="shelf-card-progress-track">

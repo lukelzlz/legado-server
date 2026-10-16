@@ -73,8 +73,16 @@ test('漫画目录底栏 - 恰好一个 drawer-footer，位于章节列表之后
   const footerAt = leftDrawer.indexOf(FOOTER_CLASS)
   assert.ok(listAt >= 0, '目录抽屉必须复用 VirtualChapterList（reader-chapters）')
   assert.ok(listAt < footerAt, '底栏必须在章节列表**之后**')
-  // 底栏是抽屉的最后一个子节点（否则就不是固定在底部的那一栏）
-  assert.ok(leftDrawer.trimEnd().endsWith('</footer>'), '底栏必须是目录抽屉的最后一个子节点')
+  // 底栏应"钉"在抽屉底部：其后最多只允许 footer-actions（换源）与收尾标签。
+  // 换源 PR 会在底栏之后追加 <div className="drawer-footer-actions">，故这里做结构容忍，
+  // 但仍不允许底栏之后再出现章节列表或别的缓存按钮（那就不叫固定在底部了）。
+  const afterFooter = leftDrawer.slice(leftDrawer.indexOf('</footer>', footerAt) + '</footer>'.length)
+  assert.ok(!afterFooter.includes('reader-chapters'), '底栏之后不能再出现章节列表（否则就不是固定在底部的那一栏）')
+  assert.ok(
+    afterFooter.trim().length === 0 || afterFooter.includes('drawer-footer-actions'),
+    '底栏之后只允许跟 drawer-footer-actions（换源）再收尾',
+  )
+  assert.ok(!/<button[^>]*cache-range-btn/.test(afterFooter), '底栏之后不能还有缓存按钮（缓存按钮必须都在底栏里）')
 
   // ③ 四个按钮，全部显式 type="button"（仓库铁律：不写会触发 form 默认 submit）
   const footer = footerSegment(html)

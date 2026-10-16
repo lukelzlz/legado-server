@@ -51,13 +51,51 @@ test('audiobook - 渲染播放外壳（封面 / 进度 / 主播放键 / 底部�
   assert.ok(html.includes('audiobook-cover-wrapper'), '封面是视觉主体（大圆角方形封面）')
   assert.ok(html.includes('audiobook-progress'), '必须有播放进度条')
   assert.ok(html.includes('audiobook-control main'), '必须有中心主播放键')
-  assert.ok(html.includes('audiobook-bottom-controls'), '必须有底部功能条（倍速/定时/缓存/目录/设置）')
+  assert.ok(html.includes('audiobook-bottom-controls'), '必须有底部功能条（倍速/定时/目录/设置）')
+  // 缓存按钮已搬进目录抽屉 ⇒ 底部功能条只剩 4 个按钮，且不再出现缓存文案
+  const bottom = html.match(/<footer class="audiobook-bottom-controls">([\s\S]*?)<\/footer>/)
+  assert.ok(bottom, '底部功能条必须是可截取的 <footer class="audiobook-bottom-controls">')
+  assert.equal((bottom![1].match(/<button/g) ?? []).length, 4, '底部功能条必须只剩 4 个按钮（倍速/定时/目录/设置）')
+  assert.ok(!bottom![1].includes('缓存'), '底部功能条不得再出现缓存按钮（缓存入口已收敛进目录抽屉）')
+  for (const label of ['倍速', '定时', '目录', '设置']) {
+    assert.ok(bottom![1].includes(label), `底部功能条必须保留「${label}」按钮`)
+  }
   // 参考稿的版式要点：信息区（章节标题 + 书名）
   assert.ok(html.includes('audiobook-episode-title'), '必须有章节标题')
   assert.ok(html.includes('audiobook-book-title'), '必须有书名/作者')
   // 目录抽屉复用虚拟章节列表与搜索（与文本/漫画阅读器同构）
   assert.ok(html.includes('chapter-search'), '目录抽屉必须带章节搜索')
   assert.ok(html.includes('reader-drawer'), '必须复用既有抽屉外壳')
+})
+
+test('audiobook - 目录抽屉底部必须带缓存动作底栏（与小说阅读器同构）', () => {
+  const html = renderToStaticMarkup(
+    React.createElement(AudiobookPlayerScreen, { openBook, startIndex: 0, onClose: () => {}, theme: 'dark' }),
+  )
+
+  assert.equal((html.match(/<footer class="drawer-footer">/g) ?? []).length, 1, '只应有目录抽屉一个 drawer-footer（不得在播放设置抽屉重复出现）')
+  const footer = html.match(/<footer class="drawer-footer">([\s\S]*?)<\/footer>/)
+  assert.ok(footer, '目录抽屉必须有 <footer class="drawer-footer"> 底栏（小说阅读器同款结构）')
+  const body = footer![1]
+
+  // 底栏必须挂在目录抽屉（reader-drawer-left）内部、且在章节列表之后
+  const asideIndex = html.indexOf('reader-drawer-left')
+  assert.ok(asideIndex >= 0 && asideIndex < html.indexOf('<footer class="drawer-footer">'), '画缓存底栏必须位于目录抽屉内部')
+  assert.ok(html.indexOf('reader-chapters') < html.indexOf('<footer class="drawer-footer">'), '缓存底栏必须在章节列表之后（不遮挡目录滚动区）')
+
+  for (const label of ['本章', '后 50 章', '后 100 章', '全本缓存']) {
+    assert.ok(body.includes(label), `缓存底栏必须有「${label}」按钮`)
+  }
+  // 本仓库铁律：辅助按钮必须显式 type="button"（否则表单内会触发 submit）
+  assert.equal((body.match(/<button/g) ?? []).length, 4, '缓存底栏必须正好 4 个按钮（本章/后 50 章/后 100 章/全本缓存）')
+  assert.equal((body.match(/type="button"/g) ?? []).length, 4, '缓存底栏的每个按钮都必须显式声明 type="button"')
+
+  // 四个动作必须分别接到 requestCache(0) / (50) / (100) / 全本（整本 ⇒ 服务端 pinned 免死金牌）
+  const source = read('../src/AudiobookPlayerScreen.tsx')
+  for (const call of ['requestCache(0)', 'requestCache(50)', 'requestCache(100)', 'requestCache(chapters.length)']) {
+    assert.ok(source.includes(call), `目录底栏必须保留缓存动作 ${call}`)
+  }
+  assert.ok(!source.includes("t('audiobook.cache'"), '底部功能条的缓存按钮必须已删除（requestCache 本身保留）')
 })
 
 test('audiobook - 三套主题都能落到根节点（随主 UI 主题切换）', () => {

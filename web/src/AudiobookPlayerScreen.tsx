@@ -707,10 +707,6 @@ export function AudiobookPlayerScreen({ openBook, startIndex, onClose, theme }: 
           <span className="audiobook-feature-value">{sleepLabel || <Icon name="clock" />}</span>
           <span>{t('audiobook.sleepTimer', '定时')}</span>
         </button>
-        <button type="button" className={`audiobook-feature ${caching ? 'active' : ''}`} onClick={() => requestCache(0)}>
-          <span className="audiobook-feature-value"><Icon name="download" /></span>
-          <span>{t('audiobook.cache', '缓存')}</span>
-        </button>
         <button type="button" className="audiobook-feature" onClick={() => setActiveDrawer(d => (d === 'toc' ? null : 'toc'))}>
           <span className="audiobook-feature-value"><Icon name="list" /></span>
           <span>{t('reader.toc', '目录')}</span>
@@ -746,6 +742,48 @@ export function AudiobookPlayerScreen({ openBook, startIndex, onClose, theme }: 
           autoScrollKey={activeDrawer === 'toc' ? 1 : 0}
           cachedUrlsSet={cachedChapters}
         />
+        {/* 离线缓存入口已从底部功能条搬进目录抽屉（与小说阅读器同构的 drawer-footer）；
+            `caching` 为真时置灰，避免重复投递同一批章节。 */}
+        <footer className="drawer-footer">
+          <div className="cache-range-btn-grid">
+            <button
+              type="button"
+              className="cache-range-btn"
+              disabled={caching}
+              title={t('audiobook.cacheCurrentTitle', '缓存当前这一章的全部音频')}
+              onClick={() => requestCache(0)}
+            >
+              {t('audiobook.cacheCurrent', '本章')}
+            </button>
+            <button
+              type="button"
+              className="cache-range-btn"
+              disabled={caching}
+              title={t('reader.cacheNext50Title', '缓存当前章节后续 50 章')}
+              onClick={() => requestCache(50)}
+            >
+              {t('reader.cacheNext50', '后 50 章')}
+            </button>
+            <button
+              type="button"
+              className="cache-range-btn"
+              disabled={caching}
+              title={t('reader.cacheNext100Title', '缓存当前章节后续 100 章')}
+              onClick={() => requestCache(100)}
+            >
+              {t('reader.cacheNext100', '后 100 章')}
+            </button>
+            <button
+              type="button"
+              className="cache-range-btn"
+              disabled={caching}
+              title={t('audiobook.cacheAllTitle', '缓存整本有声书（GC 永不自动淘汰）')}
+              onClick={() => requestCache(chapters.length)}
+            >
+              {t('reader.cacheAll', '全本缓存')}
+            </button>
+          </div>
+        </footer>
       </aside>
 
       {/* 设置抽屉：直接复用文本阅读器的设置排版（setting-section / page-modes / setting-hint） */}

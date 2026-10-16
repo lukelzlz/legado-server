@@ -488,6 +488,7 @@
     "downloadToDeviceTitle": "将已缓存章节下载到手机或电脑本地，断网脱机可读",
     "manageOfflineCache": "管理本设备离线缓存",
     "switchSource": "换源",
+    "switchSourceNearestPosition": "新书源目录里没有同名章节，已停在最接近的位置",
     "inShelf": "已在书架",
     "addToShelf": "加书架",
     "firstChapter": "已是第一章",

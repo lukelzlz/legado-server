@@ -488,6 +488,7 @@
     "downloadToDeviceTitle": "Save cached chapters locally to read offline without internet",
     "manageOfflineCache": "Manage Device Offline Cache",
     "switchSource": "Sources",
+    "switchSourceNearestPosition": "The new source has no chapter with the same title; stopped at the closest position",
     "inShelf": "In Shelf",
     "addToShelf": "Add to Shelf",
     "firstChapter": "This is the first chapter",

@@ -1350,7 +1350,11 @@ fun Route.apiRoutes(
                 registered
             } else {
                 // ② 首次解析：规则失败一律 502 `source_execution_failed` + 真实原因
-                val parsed = runCatching { runner.audioTracks(source.json, chapterUrl) }
+                // ⚠️ 必须带书籍上下文：音频地址由 `book.getVariable('custom')`（听书音色）参与拼装，
+                // 不传就等于变量的值永远为空 ⇒ 换了音色却毫无变化（实测踩过，静默无提示）。
+                val book = if (bookUrl.isNotBlank()) database.bookContext(request.sourceId, bookUrl) else null
+                val parsed = runCatching { runner.audioTracks(source.json, chapterUrl, bookName = null, book = book) }
+                book?.let { database.persistBookVariables(it) }
                 val failure = parsed.exceptionOrNull()
                 if (failure != null) {
                     call.respond(
@@ -1942,8 +1946,25 @@ fun Route.apiRoutes(
             val cover = request.coverUrl?.takeIf { it.isNotBlank() }?.let { url ->
                 runCatching { coverCache.cache(url) }.getOrNull()
             }
-            database.updateBookshelfInfo(request, cover)?.let { call.respond(it) }
-                ?: call.respond(HttpStatusCode.NotFound, ApiError("not_found", "书籍不在书架中"))
+            // 改「书籍变量」= 换听书音色 ⇒ **必须让该书已登记的音频清单失效**。
+            //
+            // 为什么非做不可：音频是按 **URL 寻址**缓存的（换音色 ⇒ 换地址 ⇒ 换 key），
+            // 而清单路由对「已登记」的章节**直接返回旧行、不再回源解析**
+            // —— 不失效的话，用户切了音色却发现**已打开过的章节还是旧音色**（且毫无提示）。
+            // 这里只在值**确实变了**时才删，避免"只改书名点保存"白清一遍缓存。
+            val beforeCustom = if (request.customVariable != null) {
+                database.getBookVariables(request.sourceId, request.bookUrl)[Database.CUSTOM_VARIABLE_KEY]
+            } else null
+            database.updateBookshelfInfo(request, cover)?.let { updated ->
+                if (request.customVariable != null) {
+                    val afterCustom = database.getBookVariables(request.sourceId, request.bookUrl)[Database.CUSTOM_VARIABLE_KEY]
+                    if (beforeCustom != afterCustom) {
+                        // 连磁盘文件一起释放（AudioCache.deleteBook 内部会 releaseFiles）
+                        runCatching { audioCache.deleteBook(request.sourceId, request.bookUrl) }
+                    }
+                }
+                call.respond(updated)
+            } ?: call.respond(HttpStatusCode.NotFound, ApiError("not_found", "书籍不在书架中"))
         }
         post("/bookshelf/switch-source") {
             if (auth.requireSession(call, true) == null) return@post

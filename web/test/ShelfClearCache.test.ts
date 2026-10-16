@@ -4,23 +4,31 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import i18n, { changeAppLanguage, resources } from '../src/i18n'
+import {
+  BROWSER_CLEAR_STEPS,
+  SCOPE_STEPS,
+  SERVER_CLEAR_STEPS,
+  isServerStep,
+  stepsForScope,
+} from '../src/shelfClearCache'
 
 /**
- * 「书籍管理」弹窗里的「清除缓存」行（独立 PR：`feat/shelf-clear-cache`）。
+ * 「清除缓存」功能（独立 PR：`feat/shelf-clear-cache`）。
  *
- * 为什么这些断言是**源码级**而不是 `renderToStaticMarkup`：
- * `BookManageModal` 与 `ShelfPage` 都定义在 `web/src/main.tsx` 里，而该模块
- * ① `import './styles.css'`（Node 无法加载 `.css`，实测 `Unknown file extension ".css"`）、
- * ② 模块顶层直接 `createRoot(document.getElementById('root')!).render(...)`。
- * 因此 Node 侧**不可能** import 它，静态渲染也无从谈起（想把弹窗拆成独立模块属于
- * 无关重构，本 PR 刻意不做）。
+ * 需求形态：书籍管理弹窗里有一行红色的「清除缓存」，点它**弹出范围选择弹窗**
+ * （清除服务器缓存 / 清除浏览器缓存 / 清理服务器和浏览器缓存，三个都红色 + 中性取消），
+ * 选定后按范围删掉这一本书的缓存。
  *
- * 这里采取的折中：按**真实 JSX 源码**解析出弹窗里的 `manage-action-row` 兄弟节点序列——
- * 兄弟节点在源码里的先后**就是**渲染后的 DOM 顺序，`className` / `Icon name` / 内联默认文案
- * 也都是逐字取自真实模板。与之配套的浏览器端渲染验证见
- * `web/test/e2e-browser-reclean-a11y.ts`（真实点击 `.book-manage-sheet` 里的按钮）。
- *
- * 解析手法与 `button-styles-audit.test.ts` 同源（引号 / 花括号感知的 `<button ...>` 扫描）。
+ * 为什么断言分两层：
+ * - **范围正确性**（选服务器就绝不动本机、选浏览器就绝不碰服务端）在
+ *   `src/shelfClearCache.ts` 这张纯表上做**真实运行时**断言（import 进来跑）；
+ * - **UI / 接线**（弹窗结构、三个选项各传哪个 scope、取消零动作、per-book 参数）只能读源码断言：
+ *   `BookManageModal` / `ClearCacheScopeModal` / `ShelfPage` 都住在 `web/src/main.tsx`，
+ *   而该模块 ① `import './styles.css'`（Node 实测 `Unknown file extension ".css"`）、
+ *   ② 模块顶层直接 `createRoot(document.getElementById('root')!)` ⇒ **Node 侧无法 import**，
+ *   `renderToStaticMarkup` 无从谈起（把弹窗拆成独立模块属于另一个 refactor，本 PR 不做）。
+ *   源码断言按**真实 JSX 兄弟节点顺序**（= 渲染后的 DOM 顺序）与逐字 class/文案取值，
+ *   配合浏览器端 e2e（`web/test/e2e-browser-reclean-a11y.ts` 真实点击 `.book-manage-sheet`）。
  */
 
 const __filename = fileURLToPath(import.meta.url)
@@ -29,11 +37,23 @@ const __dirname = path.dirname(__filename)
 /** 统一成 LF：本仓库在 Windows 下 CRLF 检出，索引/行尾断言必须与行尾风格无关。 */
 const readSource = (name: string) => fs.readFileSync(path.resolve(__dirname, `../src/${name}`), 'utf8').replace(/\r\n/g, '\n')
 
-/** 新增的 8 个 i18n key（四语都必须有、都必须非空）。 */
+/** 本 PR 涉及的全部 i18n key（四语都必须有、都必须非空）。 */
 const CLEAR_CACHE_KEYS = [
+  // 书籍管理弹窗那一行
   'clearCache',
   'clearCacheDesc',
-  'clearCacheConfirm',
+  // 范围选择弹窗：标题 / 副说明 / 三个选项及其副说明 / 取消及其副说明
+  'clearCacheTitle',
+  'clearCacheHint',
+  'clearCacheServer',
+  'clearCacheServerDesc',
+  'clearCacheBrowser',
+  'clearCacheBrowserDesc',
+  'clearCacheBoth',
+  'clearCacheBothDesc',
+  'clearCacheCancel',
+  'clearCacheCancelDesc',
+  // 失败点名与结果 toast
   'clearCacheSuccess',
   'clearCachePartial',
   'clearCachePartImages',
@@ -42,12 +62,26 @@ const CLEAR_CACHE_KEYS = [
   'clearCachePartLocal',
 ] as const
 
-/** 四语各 9 项，缺一项都不行（本机离线正文算第四项）。 */
+/** 四个清理动作各自的「失败点名」文案（本机离线正文算第四项）。 */
 const CLEAR_CACHE_PART_KEYS = [
   'clearCachePartImages',
   'clearCachePartAudio',
   'clearCachePartContent',
   'clearCachePartLocal',
+] as const
+
+/** 范围弹窗里必须引用的 key（含内联默认值要与 zh-CN 逐字一致的那些）。 */
+const MODAL_KEYS = [
+  'clearCacheTitle',
+  'clearCacheHint',
+  'clearCacheServer',
+  'clearCacheServerDesc',
+  'clearCacheBrowser',
+  'clearCacheBrowserDesc',
+  'clearCacheBoth',
+  'clearCacheBothDesc',
+  'clearCacheCancel',
+  'clearCacheCancelDesc',
 ] as const
 
 const LOCALES = ['zh-CN', 'zh-TW', 'en-US', 'ja-JP'] as const
@@ -56,20 +90,21 @@ function translationOf(locale: (typeof LOCALES)[number]): Record<string, any> {
   return (resources[locale].translation as Record<string, any>)
 }
 
-/** 切出 `BookManageModal` 的函数体（到下一个顶层 `function ` 为止）。 */
-function bookManageModalSource(): string {
-  const source = readSource('main.tsx')
-  const start = source.indexOf('function BookManageModal(')
-  assert.ok(start > -1, 'main.tsx 必须存在 BookManageModal')
-  const end = source.indexOf('\nfunction GroupManageModal(', start)
-  assert.ok(end > start, '没法定位 BookManageModal 的结尾')
-  return source.slice(start, end)
+/** 按名字切出 `main.tsx` 里的顶层函数（到下一个顶层 `function ` 为止）。 */
+function topLevelFunctionSource(source: string, name: string): string {
+  const start = source.indexOf(`function ${name}(`)
+  assert.ok(start > -1, `main.tsx 必须存在 ${name}`)
+  const next = source.slice(start + 1).search(/\nfunction /)
+  assert.ok(next > -1, `没法定位 ${name} 的结尾`)
+  return source.slice(start, start + 1 + next)
 }
 
+const bookManageModalSource = () => topLevelFunctionSource(readSource('main.tsx'), 'BookManageModal')
+const clearCacheModalSource = () => topLevelFunctionSource(readSource('main.tsx'), 'ClearCacheScopeModal')
+
 /**
- * 按源码顺序抽出弹窗里所有 `<button …>…</button>` 元素（**含子节点**——`<strong>` 文案在开标签之后，
- * 只扫开标签是拿不到标题的，这一点踩过坑）。
- * 返回顺序 = JSX 兄弟节点顺序 = 渲染后的 DOM 顺序。
+ * 按源码顺序抽出一段 JSX 里所有 `<button …>…</button>` 元素（**含子节点**——`<strong>` 文案在开标签之后，
+ * 只扫开标签是拿不到标题的，这一点踩过坑）。顺序 = JSX 兄弟顺序 = 渲染后的 DOM 顺序。
  */
 function extractButtonElements(body: string): string[] {
   const close = '</button>'
@@ -78,233 +113,303 @@ function extractButtonElements(body: string): string[] {
     .slice(1)
     .map(chunk => {
       const end = chunk.indexOf(close)
-      // 源码里所有 button 都有闭合标签；万一没有（解析异常）就取到结尾，让断言如实失败
       return '<button' + (end === -1 ? chunk : chunk.slice(0, end + close.length))
     })
 }
 
+const classesOf = (element: string) => (/className="([^"]*)"/.exec(element)?.[1] ?? '').split(/\s+/).filter(Boolean)
+const strongOf = (element: string) => (/<strong>([\s\S]*?)<\/strong>/.exec(element)?.[1] ?? '').replace(/\s+/g, ' ').trim()
+/** 取该按钮的 onClick 内容（`onClick={...}>` 的惰性匹配）。 */
+const onClickOf = (element: string) => /onClick=\{([\s\S]*?)\}>/.exec(element)?.[1] ?? ''
+
 type ActionRow = { element: string; classes: string[]; strong: string }
 
-/** 弹窗里所有「操作行」按钮（`manage-action-row`），保持源码顺序。 */
-function actionRows(): ActionRow[] {
+/** 书籍管理弹窗里所有「操作行」按钮（`manage-action-row`），保持源码顺序。 */
+function manageActionRows(): ActionRow[] {
   return extractButtonElements(bookManageModalSource())
     .filter(element => /className="[^"]*manage-action-row/.test(element))
-    .map(element => {
-      const classMatch = /className="([^"]*)"/.exec(element)
-      const strongMatch = /<strong>([\s\S]*?)<\/strong>/.exec(element)
-      return {
-        element,
-        classes: (classMatch?.[1] ?? '').split(/\s+/).filter(Boolean),
-        strong: (strongMatch?.[1] ?? '').replace(/\s+/g, ' ').trim(),
-      }
-    })
+    .map(element => ({ element, classes: classesOf(element), strong: strongOf(element) }))
 }
 
-const findRow = (rows: ActionRow[], key: string) => rows.find(r => r.strong.includes(`shelf.${key}`))
+/** 范围选择弹窗里所有按钮（含右上角关闭），保持源码顺序。 */
+const modalButtons = () => extractButtonElements(clearCacheModalSource())
 
-/** 取函数/处理器的源码片段（从锚点起 `length` 个字符内）。 */
+/** `ShelfPage.clearCache` 处理函数的源码片段。 */
+function clearCacheHandler(): string {
+  const source = readSource('main.tsx')
+  const start = source.indexOf('const clearCache = async (item: BookshelfItem, scope: ClearCacheScope) => {')
+  assert.ok(start > -1, 'ShelfPage 必须有按 scope 的 clearCache 处理函数')
+  const end = source.indexOf('\n  }\n', start)
+  assert.ok(end > start, '没法定位 clearCache 处理函数的结尾')
+  return source.slice(start, end)
+}
+
+/** 取函数/处理器源码片段（从锚点起 `length` 个字符内）。 */
 function windowFrom(source: string, anchor: string, length = 400): string {
   const at = source.indexOf(anchor)
   assert.ok(at > -1, `源码里找不到锚点：${anchor}`)
   return source.slice(at, at + length)
 }
 
-/** `ShelfPage` 里那个「清除缓存」处理函数的源码片段。 */
-function clearCacheHandler(): string {
-  const source = readSource('main.tsx')
-  const start = source.indexOf('const clearCache = async (item: BookshelfItem) => {')
-  assert.ok(start > -1, 'ShelfPage 必须有 clearCache 处理函数')
-  const end = source.indexOf('\n  }\n', start)
-  assert.ok(end > start, '没法定位 clearCache 处理函数的结尾')
-  return source.slice(start, end)
-}
-
 // ---------------------------------------------------------------------------
-// 1 & 2. 弹窗里的「清除缓存」行：danger 配色 + 排在「移出书架」之前
+// 1 & 2. 书籍管理弹窗里的「清除缓存」行：danger 配色 + 排在「移出书架」之前
 // ---------------------------------------------------------------------------
 
 test('shelf-clear-cache - 弹窗渲染出「清除缓存」行，且与「移出书架」同为 manage-action-row danger', () => {
-  const rows = actionRows()
-  const clearRow = findRow(rows, 'clearCache')
-  const removeRow = findRow(rows, 'removeFromShelf')
+  const rows = manageActionRows()
+  const clearRow = rows.find(r => r.strong.includes('shelf.clearCache'))
+  const removeRow = rows.find(r => r.strong.includes('shelf.removeFromShelf'))
 
   assert.ok(clearRow, '书籍管理弹窗里必须有一行渲染 shelf.clearCache')
   assert.ok(removeRow, '书籍管理弹窗里必须仍有一行渲染 shelf.removeFromShelf')
 
-  // 用户原话：「在移出书架上面添加一个新按钮清除缓存，和移出书架一样用红色配色」
-  assert.ok(clearRow.classes.includes('manage-action-row'), `清除缓存行的 class 必须含 manage-action-row，实际：${clearRow.classes.join(' ')}`)
-  assert.ok(clearRow.classes.includes('danger'), `清除缓存行的 class 必须含 danger（红色），实际：${clearRow.classes.join(' ')}`)
-  assert.deepEqual(
-    [...clearRow.classes].sort(),
-    [...removeRow.classes].sort(),
-    '清除缓存行与移出书架行的 class 必须完全一致（红色配色同源）',
-  )
+  // 用户原话：「和移出书架一样用红色配色」
+  assert.ok(clearRow!.classes.includes('manage-action-row'), `实际：${clearRow!.classes.join(' ')}`)
+  assert.ok(clearRow!.classes.includes('danger'), `清除缓存行的 class 必须含 danger（红色），实际：${clearRow!.classes.join(' ')}`)
+  assert.deepEqual([...clearRow!.classes].sort(), [...removeRow!.classes].sort(), '清除缓存行与移出书架行的 class 必须完全一致（红色配色同源）')
 
-  // 复用 Icon 组件里已存在的图标，不新造图标
-  assert.ok(/<Icon name="trash"\s*\/>/.test(clearRow.element), '清除缓存行必须使用既有的 trash 图标')
-  assert.ok(!/<Icon name="(broom|refresh)\s*"/.test(clearRow.element), '不得使用不存在的图标名')
+  assert.ok(/<Icon name="trash"\s*\/>/.test(clearRow!.element), '清除缓存行必须使用既有的 trash 图标')
+  assert.ok(clearRow!.strong.includes("t('shelf.clearCache'"), '主标题必须走 shelf.clearCache')
+  assert.ok(clearRow!.element.includes("t('shelf.clearCacheDesc'"), '副标题必须走 shelf.clearCacheDesc')
 
-  // 主副标题都在，且确实来自 i18n key
-  assert.ok(clearRow.strong.includes("t('shelf.clearCache'"), '主标题必须走 shelf.clearCache')
-  assert.ok(clearRow.element.includes("t('shelf.clearCacheDesc'"), '副标题必须走 shelf.clearCacheDesc')
-
-  // 内联默认值必须与 zh-CN 词条逐字一致（否则中文会闪回英文/出现两套文案）
-  const zhCN = translationOf('zh-CN')
-  assert.ok(
-    clearRow.element.includes(`t('shelf.clearCache', '${zhCN.shelf.clearCache}')`),
-    `inline 默认值必须与 zh-CN 一致：${zhCN.shelf.clearCache}`,
-  )
-  assert.ok(
-    clearRow.element.includes(`t('shelf.clearCacheDesc', '${zhCN.shelf.clearCacheDesc}')`),
-    `inline 默认值必须与 zh-CN 一致：${zhCN.shelf.clearCacheDesc}`,
-  )
+  // 内联默认值必须与 zh-CN 词条逐字一致
+  const zhCN = translationOf('zh-CN').shelf
+  assert.ok(clearRow!.element.includes(`t('shelf.clearCache', '${zhCN.clearCache}')`), `inline 默认值必须与 zh-CN 一致：${zhCN.clearCache}`)
+  assert.ok(clearRow!.element.includes(`t('shelf.clearCacheDesc', '${zhCN.clearCacheDesc}')`), `inline 默认值必须与 zh-CN 一致：${zhCN.clearCacheDesc}`)
 })
 
 test('shelf-clear-cache - 顺序断言：「清除缓存」紧挨在「移出书架」上面（DOM 兄弟顺序）', () => {
-  const rows = actionRows()
+  const rows = manageActionRows()
   const clearIndex = rows.findIndex(r => r.strong.includes('shelf.clearCache'))
   const removeIndex = rows.findIndex(r => r.strong.includes('shelf.removeFromShelf'))
 
   assert.ok(clearIndex > -1 && removeIndex > -1, '两行都必须存在')
-  assert.ok(
-    clearIndex < removeIndex,
-    `「清除缓存」必须渲染在「移出书架」之前（实际索引 ${clearIndex} vs ${removeIndex}）`,
-  )
+  assert.ok(clearIndex < removeIndex, `「清除缓存」必须渲染在「移出书架」之前（实际 ${clearIndex} vs ${removeIndex}）`)
   assert.equal(removeIndex, clearIndex + 1, '「清除缓存」必须紧邻「移出书架」的正上方')
-  assert.equal(removeIndex, rows.length - 1, '「移出书架」必须仍是弹窗里的最后一行（不改变既有收尾）')
+  assert.equal(removeIndex, rows.length - 1, '「移出书架」必须仍是弹窗里的最后一行')
 })
 
-test('shelf-clear-cache - 点击后先 onClose() 再动作，且沿用 onClearCache props 链路（不就地直调 api）', () => {
-  const rows = actionRows()
-  const clearRow = findRow(rows, 'clearCache')!
+test('shelf-clear-cache - 点这一行不再 confirm，而是先 onClose() 再打开范围弹窗（沿用 onClearCache props 链路）', () => {
+  const clearRow = manageActionRows().find(r => r.strong.includes('shelf.clearCache'))
   assert.ok(clearRow, '清除缓存行必须存在')
 
-  const onClick = /onClick=\{([\s\S]*?)\}>/.exec(clearRow.element)
-  assert.ok(onClick, '清除缓存行必须有 onClick')
-  assert.ok(/onClose\(\)\s*;\s*onClearCache\(\)/.test(onClick![1]), `onClick 必须「先关弹窗再动作」，实际：${onClick![1]}`)
+  assert.ok(
+    /onClose\(\)\s*;\s*onClearCache\(\)/.test(onClickOf(clearRow!.element)),
+    `onClick 必须「先关书籍管理弹窗再打开范围弹窗」，实际：${onClickOf(clearRow!.element)}`,
+  )
 
   const source = readSource('main.tsx')
-  // 弹窗 props 链路：声明 → 书架页传入
+  // props 链路：声明 → 书架页传入 → 弹窗内部不绕过 props 直调
   assert.ok(/onClearCache:\s*\(\)\s*=>\s*void/.test(bookManageModalSource()), 'BookManageModal 必须声明 onClearCache prop')
   assert.ok(
-    /onClearCache=\{\(\)\s*=>\s*clearCache\(managingItem\)\}/.test(source),
-    '书架页必须按既有 props 链路把 onClearCache 传给 BookManageModal',
+    /onClearCache=\{\(\)\s*=>\s*\{[\s\S]{0,240}?setManagingItem\(null\)[\s\S]{0,240}?setClearingCacheItem\(target\)/.test(source),
+    '书架页必须把 onClearCache 接到「关闭书籍管理 + 打开范围弹窗」',
   )
-  assert.equal((source.match(/<BookManageModal\b/g) ?? []).length, 1, 'BookManageModal 只应有一处使用点')
-
-  // 弹窗内部不得绕过 props 直接调 api（野路子守卫）
   assert.ok(
-    !/api\.(clearImageCache|clearAudioCache|clearBookCacheData)/.test(bookManageModalSource()),
+    !/api\.(clearImageCache|clearAudioCache|clearBookCacheData)|clearOfflineBook\(/.test(bookManageModalSource()),
     'BookManageModal 内部不得直接调用清理接口，必须走 onClearCache',
   )
+  assert.ok(
+    !/api\.(clearImageCache|clearAudioCache|clearBookCacheData)|clearOfflineBook\(/.test(clearCacheModalSource()),
+    '范围弹窗内部同样不得直接调用清理接口，必须走 onPick',
+  )
+  assert.equal((source.match(/<BookManageModal\b/g) ?? []).length, 1, 'BookManageModal 只应有一处使用点')
 })
 
 // ---------------------------------------------------------------------------
-// 3. 四语言词条齐全且非空（复用既有 parity 测试的 leaf-key 做法）
+// 3. 范围选择弹窗的结构铁律：portal + theme + 三个红色选项 + 中性取消
 // ---------------------------------------------------------------------------
 
-test('shelf-clear-cache - 四语言 key 全部存在且非空，且 en/ja 未被中文污染', () => {
-  const cjk = /[\u4e00-\u9fff]/
-  const expectedClearCache: Record<(typeof LOCALES)[number], string> = {
-    'zh-CN': '清除缓存',
-    'zh-TW': '清除快取',
-    'en-US': 'Clear Cache',
-    'ja-JP': 'キャッシュ削除',
+test('shelf-clear-cache - 范围弹窗：createPortal 到 document.body + 显式 theme，且只挂一层 backdrop', () => {
+  const modal = clearCacheModalSource()
+
+  // 铁律①：portal 逃出 backdrop-filter 包含块，并显式绑定主题（否则夜间模式透光+隐形黑字）
+  assert.ok(/createPortal\(/.test(modal), '范围弹窗必须用 createPortal 挂到 body')
+  assert.ok(/document\.body,\s*\)/.test(modal), 'createPortal 的容器必须是 document.body')
+  assert.ok(/className=\{`modal-backdrop top-layer-modal-backdrop theme-\$\{theme\}`\}/.test(modal), '浮层容器必须是 modal-backdrop top-layer-modal-backdrop（与书架其它弹窗同层级）并显式绑定 theme-${theme}')
+  assert.ok(/theme:\s*ReaderTheme/.test(modal), 'theme 必须是显式 prop（不能读全局/localStorage 兜底）')
+
+  // 铁律②：只有一层 backdrop（严禁嵌套；注意 `top-layer-modal-backdrop` 也含该子串，按 className 起始处计数）
+  assert.equal((modal.match(/className=\{`modal-backdrop/g) ?? []).length, 1, '弹窗内只能有一层 modal-backdrop')
+  // 铁律③：所有按钮显式 type="button"
+  const buttons = modalButtons()
+  assert.equal(buttons.length, 5, `范围弹窗应有 5 个按钮（关闭 + 三选项 + 取消），实际 ${buttons.length}`)
+  for (const button of buttons) {
+    assert.ok(/<button type="button"/.test(button), `每个按钮都必须显式 type="button"：${button.slice(0, 60)}`)
   }
 
-  for (const locale of LOCALES) {
-    const shelf = translationOf(locale).shelf as Record<string, unknown>
-    for (const key of CLEAR_CACHE_KEYS) {
-      const value = shelf[key]
-      assert.ok(typeof value === 'string', `${locale}.shelf.${key} 必须存在且为字符串`)
-      assert.ok((value as string).trim().length > 0, `${locale}.shelf.${key} 不得为空`)
-    }
-    assert.equal(shelf.clearCache, expectedClearCache[locale], `${locale}.shelf.clearCache 文案不符`)
-
-    // 四语必须互相独立：en/ja 不得直接复制中文
-    if (locale === 'en-US') {
-      assert.ok(!cjk.test(shelf.clearCache as string), 'en-US 不得含中文')
-      assert.ok(!cjk.test(shelf.clearCacheDesc as string), 'en-US 不得含中文')
-      assert.ok(!cjk.test(shelf.clearCacheConfirm as string), 'en-US confirm 不得含中文')
-      assert.ok(!cjk.test(shelf.clearCacheSuccess as string), 'en-US 成功 toast 不得含中文')
-      assert.ok(!cjk.test(shelf.clearCachePartial as string), 'en-US 部分失败 toast 不得含中文')
-      assert.ok(!cjk.test(shelf.clearCachePartLocal as string), 'en-US 本机离线正文文案不得含中文')
-    }
-    if (locale === 'ja-JP') {
-      assert.notEqual(shelf.clearCacheDesc, translationOf('zh-CN').shelf.clearCacheDesc, 'ja-JP 不得直接复制中文')
-      assert.notEqual(shelf.clearCacheSuccess, translationOf('zh-CN').shelf.clearCacheSuccess, 'ja-JP 不得直接复制中文')
-      assert.notEqual(shelf.clearCachePartial, translationOf('zh-CN').shelf.clearCachePartial, 'ja-JP 不得直接复制中文')
-      assert.notEqual(shelf.clearCachePartLocal, translationOf('zh-CN').shelf.clearCachePartLocal, 'ja-JP 不得直接复制中文')
-    }
-    if (locale === 'zh-TW') {
-      assert.notEqual(shelf.clearCacheDesc, translationOf('zh-CN').shelf.clearCacheDesc, 'zh-TW 必须是繁体习惯用词')
-      assert.notEqual(shelf.clearCachePartLocal, translationOf('zh-CN').shelf.clearCachePartLocal, 'zh-TW 必须是繁体习惯用词')
-    }
-  }
+  // 无障碍：dialog + aria-modal + aria-label
+  assert.ok(/role="dialog"/.test(modal) && /aria-modal="true"/.test(modal), '必须有 role="dialog" 与 aria-modal="true"')
+  assert.ok(/aria-label=\{t\('shelf\.clearCacheTitle'/.test(modal), 'aria-label 必须走 shelf.clearCacheTitle')
 })
 
-test('shelf-clear-cache - 四个失败项文案（图片/音频/正文/本机离线正文）四语齐全、非空且互不相同', () => {
-  for (const locale of LOCALES) {
-    const shelf = translationOf(locale).shelf as Record<string, string>
-    const labels = CLEAR_CACHE_PART_KEYS.map(key => shelf[key])
-    assert.equal(labels.length, 4, `${locale} 必须有四个失败项文案`)
-    for (const [i, label] of labels.entries()) {
-      assert.ok(typeof label === 'string' && label.trim().length > 0, `${locale}.shelf.${CLEAR_CACHE_PART_KEYS[i]} 不得为空`)
-    }
-    assert.equal(new Set(labels).size, 4, `${locale} 四个失败项文案必须互不相同（否则 toast 分不清哪一项没清掉）`)
-    // 本机离线那一项必须能一眼看出是"本机/离线"（不能和服务端正文缓存撞名）
-    assert.ok(
-      /本机|本機|local|ローカル/i.test(shelf.clearCachePartLocal),
-      `${locale} clearCachePartLocal 必须点明「本机/离线」：${shelf.clearCachePartLocal}`,
-    )
+test('shelf-clear-cache - 范围弹窗：三个选项都是 manage-action-row danger（红），取消是同布局但不带 danger', () => {
+  const rows = extractButtonElements(clearCacheModalSource()).filter(e => /className="[^"]*manage-action-row/.test(e))
+  const options = rows.filter(e => classesOf(e).includes('danger'))
+  const cancels = rows.filter(e => !classesOf(e).includes('danger'))
+
+  assert.equal(options.length, 3, `必须正好三个红色选项，实际 ${options.length}`)
+  assert.equal(cancels.length, 1, `必须正好一个中性取消，实际 ${cancels.length}`)
+  for (const option of options) {
+    assert.ok(classesOf(option).includes('manage-action-row'), '选项必须用 manage-action-row（与移出书架同布局）')
+    assert.ok(classesOf(option).includes('danger'), '选项必须是 danger（红色，与移出书架同源 --danger）')
   }
+  assert.deepEqual(classesOf(cancels[0]), ['manage-action-row'], '取消必须只有 manage-action-row（中性、不红）')
+
+  // 顺序：三个选项在取消之前
+  const titles = rows.map(e => strongOf(e))
+  assert.ok(titles[3].includes('shelf.clearCacheCancel'), '取消必须是最后一行')
 })
 
-test('shelf-clear-cache - confirm 文案明确列出「会清什么」与「不会动什么」，且插值可用', async () => {
-  const mustNotAffect: Record<(typeof LOCALES)[number], string> = {
-    'zh-CN': '阅读进度',
-    'zh-TW': '閱讀進度',
-    'en-US': 'reading progress',
-    'ja-JP': '読書の進捗',
-  }
-  const cleared: Record<(typeof LOCALES)[number], string[]> = {
-    'zh-CN': ['图片', '音频', '正文', '本机离线'],
-    'zh-TW': ['圖片', '音訊', '正文', '本機離線'],
-    'en-US': ['image', 'audio', 'text', 'local offline'],
-    'ja-JP': ['画像', '音声', '本文', 'ローカルオフライン'],
-  }
+test('shelf-clear-cache - 三个选项各传哪个 scope 精确断言；取消零动作', () => {
+  const rows = extractButtonElements(clearCacheModalSource()).filter(e => /className="[^"]*manage-action-row/.test(e))
+  const options = rows.filter(e => classesOf(e).includes('danger'))
+  const cancel = rows.filter(e => !classesOf(e).includes('danger'))[0]
 
-  for (const locale of LOCALES) {
-    const shelf = translationOf(locale).shelf as Record<string, string>
-    const confirmText = shelf.clearCacheConfirm
-    // 书名必须插值进来，否则用户看不出清的是哪本书
-    assert.ok(confirmText.includes('{{name}}'), `${locale} confirm 必须带 {{name}}`)
-    // 明确列出会清掉的部分（图片 / 音频 / 正文 / 本机离线）
-    for (const part of cleared[locale]) {
-      assert.ok(confirmText.includes(part), `${locale} confirm 必须点名会清掉「${part}」`)
-    }
-    // 明确声明不动阅读进度（这是「清除缓存」与「移出书架」的关键区别）
-    assert.ok(confirmText.includes(mustNotAffect[locale]), `${locale} confirm 必须声明不动「${mustNotAffect[locale]}」`)
+  const scopes = options.map(e => {
+    const onClick = onClickOf(e)
+    const picked = /onPick\('([a-z]+)'\)/.exec(onClick)
+    assert.ok(picked, `选项必须显式传 scope：${onClick}`)
+    return picked![1]
+  })
+  assert.deepEqual(scopes, ['server', 'browser', 'both'], '三选项必须依次是 服务器 / 浏览器 / 两者（互斥三选一）')
+  assert.equal(new Set(scopes).size, 3, '三个选项的 scope 不得重复')
 
-    // 运行时插值：不留占位符、带上书名
-    await changeAppLanguage(locale)
-    const rendered = i18n.t('shelf.clearCacheConfirm', { name: 'TEST_BOOK' })
-    assert.ok(rendered.includes('TEST_BOOK'), `${locale} confirm 插值后必须含书名`)
-    assert.ok(!rendered.includes('{{'), `${locale} confirm 插值后不得残留占位符`)
+  // 每个选项的标题 key 也要对得上（防止"文案与行为错位"）
+  const titleKeys = options.map(e => (/t\('(shelf\.clearCache[A-Za-z]+)'/.exec(strongOf(e))?.[1] ?? ''))
+  assert.deepEqual(titleKeys, ['shelf.clearCacheServer', 'shelf.clearCacheBrowser', 'shelf.clearCacheBoth'])
 
-    const success = i18n.t('shelf.clearCacheSuccess', { name: 'TEST_BOOK' })
-    assert.ok(success.includes('TEST_BOOK'), `${locale} 成功 toast 必须带书名`)
-
-    const partial = i18n.t('shelf.clearCachePartial', { name: 'TEST_BOOK', parts: shelf.clearCachePartImages })
-    assert.ok(partial.includes('TEST_BOOK'), `${locale} 部分失败 toast 必须带书名`)
-    assert.ok(partial.includes(shelf.clearCachePartImages), `${locale} 部分失败 toast 必须点名没清掉的部分`)
-    assert.ok(!partial.includes('{{'), `${locale} 部分失败 toast 不得残留占位符`)
-  }
-  await changeAppLanguage('zh-CN')
+  // 取消：只关弹窗，绝不触发任何清理
+  const cancelOnClick = onClickOf(cancel)
+  assert.ok(!/onPick/.test(cancelOnClick), `取消不得触发任何 scope，实际：${cancelOnClick}`)
+  assert.ok(/onClose/.test(cancelOnClick), '取消只应关闭弹窗')
+  assert.ok(strongOf(cancel).includes("t('shelf.clearCacheCancel'"), '取消文案必须走 shelf.clearCacheCancel')
 })
 
 // ---------------------------------------------------------------------------
-// 4. 源码级接线：三个端点都必须真的被调用到（防「按钮是死的」）
+// 4. 范围模型（纯模块，真实运行时断言）：选服务器就绝不动本机，反之亦然
+// ---------------------------------------------------------------------------
+
+test('shelf-clear-cache - stepsForScope 精确：服务器=3 步且零本机；浏览器=恰好本机 1 步且零服务端；两者=4 步有序', () => {
+  // 服务器：恰好三个服务端端点，**一个本机步骤都不能有**
+  assert.deepEqual([...stepsForScope('server')], ['images', 'audio', 'content'])
+  assert.equal(stepsForScope('server').length, 3)
+  assert.ok(!stepsForScope('server').includes('local'), '选「清除服务器缓存」绝不能动本机缓存')
+  assert.ok(stepsForScope('server').every(isServerStep), '服务器范围里必须全是服务端步骤')
+
+  // 浏览器：恰好一步，**一个服务端端点都不能有**
+  assert.deepEqual([...stepsForScope('browser')], ['local'])
+  assert.equal(stepsForScope('browser').length, 1, '选「清除浏览器缓存」绝不能碰服务端')
+  assert.ok(!stepsForScope('browser').some(isServerStep), '浏览器范围里必须没有服务端步骤')
+
+  // 两者：四步齐全且顺序固定（图片 → 音频 → 正文 → 本机）
+  assert.deepEqual([...stepsForScope('both')], ['images', 'audio', 'content', 'local'])
+  assert.deepEqual([...stepsForScope('both')], [...SERVER_CLEAR_STEPS, ...BROWSER_CLEAR_STEPS], 'both 必须恰好是两者相加')
+
+  // 三个范围互斥且两两不同
+  assert.equal(new Set(['server', 'browser', 'both'].map(s => stepsForScope(s as any).join(','))).size, 3)
+  const serverSet = new Set(stepsForScope('server'))
+  assert.ok(!BROWSER_CLEAR_STEPS.some(step => serverSet.has(step)), '服务端集合与本机集合必须不相交')
+  assert.deepEqual(Object.keys(SCOPE_STEPS).sort(), ['both', 'browser', 'server'], '范围只有这三种')
+
+  // 未知范围 ⇒ 空动作（宁可不删，也绝不越界删）
+  assert.deepEqual([...stepsForScope('nonsense' as any)], [], '脏 scope 必须退化为「什么都不做」')
+  assert.equal(isServerStep('local'), false)
+})
+
+// ---------------------------------------------------------------------------
+// 5. 接线：处理函数只按 stepsForScope(scope) 派发，且只带这一本书
+// ---------------------------------------------------------------------------
+
+test('shelf-clear-cache - clearCache 唯一按 stepsForScope(scope) 循环派发：四个清理调用各一处且全在循环内', () => {
+  const source = readSource('main.tsx')
+  const handler = clearCacheHandler()
+
+  const loopAt = handler.indexOf('for (const step of stepsForScope(scope))')
+  assert.ok(loopAt > -1, 'clearCache 必须按 stepsForScope(scope) 循环派发（范围只在一处定义）')
+
+  // 四个清理动作在整个 main.tsx 里各只出现一次，且都在循环体内 ⇒ 实际执行集合 === stepsForScope(scope)
+  const calls: Array<[string, string]> = [
+    ['api.clearImageCache', 'api.clearImageCache(item.sourceId, item.bookUrl)'],
+    ['api.clearAudioCache', 'api.clearAudioCache(item.sourceId, item.bookUrl)'],
+    ['api.clearBookCacheData', 'api.clearBookCacheData(item.sourceId, item.bookUrl)'],
+    ['clearOfflineBook', 'clearOfflineBook(item.sourceId, item.bookUrl)'],
+  ]
+  for (const [needle, exact] of calls) {
+    const pattern = new RegExp(`${needle.replace('.', '\\.')}\\([^)]*\\)`, 'g')
+    assert.equal((source.match(pattern) ?? []).length, 1, `${needle} 在 main.tsx 里只应有一处调用点`)
+    assert.deepEqual(handler.match(pattern) ?? [], [exact], `${needle} 必须且只能按当前这本书调用`)
+    assert.ok(handler.indexOf(needle) > loopAt, `${needle} 必须在循环体内（否则会绕过范围表）`)
+  }
+
+  // 每个 step 都有分派分支；local 是 else（兜底）分支。
+  // 注意 `step === 'x'` 会出现两次：① if/else 分派 ② catch 里的失败点名三元表达式。
+  for (const needle of ["if (step === 'images') {", "else if (step === 'audio') {", "else if (step === 'content') {"]) {
+    assert.equal(handler.split(needle).length - 1, 1, `必须恰好一个分派分支：${needle}`)
+  }
+  for (const step of ['images', 'audio', 'content']) {
+    assert.equal((handler.match(new RegExp(`step === '${step}' \\?`, 'g')) ?? []).length, 1, `失败点名必须恰好覆盖一次 ${step}`)
+  }
+  assert.equal((handler.match(/step === 'local'/g) ?? []).length, 0, 'local 必须走 else 兜底，不得多写一个分支')
+  assert.ok(/else \{[\s\S]{0,200}?await clearOfflineBook/.test(handler), 'local 必须作为 else 兜底分支')
+
+  // 禁全清 / 禁波及其它书
+  assert.ok(!/clearAllOffline/.test(handler), '严禁调用全清 clearAllOffline')
+  assert.ok(!/evictLruOfflineBooks/.test(handler), '严禁顺手触发 LRU 驱逐（会删别的书）')
+  assert.ok(!/getOfflineStorageStats/.test(handler), '严禁遍历全部书后批量删')
+})
+
+test('shelf-clear-cache - 每步独立 try/catch 单点记账（只点名实际执行过的段）+ 完成 load() + 忙碌态收尾', () => {
+  const handler = clearCacheHandler()
+
+  // 单点记账：全部标签都从循环内**唯一**那个 catch 里 push ⇒ 没执行过的段不可能被点名
+  assert.equal((handler.match(/failedParts\.push\(/g) ?? []).length, 1, '必须只有一处 push（循环内的 catch）')
+  const pushAt = handler.indexOf('failedParts.push(')
+  const catchAt = handler.lastIndexOf('catch {', pushAt)
+  const loopAt = handler.indexOf('for (const step of stepsForScope(scope))')
+  assert.ok(loopAt > -1 && loopAt < catchAt && catchAt < pushAt, 'push 必须在「循环体内的 catch」中')
+  for (const label of CLEAR_CACHE_PART_KEYS) {
+    assert.ok(handler.includes(`t('shelf.${label}'`), `失败点名必须覆盖 shelf.${label}`)
+  }
+
+  // 全成功 success / 部分失败 warning（带书名），并刷新书架
+  assert.ok(handler.includes('toast.success(') && handler.includes("t('shelf.clearCacheSuccess'"), '全成功必须 toast.success 且走 clearCacheSuccess')
+  assert.ok(handler.includes('toast.warning(') && handler.includes("t('shelf.clearCachePartial'"), '部分失败必须 toast.warning 且走 clearCachePartial')
+  assert.ok(handler.includes('name: item.name'), 'toast 必须带上书名')
+  assert.ok(/\bload\(\)/.test(handler), '清完必须刷新书架状态')
+
+  // 忙碌态：进入即置位、finally 里复位并关弹窗（整段循环被一个 try/finally 罩住，
+  // 因此即使中途抛出意外异常，也不会把弹窗永久卡在"清理中"）
+  assert.ok(/setClearingCache\(true\)/.test(handler), '开始清理必须置忙碌态')
+  const finallyAt = handler.indexOf('finally {')
+  assert.ok(finallyAt > -1 && finallyAt > loopAt, '必须有 finally 兜底，且它罩住整个循环')
+  const finallyBlock = handler.slice(finallyAt, handler.indexOf('\n    }', finallyAt))
+  assert.ok(/setClearingCache\(false\)/.test(finallyBlock), 'finally 必须复位忙碌态')
+  assert.ok(/setClearingCacheItem\(null\)/.test(finallyBlock), 'finally 必须关闭范围弹窗')
+
+  // confirm() 已彻底移除（弹窗本身就是确认）
+  assert.ok(!/\bconfirm\(/.test(handler), 'clearCache 不得再用 confirm()')
+  assert.ok(!/\bconfirm\(/.test(clearCacheModalSource()), '范围弹窗不得用 confirm()')
+})
+
+test('shelf-clear-cache - 范围弹窗在书架页以平级条件分支挂载，并把 theme 一路传下去', () => {
+  const source = readSource('main.tsx')
+
+  assert.ok(/\{clearingCacheItem && \(\s*\n\s*<ClearCacheScopeModal/.test(source), '范围弹窗必须由 {clearingCacheItem && ...} 平级挂载（不嵌在书籍管理弹窗里）')
+  assert.ok(/theme=\{theme\}/.test(source), '必须把 theme 传进范围弹窗（portal 后靠它绑主题变量）')
+  assert.ok(/busy=\{clearingCache\}/.test(source), '必须把忙碌态传进去（清理中禁止再点）')
+  assert.ok(/onPick=\{scope => void clearCache\(clearingCacheItem, scope\)\}/.test(source), 'onPick 必须把用户选定的 scope 交给 clearCache')
+  assert.ok(/function ShelfPage\(\{ onOpen, theme \}/.test(source), 'ShelfPage 必须显式接收 theme')
+  assert.ok(/<ShelfPage theme=\{settings\.theme\}/.test(source), 'App 必须把 settings.theme 传给 ShelfPage')
+
+  // 平级挂载的证据：范围弹窗与书籍管理弹窗是两个互斥的顶层条件分支
+  const manageAt = source.indexOf('{managingItem && (')
+  const clearAt = source.indexOf('{clearingCacheItem && (')
+  assert.ok(manageAt > -1 && clearAt > manageAt, '两个弹窗必须是相邻的平级分支')
+})
+
+// ---------------------------------------------------------------------------
+// 6. 三个既有 api 封装复用了正确的三个端点
 // ---------------------------------------------------------------------------
 
 test('shelf-clear-cache - 三个既有 api 封装复用了正确的三个端点', () => {
@@ -326,117 +431,147 @@ test('shelf-clear-cache - 三个既有 api 封装复用了正确的三个端点'
   assert.ok(contentWindow.includes("method: 'DELETE'"), 'clearBookCacheData 必须是 DELETE')
 })
 
-test('shelf-clear-cache - 处理函数串行调用「三端点 + 本机按书删除」，且逐个记账（不静默吞失败）', () => {
-  const source = readSource('main.tsx')
-  const start = source.indexOf('const clearCache = async (item: BookshelfItem) => {')
-  const handler = clearCacheHandler()
+// ---------------------------------------------------------------------------
+// 7. i18n 四语
+// ---------------------------------------------------------------------------
 
-  // 必须挂在 ShelfPage 上（而不是脱离页面就地直调）
-  const shelfPageAt = source.indexOf('function ShelfPage(')
-  assert.ok(shelfPageAt > -1 && shelfPageAt < start, 'clearCache 必须定义在 ShelfPage 内部')
-
-  // confirm() 必须在任何删除动作之前
-  const confirmAt = handler.indexOf('confirm(')
-  assert.ok(confirmAt > -1, '必须先 confirm() 再动手')
-
-  const steps = ['api.clearImageCache', 'api.clearAudioCache', 'api.clearBookCacheData', 'clearOfflineBook(']
-  const order = steps.map(name => {
-    const at = handler.indexOf(name)
-    assert.ok(at > -1, `clearCache 必须调用 ${name}`)
-    assert.ok(at > confirmAt, `confirm() 必须早于 ${name}`)
-    return at
-  })
-  assert.deepEqual(
-    [...order].sort((a, b) => a - b),
-    order,
-    '四步必须按「图片 → 音频 → 正文（服务端）→ 本机离线正文」串行调用',
-  )
-
-  // 四段调用必须各自 try/catch 记账：某一段失败不能静默吞掉，也不能连累后面三段
-  const tryStarts = order.map((callAt, i) => {
-    const tryAt = handler.lastIndexOf('try {', callAt)
-    assert.ok(tryAt > -1 && tryAt < callAt, `第 ${i + 1} 段调用必须包在 try 里`)
-    return tryAt
-  })
-  for (let i = 1; i < tryStarts.length; i++) {
-    assert.ok(tryStarts[i - 1] < tryStarts[i], '四个 try 块必须串行排列（不是并发、也不是嵌套）')
+test('shelf-clear-cache - 四语言 key 全部存在且非空，且 en/ja/zh-TW 未被中文污染', () => {
+  const cjk = /[\u4e00-\u9fff]/
+  const expectedClearCache: Record<(typeof LOCALES)[number], string> = {
+    'zh-CN': '清除缓存',
+    'zh-TW': '清除快取',
+    'en-US': 'Clear Cache',
+    'ja-JP': 'キャッシュ削除',
   }
-  for (let i = 0; i < tryStarts.length; i++) {
-    const segmentEnd = i === tryStarts.length - 1 ? handler.length : tryStarts[i + 1]
-    const segment = handler.slice(tryStarts[i], segmentEnd)
-    assert.ok(/catch\s*\{/.test(segment), `第 ${i + 1} 段调用必须自带 catch`)
-  }
-  assert.equal((handler.match(/failedParts\.push\(/g) ?? []).length, 4, '四段失败必须各自记账（failedParts 四次 push）')
+  /** 这几个 key 在 zh-TW 必须真的写成繁体习惯词（其余可能与简体重合，如「取消」） */
+  const mustBeTraditional = [
+    'clearCacheTitle',
+    'clearCacheDesc',
+    'clearCacheHint',
+    'clearCachePartImages',
+    'clearCachePartAudio',
+    'clearCachePartContent',
+    'clearCachePartLocal',
+    'clearCacheServer',
+    'clearCacheServerDesc',
+    'clearCacheBrowser',
+    'clearCacheBrowserDesc',
+    'clearCacheBoth',
+    'clearCacheBothDesc',
+  ] as const
 
-  // 全成功 → success；部分失败 → warning 并点名
-  const successAt = handler.indexOf("toast.success(")
-  const warnAt = handler.indexOf('toast.warning(')
-  assert.ok(successAt > -1, '全成功必须 toast.success')
-  assert.ok(warnAt > -1, '部分失败必须 toast.warning（不得静默）')
-  assert.ok(handler.includes("t('shelf.clearCacheSuccess'"), '成功 toast 必须走 shelf.clearCacheSuccess')
-  assert.ok(handler.includes("t('shelf.clearCachePartial'"), '部分失败 toast 必须走 shelf.clearCachePartial')
-  assert.ok(handler.includes('name: item.name'), 'toast 必须带上书名')
-  for (const partKey of CLEAR_CACHE_PART_KEYS) {
+  for (const locale of LOCALES) {
+    const shelf = translationOf(locale).shelf as Record<string, unknown>
+    for (const key of CLEAR_CACHE_KEYS) {
+      const value = shelf[key]
+      assert.ok(typeof value === 'string', `${locale}.shelf.${key} 必须存在且为字符串`)
+      assert.ok((value as string).trim().length > 0, `${locale}.shelf.${key} 不得为空`)
+    }
+    assert.equal(shelf.clearCache, expectedClearCache[locale], `${locale}.shelf.clearCache 文案不符`)
+
+    if (locale === 'en-US') {
+      // en 一条中文都不许有
+      for (const key of CLEAR_CACHE_KEYS) {
+        assert.ok(!cjk.test(shelf[key] as string), `en-US.shelf.${key} 不得含中文`)
+      }
+    }
+    if (locale === 'ja-JP') {
+      for (const key of CLEAR_CACHE_KEYS) {
+        assert.notEqual(shelf[key], translationOf('zh-CN').shelf[key], `ja-JP.shelf.${key} 不得直接复制中文`)
+      }
+    }
+    if (locale === 'zh-TW') {
+      for (const key of mustBeTraditional) {
+        assert.notEqual(shelf[key], translationOf('zh-CN').shelf[key], `zh-TW.shelf.${key} 必须是繁体习惯用词`)
+      }
+    }
+  }
+})
+
+test('shelf-clear-cache - 四个失败项文案四语齐全、非空、互不相同，且本机那项点明「本机/离线」', () => {
+  for (const locale of LOCALES) {
+    const shelf = translationOf(locale).shelf as Record<string, string>
+    const labels = CLEAR_CACHE_PART_KEYS.map(key => shelf[key])
+    assert.equal(labels.length, 4, `${locale} 必须有四个失败项文案`)
+    for (const [i, label] of labels.entries()) {
+      assert.ok(typeof label === 'string' && label.trim().length > 0, `${locale}.shelf.${CLEAR_CACHE_PART_KEYS[i]} 不得为空`)
+    }
+    assert.equal(new Set(labels).size, 4, `${locale} 四个失败项文案必须互不相同`)
+    assert.ok(/本机|本機|local|ローカル/i.test(shelf.clearCachePartLocal), `${locale} clearCachePartLocal 必须点明「本机/离线」：${shelf.clearCachePartLocal}`)
+  }
+})
+
+test('shelf-clear-cache - 范围弹窗引用的每个 key 四语都有，且内联默认值与 zh-CN 逐字一致', () => {
+  const modal = clearCacheModalSource()
+  const zhCN = translationOf('zh-CN').shelf
+
+  for (const key of MODAL_KEYS) {
+    assert.ok(modal.includes(`t('shelf.${key}'`), `范围弹窗必须引用 shelf.${key}（否则是死代码/悬空文案）`)
+    assert.ok(modal.includes(`'${zhCN[key]}'`), `shelf.${key} 的内联默认值必须与 zh-CN 逐字一致`)
+    for (const locale of LOCALES) {
+      const value = translationOf(locale).shelf[key]
+      assert.ok(typeof value === 'string' && value.length > 0, `${locale}.shelf.${key} 必须非空`)
+    }
+  }
+
+  // 副说明必须插值书名、且声明"不影响阅读进度/书架/封面"
+  assert.ok(/t\('shelf\.clearCacheHint',[\s\S]{0,220}?\{ name: item\.name \}/.test(modal), '副说明必须插值书名')
+  const mustNotAffect: Record<(typeof LOCALES)[number], string> = {
+    'zh-CN': '阅读进度',
+    'zh-TW': '閱讀進度',
+    'en-US': 'reading progress',
+    'ja-JP': '読書の進捗',
+  }
+  for (const locale of LOCALES) {
+    const hint = translationOf(locale).shelf.clearCacheHint as string
+    assert.ok(hint.includes('{{name}}'), `${locale} 副说明必须带 {{name}}`)
+    // 大小写不敏感：en 的 "Reading progress" 出现在句首
     assert.ok(
-      handler.includes(`t('shelf.${partKey}'`),
-      `必须分别标注「${partKey}」哪一部分没清掉（含本机离线正文）`,
+      hint.toLowerCase().includes(mustNotAffect[locale].toLowerCase()),
+      `${locale} 副说明必须声明不动「${mustNotAffect[locale]}」：${hint}`,
     )
   }
 
-  // 清完要回书架拉一次最新状态（离线章数已归零）
-  assert.ok(/\bload\(\)/.test(handler), '清完缓存必须刷新书架状态')
-})
-
-test('shelf-clear-cache - 作用域严格按书：四步都只带 item.sourceId + item.bookUrl，绝不全清、绝不带上别的书', () => {
-  const handler = clearCacheHandler()
-
-  // 本机那一份：只允许一次调用，参数必须逐字是当前这本书
-  const localCalls = handler.match(/clearOfflineBook\([^)]*\)/g) ?? []
-  assert.deepEqual(
-    localCalls,
-    ['clearOfflineBook(item.sourceId, item.bookUrl)'],
-    `本机离线删除必须且只能按当前这本书删除，实际：${JSON.stringify(localCalls)}`,
-  )
-  // 全清 / LRU 驱逐 / 遍历全部书：都会波及其它书，一律禁止
-  assert.ok(!/clearAllOffline/.test(handler), '严禁在单本清理里调用全清 clearAllOffline')
-  assert.ok(!/evictLruOfflineBooks/.test(handler), '严禁顺手触发 LRU 驱逐（会删掉别的书）')
-  assert.ok(!/getOfflineStorageStats/.test(handler), '严禁按「全部书」遍历后批量删')
-
-  // 服务端三步同样只带这本书
-  for (const name of ['clearImageCache', 'clearAudioCache', 'clearBookCacheData']) {
-    const calls = handler.match(new RegExp(`api\\.${name}\\([^)]*\\)`, 'g')) ?? []
-    assert.deepEqual(
-      calls,
-      [`api.${name}(item.sourceId, item.bookUrl)`],
-      `${name} 必须且只能按当前这本书调用，实际：${JSON.stringify(calls)}`,
-    )
+  // 三个选项的副说明各自要能看出后果差异
+  const clues: Record<(typeof LOCALES)[number], { server: string; browser: string; both: string }> = {
+    'zh-CN': { server: '服务端', browser: '本机', both: '一起' },
+    'zh-TW': { server: '伺服器', browser: '本機', both: '一起' },
+    'en-US': { server: 'server', browser: 'device', both: 'both' },
+    'ja-JP': { server: 'サーバー', browser: '端末', both: '両方' },
+  }
+  for (const locale of LOCALES) {
+    const shelf = translationOf(locale).shelf as Record<string, string>
+    assert.ok(shelf.clearCacheServerDesc.includes(clues[locale].server), `${locale} 服务器副说明必须提到「${clues[locale].server}」`)
+    assert.ok(shelf.clearCacheBrowserDesc.includes(clues[locale].browser), `${locale} 浏览器副说明必须提到「${clues[locale].browser}」`)
+    assert.ok(shelf.clearCacheBothDesc.includes(clues[locale].both), `${locale} 两者副说明必须提到「${clues[locale].both}」`)
   }
 })
 
-test('shelf-clear-cache - 本机按书删除复用了既有 API，且 key 由 sourceId+bookUrl 构成（不按书名）', () => {
-  const src = readSource('offlineStorage.ts')
+test('shelf-clear-cache - confirm() 的旧文案已改造为弹窗副说明：clearCacheConfirm 四语都不存在、源码无悬空引用', () => {
+  for (const locale of LOCALES) {
+    assert.ok(!('clearCacheConfirm' in translationOf(locale).shelf), `${locale} 不得残留 clearCacheConfirm`)
+    assert.ok('clearCacheHint' in translationOf(locale).shelf, `${locale} 必须有 clearCacheHint（副说明）`)
+  }
+  const main = readSource('main.tsx')
+  assert.ok(!main.includes('clearCacheConfirm'), 'main.tsx 里不得残留 clearCacheConfirm 引用')
+  assert.ok(main.includes("t('shelf.clearCacheHint'"), 'clearCacheHint 必须真的被弹窗引用（不是悬空 key）')
+})
 
-  // 已有按书删除 API ⇒ 直接复用，不新增「全清」或平行实现
-  assert.ok(
-    /export async function clearOfflineBook\(sourceId: string, bookUrl: string\)/.test(src),
-    '必须复用既有的 clearOfflineBook(sourceId, bookUrl)',
-  )
-  // by_book 索引落在 [sourceId, bookUrl] 上：这是「按书、不按书名」的硬证据
-  assert.ok(
-    /createIndex\('by_book', \['sourceId', 'bookUrl'\]/.test(src),
-    'by_book 索引必须由 [sourceId, bookUrl] 构成',
-  )
-  assert.ok(/IDBKeyRange\.only\(\[sourceId, bookUrl\]\)/.test(src), '删除范围必须精确到这一本书')
-  // 章节主键 = sourceId::bookUrl::chapterUrl
-  assert.ok(
-    /`\$\{sourceId\}::\$\{bookUrl\}::\$\{chapterUrl\}`/.test(src),
-    '章节主键必须由 sourceId + bookUrl + chapterUrl 构成',
-  )
+test('shelf-clear-cache - 副说明与成功/部分失败 toast 的运行时插值可用', async () => {
+  for (const locale of LOCALES) {
+    await changeAppLanguage(locale)
+    const shelf = translationOf(locale).shelf as Record<string, string>
 
-  // clearOfflineBook 的函数体里不得出现任何「按书名」的匹配
-  const bodyStart = src.indexOf('export async function clearOfflineBook')
-  const bodyEnd = src.indexOf('export async function clearAllOffline')
-  assert.ok(bodyStart > -1 && bodyEnd > bodyStart, '没法定位 clearOfflineBook 函数体')
-  const body = src.slice(bodyStart, bodyEnd)
-  assert.ok(!/\bname\b/.test(body), 'clearOfflineBook 不得按书名匹配（书名列根本不存在）')
+    const hint = i18n.t('shelf.clearCacheHint', { name: 'TEST_BOOK' })
+    assert.ok(hint.includes('TEST_BOOK') && !hint.includes('{{'), `${locale} 副说明插值后必须含书名且无占位符`)
+
+    const success = i18n.t('shelf.clearCacheSuccess', { name: 'TEST_BOOK' })
+    assert.ok(success.includes('TEST_BOOK'), `${locale} 成功 toast 必须带书名`)
+
+    const partial = i18n.t('shelf.clearCachePartial', { name: 'TEST_BOOK', parts: shelf.clearCachePartLocal })
+    assert.ok(partial.includes('TEST_BOOK'), `${locale} 部分失败 toast 必须带书名`)
+    assert.ok(partial.includes(shelf.clearCachePartLocal), `${locale} 部分失败 toast 必须点名没清掉的部分`)
+    assert.ok(!partial.includes('{{'), `${locale} 部分失败 toast 不得残留占位符`)
+  }
+  await changeAppLanguage('zh-CN')
 })

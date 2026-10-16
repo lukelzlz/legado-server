@@ -34,6 +34,13 @@ object AudioBytes {
      *
      * `video/mp4` 与 `video/webm` **刻意放进白名单**：`audio/mp4` 在真实上游常被标成前者，
      * 而浏览器对同一份字节的 `<audio>` 解码行为完全一致；把它们判成"不支持"会误杀 M4A。
+     *
+     * ⚠️ **WAV 与 FLAC 也在白名单内**（2026-10-15 实测修正）：G-6 的原话是
+     * 「FLAC/APE/WAV **浏览器解不了**就如实报错」——这是个**条件判断**，而现实条件是**浏览器都能解**：
+     * Chrome 56+ / Firefox 51+ / Safari 11+ / Edge 均支持 FLAC，PCM WAV 更是全平台原生支持。
+     * 实测触发点：番茄系音频源（`mime_type=audio_wav`）返回的就是 WAV —— 原先被判成"不支持"，
+     * 用户的真实音频源**整章放不出**。**格式白名单不该比浏览器更严格**。
+     * 真正解不了的（APE / WavPack / TTA）仍如实报错，不引转码。
      */
     val WHITELIST: Set<String> = setOf(
         "audio/mpeg", "audio/mp3", "audio/mpeg3", "audio/x-mpeg",
@@ -42,18 +49,18 @@ object AudioBytes {
         "audio/ogg", "application/ogg", "audio/opus", "audio/vorbis",
         "audio/webm", "video/webm",
         "video/mp4",
+        // 主流浏览器原生可解（见上方说明）：WAV / FLAC
+        "audio/wav", "audio/x-wav", "audio/wave", "audio/vnd.wave",
+        "audio/flac", "audio/x-flac",
     )
 
     /**
-     * **浏览器解不了、且本服务不转码**的格式：识别出来是为了给用户一句**有用的话**，
+     * **浏览器真的解不了、且本服务不转码**的格式：识别出来是为了给用户一句**有用的话**，
      * 而不是丢一句"抓取失败"（AGENTS.md：静默/含糊地丢数据比抛错危险）。
+     *
+     * 只保留**确实无主流浏览器支持**的编码：APE（Monkey's Audio）/ WavPack / TTA。
      */
     private val UNSUPPORTED: Map<String, String> = mapOf(
-        "audio/flac" to "FLAC",
-        "audio/x-flac" to "FLAC",
-        "audio/wav" to "WAV",
-        "audio/x-wav" to "WAV",
-        "audio/wave" to "WAV",
         "audio/ape" to "APE",
         "audio/x-ape" to "APE",
         "audio/x-monkeys-audio" to "APE",

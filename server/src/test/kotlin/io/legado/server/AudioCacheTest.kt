@@ -249,19 +249,48 @@ class AudioCacheTest {
     }
 
     @Test
-    fun `reports unsupported formats honestly instead of storing garbage`() {
+    fun `accepts wav and flac because browsers can decode them`() {
         withCache { cache, _ ->
-            val flac = flacBytes()
-            val fetcher = fetcherReturning("audio/flac", flac)
-            val rows = cache.registerChapter(SOURCE, BOOK, CHAPTER, 0, specs("a.flac"))
+            // 真实回归（2026-10-15）：番茄系音频源返回 mime_type=audio_wav，
+            // 原先 WAV 被判成"不支持" ⇒ 用户的真实源**整章放不出**。
+            // G-6 的原话是条件句「浏览器解不了就如实报错」，而浏览器**能**解 WAV/FLAC
+            // —— 格式白名单不该比浏览器更严格。
+            val wavRows = cache.registerChapter(SOURCE, BOOK, CHAPTER, 0, specs("a.wav"))
+            val wavOutcome = runBlocking {
+                fetcherReturning("audio/wav", wavBytes(8192)).fetchInto(
+                    "https://a.example/a.wav", emptyMap(), CHAPTER, null, cache.store, wavRows[0].cacheKey,
+                )
+            }
+            assertTrue("WAV 必须被接受：$wavOutcome", wavOutcome is AudioFetchOutcome.Success)
+            assertEquals("audio/wav", (wavOutcome as AudioFetchOutcome.Success).contentType)
+
+            val flacRows = cache.registerChapter(SOURCE, BOOK, "ch-flac", 1, specs("a.flac"))
+            val flacOutcome = runBlocking {
+                fetcherReturning("audio/flac", flacBytes()).fetchInto(
+                    "https://a.example/a.flac", emptyMap(), CHAPTER, null, cache.store, flacRows[0].cacheKey,
+                )
+            }
+            assertTrue(
+                "FLAC 也必须被接受（Chrome/Firefox/Safari 均支持）：$flacOutcome",
+                flacOutcome is AudioFetchOutcome.Success,
+            )
+        }
+    }
+
+    @Test
+    fun `reports genuinely unsupported formats honestly instead of storing garbage`() {
+        withCache { cache, _ ->
+            // APE（Monkey's Audio）确实没有任何主流浏览器支持 ⇒ 如实报错，且**不引转码**
+            val fetcher = fetcherReturning("audio/ape", apeBytes())
+            val rows = cache.registerChapter(SOURCE, BOOK, CHAPTER, 0, specs("a.ape"))
 
             val outcome = runBlocking {
-                fetcher.fetchInto("https://a.example/a.flac", emptyMap(), null, null, cache.store, rows[0].cacheKey)
+                fetcher.fetchInto("https://a.example/a.ape", emptyMap(), null, null, cache.store, rows[0].cacheKey)
             }
 
             val failure = outcome as? AudioFetchOutcome.Failure
-            assertNotNull("FLAC 必须**如实报错**，而不是静默返回坏字节", failure)
-            assertTrue("必须点名格式与白名单：${failure!!.reason}", failure.reason.contains("FLAC"))
+            assertNotNull("APE 必须**如实报错**，而不是静默返回坏字节", failure)
+            assertTrue("必须点名格式与白名单：${failure!!.reason}", failure.reason.contains("APE"))
             assertTrue("必须说明本服务不转码", failure.reason.contains("转码"))
         }
     }
@@ -474,6 +503,22 @@ class AudioCacheTest {
     private fun flacBytes(): ByteArray {
         val out = ByteArrayOutputStream()
         out.write("fLaC".toByteArray(Charsets.US_ASCII))
+        out.write(ByteArray(64))
+        return out.toByteArray()
+    }
+
+    /** 一段最小的 WAV（RIFF....WAVE 魔数 + 填充），长度必须精确（stats 的表盘对齐断言依赖它）。 */
+    private fun wavBytes(size: Int): ByteArray {
+        val bytes = ByteArray(size.coerceAtLeast(64))
+        "RIFF".toByteArray(Charsets.US_ASCII).copyInto(bytes, 0)
+        "WAVE".toByteArray(Charsets.US_ASCII).copyInto(bytes, 8)
+        return bytes
+    }
+
+    /** 一段最小的 APE（`MAC ` 魔数）—— 主流浏览器确实解不了，用作"如实报错"的样本。 */
+    private fun apeBytes(): ByteArray {
+        val out = ByteArrayOutputStream()
+        out.write("MAC ".toByteArray(Charsets.US_ASCII))
         out.write(ByteArray(64))
         return out.toByteArray()
     }

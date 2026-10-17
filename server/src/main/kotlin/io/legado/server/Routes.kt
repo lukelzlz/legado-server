@@ -1727,15 +1727,54 @@ fun Route.apiRoutes(
                 call.respond(HttpStatusCode.Accepted, mapOf("status" to "ready"))
                 return@post
             }
-            bookCache.enqueue(CachedBookRequest(
-                item.sourceId,
-                item.bookUrl,
-                item.tocUrl,
-                request.startIndex,
-                request.endIndex,
-                request.count
-            ))
-            call.respond(HttpStatusCode.Accepted, mapOf("status" to "queued"))
+            // 「缓存全本」必须按**书型**分发：漫画/有声的内容是图片/音频，正文缓存对它们
+            // 只会去抓不存在的"正文"（实测:书架里漫画点缓存 ⇒ 0 章 + "N 章未缓存"）。
+            // 与 GET /bookshelf/cached-chapters 的口径保持一致（那里也是按 kind 换数据源）。
+            val from = request.startIndex ?: 0
+            val ahead = when {
+                request.endIndex != null -> (request.endIndex - from).coerceAtLeast(0)
+                request.count != null -> (request.count - 1).coerceAtLeast(0)
+                else -> Int.MAX_VALUE // 「全本」：服务端另有 MAX_AHEAD 上限
+            }
+            val pin = request.endIndex == null && request.count == null
+            when (BookKind.from(database.getBookKind(item.sourceId, item.bookUrl))) {
+                BookKind.COMIC -> {
+                    val service = mangaPrefetch
+                    if (service == null || !service.enabled) {
+                        call.respond(HttpStatusCode.Accepted, mapOf("status" to "prefetch_disabled"))
+                        return@post
+                    }
+                    val queued = service.enqueue(item.sourceId, item.bookUrl, from, ahead, pin)
+                    if (pin && queued > 0) database.setMangaBookPinned(item.sourceId, item.bookUrl, true)
+                    call.respond(
+                        HttpStatusCode.Accepted,
+                        mapOf("status" to if (queued > 0) "queued" else "nothing_to_prefetch"),
+                    )
+                }
+                BookKind.AUDIO -> {
+                    val service = audioPrefetch
+                    if (service == null || !service.enabled) {
+                        call.respond(HttpStatusCode.Accepted, mapOf("status" to "prefetch_disabled"))
+                        return@post
+                    }
+                    val queued = service.enqueue(item.sourceId, item.bookUrl, from, ahead, pin)
+                    call.respond(
+                        HttpStatusCode.Accepted,
+                        mapOf("status" to if (queued > 0) "queued" else "nothing_to_prefetch"),
+                    )
+                }
+                BookKind.NOVEL -> {
+                    bookCache.enqueue(CachedBookRequest(
+                        item.sourceId,
+                        item.bookUrl,
+                        item.tocUrl,
+                        request.startIndex,
+                        request.endIndex,
+                        request.count
+                    ))
+                    call.respond(HttpStatusCode.Accepted, mapOf("status" to "queued"))
+                }
+            }
         }
         get("/bookshelf/cached-chapters") {
             if (auth.requireSession(call, false) == null) return@get
@@ -1765,7 +1804,12 @@ fun Route.apiRoutes(
                 call.respond(HttpStatusCode.BadRequest, ApiError("invalid_bookshelf", "缺少书籍标识"))
                 return@delete
             }
-            bookCache.cancel(sourceId, bookUrl)
+            // 取消也要按书型分发，否则漫画/有声"取消缓存"只是取消了一个并不存在的正文任务。
+            when (BookKind.from(database.getBookKind(sourceId, bookUrl))) {
+                BookKind.COMIC -> mangaPrefetch?.cancel(sourceId, bookUrl)
+                BookKind.AUDIO -> audioPrefetch?.cancel(sourceId, bookUrl)
+                BookKind.NOVEL -> bookCache.cancel(sourceId, bookUrl)
+            }
             if (clearData) {
                 database.clearBookCacheContent(sourceId, bookUrl)
             }

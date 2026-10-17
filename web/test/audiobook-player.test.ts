@@ -340,7 +340,6 @@ test('audiobook - 进行中渲染出进度条与「取消缓存」，且取消�
     const owner = lastCb >= 0 ? (upto.slice(0, lastCb).match(/const\s+(\w+)\s*$/) ?? [])[1] : undefined
     assert.ok(owner && /[Ss]witch/.test(owner), `clearXCache 只允许出现在换源处理器里（实际归属：${owner ?? '未知'}）`)
   }
-  }
 
   const apiSource = read('../src/api.ts')
   assert.ok(apiSource.includes('cancelAudioPrefetch: (sourceId: string, bookUrl: string)'), 'api.ts 必须新增 cancelAudioPrefetch 封装')

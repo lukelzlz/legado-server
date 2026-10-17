@@ -204,6 +204,58 @@ test('OfflineStorage - Chapter saving, retrieving, and list cached URLs', async 
   assert.equal(cachedUrlsAfterDelete.size, 0)
 })
 
+test('OfflineStorage - clearOfflineBook 只清这一本：同库里的其它书原样保留（按 sourceId+bookUrl，不按书名）', async () => {
+  setupMockIndexedDB()
+  // 注意：offlineStorage 模块内部把 dbPromise 缓存住了，`setupMockIndexedDB()` 换不掉已打开的库
+  // ⇒ 本文件里所有用例其实共享同一个 store。因此这里先清空、结束时也清空，
+  // 既保证自己的前置状态干净，也不会把残留丢给后面的用例。
+  await clearAllOffline()
+
+  // 故意造出「书名字段相同」与「交叉维度相同」的两本书：
+  // 若实现按书名或只按其中一维匹配，下面任一断言都会立刻失败。
+  await putOfflineChapter('src-1', 'book-url-1', 'c1', '第1章', 'A-第一章正文')
+  await putOfflineChapter('src-1', 'book-url-1', 'c2', '第2章', 'A-第二章正文')
+  await putOfflineChapter('src-1', 'book-url-2', 'c1', '第1章', 'B-第一章正文') // 同源、同章节号，不同书
+  await putOfflineChapter('src-2', 'book-url-1', 'c1', '第1章', 'C-第一章正文') // 同书号，不同源
+
+  const statsBefore = await getOfflineStorageStats()
+  assert.equal(statsBefore.books.length, 3, '清之前应当有 3 本书的离线缓存')
+  assert.equal(statsBefore.totalChapters, 4)
+
+  const removed = await clearOfflineBook('src-1', 'book-url-1')
+  assert.equal(removed, 2, '只应删掉 (src-1, book-url-1) 的 2 章')
+
+  // 目标书清空
+  assert.equal((await getOfflineChaptersSet('src-1', 'book-url-1')).size, 0)
+  assert.equal(await getOfflineChapter('src-1', 'book-url-1', 'c1'), null)
+  assert.equal(await getOfflineChapter('src-1', 'book-url-1', 'c2'), null)
+
+  // 别的书必须**一字不动**
+  assert.equal((await getOfflineChaptersSet('src-1', 'book-url-2')).size, 1)
+  assert.equal((await getOfflineChaptersSet('src-2', 'book-url-1')).size, 1)
+  assert.equal((await getOfflineChapter('src-1', 'book-url-2', 'c1'))?.content, 'B-第一章正文')
+  assert.equal((await getOfflineChapter('src-2', 'book-url-1', 'c1'))?.content, 'C-第一章正文')
+
+  const statsAfter = await getOfflineStorageStats()
+  assert.equal(statsAfter.books.length, 2, '清之后应当还剩 2 本书')
+  assert.equal(statsAfter.totalChapters, 2)
+  assert.deepEqual(
+    statsAfter.books.map(b => `${b.sourceId}::${b.bookUrl}`).sort(),
+    ['src-1::book-url-2', 'src-2::book-url-1'],
+  )
+
+  // 反向再确认：清另一本，第一本（现在就它还在库里）依然不受影响
+  await clearOfflineBook('src-1', 'book-url-2')
+  assert.equal((await getOfflineChaptersSet('src-2', 'book-url-1')).size, 1)
+  assert.equal((await getOfflineChaptersSet('src-1', 'book-url-2')).size, 0)
+
+  // 收尾：把库里剩下的也清掉，别把残留留给后面的用例（它们假设 store 是空的）
+  await clearAllOffline()
+  const statsFinal = await getOfflineStorageStats()
+  assert.equal(statsFinal.books.length, 0)
+  assert.equal(statsFinal.totalChapters, 0)
+})
+
 test('OfflineStorage - Shelf Snapshot persistence and retrieval', () => {
   mockStorage.clear()
   const dummyShelf: any = [

@@ -210,7 +210,10 @@ test('漫画目录底栏 - 进行中渲染出进度条与「取消缓存」，�
   assert.ok(cancelStart >= 0, '必须存在 cancelOffline 处理器')
   const cancelHandler = source.slice(cancelStart, source.indexOf('}, [', cancelStart) + 4)
   assert.ok(cancelHandler.includes('api.cancelMangaPrefetch('), 'cancelOffline 必须调用 cancelMangaPrefetch')
-  assert.ok(!cancelHandler.includes('clearImageCache'), 'cancelOffline 内绝不能出现 clearImageCache（会删掉已下好的图）')
+  // 注意：处理器里有行注释解释"为什么不能用 clearImageCache"，所以必须先剥掉注释再断言，
+  // 否则会被自己的注释命中（本仓库既有教训：匹配前先剥 /* */ 与 //）。
+  const cancelNoComments = cancelHandler.replace(/\/\/[^\n]*/g, '')
+  assert.ok(!cancelNoComments.includes('clearImageCache'), 'cancelOffline 内绝不能出现 clearImageCache（会删掉已下好的图）')
   for (const hit of source.matchAll(/api\.clearImageCache\(/g)) {
     const around = source.slice(Math.max(0, (hit.index ?? 0) - 500), hit.index ?? 0)
     assert.ok(/switchBookSource|clearMangaManifests|换源/.test(around), 'clearImageCache 只允许用于换源时清理旧源')

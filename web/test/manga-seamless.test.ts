@@ -49,6 +49,30 @@ test('无缝拼接 - 加载完成后必须真的带上 is-loaded class', () => {
   assert.equal(mangaImageFrameClass(true), 'manga-image-frame is-loaded')
 })
 
+test('工具条隐藏 - 加载进度条必须跟着顶栏一起离开画面（issue #65）', () => {
+  // ① 回归点：旧实现只写了 `opacity: .4` —— 进度条仍固定在 safe-top + 52px 悬在正文上
+  const hidden = ruleBlock('.manga-workspace.toolbars-hidden .manga-progress-bar')
+  assert.ok(!/opacity\s*:\s*\.?4\s*;/.test(hidden), '隐藏态不得再只降到 opacity:.4（会悬浮在画面上）')
+  assert.match(hidden, /opacity\s*:\s*0\s*;/, '隐藏态必须 opacity:0')
+  assert.match(hidden, /pointer-events\s*:\s*none/, '隐藏态必须 pointer-events:none，避免细线拦截点击')
+  // ② 必须真的移走，而不是原地留着一条线
+  const shift = hidden.match(/translateY\(\s*([^;]+?)\s*\)/)
+  assert.ok(shift, '隐藏态必须用 translateY(...) 把进度条上移')
+  assert.ok(shift![1].includes('-'), `位移必须是向上的负值（当前：${shift![1]}）`)
+
+  // ③ 恢复时"平滑回到原位"：过渡必须与悬浮顶栏逐字一致（同曲线、同时长）
+  const base = ruleBlock('.manga-progress-bar {')
+  const header = ruleBlock('.reader-header {')
+  const transitionOf = (block: string) =>
+    (block.match(/transition\s*:\s*([^;]+);/)?.[1] ?? '').replace(/\s+/g, ' ').trim()
+  assert.ok(transitionOf(base), '进度条必须声明 transition，否则唤出工具条时是硬跳')
+  assert.equal(
+    transitionOf(base),
+    transitionOf(header),
+    '进度条的 transition 必须与 .reader-header 完全一致（transform + opacity 同曲线）',
+  )
+})
+
 test('无缝拼接 - 组件确实把这个 class 接在了图片框上', () => {
   // 专门盯住"最后一公里"：图片框的 className 必须由该 helper 决定
   assert.ok(

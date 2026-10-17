@@ -49,6 +49,7 @@ class MangaPrefetchCancelRouteTest {
         val seed = Database(dbPath)
         try {
             seed.initialize("test-password-1234")
+            seed.setSetting(CACHE_LAYOUT_KEY, CACHE_LAYOUT_VERSION)
             seed.importSources(listOf("""{"bookSourceUrl":"$sourceId","bookSourceName":"测试漫画源","bookSourceType":2}"""), applyGroups = false)
             seed.saveBookshelf(
                 BookshelfWriteRequest(sourceId = sourceId, bookUrl = bookUrl, name = "测试漫画", tocUrl = bookUrl),
@@ -63,7 +64,7 @@ class MangaPrefetchCancelRouteTest {
                     imagesJson = encodeMangaImageUrls(listOf(upstream)), total = 1, state = "pending",
                 ),
             )
-            val cache = ImageCache(dataDir.resolve("images"), seed, ServerConfig.DEFAULT_IMAGE_CACHE_QUOTA_BYTES)
+            val cache = ImageCache(dataDir.resolve("comic"), seed, ServerConfig.DEFAULT_IMAGE_CACHE_QUOTA_BYTES)
             val stored = cache.put(sourceId, bookUrl, chapterUrl, upstream, "image/jpeg", jpeg(seed = 7), chapterIndex = 0, segmentIndex = 0)
             urlHash = stored.urlHash
             // 整章 ready ⇒ 绿点亮（取消**不得**把它弄灭）
@@ -77,7 +78,7 @@ class MangaPrefetchCancelRouteTest {
                 host = "0.0.0.0", port = 8080, databasePath = dbPath,
                 coverCacheDirectory = dataDir.resolve("covers"), webDavDirectory = dataDir.resolve("webdav"),
                 initialAdminPassword = "test-password-1234", secureCookies = false,
-                imageCacheDirectory = dataDir.resolve("images"),
+                comicCacheDirectory = dataDir.resolve("comic"),
             )
             application { legadoApplication(config) }
             val client = createClient {

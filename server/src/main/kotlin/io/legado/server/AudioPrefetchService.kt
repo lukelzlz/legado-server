@@ -274,11 +274,11 @@ class AudioPrefetchService(
             referer = chapter.url.takeIf { it.startsWith("http") },
             trackHeadersJson = row.headersJson,
             store = audioCache.store,
-            cacheKey = row.cacheKey,
+            target = audioCache.targetFor(row),
         )
         if (outcome is AudioFetchOutcome.Success) {
             // 字节已在 `fetchInto` 里**流式落盘**（不是先读进内存），这里只做"先盘后表"的翻牌
-            runCatching { audioCache.markReady(row, outcome.contentType, outcome.byteSize) }
+            runCatching { audioCache.markReady(row, outcome.contentType, outcome.byteSize, outcome.filePath) }
                 .onFailure { log("audio prefetch put failed: ${row.cacheKey} (${it.message})") }
         }
         return outcome

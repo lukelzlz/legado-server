@@ -1458,7 +1458,7 @@ fun Route.apiRoutes(
                     referer = pending.chapterUrl.takeIf { it.startsWith("http") },
                     trackHeadersJson = pending.headersJson,
                     store = audioCache.store,
-                    cacheKey = key,
+                    target = audioCache.targetFor(pending),
                 )
                 when (outcome) {
                     is AudioFetchOutcome.Failure -> {
@@ -1468,7 +1468,7 @@ fun Route.apiRoutes(
                         return@get
                     }
                     is AudioFetchOutcome.Success -> {
-                        audioCache.markReady(pending, outcome.contentType, outcome.byteSize)
+                        audioCache.markReady(pending, outcome.contentType, outcome.byteSize, outcome.filePath)
                         row = audioCache.rowByKey(key)
                             ?: return@get call.respond(HttpStatusCode.InternalServerError, ApiError("cache_error", "音频落盘后索引丢失"))
                     }

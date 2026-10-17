@@ -46,10 +46,16 @@ class MangaImageRouteTest {
         var urlHash: String
         try {
             seed.initialize("test-password-1234")
-            val cache = ImageCache(dataDir.resolve("images"), seed)
+            // 预置数据等价于"已经升级到 v3 布局的既有部署"：否则启动迁移会按旧布局语义把预置缓存清掉
+            seed.setSetting(CACHE_LAYOUT_KEY, CACHE_LAYOUT_VERSION)
+            val cache = ImageCache(dataDir.resolve("comic"), seed)
             val stored = cache.put(sourceId, bookUrl, chapterUrl, upstream, "image/jpeg", jpegBytes(800, 1200))
             urlHash = stored.urlHash
-            assertNotNull("预置缓存必须落盘成功", cache.fileFor(stored.cacheKey))
+            val storedFile = cache.fileFor(stored.cacheKey)
+            assertNotNull("预置缓存必须落盘成功", storedFile)
+            // v3：漫画缓存根从 `images` 改名成 `comic`（`images` 只留给小说插图）
+            assertTrue("漫画图必须落在 <data>/comic 下，实际：$storedFile", storedFile!!.startsWith(dataDir.resolve("comic")))
+            assertTrue("绝不能落在 <data>/images 下", !storedFile.startsWith(dataDir.resolve("images")))
         } finally {
             seed.close()
         }
@@ -60,7 +66,7 @@ class MangaImageRouteTest {
                 coverCacheDirectory = dataDir.resolve("covers"),
                 webDavDirectory = dataDir.resolve("webdav"),
                 initialAdminPassword = "test-password-1234", secureCookies = false,
-                imageCacheDirectory = dataDir.resolve("images"),
+                comicCacheDirectory = dataDir.resolve("comic"),
             )
             application { legadoApplication(config) }
             val client = createClient {

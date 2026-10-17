@@ -63,7 +63,7 @@ class RealMangaSourceLiveTest {
 
             val runner = RuleRunner()
             val fetcher = MangaImageFetcher(config, log = { println("[Fetcher Log] $it") })
-            val cache = ImageCache(tempDir.resolve("images"), database, quotaBytes = 10L * 1024 * 1024)
+            val cache = ImageCache(tempDir.resolve("comic"), database, quotaBytes = 10L * 1024 * 1024)
 
             // 1. 测试真实规则提取
             println("\n========================================================")

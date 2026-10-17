@@ -50,14 +50,16 @@ class AudioPrefetchCancelRouteTest {
         val seed = Database(dbPath)
         try {
             seed.initialize("test-password-1234")
+            seed.setSetting(CACHE_LAYOUT_KEY, CACHE_LAYOUT_VERSION)
             seed.importSources(listOf("""{"bookSourceUrl":"$sourceId","bookSourceName":"测试有声书","enabled":true}"""))
             seed.saveTocCache(sourceId, bookUrl, listOf(Chapter(0, "第 1 集", chapterUrl)))
             val cache = AudioCache(dataDir.resolve("audio"), seed)
             val rows = cache.registerChapter(sourceId, bookUrl, chapterUrl, 0, listOf(AudioTrackSpec(upstream)))
             key = rows.first().cacheKey
-            cache.store.writeStream(key) { it.write(trackBytes) }
-            cache.markReady(rows.first(), "audio/mpeg", trackBytes.size.toLong())
-            assertNotNull("预置缓存必须落盘成功", cache.fileFor(key))
+            val relPath = cache.relativePathFor(rows.first(), "audio/mpeg")
+            cache.store.writeStream(relPath) { it.write(trackBytes) }
+            cache.markReady(rows.first(), "audio/mpeg", trackBytes.size.toLong(), relPath)
+            assertNotNull("预置缓存必须落盘成功", cache.fileFor(rows.first()))
         } finally {
             seed.close()
         }

@@ -32,7 +32,14 @@ class ImageCacheGcTest {
     @Test
     fun `does nothing while below the high water mark`() {
         withCache { cache, database, gc ->
-            repeat(4) { index -> cache.put("src-a", "book-1", "ch-1", "https://img.example/$index.jpg", "image/jpeg", jpegOfSize(IMAGE_BYTES, seed = index)) }
+            // ⚠️ `segmentIndex` 必须显式传且各不相同：它现在是**落盘文件名**的一部分
+            //（章节目录名由章节哈希唯一确定），全传默认 0 会让这 4 张图写到同一个文件上（互相覆盖 ⇒ 占用与断言全失真）
+            repeat(4) { index ->
+                cache.put(
+                    "src-a", "book-1", "ch-1", "https://img.example/$index.jpg", "image/jpeg",
+                    jpegOfSize(IMAGE_BYTES, seed = index), chapterIndex = 0, segmentIndex = index,
+                )
+            }
 
             val result = gc.run()
 
@@ -93,6 +100,7 @@ class ImageCacheGcTest {
         withCache { cache, database, gc ->
             database.saveMangaChapter(MangaChapterRecord(sourceId = "src-a", bookUrl = "book-1", chapterUrl = "ch-0", chapterIndex = 0, pinned = true, imagesJson = "[]"))
             database.setMangaBookPinned("src-a", "book-1", true)
+            // 五章各自的 `chapterUrl` 不同 ⇒ 章节目录名（章节哈希）不同 ⇒ 五个独立文件
             repeat(5) { index -> cache.put("src-a", "book-1", "ch-$index", "https://img.example/$index.jpg", "image/jpeg", jpegOfSize(IMAGE_BYTES, seed = index)) }
 
             val result = gc.run(force = true)
@@ -147,6 +155,7 @@ class ImageCacheGcTest {
             val keep = cache.put("src-b", "book-b", "ch-0", "https://img.example/keep.jpg", "image/jpeg", shared)
             cache.put("src-a", "book-a", "ch-0", "https://img.example/shared.jpg", "image/jpeg", shared)
             // 再塞 4 张独享字节的图，把物理占用顶到 1000 字节以上
+            // （四章的 `chapterUrl` 不同 ⇒ 章节目录名不同 ⇒ 四个独立文件）
             repeat(4) { index -> cache.put("src-c", "book-c", "ch-$index", "https://img.example/c-$index.jpg", "image/jpeg", jpegOfSize(IMAGE_BYTES, seed = 300 + index)) }
 
             gc.run(force = true)

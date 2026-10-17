@@ -274,6 +274,40 @@ class Database(private val path: String) : Closeable, AutoCloseable {
                 create index if not exists idx_manga_image_book on manga_image_cache(source_id, book_url);
                 create index if not exists idx_manga_image_chapter on manga_image_cache(source_id, book_url, chapter_url, segment_index);
                 create index if not exists idx_manga_image_access on manga_image_cache(last_access_at asc);
+                -- ------------------------------------------------------------------
+                -- 有声书链路（方案 G2）：
+                --   audio_cache = 音频字节索引（**URL 寻址**：key 可预测 ⇒ 前端直接拼 src，
+                --                 不做内容寻址去重 —— 见 ADR-029 的 G-2 裁决）
+                -- 没有"音频章节清单表"：整章就绪度由本表按 chapter_url 聚合即得（少一张表少一处漂移）。
+                -- 详见 docs/proposals/PROPOSAL-029-* 与 docs/decisions/ADR-029-*
+                -- ------------------------------------------------------------------
+                create table if not exists audio_cache (
+                  cache_key      text primary key,
+                  source_id      text not null,
+                  book_url       text not null,
+                  chapter_url    text not null,
+                  chapter_index  integer not null default 0,
+                  segment_index  integer not null default 0,
+                  upstream_url   text not null,
+                  headers_json   text,
+                  content_type   text not null default '',
+                  byte_size      integer not null default 0,
+                  duration_ms    integer not null default 0,
+                  state          text not null default 'pending',
+                  last_error     text,
+                  pinned         integer not null default 0,
+                  listened       integer not null default 0,
+                  created_at     integer not null,
+                  last_access_at integer not null
+                );
+                -- 刻意**不是**唯一索引：书源换了某一段的地址时，新 key 会挂在同一个 segment_index 上，
+                -- 唯一索引会让那次 upsert 直接抛异常（一次书源变更 ⇒ 整章打不开）。
+                -- 排序/拼装只需要索引能加速，不需要唯一性。
+                create index if not exists idx_audio_cache_segment on audio_cache(source_id, book_url, chapter_url, segment_index);
+                create index if not exists idx_audio_cache_book on audio_cache(source_id, book_url);
+                create index if not exists idx_audio_cache_state on audio_cache(state);
+                create index if not exists idx_audio_cache_access on audio_cache(last_access_at asc);
+                create index if not exists idx_audio_cache_pinned on audio_cache(pinned);
             """.trimIndent())
         }
         migrateReadingProgress(db)
@@ -593,17 +627,21 @@ class Database(private val path: String) : Closeable, AutoCloseable {
     }
     fun saveProgress(progress: ReadingProgress): ReadingProgress = write { db ->
         val now = System.currentTimeMillis()
-        db.prepareStatement("""insert into reading_progress(source_id,book_url,chapter_url,chapter_index,scroll_position,updated_at) values(?,?,?,?,?,?)
-            on conflict(source_id,book_url) do update set chapter_url=excluded.chapter_url,chapter_index=excluded.chapter_index,scroll_position=excluded.scroll_position,updated_at=excluded.updated_at""").use {
-            it.setString(1, progress.sourceId); it.setString(2, progress.bookUrl); it.setString(3, progress.chapterUrl); it.setInt(4, progress.chapterIndex); it.setDouble(5, progress.scrollPosition); it.setLong(6, now); it.executeUpdate()
+        // `position_ms` 用 `coalesce(excluded, ...)` 而不是直接覆盖：
+        // 小说/漫画的写入路径从不带这个字段（null），绝不能因为一次文本阅读把音频的毫秒进度抹掉。
+        db.prepareStatement("""insert into reading_progress(source_id,book_url,chapter_url,chapter_index,scroll_position,position_ms,updated_at) values(?,?,?,?,?,?,?)
+            on conflict(source_id,book_url) do update set chapter_url=excluded.chapter_url,chapter_index=excluded.chapter_index,scroll_position=excluded.scroll_position,position_ms=coalesce(excluded.position_ms,reading_progress.position_ms),updated_at=excluded.updated_at""").use {
+            it.setString(1, progress.sourceId); it.setString(2, progress.bookUrl); it.setString(3, progress.chapterUrl); it.setInt(4, progress.chapterIndex); it.setDouble(5, progress.scrollPosition)
+            progress.positionMs?.let { value -> it.setLong(6, value) } ?: it.setNull(6, java.sql.Types.INTEGER)
+            it.setLong(7, now); it.executeUpdate()
         }
         db.prepareStatement("update book_shelf set last_read_at=? where source_id=? and book_url=?").use {
             it.setLong(1, now); it.setString(2, progress.sourceId); it.setString(3, progress.bookUrl); it.executeUpdate()
         }
         progress.copy(updatedAt = now)
     }
-    fun getProgress(sourceId: String, bookUrl: String): ReadingProgress? = connect { db -> db.prepareStatement("select source_id,book_url,chapter_url,chapter_index,scroll_position,updated_at from reading_progress where source_id=? and book_url=?").use {
-        it.setString(1, sourceId); it.setString(2, bookUrl); it.executeQuery().use { rs -> if (rs.next()) ReadingProgress(rs.getString(1), rs.getString(2), rs.getString(3), rs.getInt(4), rs.getDouble(5), rs.getLong(6)) else null }
+    fun getProgress(sourceId: String, bookUrl: String): ReadingProgress? = connect { db -> db.prepareStatement("select source_id,book_url,chapter_url,chapter_index,scroll_position,updated_at,position_ms from reading_progress where source_id=? and book_url=?").use {
+        it.setString(1, sourceId); it.setString(2, bookUrl); it.executeQuery().use { rs -> if (rs.next()) ReadingProgress(rs.getString(1), rs.getString(2), rs.getString(3), rs.getInt(4), rs.getDouble(5), rs.getLong(6), positionMs = rs.readPositionMs(7)) else null }
     } }
 
     /** 读取服务端设置（前端设置存 localStorage，但**服务端自己用的**配置必须可持久化）。 */
@@ -693,16 +731,26 @@ class Database(private val path: String) : Closeable, AutoCloseable {
      * 逐本 `getProgress` 是 N+1 次连接，在一堆书命中 GC 时会把读路径拖慢。
      */
     fun listReadingAnchors(): List<ReadingProgress> = connect { db ->
-        db.prepareStatement("select source_id,book_url,chapter_url,chapter_index,scroll_position,updated_at from reading_progress").use {
+        db.prepareStatement("select source_id,book_url,chapter_url,chapter_index,scroll_position,updated_at,position_ms from reading_progress").use {
             it.executeQuery().use { rs ->
                 buildList {
                     while (rs.next()) {
-                        add(ReadingProgress(rs.getString(1), rs.getString(2), rs.getString(3), rs.getInt(4), rs.getDouble(5), rs.getLong(6)))
+                        add(ReadingProgress(rs.getString(1), rs.getString(2), rs.getString(3), rs.getInt(4), rs.getDouble(5), rs.getLong(6), positionMs = rs.readPositionMs(7)))
                     }
                 }
             }
         }
     }
+
+    /**
+     * 读可空的 `position_ms`。
+     *
+     * ⚠️ AGENTS.md 铁律：**严禁用可空列做存在性 Elvis 判断**。这里读的是"字段可能为 NULL"，
+     * 因此必须走 `getObject` 判 null，而不是 `getLong` 得到 0 再当成"有值"——
+     * 0 毫秒是**合法进度**（章首），与"没有毫秒进度"是两件事。
+     */
+    private fun java.sql.ResultSet.readPositionMs(column: Int): Long? =
+        (getObject(column) as? Number)?.toLong()
 
     // ------------------------------------------------------------------
     // 漫画链路 · 章节清单（L2）
@@ -1032,6 +1080,282 @@ class Database(private val path: String) : Closeable, AutoCloseable {
         }
     }
 
+    // ------------------------------------------------------------------
+    // 有声书链路 · 音频字节索引（L1）
+    //
+    // 与漫画的**唯一结构差异**：音频是 URL 寻址（一个 URL 一份字节，不做内容寻址去重），
+    // 因此没有 `cache_key`（内容哈希）这一层，key 直接就是 URL 派生的哈希
+    // —— 前端于是能在**抓取之前**就拼出 `GET /api/audio/{key}`（G-2 裁决）。
+    // ------------------------------------------------------------------
+
+    fun findAudioByKey(cacheKey: String): AudioCacheRecord? = connect { db ->
+        db.prepareStatement(AUDIO_SELECT + " where cache_key=?").use {
+            it.setString(1, cacheKey)
+            it.executeQuery().use { rs -> if (rs.next()) rs.toAudioCache() else null }
+        }
+    }
+
+    /**
+     * 清单阶段的**登记**（幂等批量）：先落 `(key → 上游地址 + 该段专属头)`，但**不动 `state`**
+     * —— 已经 `ready` 的行不能被重新登记打回 `pending`。
+     *
+     * 同时**清掉本章已不在清单里的旧 key**：书源换了某段地址时，旧行会永远留在表里占盘、
+     * 还会把"整章就绪度"算成一个永远凑不齐的分数（绿点永远不亮）。
+     */
+    fun registerAudioTracks(records: List<AudioCacheRecord>, keepKeys: List<String>): Int {
+        if (records.isEmpty()) return 0
+        val head = records.first()
+        return write { db ->
+            var affected = 0
+            db.autoCommit = false
+            try {
+                val now = System.currentTimeMillis()
+                db.prepareStatement(
+                    """insert into audio_cache(cache_key,source_id,book_url,chapter_url,chapter_index,segment_index,upstream_url,headers_json,content_type,byte_size,duration_ms,state,pinned,listened,created_at,last_access_at)
+                       values(?,?,?,?,?,?,?,?,'',0,0,'pending',0,0,?,?)
+                       on conflict(cache_key) do update set
+                         source_id=excluded.source_id, book_url=excluded.book_url, chapter_url=excluded.chapter_url,
+                         chapter_index=excluded.chapter_index, segment_index=excluded.segment_index,
+                         upstream_url=excluded.upstream_url, headers_json=excluded.headers_json""",
+                ).use { st ->
+                    records.forEach { r ->
+                        st.setString(1, r.cacheKey); st.setString(2, r.sourceId); st.setString(3, r.bookUrl)
+                        st.setString(4, r.chapterUrl); st.setInt(5, r.chapterIndex); st.setInt(6, r.segmentIndex)
+                        st.setString(7, r.upstreamUrl); st.setString(8, r.headersJson)
+                        st.setLong(9, now); st.setLong(10, now)
+                        st.addBatch()
+                    }
+                    affected = st.executeBatch().sum()
+                }
+                if (keepKeys.isNotEmpty()) {
+                    val placeholders = keepKeys.joinToString(",") { "?" }
+                    db.prepareStatement(
+                        "delete from audio_cache where source_id=? and book_url=? and chapter_url=? and cache_key not in ($placeholders)",
+                    ).use { st ->
+                        st.setString(1, head.sourceId); st.setString(2, head.bookUrl); st.setString(3, head.chapterUrl)
+                        keepKeys.forEachIndexed { index, key -> st.setString(4 + index, key) }
+                        st.executeUpdate()
+                    }
+                }
+                db.commit()
+                affected
+            } catch (error: Throwable) {
+                db.rollback(); throw error
+            } finally {
+                db.autoCommit = true
+            }
+        }
+    }
+
+    /** 某一章的全部分段行（按段序号排序）—— 清单接口的取数口径。 */
+    fun listAudioForChapter(sourceId: String, bookUrl: String, chapterUrl: String): List<AudioCacheRecord> = connect { db ->
+        db.prepareStatement(AUDIO_SELECT + " where source_id=? and book_url=? and chapter_url=? order by segment_index asc").use {
+            it.setString(1, sourceId); it.setString(2, bookUrl); it.setString(3, chapterUrl)
+            it.executeQuery().use { rs -> buildList { while (rs.next()) add(rs.toAudioCache()) } }
+        }
+    }
+
+    /**
+     * 记录一次成功落盘（**先盘后表**：文件已经在磁盘上才写这行）。
+     *
+     * `pinned` / `listened` **不参与 update**：重新下载一段已 pin 的音频不该把免死金牌弄丢。
+     */
+    fun recordAudioTrack(record: AudioCacheRecord) = write { db ->
+        val now = System.currentTimeMillis()
+        db.prepareStatement(
+            """insert into audio_cache(cache_key,source_id,book_url,chapter_url,chapter_index,segment_index,upstream_url,headers_json,content_type,byte_size,duration_ms,state,last_error,pinned,listened,created_at,last_access_at)
+               values(?,?,?,?,?,?,?,?,?,?,?,'ready',null,?,?,?,?)
+               on conflict(cache_key) do update set
+                 source_id=excluded.source_id, book_url=excluded.book_url, chapter_url=excluded.chapter_url,
+                 chapter_index=excluded.chapter_index, segment_index=excluded.segment_index,
+                 upstream_url=excluded.upstream_url, headers_json=excluded.headers_json,
+                 content_type=excluded.content_type, byte_size=excluded.byte_size,
+                 duration_ms=excluded.duration_ms, state='ready', last_error=null,
+                 last_access_at=excluded.last_access_at""",
+        ).use {
+            it.setString(1, record.cacheKey); it.setString(2, record.sourceId); it.setString(3, record.bookUrl)
+            it.setString(4, record.chapterUrl); it.setInt(5, record.chapterIndex); it.setInt(6, record.segmentIndex)
+            it.setString(7, record.upstreamUrl); it.setString(8, record.headersJson); it.setString(9, record.contentType)
+            it.setLong(10, record.byteSize); it.setLong(11, record.durationMs)
+            it.setInt(12, if (record.pinned) 1 else 0); it.setInt(13, if (record.listened) 1 else 0)
+            it.setLong(14, if (record.createdAt > 0) record.createdAt else now)
+            it.setLong(15, if (record.lastAccessAt > 0) record.lastAccessAt else now)
+            it.executeUpdate()
+        }
+    }
+
+    fun markAudioFailed(cacheKey: String, error: String?) = write { db ->
+        db.prepareStatement("update audio_cache set state='failed', last_error=? where cache_key=?").use {
+            it.setString(1, error?.take(500)); it.setString(2, cacheKey); it.executeUpdate()
+        }
+    }
+
+    fun touchAudio(cacheKey: String, at: Long = System.currentTimeMillis()) = write { db ->
+        db.prepareStatement("update audio_cache set last_access_at=? where cache_key=?").use {
+            it.setLong(1, at); it.setString(2, cacheKey); it.executeUpdate()
+        }
+    }
+
+    /** 前端 `loadedmetadata` 回传的时长。**只在拿到正数时写**：0 是"未知"，不该覆盖已知值。 */
+    fun updateAudioDuration(cacheKey: String, durationMs: Long): Int = write { db ->
+        db.prepareStatement("update audio_cache set duration_ms=? where cache_key=? and ?>0").use {
+            it.setLong(1, durationMs); it.setString(2, cacheKey); it.setLong(3, durationMs); it.executeUpdate()
+        }
+    }
+
+    /** 标记"这段听完了"（GC 第 1 顺位的前提条件）。 */
+    fun markAudioListened(cacheKey: String, listened: Boolean) = write { db ->
+        db.prepareStatement("update audio_cache set listened=? where cache_key=?").use {
+            it.setInt(1, if (listened) 1 else 0); it.setString(2, cacheKey); it.executeUpdate()
+        }
+    }
+
+    fun sumAudioBytes(): Long = connect { db ->
+        db.prepareStatement("select coalesce(sum(byte_size),0) from audio_cache").use {
+            it.executeQuery().use { rs -> if (rs.next()) rs.getLong(1) else 0L }
+        }
+    }
+
+    fun countAudioTracks(): Int = connect { db ->
+        db.prepareStatement("select count(*) from audio_cache").use {
+            it.executeQuery().use { rs -> if (rs.next()) rs.getInt(1) else 0 }
+        }
+    }
+
+    /** GC 候选（按最后访问时间升序）。滑窗分档的**筛选**在 `AudioCacheGc` 里做（需读进度锚点）。 */
+    fun listAudioByLastAccess(limit: Int): List<AudioCacheRecord> = connect { db ->
+        db.prepareStatement(AUDIO_SELECT + " order by last_access_at asc limit ?").use {
+            it.setInt(1, limit)
+            it.executeQuery().use { rs -> buildList { while (rs.next()) add(rs.toAudioCache()) } }
+        }
+    }
+
+    /** 全部「免死金牌」书（`pinned = 1`）。返回 Pair 而非拼接串：书源 ID 允许任意非空字符串。 */
+    fun listPinnedAudioBooks(): Set<Pair<String, String>> = connect { db ->
+        db.prepareStatement("select distinct source_id, book_url from audio_cache where pinned=1").use {
+            it.executeQuery().use { rs -> buildSet { while (rs.next()) add(rs.getString(1) to rs.getString(2)) } }
+        }
+    }
+
+    /** 打/摘免死金牌（整本粒度，落在该书的**所有**行上）。 */
+    fun setAudioBookPinned(sourceId: String, bookUrl: String, pinned: Boolean): Int = write { db ->
+        db.prepareStatement("update audio_cache set pinned=? where source_id=? and book_url=?").use {
+            it.setInt(1, if (pinned) 1 else 0); it.setString(2, sourceId); it.setString(3, bookUrl); it.executeUpdate()
+        }
+    }
+
+    /** 批量删除索引行（**GC 专用**）：一条事务删一批，避免与前台阅读路径抢写连接。 */
+    fun deleteAudioRows(cacheKeys: List<String>): Int {
+        if (cacheKeys.isEmpty()) return 0
+        return write { db ->
+            db.autoCommit = false
+            try {
+                var removed = 0
+                db.prepareStatement("delete from audio_cache where cache_key=?").use { statement ->
+                    cacheKeys.forEach { key -> statement.setString(1, key); removed += statement.executeUpdate() }
+                }
+                db.commit()
+                removed
+            } catch (error: Throwable) {
+                db.rollback()
+                throw error
+            } finally {
+                db.autoCommit = true
+            }
+        }
+    }
+
+    fun deleteAudioRow(cacheKey: String) = write { db ->
+        db.prepareStatement("delete from audio_cache where cache_key=?").use {
+            it.setString(1, cacheKey); it.executeUpdate()
+        }
+    }
+
+    fun deleteAudioRowsByBook(sourceId: String, bookUrl: String): Int = write { db ->
+        db.prepareStatement("delete from audio_cache where source_id=? and book_url=?").use {
+            it.setString(1, sourceId); it.setString(2, bookUrl); it.executeUpdate()
+        }
+    }
+
+    fun listAudioByBook(sourceId: String, bookUrl: String): List<AudioCacheRecord> = connect { db ->
+        db.prepareStatement(AUDIO_SELECT + " where source_id=? and book_url=?").use {
+            it.setString(1, sourceId); it.setString(2, bookUrl)
+            it.executeQuery().use { rs -> buildList { while (rs.next()) add(rs.toAudioCache()) } }
+        }
+    }
+
+    fun listAllAudio(): List<AudioCacheRecord> = connect { db ->
+        db.prepareStatement(AUDIO_SELECT).use {
+            it.executeQuery().use { rs -> buildList { while (rs.next()) add(rs.toAudioCache()) } }
+        }
+    }
+
+    fun deleteAllAudioRows(): Int = write { db ->
+        db.createStatement().use { it.executeUpdate("delete from audio_cache") }
+    }
+
+    /**
+     * 已**整章就绪**的章节 URL（目录绿点 `●` 的唯一口径）。
+     *
+     * 与漫画的差别：音频**没有 L2 章节表**——"整章就绪"就是"这一章的每一段都 ready"，
+     * 一条 `having` 就能算出来，多建一张表只会多一处需要同步的状态。
+     */
+    fun readyAudioChapters(sourceId: String, bookUrl: String): List<String> = connect { db ->
+        db.prepareStatement(
+            """select chapter_url from audio_cache where source_id=? and book_url=?
+               group by chapter_url
+               having count(*) > 0 and sum(case when state='ready' then 1 else 0 end) = count(*)
+               order by min(chapter_index) asc""",
+        ).use {
+            it.setString(1, sourceId); it.setString(2, bookUrl)
+            it.executeQuery().use { rs -> buildList { while (rs.next()) add(rs.getString(1)) } }
+        }
+    }
+
+    fun audioCacheStatsByBook(): List<AudioCacheBookStat> = connect { db ->
+        db.prepareStatement(
+            """select a.source_id, a.book_url, s.name, count(*) as track_count, coalesce(sum(a.byte_size),0) as total_bytes,
+                      coalesce(c.chapter_count,0), coalesce(c.ready_count,0), coalesce(c.pinned,0)
+               from audio_cache a
+               left join book_shelf s on s.source_id = a.source_id and s.book_url = a.book_url
+               left join (
+                 select source_id, book_url, count(*) as chapter_count,
+                        sum(case when ready_all = 1 then 1 else 0 end) as ready_count,
+                        max(pinned) as pinned
+                 from (
+                   select source_id, book_url, chapter_url,
+                          min(case when state='ready' then 1 else 0 end) as ready_all,
+                          max(pinned) as pinned
+                   from audio_cache group by source_id, book_url, chapter_url
+                 )
+                 group by source_id, book_url
+               ) c on c.source_id = a.source_id and c.book_url = a.book_url
+               group by a.source_id, a.book_url
+               order by total_bytes desc""",
+        ).use { st ->
+            st.executeQuery().use { rs ->
+                buildList {
+                    while (rs.next()) add(
+                        AudioCacheBookStat(
+                            sourceId = rs.getString(1), bookUrl = rs.getString(2), name = rs.getString(3),
+                            trackCount = rs.getInt(4), totalBytes = rs.getLong(5),
+                            chapterCount = rs.getInt(6), readyChapterCount = rs.getInt(7),
+                            pinned = rs.getInt(8) != 0,
+                        ),
+                    )
+                }
+            }
+        }
+    }
+
+    private fun java.sql.ResultSet.toAudioCache(): AudioCacheRecord = AudioCacheRecord(
+        cacheKey = getString(1), sourceId = getString(2), bookUrl = getString(3), chapterUrl = getString(4),
+        chapterIndex = getInt(5), segmentIndex = getInt(6), upstreamUrl = getString(7), headersJson = getString(8),
+        contentType = getString(9), byteSize = getLong(10), durationMs = getLong(11), state = getString(12),
+        lastError = getString(13), pinned = getInt(14) != 0, listened = getInt(15) != 0,
+        createdAt = getLong(16), lastAccessAt = getLong(17),
+    )
+
     private fun java.sql.ResultSet.toMangaChapter(): MangaChapterRecord = MangaChapterRecord(
         sourceId = getString(1), bookUrl = getString(2), chapterUrl = getString(3),
         chapterIndex = getInt(4), pinned = getInt(5) != 0, imagesJson = getString(6),
@@ -1091,8 +1415,8 @@ class Database(private val path: String) : Closeable, AutoCloseable {
             }
         }
     }
-    fun listBookshelf(): List<BookshelfItem> = connect { db -> db.prepareStatement("""select s.source_id,s.book_url,s.name,s.author,s.toc_url,s.cover_key,p.chapter_index,p.scroll_position,s.last_read_at,coalesce(c.cached_chapters,0),coalesce(c.total_chapters,0),coalesce(c.state,'idle'),c.last_error,s.completed,s.alternate_sources,s.group_name,s.cover_url,s.book_kind from book_shelf s left join reading_progress p on p.source_id=s.source_id and p.book_url=s.book_url left join book_cache_status c on c.source_id=s.source_id and c.book_url=s.book_url order by s.last_read_at desc""").use { query -> query.executeQuery().use { rs -> buildList { while (rs.next()) add(rs.toShelf()) } } } }
-    fun getShelfBookByUrl(bookUrl: String): BookshelfItem? = connect { db -> db.prepareStatement("""select s.source_id,s.book_url,s.name,s.author,s.toc_url,s.cover_key,p.chapter_index,p.scroll_position,s.last_read_at,coalesce(c.cached_chapters,0),coalesce(c.total_chapters,0),coalesce(c.state,'idle'),c.last_error,s.completed,s.alternate_sources,s.group_name,s.cover_url,s.book_kind from book_shelf s left join reading_progress p on p.source_id=s.source_id and p.book_url=s.book_url left join book_cache_status c on c.source_id=s.source_id and c.book_url=s.book_url where s.book_url=?""").use { it.setString(1, bookUrl); it.executeQuery().use { rs -> if (rs.next()) rs.toShelf() else null } } }
+    fun listBookshelf(): List<BookshelfItem> = connect { db -> db.prepareStatement("""select s.source_id,s.book_url,s.name,s.author,s.toc_url,s.cover_key,p.chapter_index,p.scroll_position,s.last_read_at,coalesce(c.cached_chapters,0),coalesce(c.total_chapters,0),coalesce(c.state,'idle'),c.last_error,s.completed,s.alternate_sources,s.group_name,s.cover_url,s.book_kind,s.variable from book_shelf s left join reading_progress p on p.source_id=s.source_id and p.book_url=s.book_url left join book_cache_status c on c.source_id=s.source_id and c.book_url=s.book_url order by s.last_read_at desc""").use { query -> query.executeQuery().use { rs -> buildList { while (rs.next()) add(rs.toShelf()) } } } }
+    fun getShelfBookByUrl(bookUrl: String): BookshelfItem? = connect { db -> db.prepareStatement("""select s.source_id,s.book_url,s.name,s.author,s.toc_url,s.cover_key,p.chapter_index,p.scroll_position,s.last_read_at,coalesce(c.cached_chapters,0),coalesce(c.total_chapters,0),coalesce(c.state,'idle'),c.last_error,s.completed,s.alternate_sources,s.group_name,s.cover_url,s.book_kind,s.variable from book_shelf s left join reading_progress p on p.source_id=s.source_id and p.book_url=s.book_url left join book_cache_status c on c.source_id=s.source_id and c.book_url=s.book_url where s.book_url=?""").use { it.setString(1, bookUrl); it.executeQuery().use { rs -> if (rs.next()) rs.toShelf() else null } } }
     fun setBookshelfCompleted(sourceId: String, bookUrl: String, completed: Boolean): BookshelfItem? = write { db ->
         db.prepareStatement("update book_shelf set completed=? where source_id=? and book_url=?").use {
             it.setInt(1, if (completed) 1 else 0); it.setString(2, sourceId); it.setString(3, bookUrl); it.executeUpdate()
@@ -1171,6 +1495,25 @@ class Database(private val path: String) : Closeable, AutoCloseable {
                 }
             }
             orphan?.let { value -> db.prepareStatement("delete from cover_cache where cache_key=?").use { it.setString(1, value); it.executeUpdate() } }
+
+            // 书籍变量：只在**显式给了 custom 值**时才动（null = 不动），
+            // 且做的是**合并**（其余键原样保留）—— 对齐 Legado 的 `putCustomVariable()`。
+            // 这样「只改书名点保存」绝不会顺手清掉听书音色。
+            request.customVariable?.let { value ->
+                val merged = parseBookVariables(
+                    db.prepareStatement("select variable from book_shelf where source_id=? and book_url=?").use {
+                        it.setString(1, request.sourceId); it.setString(2, request.bookUrl)
+                        it.executeQuery().use { rs -> if (rs.next()) rs.getString(1) else null }
+                    },
+                ).toMutableMap()
+                merged[CUSTOM_VARIABLE_KEY] = value
+                db.prepareStatement("update book_shelf set variable=? where source_id=? and book_url=?").use {
+                    it.setString(1, Json.encodeToString(merged.toMap()))
+                    it.setString(2, request.sourceId); it.setString(3, request.bookUrl)
+                    it.executeUpdate()
+                }
+            }
+
             db.commit()
             getBookshelf(db, request.sourceId, request.bookUrl)
         } catch (error: Throwable) {
@@ -2024,13 +2367,15 @@ class Database(private val path: String) : Closeable, AutoCloseable {
             try {
                 db.prepareStatement("select 1 from book_shelf where source_id = ? and book_url = ?").use { existing ->
                     db.prepareStatement("""
-                        insert into book_shelf(source_id,book_url,name,author,toc_url,cover_url,cover_key,last_read_at,completed,alternate_sources,book_kind)
-                        values(?,?,?,?,?,?,null,?,?,null,?)
+                        insert into book_shelf(source_id,book_url,name,author,toc_url,cover_url,cover_key,last_read_at,completed,alternate_sources,book_kind,variable)
+                        values(?,?,?,?,?,?,null,?,?,null,?,?)
                         on conflict(source_id,book_url) do update set
                           name=excluded.name, author=excluded.author, toc_url=excluded.toc_url,
                           cover_url=coalesce(excluded.cover_url,book_shelf.cover_url),
                           last_read_at=excluded.last_read_at, completed=book_shelf.completed,
-                          book_kind=coalesce(excluded.book_kind,book_shelf.book_kind)
+                          book_kind=coalesce(excluded.book_kind,book_shelf.book_kind),
+                          -- 书籍变量：备份里没有就**保留本机已有的**（用户可能刚在这台机器上改过音色）
+                          variable=coalesce(excluded.variable,book_shelf.variable)
                     """.trimIndent()).use { save ->
                         entries.forEach { entry ->
                             existing.setString(1, entry.sourceId); existing.setString(2, entry.bookUrl)
@@ -2040,6 +2385,7 @@ class Database(private val path: String) : Closeable, AutoCloseable {
                             save.setLong(7, if (entry.readAt > 0) entry.readAt else now)
                             save.setInt(8, if (entry.completed) 1 else 0)
                             save.setString(9, entry.bookKind)
+                            save.setString(10, entry.variable?.takeIf { it.isNotBlank() })
                             save.addBatch()
                         }
                         save.executeBatch()
@@ -2047,16 +2393,23 @@ class Database(private val path: String) : Closeable, AutoCloseable {
                 }
                 val progressed = entries.filter { it.chapterIndex > 0 }
                 if (progressed.isNotEmpty()) {
+                    // `position_ms` 只对**有声书**写：`durChapterPos` 对音频就是毫秒（同语义直传），
+                    // 而对文本/漫画它是字符偏移量，塞进这里毫无意义（AGENTS.md 明文禁止混用）。
                     db.prepareStatement("""
-                        insert into reading_progress(source_id,book_url,chapter_url,chapter_index,scroll_position,updated_at)
-                        values(?,?,?,?,0,?)
+                        insert into reading_progress(source_id,book_url,chapter_url,chapter_index,scroll_position,position_ms,updated_at)
+                        values(?,?,?,?,0,?,?)
                         on conflict(source_id,book_url) do update set
-                          chapter_url=excluded.chapter_url, chapter_index=excluded.chapter_index, updated_at=excluded.updated_at
+                          chapter_url=excluded.chapter_url, chapter_index=excluded.chapter_index,
+                          position_ms=coalesce(excluded.position_ms, reading_progress.position_ms),
+                          updated_at=excluded.updated_at
                         where excluded.updated_at >= reading_progress.updated_at
                     """.trimIndent()).use { stmt ->
                         progressed.forEach { entry ->
                             stmt.setString(1, entry.sourceId); stmt.setString(2, entry.bookUrl); stmt.setString(3, "")
-                            stmt.setInt(4, entry.chapterIndex); stmt.setLong(5, if (entry.readAt > 0) entry.readAt else now)
+                            stmt.setInt(4, entry.chapterIndex)
+                            if (entry.bookKind == "audio") stmt.setLong(5, entry.chapterPos.toLong())
+                            else stmt.setNull(5, java.sql.Types.INTEGER)
+                            stmt.setLong(6, if (entry.readAt > 0) entry.readAt else now)
                             stmt.addBatch()
                         }
                         progressApplied = stmt.executeBatch().sum()
@@ -2640,8 +2993,78 @@ class Database(private val path: String) : Closeable, AutoCloseable {
             groupName = runCatching { getString(16) }.getOrNull()?.trim()?.takeIf { it.isNotEmpty() },
             coverUrl = runCatching { getString(17) }.getOrNull()?.trim()?.takeIf { it.isNotEmpty() },
             bookKind = runCatching { getString(18) }.getOrNull()?.trim()?.takeIf { it.isNotEmpty() } ?: "novel",
+            variable = runCatching { getString(19) }.getOrNull()?.trim()?.takeIf { it.isNotEmpty() },
         )
     }
+
+    // ------------------------------------------------------------------
+    // 书籍变量（Legado `Book.variable` / `book.getVariable()`）
+    //
+    // 存储形态**逐字对齐开源阅读**（`legado-with-MD3` 的 `BaseBook`）：
+    //   `variable` 列 = `GSON.toJson(variableMap)` ⇒ 一个 JSON 对象字符串，键值都是字符串。
+    // 读取语义也对齐 `RuleDataInterface.getVariable()`：**键不存在返回空串**（不是 "null"）。
+    // ------------------------------------------------------------------
+
+    /** 原始 JSON（前端编辑弹窗与备份导出用）。行不存在 / 从未设置过 ⇒ null。 */
+    fun getBookVariable(sourceId: String, bookUrl: String): String? = connect { db ->
+        db.prepareStatement("select variable from book_shelf where source_id=? and book_url=?").use {
+            it.setString(1, sourceId); it.setString(2, bookUrl)
+            it.executeQuery().use { rs -> if (rs.next()) rs.getString(1)?.trim()?.takeIf { v -> v.isNotEmpty() } else null }
+        }
+    }
+
+    /** 解析后的键值表（`book.getVariable(key)` 的取值来源）。**任何脏 JSON 都退化为空表**，绝不抛。 */
+    fun getBookVariables(sourceId: String, bookUrl: String): Map<String, String> =
+        parseBookVariables(getBookVariable(sourceId, bookUrl))
+
+    /**
+     * 写入整张变量表。
+     *
+     * ⚠️ 空表写 `null` 而不是 `"{}"`：与 Legado 的"从未设置过"保持同一种形态，
+     * 也让 `book.variable` 在"确实没有变量"时保持假值（书源里 `if (!book.variable)` 这类判空才成立）。
+     */
+    fun saveBookVariables(sourceId: String, bookUrl: String, variables: Map<String, String>): Boolean = write { db ->
+        val payload = if (variables.isEmpty()) null else Json.encodeToString(variables)
+        db.prepareStatement("update book_shelf set variable=? where source_id=? and book_url=?").use {
+            it.setString(1, payload); it.setString(2, sourceId); it.setString(3, bookUrl)
+            it.executeUpdate() > 0
+        }
+    }
+
+    /**
+     * 写入**原始 JSON 字符串**（不做解析）。
+     *
+     * 用于两类场景：备份导入要原样搬运手机端的 `variable`；以及测试/排障要构造脏数据。
+     * 常规写入请走 [saveBookVariables]（它会做空表归一化）。
+     */
+    fun saveBookVariable(sourceId: String, bookUrl: String, raw: String?): Boolean = write { db ->
+        db.prepareStatement("update book_shelf set variable=? where source_id=? and book_url=?").use {
+            it.setString(1, raw?.trim()?.takeIf { value -> value.isNotEmpty() })
+            it.setString(2, sourceId); it.setString(3, bookUrl)
+            it.executeUpdate() > 0
+        }
+    }
+
+    /** `putCustomVariable(value)`：只为 `custom` 一个键做合并，其余键**原样保留**（对齐 Legado）。 */
+    fun saveCustomVariable(sourceId: String, bookUrl: String, value: String?): Boolean {
+        if (value == null) return false
+        val merged = parseBookVariables(getBookVariable(sourceId, bookUrl)).toMutableMap()
+        merged[CUSTOM_VARIABLE_KEY] = value
+        return saveBookVariables(sourceId, bookUrl, merged)
+    }
+
+    /** 容错解析：非法 JSON / 非字符串值一律丢弃（书源写坏了不能把书架读崩）。 */
+    private fun parseBookVariables(raw: String?): Map<String, String> {
+        if (raw.isNullOrBlank()) return emptyMap()
+        return runCatching {
+            val obj = Json.parseToJsonElement(raw) as? JsonObject ?: return@runCatching emptyMap()
+            obj.mapNotNull { (key, element) ->
+                val text = (element as? JsonPrimitive)?.contentOrNull ?: return@mapNotNull null
+                key to text
+            }.toMap()
+        }.getOrDefault(emptyMap())
+    }
+
     private fun java.sql.ResultSet.toReplaceRule(): ReplaceRule = ReplaceRule(
         id = getString(1),
         name = getString(2),
@@ -2922,7 +3345,7 @@ class Database(private val path: String) : Closeable, AutoCloseable {
         }
     }
 
-    private fun getBookshelf(db: Connection, sourceId: String, bookUrl: String): BookshelfItem? = db.prepareStatement("""select s.source_id,s.book_url,s.name,s.author,s.toc_url,s.cover_key,p.chapter_index,p.scroll_position,s.last_read_at,coalesce(c.cached_chapters,0),coalesce(c.total_chapters,0),coalesce(c.state,'idle'),c.last_error,s.completed,s.alternate_sources,s.group_name,s.cover_url,s.book_kind from book_shelf s left join reading_progress p on p.source_id=s.source_id and p.book_url=s.book_url left join book_cache_status c on c.source_id=s.source_id and c.book_url=s.book_url where s.source_id=? and s.book_url=?""").use { it.setString(1, sourceId); it.setString(2, bookUrl); it.executeQuery().use { rs -> if (rs.next()) rs.toShelf() else null } }
+    private fun getBookshelf(db: Connection, sourceId: String, bookUrl: String): BookshelfItem? = db.prepareStatement("""select s.source_id,s.book_url,s.name,s.author,s.toc_url,s.cover_key,p.chapter_index,p.scroll_position,s.last_read_at,coalesce(c.cached_chapters,0),coalesce(c.total_chapters,0),coalesce(c.state,'idle'),c.last_error,s.completed,s.alternate_sources,s.group_name,s.cover_url,s.book_kind,s.variable from book_shelf s left join reading_progress p on p.source_id=s.source_id and p.book_url=s.book_url left join book_cache_status c on c.source_id=s.source_id and c.book_url=s.book_url where s.source_id=? and s.book_url=?""").use { it.setString(1, sourceId); it.setString(2, bookUrl); it.executeQuery().use { rs -> if (rs.next()) rs.toShelf() else null } }
 
     /**
      * 判断 `coverUrl` 是否为本服务自己的封面接口地址（自引用）。
@@ -2949,6 +3372,11 @@ class Database(private val path: String) : Closeable, AutoCloseable {
         if ("scroll_position" !in columns) {
             db.createStatement().use { it.executeUpdate("alter table reading_progress add column scroll_position real not null default 0") }
         }
+        // 有声书的毫秒进度（G-1 裁决选 (a)：新增列，不动既有 0..1 校验与文本/漫画语义）。
+        // 幂等：老库补列，新库由上方 create table + 本句都安全。
+        if ("position_ms" !in columns) {
+            db.createStatement().use { it.executeUpdate("alter table reading_progress add column position_ms integer") }
+        }
     }
     private fun migrateBookshelf(db: Connection) {
         val columns = db.createStatement().use { statement -> statement.executeQuery("pragma table_info(book_shelf)").use { rs -> buildSet { while (rs.next()) add(rs.getString("name")) } } }
@@ -2956,6 +3384,9 @@ class Database(private val path: String) : Closeable, AutoCloseable {
         if ("alternate_sources" !in columns) db.createStatement().use { it.executeUpdate("alter table book_shelf add column alternate_sources text") }
         if ("group_name" !in columns) db.createStatement().use { it.executeUpdate("alter table book_shelf add column group_name text") }
         if ("book_kind" !in columns) db.createStatement().use { it.executeUpdate("alter table book_shelf add column book_kind text") }
+        // 书籍变量（Legado `Book.variable`）：JSON 对象字符串，供书源 JS 的 `book.getVariable(...)` 读取。
+        // 幂等：老库补列，新库由 create table 之外的这条也安全（列已存在则跳过）。
+        if ("variable" !in columns) db.createStatement().use { it.executeUpdate("alter table book_shelf add column variable text") }
         backfillBookKind(db)
     }
 
@@ -3167,6 +3598,15 @@ class Database(private val path: String) : Closeable, AutoCloseable {
         return try { SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256").generateSecret(spec).encoded } finally { spec.clearPassword() }
     }
     companion object {
+        /**
+         * 书籍变量里承载"自定义值"的键名。
+         *
+         * **对齐开源阅读**（`legado-with-MD3` 的 `BaseBook.putCustomVariable()`/`getCustomVariable()`）：
+         * 那里把它做成一等公民，编辑 UI 也只编辑它。实测最常见的用途就是听书音色/朗读者
+         * （`🍅大灰狼聚合` 源：`book.getVariable('custom')` 取音色编号）。
+         */
+        const val CUSTOM_VARIABLE_KEY = "custom"
+
         private const val SESSION_TTL = 30L * 24 * 60 * 60 * 1000
         /** 漫画章节清单的列顺序必须与 `toMangaChapter()` 的取值下标逐一对齐。 */
         private const val MANGA_CHAPTER_SELECT =
@@ -3174,6 +3614,9 @@ class Database(private val path: String) : Closeable, AutoCloseable {
         /** 漫画图片索引的列顺序必须与 `toMangaImage()` 的取值下标逐一对齐。 */
         private const val MANGA_IMAGE_SELECT =
             "select url_hash,cache_key,source_id,book_url,chapter_url,chapter_index,segment_index,upstream_url,content_type,byte_size,width,height,state,last_error,created_at,last_access_at from manga_image_cache"
+        /** 音频索引的列顺序必须与 `toAudioCache()` 的取值下标逐一对齐。 */
+        private const val AUDIO_SELECT =
+            "select cache_key,source_id,book_url,chapter_url,chapter_index,segment_index,upstream_url,headers_json,content_type,byte_size,duration_ms,state,last_error,pinned,listened,created_at,last_access_at from audio_cache"
         private const val PBKDF2_ITERATIONS = 600_000
         private const val SALT_BYTES = 16
         private const val HASH_BITS = 256

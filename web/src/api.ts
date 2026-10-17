@@ -13,9 +13,9 @@ export type SourceRecord = { id: string; json: string; version: number; updatedA
 export type SearchResult = { sourceId: string; name: string; author?: string; bookUrl: string; coverUrl?: string; intro?: string }
 export type ExploreSourceItem = { id: string; name: string; group?: string | null; enabled: boolean }
 export type ExploreCategory = { title: string; url?: string | null; subCategories: ExploreCategory[] }
-export type BookDetails = { sourceId: string; name: string; author?: string; intro?: string; coverUrl?: string; tocUrl: string; alternateSources?: SearchResult[] }
+export type BookDetails = { sourceId: string; name: string; author?: string; intro?: string; coverUrl?: string; tocUrl: string; alternateSources?: SearchResult[]; variables?: Record<string, string> }
 export type Chapter = { index: number; title: string; url: string }
-export type ReadingProgress = { sourceId: string; bookUrl: string; chapterUrl: string; chapterIndex: number; scrollPosition: number; updatedAt: number }
+export type ReadingProgress = { sourceId: string; bookUrl: string; chapterUrl: string; chapterIndex: number; scrollPosition: number; updatedAt: number; positionMs?: number | null }
 /** 手机端进度文件（bookProgress/*.json）同步配置 */
 export type ProgressSyncSettings = { directoryName: string; directoryPath?: string; available: boolean; fileCount: number }
 
@@ -66,7 +66,7 @@ export type BackupExportResult = {
   groups: number
 }
 export type ProgressMergeResponse = { source: 'file' | 'database'; progress?: ReadingProgress; fileFound: boolean; alignedIndex?: number }
-export type BookshelfItem = { sourceId: string; bookUrl: string; name: string; author?: string; tocUrl: string; coverKey?: string; coverUrl?: string; chapterIndex?: number; scrollPosition?: number; lastReadAt: number; cachedChapters: number; totalChapters: number; cacheState: 'idle' | 'caching' | 'ready' | 'failed'; cacheError?: string; completed: boolean; alternateSources?: SearchResult[]; groupName?: string; bookKind?: string }
+export type BookshelfItem = { sourceId: string; bookUrl: string; name: string; author?: string; tocUrl: string; coverKey?: string; coverUrl?: string; chapterIndex?: number; scrollPosition?: number; lastReadAt: number; cachedChapters: number; totalChapters: number; cacheState: 'idle' | 'caching' | 'ready' | 'failed'; cacheError?: string; completed: boolean; alternateSources?: SearchResult[]; groupName?: string; bookKind?: string; variable?: string }
 export type BookshelfWrite = { sourceId: string; bookUrl: string; name: string; author?: string; tocUrl: string; coverUrl?: string; alternateSources?: SearchResult[]; groupName?: string }
 
 /** 漫画清单项（P1）：**只有服务端 key**，上游地址留在服务端（防前端绕过缓存直连）。 */
@@ -78,6 +78,27 @@ export type MangaCacheStats = { totalBytes: number; quotaBytes: number; imageCou
 /** 预取受理结果（P2）：`queued=false` 不是错误（开关关了/目录未缓存/区间为空）。 */
 export type MangaPrefetchResponse = { queued: boolean; chapters: number; reason?: string | null }
 export type MangaPrefetchStatus = { sourceId: string; bookUrl: string; running: boolean; done: number; planned: number; currentChapterIndex: number }
+
+// ---------------------------------------------------------------------------
+// 有声书（方案 G2）—— 与漫画清单**同构**，只把「张」换成「段」
+// ---------------------------------------------------------------------------
+export type AudioTrackStatus = 'pending' | 'ready' | 'failed'
+export type AudioTrackItem = { index: number; key: string; segmentIndex: number; status: AudioTrackStatus; durationMs: number; byteSize: number }
+export type AudioChapterManifest = {
+  sourceId: string
+  bookUrl: string
+  chapterUrl: string
+  chapterIndex: number
+  total: number
+  ready: number
+  /** pending | partial | ready | failed | empty（empty = 规则没提取到任何音频地址） */
+  state: string
+  tracks: AudioTrackItem[]
+}
+export type AudioCacheBookStat = { sourceId: string; bookUrl: string; name?: string | null; trackCount: number; totalBytes: number; chapterCount: number; readyChapterCount: number; pinned: boolean }
+export type AudioCacheStats = { totalBytes: number; quotaBytes: number; trackCount: number; diskBytes: number; books: AudioCacheBookStat[] }
+export type AudioPrefetchResponse = { queued: boolean; chapters: number; reason?: string | null }
+export type AudioPrefetchStatus = { sourceId: string; bookUrl: string; running: boolean; done: number; planned: number; currentChapterIndex: number }
 
 // Safari momentum scrolling can schedule several saves while a production request is still in flight.
 // Serialize saves per book so an older response cannot arrive after a newer position and overwrite it.
@@ -518,6 +539,55 @@ export const api = {
   imageUrl: (key: string) => `/api/images/${key}`,
   /** 服务端图片缓存统计（与前端 CacheStorage 的统计**分开显示**）。 */
   imageCacheStats: () => request<MangaCacheStats>('/api/books/images/cache/stats'),
+
+  // -------------------------------------------------------------------------
+  // 有声书（方案 G2）
+  // -------------------------------------------------------------------------
+
+  /**
+   * 有声书章节音频清单。
+   *
+   * 与漫画清单同一契约形状：返回**服务端 key + 状态 + 分段序号**，音频本身走 `audioUrl(key)`。
+   * 一章多分段 ⇒ 前端按 `segmentIndex` 顺序串播（服务端不拼流、不转码）。
+   */
+  audioManifest: (sourceId: string, chapterUrl: string, bookUrl?: string, chapterIndex = 0, signal?: AbortSignal) =>
+    request<AudioChapterManifest>('/api/books/audio', { method: 'POST', body: JSON.stringify({ sourceId, chapterUrl, bookUrl, chapterIndex }), signal }),
+  /** 服务端音频直出地址（同源、Range + ETag + immutable ⇒ 可 seek、可离线）。 */
+  audioUrl: (key: string) => `/api/audio/${key}`,
+  /**
+   * 把前端 `loadedmetadata` 得到的时长回传给服务端。
+   *
+   * 服务端**不引音频解析库**（Non-Goal）：时长只用于统计与 GC 的"听完"判据，
+   * 拿不到就保持 0，绝不能因此影响播放 ⇒ 调用方一律 fire-and-forget。
+   */
+  audioDuration: (key: string, durationMs: number, positionMs = 0) =>
+    request<void>('/api/audio/duration', { method: 'POST', body: JSON.stringify({ key, durationMs, positionMs }) }),
+  audioCacheStats: () => request<AudioCacheStats>('/api/audio/cache/stats'),
+  /**
+   * 批量缓存（G5）。`ahead` = 从 `fromChapterIndex` 起再往后多少章（0 = 只这一章）。
+   * 202 表示"已受理"，`queued=false` **不是错误**（开关关了/目录没缓存/区间为空）。
+   */
+  audioPrefetch: (sourceId: string, bookUrl: string, fromChapterIndex: number, ahead = 0, pin = false) =>
+    request<AudioPrefetchResponse>('/api/books/audio/cache', {
+      method: 'POST',
+      body: JSON.stringify({ sourceId, bookUrl, fromChapterIndex, ahead, pin }),
+    }),
+  audioPrefetchStatus: () => request<AudioPrefetchStatus[]>('/api/books/audio/prefetch'),
+  /** 「整本离线」免死金牌开关（GC 永不自动淘汰）。 */
+  pinAudioBook: (sourceId: string, bookUrl: string, pinned: boolean) =>
+    request<{ pinned: boolean }>(
+      `/api/audio/cache/pin?sourceId=${encodeURIComponent(sourceId)}&bookUrl=${encodeURIComponent(bookUrl)}&pinned=${pinned}`,
+      { method: 'PUT' },
+    ),
+  clearAudioCache: (sourceId?: string, bookUrl?: string, key?: string) =>
+    request<void>(
+      key
+        ? `/api/audio/cache?key=${encodeURIComponent(key)}`
+        : sourceId && bookUrl
+          ? `/api/audio/cache?sourceId=${encodeURIComponent(sourceId)}&bookUrl=${encodeURIComponent(bookUrl)}`
+          : '/api/audio/cache?all=true',
+      { method: 'DELETE' },
+    ),
   /**
    * 后台预取（方案 E · P2 环节 E8）。
    *
@@ -563,21 +633,22 @@ export const api = {
     }
   },
   progress: (sourceId: string, bookUrl: string, signal?: AbortSignal) => request<ReadingProgress | undefined>(`/api/reading-progress?sourceId=${encodeURIComponent(sourceId)}&bookUrl=${encodeURIComponent(bookUrl)}`, { signal }),
-  saveProgress: async (sourceId: string, bookUrl: string, chapterUrl: string, chapterIndex: number, scrollPosition: number, chapterTitle?: string) => {
-    const progressItem = { sourceId, bookUrl, chapterUrl, chapterIndex, scrollPosition, updatedAt: Date.now() }
+  saveProgress: async (sourceId: string, bookUrl: string, chapterUrl: string, chapterIndex: number, scrollPosition: number, chapterTitle?: string, positionMs?: number) => {
+    const progressItem = { sourceId, bookUrl, chapterUrl, chapterIndex, scrollPosition, positionMs, updatedAt: Date.now() }
     const queueKey = `${sourceId}\u0000${bookUrl}`
     const previous = progressSaveQueues.get(queueKey) ?? Promise.resolve()
     const operation = previous.catch(() => undefined).then(async () => {
       enqueueOfflineProgress(progressItem)
       try {
-        // chapterTitle 一并提交，服务端写 bookProgress 进度文件时直接用，免去回查目录缓存
-        const res = await request<ReadingProgress>('/api/reading-progress', { method: 'PUT', body: JSON.stringify({ sourceId, bookUrl, chapterUrl, chapterIndex, scrollPosition, chapterTitle }) })
+        // chapterTitle 一并提交，服务端写 bookProgress 进度文件时直接用，免去回查目录缓存；
+        // positionMs 只在有声书里带（服务端 `position_ms`，与手机端 durChapterPos 同语义）
+        const res = await request<ReadingProgress>('/api/reading-progress', { method: 'PUT', body: JSON.stringify({ sourceId, bookUrl, chapterUrl, chapterIndex, scrollPosition, chapterTitle, positionMs }) })
         void flushOfflineProgress(async (item) => {
           await request<ReadingProgress>('/api/reading-progress', { method: 'PUT', body: JSON.stringify(item) })
         })
         return res
       } catch {
-        return { sourceId, bookUrl, chapterUrl, chapterIndex, scrollPosition, updatedAt: progressItem.updatedAt }
+        return { sourceId, bookUrl, chapterUrl, chapterIndex, scrollPosition, positionMs, updatedAt: progressItem.updatedAt }
       }
     })
     const marker = operation.then(() => undefined, () => undefined)
@@ -627,7 +698,9 @@ export const api = {
    */
   reparseLocalBooks: (filter?: { sourceId?: string; bookUrl?: string }) =>
     request<LocalReparseResponse>('/api/bookshelf/reparse-local', { method: 'POST', body: JSON.stringify(filter ?? {}) }),
-  updateBookshelfInfo: (data: { sourceId: string; bookUrl: string; name: string; author?: string; coverUrl?: string; coverKey?: string; groupName?: string; alternateSources?: SearchResult[] }) => request<BookshelfItem>('/api/bookshelf/info', { method: 'PUT', body: JSON.stringify(data) }),
+  // customVariable：书籍变量里的 `custom` 键（Legado 的 `putCustomVariable`）。
+  // 省略 = 不动已有变量；传字符串 = 写入。有声书用它切换朗读者/音色。
+  updateBookshelfInfo: (data: { sourceId: string; bookUrl: string; name: string; author?: string; coverUrl?: string; coverKey?: string; groupName?: string; alternateSources?: SearchResult[]; customVariable?: string }) => request<BookshelfItem>('/api/bookshelf/info', { method: 'PUT', body: JSON.stringify(data) }),
   switchBookshelfSource: (value: BookshelfSourceSwitch) => request<BookshelfItem>('/api/bookshelf/switch-source', { method: 'POST', body: JSON.stringify(value) }),
   importLocalBooks: async (files: File[]): Promise<LocalBookImportResponse> => {
     const formData = new FormData()

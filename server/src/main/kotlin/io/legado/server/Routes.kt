@@ -70,6 +70,12 @@ fun Route.apiRoutes(
     mangaImageFetcher: MangaImageFetcher,
     /** 漫画图片后台预取（方案 E · P2）。可为 null ⇒ 视为关闭。 */
     mangaPrefetch: MangaPrefetchService? = null,
+    /** 有声书音频的 L1 字节缓存（方案 G2 · PROPOSAL-029 / ADR-029）。 */
+    audioCache: AudioCache,
+    /** 有声书音频抓取收口（全局 Semaphore(3) + 单 host 1 + 流式落盘 + SSRF）。 */
+    audioFetcher: AudioFetcher,
+    /** 音频后台批量缓存（方案 G2 · G5）。可为 null ⇒ 视为关闭。 */
+    audioPrefetch: AudioPrefetchService? = null,
 ) {
     val webView = WebViewProxy(database)
 
@@ -149,6 +155,9 @@ fun Route.apiRoutes(
                 author = shelf.author,
                 chapterIndex = saved.chapterIndex,
                 chapterTitle = title,
+                // 有声书：把我们负责的毫秒位置镜像成 `durChapterPos`（同语义直传）；
+                // 其它类型为 null ⇒ 沿用文件里手机端写的值（我们无权改写字符偏移量）
+                positionMs = saved.positionMs,
             )
         }
     }
@@ -838,15 +847,18 @@ fun Route.apiRoutes(
             call.respondCatching {
                 try {
                     withTimeout(4000) {
-                        val chapters = runCatching { runner.chapters(source.json, request.bookUrl) }.getOrElse {
-                            val details = runner.details(source.json, request.bookUrl)
-                            val toc = runner.chapters(source.json, details.tocUrl)
+                        // 书籍上下文（含变量）同样要进目录规则：Legado 的 `getChapters(book)` 就带着 Book。
+                        val book = database.bookContext(request.sourceId, request.bookUrl)
+                        val chapters = runCatching { runner.chapters(source.json, request.bookUrl, book) }.getOrElse {
+                            val details = runner.details(source.json, request.bookUrl, book)
+                            val toc = runner.chapters(source.json, details.tocUrl, book)
                             database.saveTocCache(request.sourceId, details.tocUrl, toc)
                             toc
                         }
                         if (chapters.isNotEmpty()) {
                             database.saveTocCache(request.sourceId, request.bookUrl, chapters)
                         }
+                        database.persistBookVariables(book)
                         chapters
                     }
                 } catch (error: Throwable) {
@@ -1037,8 +1049,13 @@ fun Route.apiRoutes(
                 call.respond(cached)
             } else call.respondCatching {
                 try {
-                    runner.content(source.json, request.chapterUrl, bookName).also { content ->
+                    // 书籍上下文（含变量）：正文规则里 `book.getVariable('custom')` 与 `book.variable`
+                    // 都靠它 —— 听书音色、按书切换线路的书源都依赖这一条。
+                    // bookUrl 未知时传 null，保持与从前一致（book 各字段为空串）。
+                    val book = bookUrl?.let { database.bookContext(request.sourceId, it) }
+                    runner.content(source.json, request.chapterUrl, bookName, book).also { content ->
                         bookUrl?.let { database.cacheBookContent(request.sourceId, it, request.chapterUrl, content) }
+                        book?.let { database.persistBookVariables(it) }
                     }
                 } catch (error: Throwable) {
                     if (cached != null && cached.content.isNotBlank()) cached
@@ -1078,7 +1095,14 @@ fun Route.apiRoutes(
                     // ② 首次解析：失败一律 502 `source_execution_failed` + 真实原因，与
                     // `/books/content` 一致（抛 500「服务器内部错误」会把「书源规则没配好」
                     // 伪装成「服务端故障」，是最容易误导排障的形态）。
-                    val parsed = runCatching { runner.mangaImages(source.json, chapterUrl) }
+                    val parsed = runCatching {
+                        val book = bookUrl.takeIf { it.isNotBlank() }?.let { database.bookContext(request.sourceId, it) }
+                        try {
+                            runner.mangaImages(source.json, chapterUrl, bookName = null, book = book)
+                        } finally {
+                            book?.let { database.persistBookVariables(it) }
+                        }
+                    }
                     val failure = parsed.exceptionOrNull()
                     if (failure != null) {
                         call.respond(
@@ -1280,6 +1304,270 @@ fun Route.apiRoutes(
             database.deleteMangaChapters(sourceId, bookUrl)
             call.respond(HttpStatusCode.NoContent)
         }
+
+        // ==================================================================
+        // 有声书（方案 G2 · PROPOSAL-029 / ADR-029）
+        //
+        // 与漫画段**同构**（鉴权口径、契约形状、失败上报都对齐），只有三处刻意不同：
+        // ① 清单项叫 track（一章可能多分段，前端按 segmentIndex 串播）；
+        // ② 直出带 `ETag + immutable`（音频内容按 URL 寻址，key 稳定 ⇒ 可长期缓存）；
+        // ③ 抓取失败**带原因**（整章听不了时，用户需要知道是"要登录"还是"格式不支持"）。
+        // ==================================================================
+
+        /**
+         * 解析一章的音频清单。
+         *
+         * 与漫画同一条铁律：**只回 key + 状态，绝不回上游 URL**
+         *（回了前端就会绕过字节缓存直连 ⇒ 防盗链、离线、Range 复用全部失效）。
+         */
+        post("/books/audio") {
+            if (auth.requireSession(call) == null) return@post
+            val request = call.receive<AudioManifestRequest>()
+            if (request.sourceId.isBlank()) {
+                call.respond(HttpStatusCode.BadRequest, ApiError("invalid_audio", "缺少书源"))
+                return@post
+            }
+            val chapterUrl = request.chapterUrl
+            if (chapterUrl.isBlank()) {
+                call.respond(HttpStatusCode.BadRequest, ApiError("invalid_audio", "缺少章节地址"))
+                return@post
+            }
+            val source = database.getSource(request.sourceId)
+                ?: return@post call.respond(HttpStatusCode.NotFound, ApiError("not_found", "书源不存在"))
+            val bookUrl = request.bookUrl ?: if (chapterUrl.startsWith("local://")) chapterUrl.substringBeforeLast('/') else ""
+
+            // 书自身的类型说法（`tab=听书`）或源声明 ⇒ 顺手把书架类型修好（幂等回填）。
+            // ⚠️ 必须让**书自己**优先：聚合源不声明 `bookSourceType`。
+            if (bookUrl.isNotBlank()) {
+                BookKind.resolveOrNull(null, bookUrl, source.json)?.let { kind ->
+                    database.setBookKindSilently(request.sourceId, bookUrl, kind)
+                }
+            }
+
+            // ① 本地已登记 ⇒ **完全不再回源抓章节页**（二次打开零上游请求）
+            val registered = audioCache.chapterRows(request.sourceId, bookUrl, chapterUrl)
+            val rows = if (registered.isNotEmpty()) {
+                registered
+            } else {
+                // ② 首次解析：规则失败一律 502 `source_execution_failed` + 真实原因
+                val parsed = runCatching { runner.audioTracks(source.json, chapterUrl) }
+                val failure = parsed.exceptionOrNull()
+                if (failure != null) {
+                    call.respond(
+                        HttpStatusCode.BadGateway,
+                        ApiError("source_execution_failed", failure.message ?: "音频清单解析失败"),
+                    )
+                    return@post
+                }
+                val list = parsed.getOrThrow()
+                if (list.isEmpty()) {
+                    // 明确回一个**空清单**：绝不静默留白（前端据此提示"该书源的音频规则没配好"）
+                    call.respond(
+                        AudioChapterManifest(
+                            sourceId = request.sourceId, bookUrl = bookUrl, chapterUrl = chapterUrl,
+                            chapterIndex = request.chapterIndex, total = 0, ready = 0,
+                            state = "empty", tracks = emptyList(),
+                        ),
+                    )
+                    return@post
+                }
+                audioCache.registerChapter(request.sourceId, bookUrl, chapterUrl, request.chapterIndex, list)
+            }
+
+            call.respond(
+                AudioChapterManifest(
+                    sourceId = request.sourceId,
+                    bookUrl = bookUrl,
+                    chapterUrl = chapterUrl,
+                    chapterIndex = request.chapterIndex,
+                    total = rows.size,
+                    ready = rows.count { it.state == "ready" },
+                    state = audioCache.chapterState(rows),
+                    tracks = rows.map {
+                        AudioTrack(
+                            index = it.segmentIndex,
+                            key = it.cacheKey,
+                            segmentIndex = it.segmentIndex,
+                            status = it.state,
+                            durationMs = it.durationMs,
+                            byteSize = it.byteSize,
+                        )
+                    },
+                ),
+            )
+        }
+
+        /**
+         * 音频直出（**按需抓取 + 唯一字节副本 + 单段 Range**）。
+         *
+         * `ETag = cacheKey`（URL 派生的稳定哈希）⇒ 可 `immutable`：同一个 key 的内容在我们
+         * 这一层不会变，浏览器与中间层可以放心长期缓存（这是"二次播放零上游请求"的关键）。
+         *
+         * Range 实现**复用 `respondFileRange`**（与 WebDAV 同一份手写实现）——
+         * AGENTS.md 明文：Range 写错 ⇒ 播放器 seek 卡死 / 416。
+         */
+        get("/audio/{key}") {
+            if (auth.requireSession(call) == null) return@get
+            val key = call.parameters["key"].orEmpty()
+            if (!key.matches(AUDIO_KEY_PATTERN)) {
+                call.respond(HttpStatusCode.NotFound, ApiError("not_found", "音频 key 无效"))
+                return@get
+            }
+
+            var row = audioCache.getByKey(key)
+            if (row == null) {
+                // 未就绪 ⇒ 用登记时留下的上游地址按需抓取（key 不可逆，这是它的代价也是防护）
+                val pending = audioCache.rowByKey(key)
+                    ?: return@get call.respond(HttpStatusCode.NotFound, ApiError("not_found", "该 key 未登记（可能章节清单已清空）"))
+                val sourceJson = database.getSource(pending.sourceId)?.json
+                if (sourceJson == null) {
+                    audioCache.markFailed(key, "书源不存在")
+                    return@get call.respond(HttpStatusCode.NotFound, ApiError("not_found", "书源不存在"))
+                }
+                // 防盗链的命门：Referer 必须是**章节页**，并与书源 header/Cookie 一起发
+                val outcome = audioFetcher.fetchInto(
+                    upstreamUrl = pending.upstreamUrl,
+                    mediaHeaders = runner.mediaHeaders(sourceJson, pending.sourceId),
+                    referer = pending.chapterUrl.takeIf { it.startsWith("http") },
+                    trackHeadersJson = pending.headersJson,
+                    store = audioCache.store,
+                    cacheKey = key,
+                )
+                when (outcome) {
+                    is AudioFetchOutcome.Failure -> {
+                        audioCache.markFailed(key, outcome.reason)
+                        // 502 + **真实原因**：格式不支持 / 要登录 / 上游 404 是三种完全不同的动作
+                        call.respond(HttpStatusCode.BadGateway, ApiError("audio_fetch_failed", outcome.reason))
+                        return@get
+                    }
+                    is AudioFetchOutcome.Success -> {
+                        audioCache.markReady(pending, outcome.contentType, outcome.byteSize)
+                        row = audioCache.rowByKey(key)
+                            ?: return@get call.respond(HttpStatusCode.InternalServerError, ApiError("cache_error", "音频落盘后索引丢失"))
+                    }
+                }
+            }
+
+            val file = audioCache.fileFor(row.cacheKey)
+                ?: return@get call.respond(HttpStatusCode.NotFound, ApiError("not_found", "音频文件不存在"))
+            call.respondFileRange(
+                file = file,
+                contentType = ContentType.parse(row.contentType.ifBlank { "audio/mpeg" }),
+                etag = row.cacheKey,
+                cacheControl = "private, max-age=31536000, immutable",
+            )
+        }
+
+        /** 前端 `loadedmetadata` 回传时长（服务端不引音频解析库）。顺带判一次"这一段听完了"。 */
+        post("/audio/duration") {
+            if (auth.requireSession(call, true) == null) return@post
+            val request = call.receive<AudioDurationRequest>()
+            if (request.key.isBlank() || !request.key.matches(AUDIO_KEY_PATTERN)) {
+                call.respond(HttpStatusCode.BadRequest, ApiError("invalid_audio", "音频 key 无效"))
+                return@post
+            }
+            audioCache.updateDuration(request.key, request.durationMs)
+            if (request.durationMs > 0 && request.positionMs > 0) {
+                // 听完判据（> 80%）：GC 顺位 1 的输入之一。失败静默——这只是统计意义上的信息。
+                runCatching { audioCache.markListened(request.key, request.positionMs * 100 >= request.durationMs * 80) }
+            }
+            call.respond(HttpStatusCode.NoContent)
+        }
+
+        /**
+         * 批量缓存（G5）。
+         *
+         * **幂等且随时可重复调用**：同一本书的重复请求不会新起并行任务，而是让正在跑的循环改目标。
+         * 返回 `202 Accepted` 表示"已受理"而非"已完成"。
+         */
+        post("/books/audio/cache") {
+            if (auth.requireSession(call, true) == null) return@post
+            val request = call.receive<AudioPrefetchRequest>()
+            if (request.sourceId.isBlank()) {
+                call.respond(HttpStatusCode.BadRequest, ApiError("invalid_audio", "缺少书源"))
+                return@post
+            }
+            val bookUrl = request.bookUrl?.takeIf { it.isNotBlank() }
+                ?: run {
+                    call.respond(HttpStatusCode.BadRequest, ApiError("invalid_audio", "缺少书籍地址"))
+                    return@post
+                }
+            val service = audioPrefetch
+            if (service == null || !service.enabled) {
+                // 关闭 ≠ 报错：播放器对它的唯一正确反应是"什么都不做"
+                call.respond(HttpStatusCode.Accepted, AudioPrefetchResponse(false, 0, "prefetch_disabled"))
+                return@post
+            }
+            val chapters = service.enqueue(
+                sourceId = request.sourceId,
+                bookUrl = bookUrl,
+                fromChapterIndex = request.fromChapterIndex,
+                ahead = request.ahead,
+                pin = request.pin,
+            )
+            call.respond(
+                HttpStatusCode.Accepted,
+                AudioPrefetchResponse(chapters > 0, chapters, if (chapters > 0) null else "nothing_to_cache"),
+            )
+        }
+        get("/books/audio/prefetch") {
+            if (auth.requireSession(call) == null) return@get
+            call.respond(audioPrefetch?.status() ?: emptyList<AudioPrefetchStatus>())
+        }
+        get("/books/audio/cached-chapters") {
+            if (auth.requireSession(call, false) == null) return@get
+            val sourceId = call.request.queryParameters["sourceId"]
+            val bookUrl = call.request.queryParameters["bookUrl"]
+            if (sourceId.isNullOrBlank() || bookUrl.isNullOrBlank()) {
+                call.respond(HttpStatusCode.BadRequest, ApiError("invalid_audio", "缺少书籍标识"))
+                return@get
+            }
+            val urls = database.readyAudioChapters(sourceId, bookUrl)
+            val total = database.getTocCache(sourceId, bookUrl)?.size ?: 0
+            call.respond(CachedChaptersResponse(sourceId, bookUrl, urls, urls.size, total))
+        }
+        get("/audio/cache/stats") {
+            if (auth.requireSession(call) == null) return@get
+            call.respond(audioCache.stats())
+        }
+        /** 「整本离线」免死金牌开关（G8）。只有**用户显式动作**才配得上它。 */
+        put("/audio/cache/pin") {
+            if (auth.requireSession(call, true) == null) return@put
+            val sourceId = call.request.queryParameters["sourceId"]
+            val bookUrl = call.request.queryParameters["bookUrl"]
+            val pinned = call.request.queryParameters["pinned"]?.toBooleanStrictOrNull() ?: true
+            if (sourceId.isNullOrBlank() || bookUrl.isNullOrBlank()) {
+                call.respond(HttpStatusCode.BadRequest, ApiError("invalid_audio", "缺少书籍标识"))
+                return@put
+            }
+            database.setAudioBookPinned(sourceId, bookUrl, pinned)
+            call.respond(AudioPinResponse(sourceId, bookUrl, pinned))
+        }
+        delete("/audio/cache") {
+            if (auth.requireSession(call, true) == null) return@delete
+            if (call.request.queryParameters["all"]?.toBooleanStrictOrNull() == true) {
+                // 先停任务再清：否则清理刚删完，还在跑的缓存任务又把它抓回来（用户看到"清不干净"）
+                audioPrefetch?.cancelAll()
+                audioCache.deleteAll()
+                call.respond(HttpStatusCode.NoContent)
+                return@delete
+            }
+            val key = call.request.queryParameters["key"]
+            if (!key.isNullOrBlank()) {
+                audioCache.deleteKey(key)
+                call.respond(HttpStatusCode.NoContent)
+                return@delete
+            }
+            val sourceId = call.request.queryParameters["sourceId"]
+            val bookUrl = call.request.queryParameters["bookUrl"]
+            if (sourceId.isNullOrBlank() || bookUrl.isNullOrBlank()) {
+                call.respond(HttpStatusCode.BadRequest, ApiError("invalid_audio", "缺少书籍标识或 key"))
+                return@delete
+            }
+            audioPrefetch?.cancel(sourceId, bookUrl)
+            audioCache.deleteBook(sourceId, bookUrl)
+            call.respond(HttpStatusCode.NoContent)
+        }
         get("/bookshelf") {
             if (auth.requireSession(call) == null) return@get
             call.respond(database.listBookshelf())
@@ -1457,12 +1745,13 @@ fun Route.apiRoutes(
                 call.respond(HttpStatusCode.BadRequest, ApiError("invalid_bookshelf", "缺少书籍标识"))
                 return@get
             }
-            // 绿点的唯一口径：文本书看 "正文已缓存"，漫画看 "整章图片全部落盘"（state='ready'）。
+            // 绿点的唯一口径：文本书看 "正文已缓存"，漫画看 "整章图片全部落盘"，
+            // 有声书看 "整章音频分段全部落盘"（三者都是 state='ready' 的同一语义）。
             // 契约（路径 / 字段名）**完全不变**，只是服务端按 kind 换数据源 —— 前端与 SW 无需改。
-            val cachedUrls = if (BookKind.from(database.getBookKind(sourceId, bookUrl)) == BookKind.COMIC) {
-                database.listReadyMangaChapterUrls(sourceId, bookUrl)
-            } else {
-                database.cachedChapterUrls(sourceId, bookUrl).toList()
+            val cachedUrls = when (BookKind.from(database.getBookKind(sourceId, bookUrl))) {
+                BookKind.COMIC -> database.listReadyMangaChapterUrls(sourceId, bookUrl)
+                BookKind.AUDIO -> database.readyAudioChapters(sourceId, bookUrl)
+                BookKind.NOVEL -> database.cachedChapterUrls(sourceId, bookUrl).toList()
             }
             val total = database.getTocCache(sourceId, bookUrl)?.size ?: 0
             call.respond(CachedChaptersResponse(sourceId, bookUrl, cachedUrls, cachedUrls.size, total))
@@ -1815,7 +2104,9 @@ fun Route.apiRoutes(
         put("/reading-progress") {
             if (auth.requireSession(call, true) == null) return@put
             val progress = call.receive<ReadingProgress>()
-            if (progress.sourceId.isBlank() || progress.bookUrl.isBlank() || progress.chapterUrl.isBlank() || progress.chapterIndex < 0 || !progress.scrollPosition.isFinite() || progress.scrollPosition !in 0.0..1.0) { call.respond(HttpStatusCode.BadRequest, ApiError("invalid_progress", "阅读进度无效")); return@put }
+            // 有声书走 `position_ms`（毫秒），**因此这里刻意不动既有的 0..1 校验**
+            // ——`scrollPosition` 仍然是比例语义，毫秒绝不塞进它（G2 §8 的裁决）。
+            if (progress.sourceId.isBlank() || progress.bookUrl.isBlank() || progress.chapterUrl.isBlank() || progress.chapterIndex < 0 || !progress.scrollPosition.isFinite() || progress.scrollPosition !in 0.0..1.0 || (progress.positionMs != null && progress.positionMs < 0)) { call.respond(HttpStatusCode.BadRequest, ApiError("invalid_progress", "阅读进度无效")); return@put }
             val saved = database.saveProgress(progress)
             // 顺带把进度镜像到手机端的 bookProgress 文件（失败静默，绝不影响阅读保存）
             syncProgressToFile(saved, progress.chapterTitle)
@@ -2207,6 +2498,13 @@ internal suspend fun <T, R> boundedConcurrentMap(values: List<T>, limit: Int, ac
 
 /** 图片 key = sha256 的十六进制（64 位）。非法 key 直接 404，绝不拿它去拼路径。 */
 private val MANGA_IMAGE_KEY_PATTERN = Regex("[0-9a-f]{64}")
+/**
+ * 音频 key 只接受 64 位小写十六进制。
+ *
+ * 与图片同样必须**先校验再落到 `Path.resolve`**：AGENTS.md 铁律——`Path.resolve()` 对非法字符
+ * （换行、`..`、绝对路径…）会**抛异常**，而不是返回一个不存在的路径。
+ */
+private val AUDIO_KEY_PATTERN = Regex("[0-9a-f]{64}")
 private val mangaImagesJson = Json { ignoreUnknownKeys = true }
 
 /** 章节图片清单（有序上游 URL 数组）的序列化 —— **仅服务端可见**，绝不下发前端。 */
@@ -2267,10 +2565,18 @@ internal fun fetchBookDetails(database: Database, runner: RuleRunner, sourceId: 
             intro = null,
             coverUrl = shelf.coverKey?.let { "/api/covers/$it" },
             tocUrl = shelf.tocUrl,
+            variables = database.getBookVariables(sourceId, bookUrl),
         )
     }
     val source = database.getSource(sourceId) ?: return null
-    return runner.details(source.json, bookUrl)
+    // 详情规则也带书籍上下文：Legado 的 `getBookInfo(book)` 里 `book.getVariable(...)` 是常见写法
+    // （音色/线路参数往往在详情步骤就参与拼 URL）。
+    val book = database.bookContext(sourceId, bookUrl)
+    val details = runner.details(source.json, bookUrl, book)
+    database.persistBookVariables(book)
+    // 详情页也要吐出变量表：前端「编辑书籍信息」的书籍变量设置栏据此回显当前音色。
+    // 取落库后的值（而不是 `book.variables`）：规则里刚写过的变量也要一并可见。
+    return details.copy(variables = database.getBookVariables(sourceId, bookUrl))
 }
 
 /**

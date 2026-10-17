@@ -34,6 +34,67 @@ import java.util.zip.GZIPInputStream
 import java.util.zip.InflaterInputStream
 
 /**
+ * 一本书在**规则执行期**的上下文 —— 即开源阅读里 JS 能看到的那个 `book` 对象。
+ *
+ * 为什么必须显式传：`sourceContext()` 原本只装书源信息（sourceId/jsLib），于是书源 JS 里
+ * `book.name` / `book.author` / `book.bookUrl` / `book.getVariable('custom')` 全是**空值**。
+ * 实测代价最大的一处就是听书音色：`🍅大灰狼聚合` 源用 `book.getVariable('custom')` 取音色编号，
+ * 空值 ⇒ 永远只能用默认音色，而用户在书籍变量里填什么都没用。
+ *
+ * [variables] 刻意是**可变**的：规则里可能 `book.putVariable(...)`（Legado 里这会随
+ * `saveBook` 落库），调用方在规则跑完后比对并写回。
+ */
+data class BookContext(
+    val sourceId: String,
+    val bookUrl: String,
+    val name: String? = null,
+    val author: String? = null,
+    val tocUrl: String? = null,
+    /** `novel` / `comic` / `audio`（[BookKind] 的 wire 值）。 */
+    val kind: String? = null,
+    /** 书籍变量表（Legado `Book.variableMap`）。 */
+    val variables: MutableMap<String, String> = mutableMapOf(),
+) {
+    /** Legado 的 `Book.type`：0=文本 1=音频 2=图像（书源里 `book.type` 会按它分派）。 */
+    val numericType: Int
+        get() = when (kind?.lowercase()) {
+            "audio" -> 1
+            "comic" -> 2
+            else -> 0
+        }
+}
+
+/**
+ * 从库里装配一本书的规则执行上下文（含书籍变量）。
+ *
+ * 书架里没有这本书（例如从搜索页直接进详情）时**依然返回上下文**：书名/作者取不到，
+ * 但变量表可以（`getBookVariables` 会返回空表），这样行为与 Legado 一致而不会抛错。
+ */
+internal fun Database.bookContext(sourceId: String, bookUrl: String): BookContext {
+    val shelf = getShelfBookByUrl(bookUrl)?.takeIf { it.sourceId == sourceId }
+    return BookContext(
+        sourceId = sourceId,
+        bookUrl = bookUrl,
+        name = shelf?.name,
+        author = shelf?.author,
+        tocUrl = shelf?.tocUrl,
+        kind = shelf?.bookKind,
+        variables = getBookVariables(sourceId, bookUrl).toMutableMap(),
+    )
+}
+
+/**
+ * 把规则执行期间对书籍变量的修改落库（Legado 里 `book.putVariable(...)` 会随 `saveBook` 落库）。
+ *
+ * **只在真的变了才写**：正文/目录每次都要跑规则，无脑写库会让高频路径多出无谓的写事务。
+ */
+internal fun Database.persistBookVariables(book: BookContext) {
+    if (getBookVariables(book.sourceId, book.bookUrl) != book.variables) {
+        saveBookVariables(book.sourceId, book.bookUrl, book.variables)
+    }
+}
+
+/**
  * A deliberately small, server-safe subset of Legado's declarative source protocol.
  * It keeps execution away from Android APIs and rejects private-network targets.
  */
@@ -270,7 +331,7 @@ class RuleRunner(private val responseFetcher: ((String) -> String)? = null, inte
      * 注意：Legado 约定里 `loginUrl` 可以不是网址，而是**整段登录用 JS**（聚合源普遍如此），
      * 其中的工具函数同样会被正文/目录规则调用，因此也要并入脚本库。
      */
-    private fun sourceContext(source: JsonObject, sourceUrl: String?): JsExecutionContext {
+    private fun sourceContext(source: JsonObject, sourceUrl: String?, book: BookContext? = null): JsExecutionContext {
         val library = buildString {
             source.string("jsLib")?.takeIf { it.isNotBlank() }?.let { append(it) }
             val loginScript = source.string("loginUrl")?.takeIf { it.isNotBlank() && !it.trim().startsWith("http") }
@@ -279,13 +340,26 @@ class RuleRunner(private val responseFetcher: ((String) -> String)? = null, inte
                 append(loginScript)
             }
         }.takeIf { it.isNotBlank() }
-        return JsExecutionContext(sourceId = sourceUrl, database = database, jsLib = library)
+        // 书籍上下文一并注入：书源 JS 里的 `book.getVariable('custom')`（听书音色）就靠它。
+        // 传 null 时保持原行为（各字段为空串），搜索等"还没有具体书"的场景走这条。
+        return JsExecutionContext(
+            sourceId = sourceUrl,
+            database = database,
+            jsLib = library,
+            bookUrl = book?.bookUrl,
+            bookName = book?.name,
+            bookAuthor = book?.author,
+            bookTocUrl = book?.tocUrl,
+            bookType = book?.numericType,
+            bookKind = book?.kind,
+            bookVariables = book?.variables ?: mutableMapOf(),
+        )
     }
 
-    fun details(sourceJson: String, bookUrl: String): BookDetails {
+    fun details(sourceJson: String, bookUrl: String, book: BookContext? = null): BookDetails {
         val source = sourceJson.objectValue()
-        source.string("mainJs")?.takeIf { it.isNotBlank() }?.let { return JsSourceRunner(this, source).details(bookUrl) }
-        return jsSandbox.withSourceContext(sourceContext(source, source.string("bookSourceUrl"))) {
+        source.string("mainJs")?.takeIf { it.isNotBlank() }?.let { return JsSourceRunner(this, source).details(bookUrl, book) }
+        return jsSandbox.withSourceContext(sourceContext(source, source.string("bookSourceUrl"), book)) {
             declarativeDetails(source, bookUrl)
         }
     }
@@ -355,11 +429,11 @@ class RuleRunner(private val responseFetcher: ((String) -> String)? = null, inte
         )
     }
 
-    fun chapters(sourceJson: String, tocUrl: String): List<Chapter> {
+    fun chapters(sourceJson: String, tocUrl: String, book: BookContext? = null): List<Chapter> {
         val source = sourceJson.objectValue()
-        source.string("mainJs")?.takeIf { it.isNotBlank() }?.let { return JsSourceRunner(this, source).chapters(tocUrl) }
+        source.string("mainJs")?.takeIf { it.isNotBlank() }?.let { return JsSourceRunner(this, source).chapters(tocUrl, book) }
         val sourceUrl = source.string("bookSourceUrl")
-        return jsSandbox.withSourceContext(sourceContext(source, sourceUrl)) {
+        return jsSandbox.withSourceContext(sourceContext(source, sourceUrl, book)) {
             val rule = source.objectValue("ruleToc") ?: throw RuleExecutionException("该书源未配置 ruleToc")
             val listRule = rule.string("chapterList") ?: throw RuleExecutionException("缺少 ruleToc.chapterList")
             val dataPayload = dataUrlPayload(tocUrl)
@@ -404,14 +478,14 @@ class RuleRunner(private val responseFetcher: ((String) -> String)? = null, inte
         JsonNull -> null
     }
 
-    fun content(sourceJson: String, chapterUrl: String, bookName: String? = null): ChapterContent {
+    fun content(sourceJson: String, chapterUrl: String, bookName: String? = null, book: BookContext? = null): ChapterContent {
         val source = sourceJson.objectValue()
         val sourceUrl = source.string("bookSourceUrl")
         val sourceName = source.string("bookSourceName")
         val replaceRules = database?.getEnabledReplaceRulesForScope(bookName, sourceUrl, sourceName).orEmpty()
 
         if (source.string("mainJs")?.isNotBlank() == true) {
-            val result = JsSourceRunner(this, source).content(chapterUrl)
+            val result = JsSourceRunner(this, source).content(chapterUrl, book)
             val rawTitle = result.title
             val rawContent = result.content
             if (replaceRules.isEmpty()) return ChapterContent(rawTitle, rawContent, rawTitle, rawContent)
@@ -421,7 +495,7 @@ class RuleRunner(private val responseFetcher: ((String) -> String)? = null, inte
         }
 
         return jsSandbox.withSourceContext(
-            sourceContext(source, sourceUrl).let { it.copy(chapterUrl = chapterUrl) },
+            sourceContext(source, sourceUrl, book).let { it.copy(chapterUrl = chapterUrl) },
         ) {
             val rule = source.objectValue("ruleContent") ?: throw RuleExecutionException("该书源未配置 ruleContent")
             // 聚合源的章节地址同样是 data: 参数载体，正文由内容规则自行取回
@@ -483,7 +557,7 @@ class RuleRunner(private val responseFetcher: ((String) -> String)? = null, inte
      *
      * @return 有序去重后的全量上游图片 URL（空列表意味着规则未提取到图片）。
      */
-    fun mangaImages(sourceJson: String, chapterUrl: String, bookName: String? = null): List<String> {
+    fun mangaImages(sourceJson: String, chapterUrl: String, bookName: String? = null, book: BookContext? = null): List<String> {
         val source = sourceJson.objectValue()
         val sourceUrl = source.string("bookSourceUrl")
 
@@ -494,7 +568,7 @@ class RuleRunner(private val responseFetcher: ((String) -> String)? = null, inte
         }
 
         return jsSandbox.withSourceContext(
-            sourceContext(source, sourceUrl).let { it.copy(chapterUrl = chapterUrl) },
+            sourceContext(source, sourceUrl, book).let { it.copy(chapterUrl = chapterUrl) },
         ) {
             val rule = source.objectValue("ruleContent") ?: throw RuleExecutionException("该书源未配置 ruleContent")
             val dataPayload = dataUrlPayload(chapterUrl)
@@ -567,6 +641,145 @@ class RuleRunner(private val responseFetcher: ((String) -> String)? = null, inte
      */
     fun mediaHeaders(sourceJson: String, sourceId: String? = null): Map<String, String> =
         runCatching { parseSourceHeaders(sourceJson.objectValue(), sourceId) }.getOrDefault(emptyMap())
+
+    // ------------------------------------------------------------------
+    // 有声书（方案 G2）：章节音频地址解析
+    // ------------------------------------------------------------------
+
+    /**
+     * 解析一章的**有序音频分段清单**——与 [mangaImages] 完全同构，只换最后一步的取值语义。
+     *
+     * 三种形态（G1）：
+     * ① **纯文本 URL**（一行一个，Legado 多值规则默认 `\n` 连接）；
+     * ② **JSON 数组**（多分段，**保序**；元素可以是字符串，也可以是 `{url, headers}` 对象）；
+     * ③ **`url,{"headers":{...}}` 扩展头**（每段可带独立请求头，必须随分段一起交给 Fetcher，否则重拉 403）。
+     *
+     * 另额外兼容 HTML 片段里的 `<audio src>` / `<source src>`（部分源的音频规则直接给标签）。
+     *
+     * @return 有序分段规格；**不含上游 URL 的下发**，URL 只留在服务端（见 `AudioCache` 的 key 语义）。
+     */
+    fun audioTracks(sourceJson: String, chapterUrl: String, bookName: String? = null): List<AudioTrackSpec> {
+        val source = sourceJson.objectValue()
+        val sourceUrl = source.string("bookSourceUrl")
+
+        // JS 书源（mainJs）：走 JsSourceRunner 取回文本，再从中提取音频地址
+        if (source.string("mainJs")?.isNotBlank() == true) {
+            val result = JsSourceRunner(this, source).content(chapterUrl)
+            return normalizeTracks(splitAudioTracks(result.content), chapterUrl)
+        }
+
+        return jsSandbox.withSourceContext(
+            sourceContext(source, sourceUrl).let { it.copy(chapterUrl = chapterUrl) },
+        ) {
+            val rule = source.objectValue("ruleContent") ?: throw RuleExecutionException("该书源未配置 ruleContent")
+            val dataPayload = dataUrlPayload(chapterUrl)
+            val body: String
+            val root: NodeValue
+            if (dataPayload != null) {
+                body = dataPayload
+                root = NodeValue.json(dataPayload)
+            } else {
+                val (url, options) = splitUrlOptions(chapterUrl)
+                val mergedOptions = mergeOptions(parseSourceHeaders(source, sourceUrl), options)
+                body = fetchUrl(url, mergedOptions, null, sourceUrl, database)
+                root = NodeValue.document(body)
+            }
+            val raw = root.value(rule.string("content"), jsSandbox, body, chapterUrl)?.trim() ?: ""
+            normalizeTracks(splitAudioTracks(raw), chapterUrl)
+        }
+    }
+
+    /**
+     * 把相对地址补全到章节页，并**保序去重**。
+     *
+     * 为什么去重：对外 key = `sha256(sourceId + '\n' + url)` 是 `audio_cache` 的主键，
+     * 同一章里出现两条完全相同的地址只会互相覆盖（`segment_index` 丢失），
+     * 因此与漫画清单保持同一口径（同一地址只保留首次出现的位置）。
+     */
+    private fun normalizeTracks(tracks: List<AudioTrackSpec>, chapterUrl: String): List<AudioTrackSpec> {
+        val seen = mutableSetOf<String>()
+        return tracks.mapNotNull { spec ->
+            val url = spec.url.absolute(chapterUrl).trim()
+            if (url.isBlank()) return@mapNotNull null
+            if (!seen.add("$url\u0000${spec.headersJson.orEmpty()}")) return@mapNotNull null
+            spec.copy(url = url)
+        }
+    }
+
+    /**
+     * 从规则求值所得的字符串里提取有序音频分段。
+     *
+     * 拆分顺序：JSON 数组 → HTML `<audio>/<source>` → 换行纯文本。
+     * 元素级的 `url,{"headers":…}` / `{"url":…,"headers":…}` 拆解见 [parseAudioTrackItem]。
+     */
+    internal fun splitAudioTracks(raw: String?): List<AudioTrackSpec> {
+        if (raw.isNullOrBlank()) return emptyList()
+        val items = mutableListOf<String>()
+
+        // ① JSON 数组：既可能是 ["url1","url2"]，也可能是 [{"url":…,"headers":…}]
+        val trimmed = raw.trim()
+        if (trimmed.startsWith("[")) {
+            val parsed = runCatching { Json.parseToJsonElement(trimmed) }.getOrNull() as? JsonArray
+            if (parsed != null) {
+                parsed.forEach { element ->
+                    when (element) {
+                        is JsonPrimitive -> element.contentOrNull?.let { items += it }
+                        // 对象形态：**整条对象**交给 parseAudioTrackItem
+                        //（它才知道怎么取 `headers`；只取 url 会把每段专属头静默丢掉 ⇒ 重拉 403）
+                        is JsonObject -> items += element.toString()
+                        else -> Unit
+                    }
+                }
+            }
+        }
+
+        // ② HTML 片段：<audio src> / <source src>（含 <audio><source src=…></audio> 的嵌套形态）
+        if (items.isEmpty()) {
+            val doc = Jsoup.parse(raw)
+            val selected = doc.select("audio[src], source[src]")
+            if (selected.isNotEmpty()) selected.forEach { items += it.attr("src") }
+        }
+
+        // ③ 换行分隔的纯文本（Legado 多元素规则的默认连接符）
+        if (items.isEmpty()) items += raw.lines()
+
+        return items.mapNotNull(::parseAudioTrackItem)
+    }
+
+    /**
+     * 拆解单条音频项，**同时支持两种扩展头写法**：
+     * - `https://a/b.mp3,{"headers":{"Referer":"…"}}`（Legado 的 `url,{options}` 形态）
+     * - `{"url":"https://a/b.mp3","headers":{"Referer":"…"}}`（对象形态）
+     *
+     * 认不出来就当作**裸 URL**（绝不因为"选项解析失败"而丢掉整条音频——
+     * 静默丢数据比报错危险得多，而裸 URL 至少还能播）。
+     */
+    internal fun parseAudioTrackItem(rawItem: String): AudioTrackSpec? {
+        val item = rawItem.trim().trim(',', ' ').removeSurrounding("\"").trim()
+        if (item.isEmpty()) return null
+
+        if (item.startsWith("{")) {
+            val obj = runCatching { Json.parseToJsonElement(item).jsonObject }.getOrNull()
+                ?: return AudioTrackSpec(item, null)
+            val url = obj.string("url") ?: obj.string("src") ?: return null
+            return AudioTrackSpec(cleanAudioUrl(url), obj["headers"]?.toString())
+        }
+
+        // `,{` 与 URL 编码后的 `,%7B` 都出现过（上游/书源会自行编码）
+        val plainIndex = item.indexOf(",{").takeIf { it >= 0 } ?: Int.MAX_VALUE
+        val encodedIndex = item.indexOf(",%7B", ignoreCase = true).takeIf { it >= 0 } ?: Int.MAX_VALUE
+        val index = minOf(plainIndex, encodedIndex)
+        if (index == Int.MAX_VALUE) return AudioTrackSpec(cleanAudioUrl(item), null)
+
+        val url = cleanAudioUrl(item.substring(0, index))
+        val optionsText = item.substring(index + 1).trim()
+        val headers = runCatching {
+            Json.parseToJsonElement(optionsText).jsonObject["headers"]?.toString()
+        }.getOrNull()
+        return AudioTrackSpec(url, headers)
+    }
+
+    private fun cleanAudioUrl(url: String): String = url.trim().trimEnd(',', ' ')
 
     fun parseLoginUi(sourceJson: String): List<SourceLoginUiItem> {
         val source = sourceJson.objectValue()
@@ -1111,15 +1324,15 @@ private class JsSourceRunner(private val runner: RuleRunner, private val source:
         val url = book.string("bookUrl") ?: return@mapNotNull null
         SearchResult(source.string("bookSourceUrl")!!, book.string("name") ?: return@mapNotNull null, book.string("author"), url, book.string("coverUrl"), book.string("intro"))
     }
-    fun details(bookUrl: String): BookDetails {
-        val value = callOptional("getBookInfo", arrayOf(bookObject(bookUrl)))?.jsonObjectOrEmpty() ?: JsonObject(emptyMap())
+    fun details(bookUrl: String, book: BookContext? = null): BookDetails {
+        val value = callOptional("getBookInfo", arrayOf(bookObject(bookUrl, book)))?.jsonObjectOrEmpty() ?: JsonObject(emptyMap())
         val name = sanitizeBookName(value.string("name"))
         return BookDetails(source.string("bookSourceUrl")!!, name.ifBlank { "未命名书籍" }, value.string("author"), value.string("intro"), value.string("coverUrl"), value.string("tocUrl") ?: bookUrl)
     }
-    fun chapters(tocUrl: String): List<Chapter> = call("getChapters", arrayOf(bookObject(tocUrl))).jsonArray().mapIndexedNotNull { index, value ->
+    fun chapters(tocUrl: String, book: BookContext? = null): List<Chapter> = call("getChapters", arrayOf(bookObject(tocUrl, book))).jsonArray().mapIndexedNotNull { index, value ->
         val chapter = Json.parseToJsonElement(value).jsonObject; val url = chapter.string("url") ?: return@mapIndexedNotNull null; Chapter(index, chapter.string("title") ?: "第 ${index + 1} 章", url)
     }
-    fun content(chapterUrl: String): ChapterContent = ChapterContent(content = call("getContent", arrayOf(chapterObject(chapterUrl), bookObject(""), null)).trim().also { if (it.isBlank()) throw RuleExecutionException("JS书源正文为空") })
+    fun content(chapterUrl: String, book: BookContext? = null): ChapterContent = ChapterContent(content = call("getContent", arrayOf(chapterObject(chapterUrl), bookObject("", book), null)).trim().also { if (it.isBlank()) throw RuleExecutionException("JS书源正文为空") })
 
     private fun call(name: String, args: Array<Any?>): String = callOptional(name, args) ?: throw RuleExecutionException("JS书源缺少函数 $name")
     private fun callOptional(name: String, args: Array<Any?>): String? {
@@ -1161,7 +1374,22 @@ private class JsSourceRunner(private val runner: RuleRunner, private val source:
         is List<*> -> Context.getCurrentContext().newArray(scope, value.map { toJsValue(it, scope) }.toTypedArray())
         else -> Context.javaToJS(value, scope)
     }
-    private fun bookObject(url: String) = mapOf("bookUrl" to url, "tocUrl" to url)
+    /**
+     * JS 书源（`mainJs`）看到的 `book` 对象。
+     *
+     * 与声明式书源的沙箱 `book` 桥接保持**同一份字段**（含 `variable` 变量表 JSON 与 `name/author/kind`），
+     * 否则同一本书在两种书源形态下行为不一致 —— 这类"只在某一条路径生效"的差异最难排查。
+     */
+    private fun bookObject(url: String, book: BookContext? = null): Map<String, Any?> = mapOf(
+        "bookUrl" to url,
+        "tocUrl" to url,
+        "name" to (book?.name ?: ""),
+        "author" to (book?.author ?: ""),
+        "kind" to (book?.kind ?: ""),
+        "type" to (book?.numericType ?: 0),
+        "variable" to (book?.variables?.takeIf { it.isNotEmpty() }?.let { Json.encodeToString(it) } ?: ""),
+        "variableMap" to (book?.variables ?: emptyMap<String, String>()),
+    )
     private fun chapterObject(url: String) = mapOf("url" to url)
     private fun String.jsonArray(): List<String> = (Json.parseToJsonElement(this) as? JsonArray)?.map { it.toString() } ?: throw RuleExecutionException("JS书源返回值必须是数组")
     private fun String.jsonObjectOrEmpty(): JsonObject = runCatching { Json.parseToJsonElement(this).jsonObject }.getOrDefault(JsonObject(emptyMap()))

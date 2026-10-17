@@ -7,6 +7,7 @@ import { Logo } from './Logo'
 import { Login } from './Login'
 import { OpenBook, ReaderScreen } from './ReaderScreen'
 import { MangaReaderScreen } from './MangaReaderScreen'
+import { AudiobookPlayerScreen } from './AudiobookPlayerScreen'
 import { loadReaderSettings, ReaderSettings, saveReaderSettings } from './readerSettings'
 import { AppHeader } from './AppHeader'
 import { cleanAuthor, cleanTitle, defaultSearchFilters, filterSearchGroups, isExactMatch, isPopularMatch, SearchFilters, SearchGroup, SortMode } from './searchFilters'
@@ -1239,6 +1240,26 @@ function LibraryPage({ sources, onOpen }: { sources: SourceSummary[]; onOpen: (b
   )
 }
 
+/**
+ * 从书籍变量（Legado `Book.variable`，一个 JSON 对象字符串）里取出 `custom` 键的值。
+ *
+ * 对齐开源阅读：`custom` 在 Legado 里是一等公民（`getCustomVariable()`/`putCustomVariable()`），
+ * 编辑弹窗**只编辑它**，而底层存的始终是整张表的 JSON。实测用途就是听书音色/朗读者
+ * （`🍅大灰狼聚合` 源：`book.getVariable('custom')` 取音色编号）。
+ *
+ * 解析失败一律当空值：脏数据（手改过的库、旧版本写坏的 JSON）绝不能让编辑弹窗打崩。
+ */
+function readCustomVariable(raw?: string): string {
+  if (!raw) return ''
+  try {
+    const parsed = JSON.parse(raw) as Record<string, unknown> | null
+    const value = parsed && typeof parsed === 'object' ? parsed.custom : undefined
+    return typeof value === 'string' ? value : ''
+  } catch {
+    return ''
+  }
+}
+
 function BookInfoEditModal({
   item,
   groups,
@@ -1258,6 +1279,8 @@ function BookInfoEditModal({
   const [uploadedCoverKey, setUploadedCoverKey] = useState<string | null>(null)
   const [uploadingCover, setUploadingCover] = useState(false)
   const [alternateSources, setAlternateSources] = useState<SearchResult[]>(item.alternateSources || [])
+  // 书籍变量里的 `custom` 值（听书音色/朗读者）。初值来自书架条目携带的 `variable` JSON。
+  const [customVariable, setCustomVariable] = useState(() => readCustomVariable(item.variable))
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
   const fileInputRef = useRef<HTMLInputElement | null>(null)
@@ -1438,6 +1461,9 @@ function BookInfoEditModal({
         coverKey: coverKeyField,
         groupName: groupName || undefined,
         alternateSources,
+        // 书籍变量里的 `custom`（Legado 的 `putCustomVariable`）：有声书用它切换朗读者/音色。
+        // 始终提交当前值 —— "清空输入框"本身就是一个有意义的操作（下次用默认音色）。
+        customVariable,
       })
       toast.success(t('shelf.bookInfoUpdated', '《{{name}}》信息已更新', { name: updated.name }))
       onSaved(updated)
@@ -1767,6 +1793,22 @@ function BookInfoEditModal({
                     <option key={g.id} value={g.name}>{g.name}</option>
                   ))}
                 </select>
+              </label>
+
+              {/* 书籍变量：对齐开源阅读的编辑形态（`legado-with-MD3` 的 VariableEditorSheet）——
+                  一个输入框编辑 `custom` 键 + 下方给出用法提示，而不是键值对列表。
+                  有声书的"切换朗读者"就是改这个值；书籍变量会随规则执行注入 `book` 对象。 */}
+              <label className="edit-form-label">
+                <span>{t('shelf.bookVariable', '书籍变量')}</span>
+                <input
+                  type="text"
+                  value={customVariable}
+                  onChange={e => setCustomVariable(e.target.value)}
+                  placeholder={t('shelf.bookVariablePlaceholder', '如音色编号：3')}
+                />
+                <small className="edit-form-hint">
+                  {t('shelf.bookVariableHint', '书源规则通过 book.getVariable("custom") 读取本值；听书填书籍详情里显示的可用音色编号即可切换朗读者，留空用默认音色')}
+                </small>
               </label>
             </div>
 
@@ -2720,6 +2762,7 @@ function ShelfPage({ onOpen }: { onOpen: (item: BookshelfItem) => void }) {
                   )}
                   {isLocal && <span className="shelf-card-tag-local">{t('shelf.localTag', '本地')}</span>}
                   {item.bookKind === 'comic' && <span className="shelf-card-tag-comic">{t('shelf.comicTag', '漫画')}</span>}
+                  {item.bookKind === 'audio' && <span className="shelf-card-tag-audio">{t('shelf.audioTag', '听书')}</span>}
                   {badge && <span className={`shelf-card-badge ${item.cacheState}`}>{badge}</span>}
                   {isCaching && (
                     <div className="shelf-card-progress-track">
@@ -3132,6 +3175,16 @@ function App() {
         <div className={`app-shell theme-${settings.theme}`}>
           <ToastContainer />
           <MangaReaderScreen openBook={reader.book} startIndex={reader.index} onClose={closeReader} theme={settings.theme} />
+        </div>
+      )
+    }
+    // 有声书（音频书源）同样走独立屏幕：没有正文、进度语义是**毫秒**，
+    // 且绝不做全局常驻播放条（方案 G2 的 Non-Goal）。
+    if (reader.book.bookKind === 'audio') {
+      return (
+        <div className={`app-shell theme-${settings.theme}`}>
+          <ToastContainer />
+          <AudiobookPlayerScreen openBook={reader.book} startIndex={reader.index} onClose={closeReader} theme={settings.theme} />
         </div>
       )
     }

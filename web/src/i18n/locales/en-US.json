@@ -293,6 +293,7 @@
     "clearCachePartLocal": "local offline text",
     "clearCacheServer": "Clear Server Cache",
     "clearCacheServerDesc": "Removes the downloaded images, audio and text on the server; they will be re-downloaded next time",
+    "clearCacheServerLocalDesc": "Removes only the rebuildable image cache; a local book's text comes from its original file and is kept",
     "clearCacheBrowser": "Clear Browser Cache",
     "clearCacheBrowserDesc": "Removes only the offline text stored on this device; the server is left untouched",
     "clearCacheBoth": "Clear Server and Browser Cache",

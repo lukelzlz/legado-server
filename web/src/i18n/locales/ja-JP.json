@@ -293,6 +293,7 @@
     "clearCachePartLocal": "ローカルオフライン本文",
     "clearCacheServer": "サーバーキャッシュを削除",
     "clearCacheServerDesc": "サーバー側の画像・音声・本文を削除します。次回の読書時に再取得します",
+    "clearCacheServerLocalDesc": "再生成できる画像キャッシュだけを削除します。ローカル本の本文は元ファイルから解析されるため、キャッシュ削除では失われません",
     "clearCacheBrowser": "ブラウザキャッシュを削除",
     "clearCacheBrowserDesc": "この端末のオフライン本文だけを削除します（サーバーはそのまま）",
     "clearCacheBoth": "サーバーとブラウザの両方を削除",

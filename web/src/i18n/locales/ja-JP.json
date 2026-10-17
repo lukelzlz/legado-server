@@ -310,6 +310,7 @@
     "localTag": "ローカル",
     "comicTag": "漫画",
     "audioTag": "朗読",
+    "novelTag": "小説",
     "justAdded": "本棚に追加したばかり",
     "chapterAt": "第 {{count}} 章",
     "reRead": "最初から読む",

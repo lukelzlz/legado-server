@@ -310,6 +310,7 @@
     "localTag": "Local",
     "comicTag": "Comic",
     "audioTag": "Audio",
+    "novelTag": "Novel",
     "justAdded": "Just added",
     "chapterAt": "Ch. {{count}}",
     "reRead": "Read Again",

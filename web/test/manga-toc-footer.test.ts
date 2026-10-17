@@ -204,7 +204,17 @@ test('漫画目录底栏 - 进行中渲染出进度条与「取消缓存」，�
 
   // ③ 取消必须走**只取消不删缓存**的新端点，绝不能是会删缓存的 clearImageCache（DELETE /books/images/cache）
   assert.ok(source.includes('api.cancelMangaPrefetch('), '取消缓存必须调用新增的 cancelMangaPrefetch')
-  assert.ok(!source.includes('api.clearImageCache('), '取消缓存绝不能调用 clearImageCache（那条 DELETE 会把已下好的图一起删掉）')
+  // clearImageCache（DELETE /books/images/cache）会连已下好的图一起删，只允许出现在"换源清理旧源"那段；
+  // 取消缓存必须走只取消不删缓存的新端点 —— 所以断言要收敛到 cancelOffline 内部，而不是全文件扫。
+  const cancelStart = source.indexOf('const cancelOffline = useCallback(')
+  assert.ok(cancelStart >= 0, '必须存在 cancelOffline 处理器')
+  const cancelHandler = source.slice(cancelStart, source.indexOf('}, [', cancelStart) + 4)
+  assert.ok(cancelHandler.includes('api.cancelMangaPrefetch('), 'cancelOffline 必须调用 cancelMangaPrefetch')
+  assert.ok(!cancelHandler.includes('clearImageCache'), 'cancelOffline 内绝不能出现 clearImageCache（会删掉已下好的图）')
+  for (const hit of source.matchAll(/api\.clearImageCache\(/g)) {
+    const around = source.slice(Math.max(0, (hit.index ?? 0) - 500), hit.index ?? 0)
+    assert.ok(/switchBookSource|clearMangaManifests|换源/.test(around), 'clearImageCache 只允许用于换源时清理旧源')
+  }
 
   const apiSource = read('../src/api.ts')
   assert.ok(apiSource.includes("cancelMangaPrefetch: (sourceId: string, bookUrl: string)"), 'api.ts 必须新增 cancelMangaPrefetch 封装')

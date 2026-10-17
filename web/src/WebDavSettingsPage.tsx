@@ -393,7 +393,7 @@ export function WebDavSettingsPage() {
       const total = (a: number, b: number) => a + b
       // 提示**由服务端摘要数据驱动**（见 backupImportNotes）：
       // 只有真的跳过了手机本地图书才报"已跳过"，漫画/听书不再出现在"被忽略"里。
-      const { skipNote, coverNote, markNote } = backupImportNotes(summary, t)
+      const { skipNote, coverNote, markNote, queuedNote } = backupImportNotes(summary, t)
       if (total(summary.sources, summary.sourcesUpdated) + total(summary.rules, summary.rulesUpdated) + total(summary.books, summary.booksUpdated) === 0) {
         toast.warning(t('webdav.backupEmptyWarning', { skipNote, defaultValue: `备份包里没有可导入的内容（已忽略 RSS / TTS / 主题等条目）${skipNote}` }))
       } else {
@@ -412,14 +412,21 @@ export function WebDavSettingsPage() {
             markNote,
             skipNote,
             coverNote,
+            queuedNote,
             defaultValue:
               `导入完成：书源 ${total(summary.sources, summary.sourcesUpdated)}${sourceGroupNote}，` +
               `替换规则 ${total(summary.rules, summary.rulesUpdated)}，` +
               `书籍 ${total(summary.books, summary.booksUpdated)}，阅读进度 ${summary.progress}` +
               markNote +
               skipNote +
-              coverNote,
+              coverNote +
+              queuedNote,
           }),
+          // 导入结果这一条信息量大（书源/规则/书籍/进度/跳过/封面/后台补抓受理），
+          // 用户要求「提示显示成功什么的的时间长一些，5s」⇒ 只把**这一条**延长，
+          // 其余 toast 一律保持默认。toast API 本身是 `success(message, duration)`
+          // （无同 key 覆盖/去重，每条各自计时），所以 5s 一定生效。
+          5000,
         )
       }
       void load(path)

@@ -323,7 +323,24 @@ test('audiobook - 进行中渲染出进度条与「取消缓存」，且取消�
 
   // ③ 取消必须走**只取消不删缓存**的新端点，绝不能是会删缓存的 clearAudioCache（DELETE /audio/cache）
   assert.ok(source.includes('api.cancelAudioPrefetch('), '取消缓存必须调用新增的 cancelAudioPrefetch')
-  assert.ok(!source.includes('api.clearAudioCache('), '取消缓存绝不能调用 clearAudioCache（那条 DELETE 会把已下好的音频一起删掉）')
+  // 收敛版：clearXCache（DELETE …/cache）会连已下好的缓存一起删，只允许出现在"换源清理旧源"那段；
+  // 取消缓存必须走只取消不删缓存的新端点 ⇒ 断言收敛到 cancelCache 内部，而不是全文件扫。
+  const cancelStart = source.indexOf('const cancelCache = useCallback(')
+  assert.ok(cancelStart >= 0, '必须存在 cancelCache 处理器')
+  const cancelHandler = source.slice(cancelStart, source.indexOf('}, [', cancelStart) + 4)
+  assert.ok(cancelHandler.includes('api.cancel'), 'cancelCache 必须调用新增的 cancel 端点')
+  // 处理器里有行注释解释"为什么不能用 clearXCache"，必须先剥注释再断言，否则会被自己的注释命中。
+  const cancelNoComments = cancelHandler.replace(/\/\/[^\n]*/g, '')
+  assert.ok(!cancelNoComments.includes('clearAudioCache') && !cancelNoComments.includes('clearImageCache'), 'cancelCache 内绝不能出现会删缓存的 clearXCache')
+  // 允许范围：只有"换源"处理器才可以用会删缓存的 clearXCache（它清的是**旧源**那一本）。
+  // 判据按**所属函数**来：往前找最近的 '= useCallback('，要求函数名含 switch —— 定长字符窗口够不到会假红。
+  for (const hit of source.matchAll(/api\.clear[A-Za-z]*Cache\(/g)) {
+    const upto = source.slice(0, hit.index ?? 0)
+    const lastCb = upto.lastIndexOf('= useCallback(')
+    const owner = lastCb >= 0 ? (upto.slice(0, lastCb).match(/const\s+(\w+)\s*$/) ?? [])[1] : undefined
+    assert.ok(owner && /[Ss]witch/.test(owner), `clearXCache 只允许出现在换源处理器里（实际归属：${owner ?? '未知'}）`)
+  }
+  }
 
   const apiSource = read('../src/api.ts')
   assert.ok(apiSource.includes('cancelAudioPrefetch: (sourceId: string, bookUrl: string)'), 'api.ts 必须新增 cancelAudioPrefetch 封装')

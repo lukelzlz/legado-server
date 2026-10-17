@@ -511,10 +511,11 @@ class RuleRunner(private val responseFetcher: ((String) -> String)? = null, inte
                 body = fetchUrl(url, mergedOptions, null, sourceUrl, database)
                 root = NodeValue.document(body)
             }
-            var text = root.value(rule.string("content"), jsSandbox, body, chapterUrl)?.cleanContent().orEmpty()
+            // 插图：清洗时保留安全的 <img>（相对地址按章节页补全）——见 cleanContent 的说明
+            var text = root.value(rule.string("content"), jsSandbox, body, chapterUrl)?.cleanContent(chapterUrl).orEmpty()
             if (text.length < 500) {
                 val paragraphs = Regex("(?i)<p[^>]*>([\\s\\S]*?)</p>").findAll(body)
-                    .map { it.groupValues[1].cleanContent() }
+                    .map { it.groupValues[1].cleanContent(chapterUrl) }
                     .filter { it.length > 2 && !it.contains("按←键返回") && !it.contains("加入书签") && !it.contains("仅放置最近浏览") }
                     .toList()
                 if (paragraphs.size >= 5) {
@@ -1274,9 +1275,39 @@ class RuleRunner(private val responseFetcher: ((String) -> String)? = null, inte
      * 但聚合源的正文**整体包在一个 `<div>` 里**（如大灰狼的 `<div rs-native>…</div>`），
      * 直接删 div 会把正文一起删光 ⇒ 表现为「正文规则未提取到内容」。
      * 因此当结构性删除后内容所剩无几时，退化为「只剥标签、保留文本」。
+     *
+     * ## 正文插图（`<img>`）为什么必须先"摘走"再放回
+     * 旧实现把所有标签一并剥掉 ⇒ **正文里的插图彻底消失**（用户报「添加书籍正文插图功能」）。
+     * 但直接把 `<img …>` 留在待清洗文本里也不行：结构性删除、`<[^>]+>` 剥离、
+     * 实体反转义都会把它撕坏（属性里的 `onerror=…` 甚至会变成可见正文）。
+     * 所以：先按 [IllustrationMarkup] 的判据把**安全的插图**换成独占一行的占位标记，
+     * 文本清洗照旧跑，最后按行把占位标记换回**我们自己重建**的 `<img src="…" alt="…">`。
+     *
+     * 安全性由「重建」保证：只保留 `src`/`alt`（自转义），上游的 `on*`/`style`/`srcset`
+     * 一个都进不来；`data:`/`javascript:` 之类非 http(s) 地址整条丢弃（见 ADR-033）。
+     *
+     * @param baseUrl 章节页地址（相对/协议相对插图地址的补全基准）；聚合源 `data:` 载荷传 null
      */
-    private fun String.cleanContent(): String {
-        val structural = this
+    private fun String.cleanContent(baseUrl: String? = null): String {
+        val illustrations = mutableListOf<String>()
+        val masked = IllustrationMarkup.IMG_TAG.replace(this) { match ->
+            val safe = IllustrationMarkup.safeTag(match.value, baseUrl)
+            if (safe == null) {
+                ""
+            } else {
+                illustrations += safe
+                "\n${IllustrationMarkup.slotMarker(illustrations.size - 1)}\n"
+            }
+        }
+        // 占位行独占一行 ⇒ 清洗完成后按行换回插图标签（占位标记里没有任何标签字符，不会被清洗吃掉）
+        fun String.restoreIllustrations(): String {
+            if (illustrations.isEmpty()) return this
+            return this.lines()
+                .map { line -> IllustrationMarkup.slotIndex(line)?.let { illustrations.getOrNull(it) } ?: line.trim() }
+                .filter { it.isNotBlank() }
+                .joinToString("\n\n")
+        }
+        val structural = masked
             .replace(Regex("(?i)<script[\\s\\S]*?</script>"), "")
             .replace(Regex("(?i)<style[\\s\\S]*?</style>"), "")
             .replace(Regex("(?i)<div[\\s\\S]*?</div>"), "")
@@ -1286,8 +1317,8 @@ class RuleRunner(private val responseFetcher: ((String) -> String)? = null, inte
             .let { org.jsoup.parser.Parser.unescapeEntities(it, false) }
             .lines().map { it.trim() }.filter { it.isNotBlank() }.joinToString("\n\n")
         // 结构性删除把内容吃光了 ⇒ 说明正文被外层 div 包着，改走「只剥标签」
-        if (structural.isNotBlank()) return structural
-        return this
+        if (structural.isNotBlank()) return structural.restoreIllustrations()
+        val fallback = masked
             .replace(Regex("(?i)<script[\\s\\S]*?</script>"), "")
             .replace(Regex("(?i)<style[\\s\\S]*?</style>"), "")
             .replace(Regex("(?i)<br\\s*/?>"), "\n")
@@ -1295,6 +1326,7 @@ class RuleRunner(private val responseFetcher: ((String) -> String)? = null, inte
             .replace(Regex("<[^>]+>"), "")
             .let { org.jsoup.parser.Parser.unescapeEntities(it, false) }
             .lines().map { it.trim() }.filter { it.isNotBlank() }.joinToString("\n\n")
+        return fallback.restoreIllustrations()
     }
     private fun String.absolute(base: String): String = try {
         val cleanBase = base.substringBefore("##").substringBefore("#").trim()

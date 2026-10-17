@@ -76,6 +76,12 @@ fun Route.apiRoutes(
     audioFetcher: AudioFetcher,
     /** 音频后台批量缓存（方案 G2 · G5）。可为 null ⇒ 视为关闭。 */
     audioPrefetch: AudioPrefetchService? = null,
+    /**
+     * 小说正文插图的落盘缓存（`<data>/images/`，PROPOSAL-034）。
+     *
+     * 可为 null ⇒ 插图代理路由关闭（老测试构造 `apiRoutes` 时不必关心它）。
+     */
+    illustrationCache: IllustrationCache? = null,
 ) {
     val webView = WebViewProxy(database)
 
@@ -1046,7 +1052,18 @@ fun Route.apiRoutes(
                 call.respond(HttpStatusCode.NotFound, ApiError("not_found", "书源不存在"))
                 return@post
             }
+            // 正文里的插图按**出现顺序**登记一次（序号定死的唯一时机）：
+            // 离线缓存与在线代理都按这份登记表取序号，缺它就只能"追加到章末"。
+            // 任何失败都静默 —— 登记只是索引，绝不该让正文接口失败。
+            fun rememberIllustrations(content: ChapterContent) {
+                illustrationCache?.let { cache ->
+                    bookUrl?.takeIf { it.isNotBlank() }?.let { url ->
+                        runCatching { cache.registerFromContent(request.sourceId, url, request.chapterUrl, 0, content.content) }
+                    }
+                }
+            }
             if (cached != null && cached.content.isNotBlank()) {
+                rememberIllustrations(cached)
                 call.respond(cached)
             } else call.respondCatching {
                 try {
@@ -1056,6 +1073,7 @@ fun Route.apiRoutes(
                     val book = bookUrl?.let { database.bookContext(request.sourceId, it) }
                     runner.content(source.json, request.chapterUrl, bookName, book).also { content ->
                         bookUrl?.let { database.cacheBookContent(request.sourceId, it, request.chapterUrl, content) }
+                        rememberIllustrations(content)
                         book?.let { database.persistBookVariables(it) }
                     }
                 } catch (error: Throwable) {
@@ -1222,6 +1240,113 @@ fun Route.apiRoutes(
         get("/books/images/cache/stats") {
             if (auth.requireSession(call) == null) return@get
             call.respond(imageCache.stats())
+        }
+        /**
+         * 小说正文**插图代理 + 落盘缓存**（PROPOSAL-034 / ADR-033）。
+         *
+         * 为什么前端必须打这里、不能直接 `<img src="上游URL">`：
+         * 1. 防盗链 —— 上游判的是书源 `header` + **章节页 Referer** + Cookie，浏览器直连必裂图；
+         * 2. 离线 —— 只有服务端落盘，断网才看得到图；
+         * 3. 隐私 —— 直连会把用户 IP / UA 暴露给几十个图床；
+         * 4. 一致性 —— gzip 假图片、错误页冒充 jpeg、超大文件都要在**唯一收口**里拦掉。
+         *
+         * 命中判据：`(sourceId, 上游URL)` 的 `url_hash` 行 `ready` **且文件确实在**。
+         * 未命中 ⇒ 用书源头 + 章节 Referer 抓一次 → 落盘 → 直出；失败**明确报错**（4xx/502），
+         * 绝不返回空 200（空 200 在浏览器里表现为"裂图且无任何线索"）。
+         *
+         * 落盘命名沿用 v3：`images/<书名 (书哈希)>/<章节名 (章节哈希)>/<8位序号>.<真实扩展名>`。
+         */
+        get("/books/images/illustration") {
+            if (auth.requireSession(call) == null) return@get
+            val params = call.request.queryParameters
+            val sourceId = params["sourceId"]?.trim().orEmpty()
+            val chapterUrl = params["chapterUrl"]?.trim().orEmpty()
+            val upstreamUrl = params["url"]?.trim().orEmpty()
+            val bookUrl = params["bookUrl"]?.trim().orEmpty()
+            val chapterIndex = params["chapterIndex"]?.trim()?.toIntOrNull() ?: 0
+            val cache = illustrationCache
+            if (cache == null) {
+                call.respond(HttpStatusCode.NotFound, ApiError("illustration_disabled", "插图缓存未启用"))
+                return@get
+            }
+            when {
+                sourceId.isBlank() -> {
+                    call.respond(HttpStatusCode.BadRequest, ApiError("invalid_illustration", "缺少书源"))
+                    return@get
+                }
+                upstreamUrl.isBlank() -> {
+                    call.respond(HttpStatusCode.BadRequest, ApiError("invalid_illustration", "缺少插图地址"))
+                    return@get
+                }
+                // 只代理 http(s)：`data:`/`javascript:` 之类**永不代理**（服务端抓不到、浏览器侧又是注入面）
+                !IllustrationMarkup.isHttpUrl(upstreamUrl) -> {
+                    call.respond(
+                        HttpStatusCode.BadRequest,
+                        ApiError("invalid_illustration", "插图地址必须是 http(s) 绝对地址"),
+                    )
+                    return@get
+                }
+                chapterUrl.isBlank() -> {
+                    call.respond(HttpStatusCode.BadRequest, ApiError("invalid_illustration", "缺少章节地址"))
+                    return@get
+                }
+            }
+
+            val urlHash = cache.urlHash(sourceId, upstreamUrl)
+            var row = cache.getByKey(urlHash)
+            if (row == null) {
+                val source = database.getSource(sourceId)
+                    ?: return@get call.respond(HttpStatusCode.NotFound, ApiError("not_found", "书源不存在"))
+                // 抓取收口：书源 header + 登录 Cookie + **章节页 Referer**，缺一必裂图
+                val fetched = mangaImageFetcher.fetch(
+                    upstreamUrl = upstreamUrl,
+                    mediaHeaders = runner.mediaHeaders(source.json, sourceId),
+                    referer = chapterUrl.takeIf { it.startsWith("http") },
+                )
+                if (fetched == null) {
+                    call.respond(
+                        HttpStatusCode.BadGateway,
+                        ApiError(
+                            "illustration_fetch_failed",
+                            "插图抓取失败（上游不可达、返回的不是图片，或超过单图 ${ImageBytes.MAX_BYTES} 字节上限）",
+                        ),
+                    )
+                    return@get
+                }
+                // 序号：优先按**正文里的出现顺序**分配（正文取回时已登记过），拿不到就追加到章末
+                val pending = cache.ensureRow(sourceId, bookUrl, chapterUrl, chapterIndex, upstreamUrl)
+                row = runCatching {
+                    cache.put(
+                        sourceId = sourceId,
+                        bookUrl = bookUrl,
+                        chapterUrl = chapterUrl,
+                        upstreamUrl = upstreamUrl,
+                        contentType = fetched.contentType,
+                        bytes = fetched.bytes,
+                        chapterIndex = chapterIndex,
+                        segmentIndex = pending.segmentIndex,
+                    )
+                }.getOrElse { error ->
+                    return@get call.respond(
+                        HttpStatusCode.BadGateway,
+                        ApiError("illustration_cache_failed", "插图落盘失败：${error.message}"),
+                    )
+                }
+            }
+
+            val file = cache.fileFor(row)
+                ?: return@get call.respond(HttpStatusCode.NotFound, ApiError("not_found", "插图文件不存在"))
+            val etag = row.cacheKey.ifBlank { urlHash }
+            call.response.headers.append(HttpHeaders.ETag, "\"$etag\"")
+            // 内容变了 cache_key 必变 ⇒ 可以放心 immutable（与封面/漫画同一裁决）
+            call.response.headers.append(HttpHeaders.CacheControl, "private, max-age=31536000, immutable")
+            if (call.request.headers[HttpHeaders.IfNoneMatch]?.contains(etag) == true) {
+                call.respond(HttpStatusCode.NotModified)
+                return@get
+            }
+            call.respond(
+                LocalFileContent(file.toFile(), ContentType.parse(row.contentType.ifBlank { "image/jpeg" })),
+            )
         }
         /**
          * 后台预取（环节 E8）。
@@ -1879,6 +2004,8 @@ fun Route.apiRoutes(
             }
             if (clearData) {
                 database.clearBookCacheContent(sourceId, bookUrl)
+                // 正文的插图副本也一起清（只在服务器侧清缓存时做：浏览器侧缓存由前端自己清）
+                illustrationCache?.deleteBook(sourceId, bookUrl)
             }
             call.respond(HttpStatusCode.NoContent)
         }

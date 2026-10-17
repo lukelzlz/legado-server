@@ -36,6 +36,7 @@ import './ShelfGrouping.test.ts'
 import './ShelfClearCache.test.ts'
 import './source-settings-result.test.ts'
 import './network-import.test.ts'
+import './inline-illustrations.test.ts'
 
 console.log('🚀 Running Legado Web Frontend Comprehensive Test Suite (Tier 1, 2, 4 + Challenger Stress)...\n')
 import './webdav-settings.test.ts'

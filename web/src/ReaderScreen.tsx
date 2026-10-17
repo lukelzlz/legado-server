@@ -33,6 +33,9 @@ import {
   getOfflineChaptersSet,
   putOfflineChapter,
 } from './offlineStorage'
+import { splitIllustrationSegments, stripIllustrations } from './inlineIllustrations'
+import type { IllustrationContext } from './inlineIllustrations'
+import { IllustrationLightbox, InlineIllustration } from './ReaderIllustration'
 
 export type OpenBook = { details: BookDetails; bookUrl: string; chapters: Chapter[]; progress?: ReadingProgress; bookKind?: string }
 
@@ -301,6 +304,16 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
   const [sliderChapterIndex, setSliderChapterIndex] = useState(chapterIndex)
   const [isDraggingSlider, setIsDraggingSlider] = useState(false)
   const [boundaryMessage, setBoundaryMessage] = useState('')
+  /** 正在放大的插图（代理地址 + alt）。null = 灯箱关闭。 */
+  const [illustrationLightbox, setIllustrationLightbox] = useState<{ src: string; alt: string } | null>(null)
+  /**
+   * 插图尺寸就绪的计数器。
+   *
+   * 插图是 `loading="lazy"` 的：图片落地后正文会变高，而滚动流的几何补偿只在
+   * 若干 state 变化时才重跑。没有这个 tick，图片晚到会让读者眼前的文字**跳一下**
+   * （`.reading-scroll-window` 上 `overflow-anchor: none`，浏览器的自动锚定被关掉了）。
+   */
+  const [illustrationLayoutTick, setIllustrationLayoutTick] = useState(0)
   const [inShelf, setInShelf] = useState(true)
   const [ttsActive, setTtsActive] = useState(false)
   const [ttsPlayState, setTtsPlayState] = useState<TtsPlayState>('idle')
@@ -683,7 +696,9 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
   }, [currentBook.bookUrl, currentBook.details.sourceId])
 
   const ttsData: TtsChapterData = useMemo(() => {
-    return processChapterForTts(chapter?.title || '', paragraphs, settings.ttsFilterSymbols)
+    // 正文里的插图标签必须从朗读文本里剔除（否则 TTS 会念 `img src=…`）；
+    // 只删标签、不删段落 ⇒ 段落下标不变，高亮仍按 index 对齐。
+    return processChapterForTts(chapter?.title || '', stripIllustrations(paragraphs), settings.ttsFilterSymbols)
   }, [chapter?.title, paragraphs, settings.ttsFilterSymbols])
 
   const currentChunk = ttsData.chunks[currentChunkIndex] ?? null
@@ -1126,7 +1141,7 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
 
     scrollHeightRef.current = height
     scrollAnchorTopsRef.current = tops
-  }, [scrollEntries, scrollText, scrollPlaceholders, chapterIndex, settings.pageMode])
+  }, [scrollEntries, scrollText, scrollPlaceholders, chapterIndex, settings.pageMode, illustrationLayoutTick])
 
   /**
    * 文档高度**只增不减**的兜底。
@@ -1145,7 +1160,7 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
     const height = document.querySelector<HTMLElement>('.reading-scroll-window')?.scrollHeight ?? 0
     if (height <= scrollStreamMinHeight) return
     setScrollStreamMinHeight(height)
-  }, [scrollEntries, settings.pageMode, scrollStreamMinHeight])
+  }, [scrollEntries, settings.pageMode, scrollStreamMinHeight, illustrationLayoutTick])
 
   /**
    * 向上补齐：从目录直接跳到很后面的章节时，上方章节从未加载过。
@@ -1397,8 +1412,50 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
     }
   }, [chapterIndex, currentBook.chapters.length, persist])
 
-  const renderParagraphContent = (rawLine: string, pIndex: number) => {
-    if (!ttsActive || activeParagraphIndex !== pIndex || !currentChunk) {
+  /**
+   * 段落渲染：**文字 + 插图**。
+   *
+   * 正文里的插图是服务端保留的 `<img src="上游地址">`（独占一行）。这里把它重写成
+   * **本站代理地址**后渲染成可点击的图片块（点开 = 灯箱），并把该行剩下的文字按原有
+   * TTS 高亮规则渲染 —— 一行里"文字 + 图 + 文字"都能正确显示，且段落下标不变。
+   *
+   * @param chapterUrl 该段落**所属章节**的地址（滚动流的相邻章也要用它们自己的地址，
+   *   否则代理会把图挂到错误的章节上、序号与落盘目录全错）
+   */
+  const renderParagraphLine = (rawLine: string, chapterUrl: string, chapterIndexForLine: number, pIndex: number, highlight = true) => {
+    const segments = splitIllustrationSegments(rawLine)
+    if (segments.length === 0) {
+      // 没有插图 ⇒ 完全走原来的纯文本（含 TTS 高亮）路径，零行为变化
+      return renderTextWithHighlight(rawLine, pIndex, highlight)
+    }
+    const context: IllustrationContext = {
+      sourceId: currentBook.details.sourceId,
+      bookUrl: currentBook.bookUrl,
+      chapterUrl,
+      chapterIndex: chapterIndexForLine,
+    }
+    return segments.map((segment, segmentIndex) => {
+      if (segment.kind === 'image') {
+        return (
+          <InlineIllustration
+            key={`illustration-${segmentIndex}-${segment.src}`}
+            context={context}
+            upstreamUrl={segment.src}
+            alt={segment.alt}
+            openLabel={t('reader.viewIllustration', '查看插图')}
+            failedLabel={t('reader.illustrationFailed', '插图加载失败')}
+            onOpen={(src, alt) => setIllustrationLightbox({ src, alt })}
+            onSettled={() => setIllustrationLayoutTick(tick => tick + 1)}
+          />
+        )
+      }
+      return <React.Fragment key={`text-${segmentIndex}`}>{renderTextWithHighlight(segment.text, pIndex, highlight)}</React.Fragment>
+    })
+  }
+
+  /** 纯文本段落（TTS 朗读中高亮当前句）。 */
+  const renderTextWithHighlight = (rawLine: string, pIndex: number, highlight = true) => {
+    if (!highlight || !ttsActive || activeParagraphIndex !== pIndex || !currentChunk) {
       return rawLine
     }
     const sentenceText = currentChunk.text
@@ -2203,6 +2260,23 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
 
   useEffect(() => () => { if (boundaryTimerRef.current !== null) window.clearTimeout(boundaryTimerRef.current) }, [])
 
+  /**
+   * 插图灯箱的 Esc 关闭（**捕获阶段**监听）。
+   *
+   * 为什么单独一条：下面的通用键盘处理会在焦点位于 `button` 上时直接 return，
+   * 而"点开插图"恰好把焦点留在了插图按钮上 ⇒ Esc 会失效。
+   */
+  useEffect(() => {
+    if (!illustrationLightbox) return
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return
+      event.preventDefault()
+      setIllustrationLightbox(null)
+    }
+    window.addEventListener('keydown', onKeyDown, true)
+    return () => window.removeEventListener('keydown', onKeyDown, true)
+  }, [illustrationLightbox])
+
   // Keyboard navigation
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -2604,7 +2678,7 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
                       className={`reader-paragraph ${ttsActive && activeParagraphIndex === index ? 'tts-active-paragraph' : ''}`}
                       onClick={() => { if (ttsActive) handleParagraphClick(index) }}
                     >
-                      {renderParagraphContent(line, index)}
+                      {renderParagraphLine(line, chapter?.url ?? '', chapterIndex, index)}
                     </p>
                   ))}
                 </article>
@@ -2704,11 +2778,20 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
                       className={`reader-paragraph ${ttsActive && activeParagraphIndex === index ? 'tts-active-paragraph' : ''}`}
                       onClick={() => { if (ttsActive) handleParagraphClick(index) }}
                     >
-                      {renderParagraphContent(line, index)}
+                      {renderParagraphLine(line, chapter?.url ?? '', chapterIndex, index)}
                     </p>
                   ))
                   : entry.paragraphs.map((line, index) => (
-                    <p key={index} className="reader-paragraph">{line}</p>
+                    <p key={index} className="reader-paragraph">
+                      {/* 相邻章：用**它自己的**章节地址拼代理（否则图会被挂到当前章上）+ 不做朗读高亮 */}
+                      {renderParagraphLine(
+                        line,
+                        currentBook.chapters[entry.index]?.url ?? '',
+                        entry.index,
+                        index,
+                        false,
+                      )}
+                    </p>
                   ))}
               </article>
             )
@@ -2930,6 +3013,15 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
           </footer>
         </div>
       </div>
+    )}
+    {/* 正文插图灯箱（点击正文里的插图打开；点空白/关闭按钮/Esc 关闭） */}
+    {illustrationLightbox && (
+      <IllustrationLightbox
+        src={illustrationLightbox.src}
+        alt={illustrationLightbox.alt}
+        closeLabel={t('reader.closeIllustration', '关闭插图')}
+        onClose={() => setIllustrationLightbox(null)}
+      />
     )}
   </main>
 }

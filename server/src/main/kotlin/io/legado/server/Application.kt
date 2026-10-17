@@ -27,7 +27,16 @@ fun main(args: Array<String>) {
     }.start(wait = true)
 }
 
-fun Application.legadoApplication(config: ServerConfig = ServerConfig.fromEnvironment()) {
+fun Application.legadoApplication(
+    config: ServerConfig = ServerConfig.fromEnvironment(),
+    /**
+     * 测试注入接缝：替换**图片抓取收口**（漫画与小说插图共用同一个实例）。
+     *
+     * 默认 null ⇒ 真实网络抓取。契约级测试要覆盖「gzip 假图片 / 超大 / 上游 404」
+     * 这些只在网络边界上才成立的校验，必须能注入上游字节，否则只能造假绿。
+     */
+    injectedImageFetcher: MangaImageFetcher? = null,
+) {
     val database = Database(config.databasePath)
     database.initialize(config.initialAdminPassword)
     // 缓存目录结构升级到 v3 的唯一入口（同一套 `app_setting.cache_layout` 版本判断）：
@@ -47,7 +56,19 @@ fun Application.legadoApplication(config: ServerConfig = ServerConfig.fromEnviro
     val auth = AuthService(database, config.secureCookies)
     val subscriptions = SubscriptionService(database) { message -> log.info(message) }
     val runner = RuleRunner(database = database)
-    val bookCache = BookCacheService(database, runner) { message -> log.info(message) }
+    // 图片抓取的**唯一收口**（漫画与小说正文插图共用）：书源 header + 章节页 Referer + Cookie、
+    // 全局限流、gzip 魔数解压、单图体积上限、SSRF 防护都在这里（见 MangaImageFetcher 的说明）。
+    // ⚠️ 必须用具名参数：`log` 不是最后一个参数（后面还有测试注入接缝），
+    // 尾随 lambda 会绑到 `injectedFetcher` 上，导致类型不匹配。
+    val imageFetcher = injectedImageFetcher ?: MangaImageFetcher(config, log = { message -> log.info(message) })
+    // 小说正文插图的落盘缓存（`<data>/images/`）。离线缓存章节时顺手把插图抓下来。
+    val illustrationCache = IllustrationCache(config.illustrationCacheDirectory, database) { message -> log.info(message) }
+    val bookCache = BookCacheService(
+        database,
+        runner,
+        illustrationCache = illustrationCache,
+        illustrationFetcher = imageFetcher,
+    ) { message -> log.info(message) }
     val edgeTts = EdgeTtsService()
     val httpTtsService = HttpTtsService(database)
     val ttsSessions = TtsSessionService(edgeTts, httpTtsService)
@@ -94,9 +115,7 @@ fun Application.legadoApplication(config: ServerConfig = ServerConfig.fromEnviro
         val coverCache = CoverCache(config.coverCacheDirectory, database = database)
         // 漫画 P1：L1 字节缓存 + 抓取收口（配额默认 10 GiB，见 ADR-028 的滑窗 GC 裁决）
         val imageCache = ImageCache(config.comicCacheDirectory, database, config.imageCacheQuotaBytes) { message -> log.info(message) }
-        // ⚠️ 必须用具名参数：`log` 不是最后一个参数（后面还有测试注入接缝），
-        // 尾随 lambda 会绑到 `injectedFetcher` 上，导致类型不匹配。
-        val mangaImageFetcher = MangaImageFetcher(config, log = { message -> log.info(message) })
+        val mangaImageFetcher = imageFetcher
         // 漫画 P2：滑窗 GC + 后台预取。
         // GC 的"每次落盘后检查"落在预取循环与章节收口处（每张图都查一次是没必要的写放大）。
         val imageGc = ImageCacheGc(database, imageCache, config.imageCacheQuotaBytes, config.mangaGcEnabled) { message -> log.info(message) }
@@ -158,6 +177,7 @@ fun Application.legadoApplication(config: ServerConfig = ServerConfig.fromEnviro
             audioCache,
             audioFetcher,
             audioPrefetch,
+            illustrationCache,
         )
         webDavRoutes(auth, webDavStorage, database, coverCache, runner)
         staticWeb()

@@ -5994,11 +5994,25 @@ mark.search-highlight { background: var(--accent-soft); color: var(--accent); fo
 .manga-image-frame {
   width: 100%;
   max-width: 900px;
-  margin: 0 auto 6px;
-  min-height: 60vh;
+  /* 无缝拼接（用户诉求）：相邻图之间**不能有任何间隙或色带**。
+     原来这里是 `margin: 0 auto 6px` —— 每张图之间固定 6px 缝，长条漫一眼可见"断成一截截"。 */
+  margin: 0 auto;
   display: grid;
   place-items: center;
+  /* 图框自身不铺底色：底色一旦露出来就是缝（容器已有 --surface-muted 作整体背景） */
+  background: transparent;
+}
+
+/* 占位**只在图片加载出来之前**生效：加载完立刻收缩到图片真实高度。
+   否则 60vh 的固定占位会让每一张短图上下都空出一截底色，纵向连读时同样是"接缝"。
+   （manifest 提供真实宽高时，行内 aspect-ratio 已接管占位，此处无关。） */
+.manga-image-frame:not(.is-loaded) {
+  min-height: 60vh;
   background: var(--surface);
+}
+
+.manga-image-frame.is-loaded {
+  min-height: 0;
 }
 
 .manga-image-frame img {

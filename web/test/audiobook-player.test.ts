@@ -6,7 +6,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { renderToStaticMarkup } from 'react-dom/server'
 import '../src/i18n'
-import { AudiobookPlayerScreen } from '../src/AudiobookPlayerScreen'
+import { AudiobookPlayerScreen, audiobookCacheProgressMarkup } from '../src/AudiobookPlayerScreen'
 import { api } from '../src/api'
 import { audioManifestKey, warmChapterAudio } from '../src/audioOffline'
 
@@ -51,13 +51,67 @@ test('audiobook - 渲染播放外壳（封面 / 进度 / 主播放键 / 底部�
   assert.ok(html.includes('audiobook-cover-wrapper'), '封面是视觉主体（大圆角方形封面）')
   assert.ok(html.includes('audiobook-progress'), '必须有播放进度条')
   assert.ok(html.includes('audiobook-control main'), '必须有中心主播放键')
-  assert.ok(html.includes('audiobook-bottom-controls'), '必须有底部功能条（倍速/定时/缓存/目录/设置）')
+  assert.ok(html.includes('audiobook-bottom-controls'), '必须有底部功能条（倍速/定时/目录/设置）')
+  // 缓存按钮已搬进目录抽屉 ⇒ 底部功能条只剩 4 个按钮，且不再出现缓存文案
+  const bottom = html.match(/<footer class="audiobook-bottom-controls">([\s\S]*?)<\/footer>/)
+  assert.ok(bottom, '底部功能条必须是可截取的 <footer class="audiobook-bottom-controls">')
+  assert.equal((bottom![1].match(/<button/g) ?? []).length, 4, '底部功能条必须只剩 4 个按钮（倍速/定时/目录/设置）')
+  assert.ok(!bottom![1].includes('缓存'), '底部功能条不得再出现缓存按钮（缓存入口已收敛进目录抽屉）')
+  for (const label of ['倍速', '定时', '目录', '设置']) {
+    assert.ok(bottom![1].includes(label), `底部功能条必须保留「${label}」按钮`)
+  }
   // 参考稿的版式要点：信息区（章节标题 + 书名）
   assert.ok(html.includes('audiobook-episode-title'), '必须有章节标题')
   assert.ok(html.includes('audiobook-book-title'), '必须有书名/作者')
   // 目录抽屉复用虚拟章节列表与搜索（与文本/漫画阅读器同构）
   assert.ok(html.includes('chapter-search'), '目录抽屉必须带章节搜索')
   assert.ok(html.includes('reader-drawer'), '必须复用既有抽屉外壳')
+})
+
+test('audiobook - 目录抽屉底部必须带缓存动作底栏（与小说阅读器同构）', () => {
+  const html = renderToStaticMarkup(
+    React.createElement(AudiobookPlayerScreen, { openBook, startIndex: 0, onClose: () => {}, theme: 'dark' }),
+  )
+
+  assert.equal((html.match(/<footer class="drawer-footer">/g) ?? []).length, 1, '只应有目录抽屉一个 drawer-footer（不得在播放设置抽屉重复出现）')
+  const footer = html.match(/<footer class="drawer-footer">([\s\S]*?)<\/footer>/)
+  assert.ok(footer, '目录抽屉必须有 <footer class="drawer-footer"> 底栏（小说阅读器同款结构）')
+  const body = footer![1]
+
+  // 底栏必须挂在目录抽屉（reader-drawer-left）内部、且在章节列表之后
+  const asideIndex = html.indexOf('reader-drawer-left')
+  assert.ok(asideIndex >= 0 && asideIndex < html.indexOf('<footer class="drawer-footer">'), '画缓存底栏必须位于目录抽屉内部')
+  assert.ok(html.indexOf('reader-chapters') < html.indexOf('<footer class="drawer-footer">'), '缓存底栏必须在章节列表之后（不遮挡目录滚动区）')
+
+  for (const label of ['本章', '后 50 章', '后 100 章', '全本缓存', '自定义...']) {
+    assert.ok(body.includes(label), `缓存底栏必须有「${label}」按钮`)
+  }
+  // 本仓库铁律：辅助按钮必须显式 type="button"（否则表单内会触发 submit）
+  const rangeButtons = body.match(/<button[^>]*cache-range-btn[^>]*>/g) ?? []
+  assert.equal(rangeButtons.length, 5, `缓存底栏必须正好 5 个缓存范围按钮（本章/后 50/后 100/全本/自定义，实测 ${rangeButtons.length}）`)
+  for (const button of rangeButtons) {
+    assert.ok(button.includes('type="button"'), `缓存按钮必须显式 type="button"：${button}`)
+  }
+  // 「下载到本设备」与「管理本设备离线缓存」：复用小说那套 class，各自显式 type="button"
+  for (const cls of ['cache-sync-btn', 'cache-manage-btn']) {
+    const button = body.match(new RegExp(`<button[^>]*${cls}[^>]*>`))?.[0]
+    assert.ok(button, `必须复用 .${cls}`)
+    assert.ok(button!.includes('type="button"'), `.${cls} 必须显式 type="button"`)
+  }
+
+  // 五个动作必须分别接到 requestCache(0) / (50) / (100) / 全本（整本 ⇒ 服务端 pinned 免死金牌）
+  const source = read('../src/AudiobookPlayerScreen.tsx')
+  for (const call of ['requestCache(0)', 'requestCache(50)', 'requestCache(100)', 'requestCache(chapters.length)']) {
+    assert.ok(source.includes(call), `目录底栏必须保留缓存动作 ${call}`)
+  }
+  assert.ok(!source.includes("t('audiobook.cache'"), '底部功能条的缓存按钮必须已删除（requestCache 本身保留）')
+
+  // 动作区（`</footer>` 之后）：加书架/已在书架复用 .shelf-button
+  assert.equal((html.match(/drawer-footer-actions/g) ?? []).length, 1, '目录抽屉里必须恰好一个 drawer-footer-actions（两个 div 会变成两行、各占半格）')
+  const actions = html.slice(html.indexOf('drawer-footer-actions'))
+  const shelfButton = actions.match(/<button[^>]*shelf-button[^>]*>/)?.[0] ?? ''
+  assert.ok(shelfButton.includes('type="button"'), '「加书架」必须显式 type="button"')
+  assert.ok(shelfButton.includes('shelf-button'), '「加书架」必须复用 .shelf-button')
 })
 
 test('audiobook - 三套主题都能落到根节点（随主 UI 主题切换）', () => {
@@ -179,4 +233,228 @@ test('audiobook - 整章预热：并发受限（≤2）、失败静默、可中�
 
   // 没有 key 时不做任何网络请求
   assert.deepEqual(await warmChapterAudio([], { fetchImpl: okFetch }), { warmed: 0, total: 0 })
+})
+
+/**
+ * 用户反馈「有声书和漫画目录下面的按钮还是不全」⇒ 目录底栏补齐到与小说一致：
+ * 自定义范围 / 进度条 + 取消 / 下载到本设备 / 管理本设备离线缓存 / 加书架。
+ */
+test('audiobook - 目录底栏的五个缓存按钮逐一接线，自定义范围按范围发起缓存', () => {
+  const source = read('../src/AudiobookPlayerScreen.tsx')
+  const start = source.indexOf('<footer className="drawer-footer">')
+  assert.ok(start >= 0, '目录抽屉必须有 drawer-footer')
+  const footer = source.slice(start, source.indexOf('</footer>', start))
+
+  // 顺序与漫画/小说那套一致：本章 → 后 50 章 → 后 100 章 → 全本 → 自定义
+  const wiring = [
+    { label: "t('audiobook.cacheCurrent'", title: "t('audiobook.cacheCurrentTitle'", call: 'requestCache(0)' },
+    { label: "t('reader.cacheNext50'", title: "t('reader.cacheNext50Title'", call: 'requestCache(50)' },
+    { label: "t('reader.cacheNext100'", title: "t('reader.cacheNext100Title'", call: 'requestCache(100)' },
+    { label: "t('reader.cacheAll'", title: "t('audiobook.cacheAllTitle'", call: 'requestCache(chapters.length)' },
+    { label: "t('reader.cacheCustom'", title: "t('reader.cacheCustomTitle'", call: 'setCustomRangeOpen' },
+  ]
+  const buttons = footer.match(/<button[\s\S]*?<\/button>/g) ?? []
+  wiring.forEach((item, index) => {
+    const button = buttons[index]
+    assert.ok(button, `第 ${index + 1} 个缓存按钮必须存在`)
+    assert.ok(button.includes(item.call), `第 ${index + 1} 个按钮必须调用 ${item.call}`)
+    assert.ok(button.includes(item.label), `第 ${index + 1} 个按钮的文案必须用 ${item.label}`)
+    assert.ok(button.includes(item.title), `第 ${index + 1} 个按钮的 title 必须用 ${item.title}`)
+    assert.ok(button.includes('type="button"'), `第 ${index + 1} 个按钮必须显式 type="button"`)
+  })
+
+  // 自定义范围：复用小说的 class 与文案键，确认范围后按「第 X 至 Y 章」发起既有缓存调用
+  assert.ok(footer.includes('cache-custom-range-box'), '自定义范围必须复用 .cache-custom-range-box')
+  assert.ok(footer.includes('range-inputs'), '自定义范围必须复用 .range-inputs')
+  assert.ok(footer.includes('primary-button range-start-btn'), '「开始缓存」必须复用 .primary-button.range-start-btn')
+  for (const key of ['cacheCustomFrom', 'cacheCustomTo', 'cacheCustomUnit', 'startCache']) {
+    assert.ok(footer.includes(`t('reader.${key}'`), `自定义范围必须复用 reader.${key}`)
+  }
+  assert.ok(
+    footer.includes('requestCacheRange(customRangeStart, customRangeEnd)'),
+    '「开始缓存」必须把「第 X 至 Y 章」交给 requestCacheRange（→ 既有 api.audioPrefetch）',
+  )
+  assert.ok(
+    /const requestCacheRange[\s\S]*?requestCache\(to - from, from - 1\)/.test(source),
+    '自定义范围必须落回既有的 requestCache（不新造请求路径）',
+  )
+
+  // 进行中反馈：沿用既有的 `caching`，不新造状态机；禁用而不是把抽屉关掉
+  assert.equal(
+    footer.split('disabled={caching}').length - 1,
+    5,
+    '缓存进行中必须让五个缓存按钮都置灰（沿用 caching 这一个既有状态）',
+  )
+  assert.ok(!footer.includes('setActiveDrawer'), '底栏按钮不得关闭抽屉（要保持目录可见，让绿点当场亮）')
+})
+
+test('audiobook - 进行中渲染出进度条与「取消缓存」，且取消只停任务不删缓存', () => {
+  // ① 真的渲染"进行中"那一态：`renderToStaticMarkup` 不跑 effect ⇒ 组件初始态永远是空闲的，
+  //    所以喂一个 running 状态给这个纯渲染函数（组件本身用的就是它）。
+  const html = renderToStaticMarkup(
+    audiobookCacheProgressMarkup({
+      percent: 42,
+      done: 21,
+      planned: 50,
+      serverCachingLabel: '正在服务端缓存',
+      unitLabel: '章',
+      cancelLabel: '取消缓存',
+      onCancel: () => {},
+    }),
+  )
+  assert.ok(html.includes('drawer-cache-progress'), '进行中必须复用 .drawer-cache-progress')
+  assert.ok(html.includes('cache-progress-text'), '进行中必须有进度文案（.cache-progress-text）')
+  assert.ok(html.includes('cache-progress-bar-track'), '进行中必须有进度条轨道（与小说同款 class）')
+  assert.ok(html.includes('cache-progress-bar-fill'), '进行中必须有进度条填充（与小说同款 class）')
+  assert.ok(html.includes('width:42%'), '进度条宽度必须来自 done/planned（实测缺少 42% 宽度）')
+  assert.ok(html.includes('42% (21/50章)'), '进度文案必须是「x% (done/planned 章)」')
+  const cancel = html.match(/<button[^>]*cache-cancel-btn[^>]*>/)?.[0] ?? ''
+  assert.ok(cancel.includes('type="button"'), '「取消缓存」必须显式 type="button"')
+  assert.ok(html.includes('取消缓存'), '「取消缓存」必须复用 reader.cancelCache 的文案')
+
+  // ② 进度数据的来源：既有状态接口，且**复用既有轮询**（不新加定时器）
+  const source = read('../src/AudiobookPlayerScreen.tsx')
+  assert.ok(source.includes('api.audioPrefetchStatus()'), '进度必须来自既有状态接口 api.audioPrefetchStatus()')
+  assert.equal(
+    source.split('window.setInterval').length - 1,
+    2,
+    '不得新增轮询循环：状态刷新必须复用既有那两个定时器（缓存轮询 + 睡眠定时）',
+  )
+
+  // ③ 取消必须走**只取消不删缓存**的新端点，绝不能是会删缓存的 clearAudioCache（DELETE /audio/cache）
+  assert.ok(source.includes('api.cancelAudioPrefetch('), '取消缓存必须调用新增的 cancelAudioPrefetch')
+  // 收敛版：clearXCache（DELETE …/cache）会连已下好的缓存一起删，只允许出现在"换源清理旧源"那段；
+  // 取消缓存必须走只取消不删缓存的新端点 ⇒ 断言收敛到 cancelCache 内部，而不是全文件扫。
+  const cancelStart = source.indexOf('const cancelCache = useCallback(')
+  assert.ok(cancelStart >= 0, '必须存在 cancelCache 处理器')
+  const cancelHandler = source.slice(cancelStart, source.indexOf('}, [', cancelStart) + 4)
+  assert.ok(cancelHandler.includes('api.cancel'), 'cancelCache 必须调用新增的 cancel 端点')
+  // 处理器里有行注释解释"为什么不能用 clearXCache"，必须先剥注释再断言，否则会被自己的注释命中。
+  const cancelNoComments = cancelHandler.replace(/\/\/[^\n]*/g, '')
+  assert.ok(!cancelNoComments.includes('clearAudioCache') && !cancelNoComments.includes('clearImageCache'), 'cancelCache 内绝不能出现会删缓存的 clearXCache')
+  // 允许范围：只有"换源"处理器才可以用会删缓存的 clearXCache（它清的是**旧源**那一本）。
+  // 判据按**所属函数**来：往前找最近的 '= useCallback('，要求函数名含 switch —— 定长字符窗口够不到会假红。
+  for (const hit of source.matchAll(/api\.clear[A-Za-z]*Cache\(/g)) {
+    const upto = source.slice(0, hit.index ?? 0)
+    const lastCb = upto.lastIndexOf('= useCallback(')
+    const owner = lastCb >= 0 ? (upto.slice(0, lastCb).match(/const\s+(\w+)\s*$/) ?? [])[1] : undefined
+    assert.ok(owner && /[Ss]witch/.test(owner), `clearXCache 只允许出现在换源处理器里（实际归属：${owner ?? '未知'}）`)
+  }
+
+  const apiSource = read('../src/api.ts')
+  assert.ok(apiSource.includes('cancelAudioPrefetch: (sourceId: string, bookUrl: string)'), 'api.ts 必须新增 cancelAudioPrefetch 封装')
+  assert.ok(apiSource.includes("'/api/books/audio/prefetch/cancel'"), 'cancelAudioPrefetch 必须打新增的 /books/audio/prefetch/cancel')
+  assert.ok(
+    /cancelAudioPrefetch[\s\S]{0,200}method: 'POST'/.test(apiSource),
+    'cancelAudioPrefetch 必须是 POST（与既有预取路由同款写接口）',
+  )
+
+  // ④ 服务端：新路由必须存在、必须鉴权，且**不得**碰 audioCache（删缓存的语义）
+  const routes = read('../../server/src/main/kotlin/io/legado/server/Routes.kt')
+  const routeStart = routes.indexOf('post("/books/audio/prefetch/cancel")')
+  assert.ok(routeStart >= 0, '服务端必须新增 POST /books/audio/prefetch/cancel')
+  // 只取这一条路由的块（到下一个路由注册为止）——后面 `DELETE /audio/cache` 本来就该删缓存
+  const nextRoute = routes.indexOf('get("/books/audio/cached-chapters")', routeStart)
+  const block = routes.slice(routeStart, nextRoute > routeStart ? nextRoute : routeStart + 2000)
+  assert.ok(block.includes('auth.requireSession(call, true)'), '取消路由必须与既有预取路由同款鉴权（写接口）')
+  assert.ok(block.includes('audioPrefetch?.cancel(request.sourceId, bookUrl)'), '取消路由必须只调预取服务的 cancel')
+  // 断言前先剥掉注释：这条路由的说明注释里**正写着**「绝不调用 audioCache.deleteBook」，
+  // 带着注释断言会自伤（漫画那边实测踩过一次）。
+  const blockCode = block.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+  assert.ok(!blockCode.includes('audioCache.deleteBook'), '取消路由绝不能删音频缓存（那是 DELETE /audio/cache 的语义）')
+  assert.ok(!blockCode.includes('audioCache.deleteKey'), '取消路由绝不能删音频分段')
+})
+
+test('audiobook - 下载到本设备 / 管理本设备离线缓存 / 加书架 三处都接上了既有能力', () => {
+  const source = read('../src/AudiobookPlayerScreen.tsx')
+  const html = renderToStaticMarkup(
+    React.createElement(AudiobookPlayerScreen, { openBook, startIndex: 0, onClose: () => {}, theme: 'dark' }),
+  )
+  const drawerStart = html.indexOf('reader-drawer-left')
+  const drawer = html.slice(drawerStart, html.indexOf('</aside>', drawerStart))
+  const footerStart = source.indexOf('<footer className="drawer-footer">')
+  const footer = source.slice(footerStart, source.indexOf('</footer>', footerStart))
+  const drawerSource = source.slice(source.indexOf('reader-drawer-left'), source.indexOf('</aside>', source.indexOf('reader-drawer-left')))
+
+  // ① 「下载到本设备」：复用 reader.downloadToDevice(+Title) 与 .cache-sync-btn
+  assert.ok(footer.includes('cache-sync-btn'), '必须复用 .cache-sync-btn')
+  assert.ok(footer.includes("t('reader.downloadToDevice'"), '必须复用 reader.downloadToDevice')
+  assert.ok(footer.includes("t('reader.downloadToDeviceTitle'"), '必须复用 reader.downloadToDeviceTitle')
+  assert.ok(footer.includes('onClick={downloadToDevice}'), '「下载到本设备」必须接线到 downloadToDevice')
+  // 语义如实落地：音频的字节落在服务端缓存里 ⇒ 触发的是本书的既有缓存动作（覆盖到书末）
+  assert.ok(
+    /const downloadToDevice[\s\S]{0,900}requestCache\(chapters\.length, 0\)/.test(source),
+    '「下载到本设备」必须落到既有的 requestCache（本仓库没有"只预热本机"的既有路径）',
+  )
+
+  // ② 「管理本设备离线缓存」：接同一个 OfflineCacheModal（小说用 setOfflineStatsModal(true) 打开）
+  assert.ok(footer.includes('cache-manage-btn'), '必须复用 .cache-manage-btn')
+  assert.ok(footer.includes("t('reader.manageOfflineCache'"), '必须复用 reader.manageOfflineCache')
+  assert.ok(footer.includes('setOfflineStatsModal(true)'), '「管理」按钮必须打开离线缓存弹窗')
+  assert.ok(source.includes("import { OfflineCacheModal } from './OfflineCacheModal'"), '必须复用小说同一个 OfflineCacheModal')
+  assert.ok(source.includes('<OfflineCacheModal'), '必须真的挂载 OfflineCacheModal')
+  assert.ok(/offlineStatsModal[\s\S]{0,600}<OfflineCacheModal/.test(source), 'OfflineCacheModal 必须由 offlineStatsModal 控制显隐')
+
+  // ③ 「加书架 / 已在书架」：与小说**同一套** API（bookshelf 查在架 + add/remove 改）
+  //   ⚠️ 动作区在 `</footer>` 之后，所以这里必须从整个目录抽屉里取按钮
+  const shelfButton = drawerSource.match(/<button[^>]*shelf-button[\s\S]*?<\/button>/)?.[0] ?? ''
+  assert.ok(shelfButton.includes('shelf-button'), '必须复用 .shelf-button')
+  assert.ok(shelfButton.includes('type="button"'), '「加书架」必须显式 type="button"')
+  assert.ok(drawerSource.includes("t('reader.inShelf'"), '在架文案必须复用 reader.inShelf')
+  assert.ok(drawerSource.includes("t('reader.addToShelf'"), '加书架文案必须复用 reader.addToShelf')
+  assert.ok(source.includes('api.addToBookshelf('), '加书架必须复用 api.addToBookshelf')
+  assert.ok(source.includes('api.removeFromBookshelf('), '已在书架时再点必须复用 api.removeFromBookshelf')
+  assert.ok(source.includes('api.bookshelf()'), '在架状态必须用 api.bookshelf() 查询（与小说同一套封装）')
+  assert.ok(source.includes("t('shelf.removeFromShelfConfirm'"), '移出书架必须复用小说的确认文案')
+
+  // 与小说阅读器用的是同一套 API（避免两边漂移）
+  const novel = read('../src/ReaderScreen.tsx')
+  for (const call of ['api.addToBookshelf(', 'api.removeFromBookshelf(', 'api.bookshelf()']) {
+    assert.ok(novel.includes(call), `小说阅读器也必须用 ${call}（两端必须同源）`)
+  }
+
+  // ④ 换源存在时（集成分支）：换源与加书架必须在**同一个** drawer-footer-actions，顺序照小说（换源在前）
+  assert.ok(drawer.includes('drawer-footer-actions'), '目录抽屉必须有 drawer-footer-actions')
+  if (source.includes("t('reader.switchSource'")) {
+    assert.equal(
+      source.split('<div className="drawer-footer-actions">').length - 1,
+      1,
+      '换源与「加书架」必须合并进同一个 drawer-footer-actions（两个 div 会渲染成两行、各占左半格）',
+    )
+    const actions = source.slice(source.indexOf('<div className="drawer-footer-actions">'))
+    assert.ok(
+      actions.indexOf("t('reader.switchSource'") < actions.indexOf("t('reader.addToShelf'"),
+      '顺序必须照小说：换源在前、加书架在后',
+    )
+  }
+})
+
+test('audiobook - 目录底栏新增按钮复用的文案键在四种语言里齐全、非空', () => {
+  const locales = ['zh-CN', 'zh-TW', 'en-US', 'ja-JP'] as const
+  const required = {
+    reader: [
+      'cacheNext50', 'cacheNext50Title', 'cacheNext100', 'cacheNext100Title', 'cacheAll',
+      // 本 PR 新增入口用到的键（**全部复用既有键，一个都没新造**）
+      'cacheCustom', 'cacheCustomTitle', 'cacheCustomFrom', 'cacheCustomTo', 'cacheCustomUnit',
+      'startCache', 'cancelCache', 'serverCaching',
+      'downloadToDevice', 'downloadToDeviceTitle', 'manageOfflineCache',
+      'inShelf', 'addToShelf', 'removedFromShelfToast', 'addedToShelfToast',
+    ],
+    audiobook: ['cacheCurrent', 'cacheCurrentTitle', 'cacheAllTitle'],
+    shelf: ['removeFromShelfConfirm', 'toggleShelfFailed'],
+  }
+
+  for (const locale of locales) {
+    const data = JSON.parse(read(`../src/i18n/locales/${locale}.json`)) as Record<string, Record<string, string>>
+    for (const [namespace, keys] of Object.entries(required)) {
+      assert.ok(data[namespace], `${locale} 必须包含 ${namespace} 命名空间`)
+      for (const key of keys) {
+        const value = data[namespace][key]
+        assert.ok(
+          typeof value === 'string' && value.trim().length > 0,
+          `${locale}.${namespace}.${key} 必须存在且非空`,
+        )
+      }
+    }
+  }
 })

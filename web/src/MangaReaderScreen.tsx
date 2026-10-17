@@ -117,6 +117,13 @@ export function MangaReaderScreen({ openBook, startIndex, onClose, theme }: Mang
   const [cachedChapters, setCachedChapters] = useState<Set<string>>(() => new Set())
   /** 用户手动"整本离线"进行中（只用于显示进度与轮询绿点）。 */
   const [offlineRunning, setOfflineRunning] = useState(false)
+  /**
+   * 本次预取任务的失败情况（服务端如实带出的首条原因）。
+   *
+   * 为什么要显示：旧实现把失败只写进库与日志，界面上只有"正在后台缓存"——
+   * 用户看到进度不动却不知道为什么（防盗链 403？图床挂了？）。这里把"失败几张 + 原因"摆出来。
+   */
+  const [prefetchFailure, setPrefetchFailure] = useState<{ failed: number; reason: string } | null>(null)
   /** 当前渲染用的是**本地清单快照**（脱网回退），用于顶部横幅与失败文案区分。 */
   const [offlineSnapshot, setOfflineSnapshot] = useState(false)
 
@@ -277,8 +284,11 @@ export function MangaReaderScreen({ openBook, startIndex, onClose, theme }: Mang
       refreshCachedChapters()
       void api.mangaPrefetchStatus()
         .then(list => {
-          const stillRunning = (list ?? []).some(item => item.sourceId === openBook.details.sourceId && item.bookUrl === openBook.bookUrl)
-          if (!stillRunning) setOfflineRunning(false)
+          const mine = (list ?? []).find(item => item.sourceId === openBook.details.sourceId && item.bookUrl === openBook.bookUrl)
+          if (!mine) setOfflineRunning(false)
+          // 失败原因**保留到下一次投递**：任务结束后服务端不再回报它，跟着清掉会让原因凭空消失
+          const failed = Number(mine?.failed ?? 0)
+          if (mine) setPrefetchFailure(failed > 0 ? { failed, reason: mine.lastError ?? '' } : null)
         })
         .catch(() => undefined)
     }, OFFLINE_POLL_MS)
@@ -294,6 +304,8 @@ export function MangaReaderScreen({ openBook, startIndex, onClose, theme }: Mang
       .then(result => {
         if (result?.queued) {
           setOfflineRunning(true)
+          // 新任务开始 ⇒ 上一次的失败提示作废（否则用户会以为是这次也失败了）
+          setPrefetchFailure(null)
           toast.success(
             whole
               ? t('manga.offlineQueuedAll', '已加入整本离线队列（后台缓存，可继续阅读）')
@@ -548,6 +560,16 @@ export function MangaReaderScreen({ openBook, startIndex, onClose, theme }: Mang
                 ? t('manga.offlineRunning', '正在后台缓存，目录里绿点表示该章已可离线阅读')
                 : t('manga.offlineHint', { count: cachedChapters.size, defaultValue: `已离线 ${cachedChapters.size} 章 · 绿点表示整章可离线阅读` })}
             </small>
+            {/* 失败如实报出：旧实现只写库与日志，用户看到"进度不动"却不知道为什么 */}
+            {prefetchFailure && (
+              <small className="setting-hint cache-failure-hint" role="status">
+                {t('reader.cacheFailedImages', {
+                  count: prefetchFailure.failed,
+                  reason: prefetchFailure.reason || t('common.unknownReason', '未知原因'),
+                  defaultValue: `${prefetchFailure.failed} 张图片缓存失败（最近：${prefetchFailure.reason || '未知原因'}），可稍后重试`,
+                })}
+              </small>
+            )}
           </section>
         </div>
       </aside>

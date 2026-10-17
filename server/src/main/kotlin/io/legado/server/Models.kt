@@ -1465,15 +1465,33 @@ data class AudioPrefetchResponse(
     val reason: String? = null,
 )
 
-/** 一本书的音频缓存任务进度（`GET /api/books/audio/prefetch`）。 */
+/**
+ * 一本书的音频缓存任务进度（`GET /api/books/audio/prefetch`）。
+ *
+ * ## 单位契约（与 [MangaPrefetchStatus] 逐字同源）
+ * [done] / [planned] 是**章**（`done` 只统计"整章分段全部落盘"的章节），
+ * [doneTracks] / [plannedTracks] 才是**分段**数。用户反馈"进度写着章节、
+ * 实际是每章的分段数"，就是因为旧字段曾经是分段口径而文案写"章"。
+ * 只**新增**字段、不复用旧字段表达别的含义。
+ */
 @Serializable
 data class AudioPrefetchStatus(
     val sourceId: String,
     val bookUrl: String,
     val running: Boolean = true,
+    /** **已完成章节数**（整章分段全部落盘才算完成；本次任务开始前就已就绪的章也计入）。 */
     val done: Int = 0,
+    /** 本次任务**规划**的章节数（目录还没抓到时为 0，抓完立刻回填）。 */
     val planned: Int = 0,
     val currentChapterIndex: Int = 0,
+    /** 已落盘**分段**数（细节口径，不是"章"）。 */
+    val doneTracks: Int = 0,
+    /** 本次任务已解析出的**分段**数（逐章增长，细节口径，不是"章"）。 */
+    val plannedTracks: Int = 0,
+    /** 本次任务内失败的分段数（>0 时用 [lastError] 说明首条原因）。 */
+    val failed: Int = 0,
+    /** 首条失败原因（`HTTP connect timed out` / `上游返回 HTTP 403` / 超限…）。 */
+    val lastError: String? = null,
 )
 
 /** pin 开关结果（`PUT /api/audio/cache/pin`）。 */

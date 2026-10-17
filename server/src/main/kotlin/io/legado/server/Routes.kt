@@ -1227,6 +1227,10 @@ fun Route.apiRoutes(
          *
          * **幂等且随时可重复调用**：同一本书的重复请求不会新起并行任务，而是让正在跑的循环改目标
          * （见 `MangaPrefetchService.drain`）。返回 `202 Accepted` 表示"已受理"而非"已完成"。
+         *
+         * 目录**还没缓存时也照样受理**（`chapters ≥ 1`）：预取会自己把目录抓进 `book_toc_cache`。
+         * 返回的 `chapters` 只是"已受理的章数"（目录未知时无法先验知道真实章数，按 1 报），
+         * 真实进度一律看 `GET /books/images/prefetch` 的 `done/planned`（**章**口径）。
          */
         post("/books/images/prefetch") {
             if (auth.requireSession(call, true) == null) return@post
@@ -1479,6 +1483,10 @@ fun Route.apiRoutes(
          *
          * **幂等且随时可重复调用**：同一本书的重复请求不会新起并行任务，而是让正在跑的循环改目标。
          * 返回 `202 Accepted` 表示"已受理"而非"已完成"。
+         *
+         * 目录**还没缓存时也照样受理**（与漫画端同一裁决）：缓存会自己把目录抓进 `book_toc_cache`。
+         * 返回的 `chapters` 只是"已受理的章数"（目录未知时按 1 报），
+         * 真实进度看 `GET /books/audio/prefetch` 的 `done/planned`（**章**口径）。
          */
         post("/books/audio/cache") {
             if (auth.requireSession(call, true) == null) return@post

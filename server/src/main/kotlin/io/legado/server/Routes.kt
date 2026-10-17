@@ -1923,6 +1923,21 @@ fun Route.apiRoutes(
                 }
             }
             database.removeBookshelf(sourceId, bookUrl)?.let(coverCache::delete)
+            // 媒体缓存（漫画图片 / 有声音频 / 正文插图）同样是"这本书的私有数据"：不跟着一起清，
+            // 行与字节就会永久占盘，且书已不在书架 ⇒ 用户再也无法从任何界面回收
+            // （反馈：「为什么书移出书架后漫画，音频，插图没有同步删了」）。
+            // 单一入口见 [purgeBookMediaCaches]（批量移出也走它）；任何一类失败只记日志，不阻断移出书架。
+            purgeBookMediaCaches(
+                sourceId = sourceId,
+                bookUrl = bookUrl,
+                database = database,
+                imageCache = imageCache,
+                audioCache = audioCache,
+                illustrationCache = illustrationCache,
+                mangaPrefetch = mangaPrefetch,
+                audioPrefetch = audioPrefetch,
+                log = { message -> application.log.info(message) },
+            )
             call.respond(HttpStatusCode.NoContent)
         }
         post("/bookshelf/cache") {
@@ -2351,6 +2366,23 @@ fun Route.apiRoutes(
             }
             val affected = database.batchBookshelfOperation(request) { orphanKey ->
                 coverCache.delete(orphanKey)
+            }
+            // 批量移出与单本移出是**同一语义**（这本书不再属于书架）⇒ 媒体缓存必须一起清，
+            // 且必须复用同一个入口（见 [purgeBookMediaCaches]），否则两条路径迟早再次分叉。
+            if (request.action == "delete") {
+                request.items.forEach { item ->
+                    purgeBookMediaCaches(
+                        sourceId = item.sourceId,
+                        bookUrl = item.bookUrl,
+                        database = database,
+                        imageCache = imageCache,
+                        audioCache = audioCache,
+                        illustrationCache = illustrationCache,
+                        mangaPrefetch = mangaPrefetch,
+                        audioPrefetch = audioPrefetch,
+                        log = { message -> application.log.info(message) },
+                    )
+                }
             }
             call.respond(mapOf("affected" to affected))
         }

@@ -2897,11 +2897,13 @@ mark.search-highlight { background: var(--accent-soft); color: var(--accent); fo
   cursor: pointer;
   transition: all .15s ease;
 }
-.cache-range-btn:hover {
+.cache-range-btn:hover:not(:disabled) {
   background: var(--accent-soft);
   color: var(--accent-ink);
   border-color: var(--accent);
 }
+/* 缓存进行中：按钮置灰（唯一的"进行中"反馈，复用 offlineRunning 这一个既有状态） */
+.cache-range-btn:disabled { opacity: .55; cursor: not-allowed; }
 .cache-custom-range-box {
   padding: 8px;
   margin-bottom: 8px;

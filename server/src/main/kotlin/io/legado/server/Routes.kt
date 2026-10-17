@@ -1267,6 +1267,30 @@ fun Route.apiRoutes(
             call.respond(mangaPrefetch?.status() ?: emptyList<MangaPrefetchStatus>())
         }
         /**
+         * **只取消、不删缓存**的取消入口（目录底栏那个「取消缓存」按钮）。
+         *
+         * 为什么必须单开一条：`DELETE /books/images/cache` 里的 `cancel()` 是「清缓存顺带停任务」，
+         * 直接拿它当取消按钮用，会把用户已经下好的图片连同清单一起删掉（语义不符、且不可恢复）。
+         * 这里只停任务：字节、清单与 pin 一律**原样保留**，用户随时可以再点一次接着缓存。
+         */
+        post("/books/images/prefetch/cancel") {
+            if (auth.requireSession(call, true) == null) return@post
+            val request = call.receive<MangaPrefetchRequest>()
+            if (request.sourceId.isBlank()) {
+                call.respond(HttpStatusCode.BadRequest, ApiError("invalid_manga", "缺少书源"))
+                return@post
+            }
+            val bookUrl = request.bookUrl?.takeIf { it.isNotBlank() }
+                ?: run {
+                    call.respond(HttpStatusCode.BadRequest, ApiError("invalid_manga", "缺少书籍地址"))
+                    return@post
+                }
+            // 服务为 null（预取功能被 `LEGADO_MANGA_PREFETCH=false` 关掉）时"已经没在跑"，等价于取消成功。
+            // ⚠️ 绝不调用 `imageCache.deleteBook` / `database.deleteMangaChapters`：那是 DELETE 的语义。
+            mangaPrefetch?.cancel(request.sourceId, bookUrl)
+            call.respond(HttpStatusCode.NoContent)
+        }
+        /**
          * 「整本离线」免死金牌开关（环节 E12）。
          *
          * 只有**用户显式动作**才配得上它：自动预取绝不会自己打 pin（否则配额很快被"永久保留"吃光）。

@@ -608,6 +608,13 @@ data class CachedBookRequest(
     val groupName: String? = null,
     val bookKind: String = "novel",
     /**
+     * 有声书进度的**毫秒偏移**（`reading_progress.position_ms`，与手机端 `durChapterPos` 同语义）。
+     *
+     * 非 audio 的书恒为 null：文本/漫画的章内位置是 [scrollPosition] 比例，两套语义不混用。
+     * 导出备份时它直传成 `durChapterPos`（音频那一类才写），否则换设备后听书得从头开始。
+     */
+    val positionMs: Long? = null,
+    /**
      * **书籍变量**（Legado `Book.variable`）—— 一个 JSON 对象字符串，键值都是字符串。
      *
      * 用途（对齐开源阅读 `legado-with-MD3` 的做法）：书源规则在 JS 里用
@@ -945,15 +952,30 @@ data class BackupImportSummary(
     val books: Int,
     val booksUpdated: Int,
     val progress: Int,
-    /** 因是**本地图书**（手机本机文件，服务端读不到）而跳过的条数。 */
-    val skippedLocal: Int = 0,
     /**
-     * 因是**音频/听书**而跳过的条数。
+     * 因是**本地图书**（手机本机文件，服务端读不到）而跳过的条数。
      *
-     * ⚠️ 自方案 G2 的 G0 起**恒为 0**：音频不再被过滤（服务端已能解析/缓存/直出音频）。
-     * 字段保留只为不改动前端契约（"已跳过 N"仅在 > 0 时显示）。
+     * **这是唯一会跳过的类别**：音频/听书与漫画都已是一等公民（各自有 `book_kind`、
+     * 缓存目录与阅读器），导入时必须放行。前端据此如实提示"跳过原因"。
      */
-    val skippedAudio: Int = 0,
+    val skippedLocal: Int = 0,
+    /** 本次成功补抓成本地副本的封面张数（导入摘要提示用）。 */
+    val coversFetched: Int = 0,
+    /**
+     * 其中有多少张是**回源**成功的（备份里的地址已失效 ⇒ 回书源详情页取新地址后下载成功）。
+     *
+     * 与 [coversFetched] 是父子关系（`coversResourced <= coversFetched`），
+     * 单独回报是为了让"自动补上了"这件事可观测（用户与排障都需要）。
+     */
+    val coversResourced: Int = 0,
+    /**
+     * 封面补抓失败的张数（图床失效 / 签名过期 / 防盗链 / 超时）。
+     *
+     * 失败的封面**不影响导入本身**：该书仍会入架，只是没有本地副本，前端回退到
+     * `coverUrl` 直连、再失败则显示文字占位。这个计数是为了让"封面全裂"有可解释的原因，
+     * 而不是静默吞掉。
+     */
+    val coversFailed: Int = 0,
     /** 新增的书签数。 */
     val bookmarks: Int = 0,
     /** 因所属书籍未导入（**仅本地图书**）而跳过的书签数。 */
@@ -987,7 +1009,7 @@ data class BackupShelfEntry(
      * （AGENTS.md 明文：「Android 的字符偏移量 `durChapterPos` 不得强塞入服务端的百分比 `scroll_position`」）。
      */
     val chapterPos: Int = 0,
-    /** 类别判定结果，用于导入时过滤本地图书与音频（见 [ShelfKind]）。 */
+    /** 类别判定结果，用于导入时过滤本地图书（见 [ShelfKind]）。 */
     val kind: ShelfKind = ShelfKind.ONLINE,
     /**
      * 分组名（已由 `bookGroup.json` 的 `groupId` 解析而来）。
@@ -998,16 +1020,14 @@ data class BackupShelfEntry(
      */
     val groupName: String? = null,
     /**
-     * 书的内容类型（`novel`/`comic`）。
+     * 书的内容类型（`novel`/`comic`/`audio`）——**由 [kind] 显式映射**：
+     * 听书 ⇒ `audio`、漫画 ⇒ `comic`；在线小说仍只看书自己载荷里的 `tab`（没说 ⇒ null）。
      *
-     * ⚠️ **备份导入不再设置它**（恒为 null）：
-     * 备份里的 `tab` / `type` 只是手机端的展示分类，拿它猜"这本书是不是漫画"属于**自动分类**，
-     * 猜错的代价是**漫画被送进文字阅读器**（表现为"漫画打不开"，而不是报错）。
-     * 现在类型只认**书源自身声明**（`bookSourceType == 2`），由
-     * [Database.backfillBookKindFromSources] 在导入结束时统一落库；分组则完全按备份文件里的分组走。
-     *
-     * `null` ⇒ 不指定：新行留 NULL，已有行**保留原值**（`coalesce(excluded.book_kind, book_shelf.book_kind)`），
-     * 也就是"已经和小说一样（无需特殊分类）就跳过，不写库"。
+     * 为什么漫画必须显式落 `comic`：按小说入库会进文字阅读器，代价是"漫画打不开"而不是报错。
+     * 为什么在线小说仍允许 `null`：`null` 表示「不指定」，新行留 NULL（按小说处理），
+     * 已有行**保留原值**（`coalesce(excluded.book_kind, book_shelf.book_kind)`），
+     * 也就是"已经和小说一样就跳过"。源声明（`bookSourceType`）由
+     * [Database.backfillBookKindFromSources] 在导入结束时统一兜底。
      */
     val bookKind: String? = null,
     /**
@@ -1481,15 +1501,33 @@ data class AudioPrefetchResponse(
     val reason: String? = null,
 )
 
-/** 一本书的音频缓存任务进度（`GET /api/books/audio/prefetch`）。 */
+/**
+ * 一本书的音频缓存任务进度（`GET /api/books/audio/prefetch`）。
+ *
+ * ## 单位契约（与 [MangaPrefetchStatus] 逐字同源）
+ * [done] / [planned] 是**章**（`done` 只统计"整章分段全部落盘"的章节），
+ * [doneTracks] / [plannedTracks] 才是**分段**数。用户反馈"进度写着章节、
+ * 实际是每章的分段数"，就是因为旧字段曾经是分段口径而文案写"章"。
+ * 只**新增**字段、不复用旧字段表达别的含义。
+ */
 @Serializable
 data class AudioPrefetchStatus(
     val sourceId: String,
     val bookUrl: String,
     val running: Boolean = true,
+    /** **已完成章节数**（整章分段全部落盘才算完成；本次任务开始前就已就绪的章也计入）。 */
     val done: Int = 0,
+    /** 本次任务**规划**的章节数（目录还没抓到时为 0，抓完立刻回填）。 */
     val planned: Int = 0,
     val currentChapterIndex: Int = 0,
+    /** 已落盘**分段**数（细节口径，不是"章"）。 */
+    val doneTracks: Int = 0,
+    /** 本次任务已解析出的**分段**数（逐章增长，细节口径，不是"章"）。 */
+    val plannedTracks: Int = 0,
+    /** 本次任务内失败的分段数（>0 时用 [lastError] 说明首条原因）。 */
+    val failed: Int = 0,
+    /** 首条失败原因（`HTTP connect timed out` / `上游返回 HTTP 403` / 超限…）。 */
+    val lastError: String? = null,
 )
 
 /** pin 开关结果（`PUT /api/audio/cache/pin`）。 */

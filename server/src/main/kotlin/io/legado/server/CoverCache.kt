@@ -81,12 +81,14 @@ class CoverCache(
      * 抓取并落盘一张封面（已在缓存里就直接短路，**不再触网**）。
      *
      * @param book 已知的书籍身份；拿不到就传 null（文件名退化成 `未命名 (哈希)`）。
+     * @param headers 额外的请求头（书源自带的 `header` / `Cookie` / `Referer`）。
+     *   **回源下载必须带上**：从详情页拿到的封面地址多半有防盗链，裸请求就是 403。
      */
-    fun cache(url: String, book: CoverBookRef? = null): CachedCover {
+    fun cache(url: String, book: CoverBookRef? = null, headers: Map<String, String> = emptyMap()): CachedCover {
         val key = sha256(url)
         if (knownRelative(key) != null) return CachedCover(key, hitContentType(key))
         val injected = fetcher
-        val (contentType, rawBody) = injected?.invoke(url) ?: download(url)
+        val (contentType, rawBody) = injected?.invoke(url) ?: download(url, headers)
         require(contentType.lowercase().startsWith("image/")) { "封面不是图片" }
         // 统一在**落盘前的唯一收口**处兜底解压：无论走内置 download 还是外部注入的 fetcher
         // （如 BackupImporter / 元数据补全），都不能把压缩字节当成图片存下来。
@@ -273,10 +275,17 @@ class CoverCache(
     private fun hitContentType(key: String): String =
         database?.coverContentType(key)?.takeIf { it.isNotBlank() } ?: "image/*"
 
-    private fun download(url: String): Pair<String, ByteArray> {
+    private fun download(url: String, headers: Map<String, String> = emptyMap()): Pair<String, ByteArray> {
         var uri = URI(url); validate(uri)
         repeat(4) {
-            val response = client.send(HttpRequest.newBuilder(uri).timeout(Duration.ofSeconds(20)).header("User-Agent", "LegadoServer/0.1").GET().build(), HttpResponse.BodyHandlers.ofByteArray())
+            val builder = HttpRequest.newBuilder(uri).timeout(Duration.ofSeconds(20)).header("User-Agent", "LegadoServer/0.1")
+            // 书源请求头最后应用（可覆盖 User-Agent）：它与详情页那次请求同源，防盗链才对得上。
+            headers.forEach { (name, value) ->
+                if (name.isNotBlank() && value.isNotBlank() && !name.equals("Host", ignoreCase = true) &&
+                    !name.equals("Content-Length", ignoreCase = true)
+                ) builder.header(name, value)
+            }
+            val response = client.send(builder.GET().build(), HttpResponse.BodyHandlers.ofByteArray())
             if (response.statusCode() in 300..399) { uri = uri.resolve(response.headers().firstValue("location").orElseThrow { IllegalArgumentException("封面重定向缺少地址") }); validate(uri); return@repeat }
             require(response.statusCode() in 200..299) { "封面上游返回 HTTP ${response.statusCode()}" }
             return response.headers().firstValue("content-type").orElse("") to response.body()

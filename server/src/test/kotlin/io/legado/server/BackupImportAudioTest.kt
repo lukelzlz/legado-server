@@ -51,7 +51,9 @@ class BackupImportAudioTest {
                 summary.books,
             )
             assertEquals("只有本地图书被跳过", LOCAL_COUNT, summary.skippedLocal)
-            assertEquals("G0 起音频**不再被跳过**（如实报 0，而不是静默吞掉）", 0, summary.skippedAudio)
+            // 摘要里已**不存在** `skippedAudio` 字段（音频永不跳过，留一个恒为 0 的字段只会误导），
+            // 因此这里直接断言"音频被算进导入条数"——上面那条 assertEquals 已经锁死了它。
+            assertEquals("G0 起音频**不再被跳过**：本地图书才是唯一被过滤的类别", LOCAL_COUNT, summary.skippedLocal)
 
             val shelf = database.listBookshelf()
             assertEquals(ONLINE_COUNT + AUDIO_COUNT, shelf.size)

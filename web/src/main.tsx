@@ -1,4 +1,5 @@
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { createRoot } from 'react-dom/client'
 import { useTranslation } from 'react-i18next'
 import { api, BookDetails, BookGroup, BookshelfItem, Chapter, NetworkImportPreview, SearchResult, SearchStreamEvent, setCsrfToken, SourceGroupSummary, SourceRecord, SourceSubscription, SourceSummary, streamSearch, UNGROUPED_SOURCE_GROUP } from './api'
@@ -8,7 +9,7 @@ import { Login } from './Login'
 import { OpenBook, ReaderScreen } from './ReaderScreen'
 import { MangaReaderScreen } from './MangaReaderScreen'
 import { AudiobookPlayerScreen } from './AudiobookPlayerScreen'
-import { loadReaderSettings, ReaderSettings, saveReaderSettings } from './readerSettings'
+import { loadReaderSettings, ReaderSettings, ReaderTheme, saveReaderSettings } from './readerSettings'
 import { AppHeader } from './AppHeader'
 import { cleanAuthor, cleanTitle, defaultSearchFilters, filterSearchGroups, isExactMatch, isPopularMatch, SearchFilters, SearchGroup, SortMode } from './searchFilters'
 import { groupSearchResults, SourceChoice, SourceChoiceStatus, useSearchStore } from './searchStore'
@@ -23,9 +24,11 @@ import { OfflineCacheModal } from './OfflineCacheModal'
 import { SourceHealthModal } from './SourceHealthModal'
 import { SourceGroupManagerModal } from './SourceGroupManagerModal'
 import { SearchScopeBar } from './SearchScopeBar'
+import { ShelfKindTag } from './ShelfKindTag'
 import { PwaManager } from './PwaManager'
 import { ErrorBoundary } from './ErrorBoundary'
-import { flushOfflineProgress } from './offlineStorage'
+import { clearOfflineBook, flushOfflineProgress } from './offlineStorage'
+import { ClearCacheScope, stepsForScope } from './shelfClearCache'
 import { toast, ToastContainer } from './Toast'
 import './styles.css'
 import './i18n'
@@ -33,6 +36,7 @@ import { changeAppLanguage, normalizeLocale } from './i18n'
 
 import { clearStoredInspections, getInitialOrStoredInspections, inspectAllSourcesConcurrently, SourceHealthInspection } from './sourceInspector'
 import { sanitizeImageUrl } from './sourceImport'
+import { BookCover } from './BookCover'
 
 export { sanitizeImageUrl }
 export type { SourceChoice, SourceChoiceStatus }
@@ -1838,6 +1842,7 @@ function BookManageModal({
   onCancelCache,
   onToggleCompleted,
   onUpdateInfo,
+  onClearCache,
   onRemove,
 }: {
   item: BookshelfItem
@@ -1848,6 +1853,7 @@ function BookManageModal({
   onCancelCache: () => void
   onToggleCompleted: () => void
   onUpdateInfo: (updated: BookshelfItem) => void
+  onClearCache: () => void
   onRemove: () => void
 }) {
   const { t } = useTranslation()
@@ -1878,7 +1884,7 @@ function BookManageModal({
       <div className="book-manage-sheet" onClick={e => e.stopPropagation()} role="dialog" aria-modal="true" aria-label={t('shelf.bookManageWithTitle', '书籍管理: {{name}}', { name: item.name })}>
         <header className="manage-sheet-header">
           <div className="manage-sheet-cover">
-            {resolveShelfCover(item) ? <img src={resolveShelfCover(item)!} alt="" referrerPolicy="no-referrer" /> : <span>{item.name.slice(0, 1)}</span>}
+            <BookCover coverKey={item.coverKey} coverUrl={item.coverUrl} name={item.name} />
           </div>
           <div className="manage-sheet-info">
             <h3>{item.name}</h3>
@@ -2034,6 +2040,18 @@ function BookManageModal({
             <Icon name="arrowRight" />
           </button>
 
+          {/* 「清除缓存」与「移出书架」同为**危险动作**（都不可逆、都要重新联网下载），
+              因此共用 danger 红色配色；但语义严格区分：本行只回收磁盘，书还在书架上、
+              进度与封面都不动。 */}
+          <button className="manage-action-row danger" onClick={() => { onClose(); onClearCache() }}>
+            <div className="action-icon"><Icon name="trash" /></div>
+            <div className="action-text">
+              <strong>{t('shelf.clearCache', '清除缓存')}</strong>
+              <small>{t('shelf.clearCacheDesc', '清除本书已下载的图片、音频与正文缓存（含本机离线）')}</small>
+            </div>
+            <Icon name="arrowRight" />
+          </button>
+
           <button className="manage-action-row danger" onClick={() => { onClose(); onRemove() }}>
             <div className="action-icon"><Icon name="close" /></div>
             <div className="action-text">
@@ -2045,6 +2063,101 @@ function BookManageModal({
         </div>
       </div>
     </div>
+  )
+}
+
+/**
+ * 「清除缓存」的范围选择弹窗：**服务器 / 浏览器 / 两者**三选一。
+ *
+ * 用户原话：「删除时添加新弹窗三个选项，清除服务器缓存，清除浏览器缓存，清理服务器和浏览器缓存」
+ * 「并且也都是红色配色」⇒ 三个选项一律 `manage-action-row danger`（红色与「移出书架」同源，
+ * 都来自 `.manage-action-row.danger { color: var(--danger) }`），**取消**用中性 `manage-action-row`。
+ *
+ * 为什么用弹窗而不是 `confirm()`：原生 confirm 只能"确定/取消"，表达不了三种范围。
+ *
+ * 样式铁律（AGENTS.md）：① 浮层用 `createPortal(..., document.body)` 逃出带 `backdrop-filter`
+ * 的包含块，并**显式**绑 `theme-${theme}` —— 否则脱离 `.app-shell` 后主题变量回退，夜间模式下
+ * 会出现透光背景 + 隐形黑字；② 本弹窗由书架页以**平级条件分支**挂载（此时书籍管理弹窗已关闭），
+ * 杜绝"带动画的 `modal-backdrop` 里再嵌一层 `modal-backdrop`"；③ 所有按钮显式 `type="button"`。
+ */
+function ClearCacheScopeModal({
+  item,
+  theme,
+  busy,
+  onPick,
+  onClose,
+}: {
+  item: BookshelfItem
+  theme: ReaderTheme
+  busy: boolean
+  onPick: (scope: ClearCacheScope) => void
+  onClose: () => void
+}) {
+  const { t } = useTranslation()
+
+  return createPortal(
+    <div className={`modal-backdrop top-layer-modal-backdrop theme-${theme}`} onClick={busy ? undefined : onClose}>
+      <div
+        className="book-manage-sheet"
+        onClick={event => event.stopPropagation()}
+        role="dialog"
+        aria-modal="true"
+        aria-label={t('shelf.clearCacheTitle', '清除缓存')}
+      >
+        <header className="manage-sheet-header">
+          <div className="manage-sheet-cover">
+            <BookCover coverKey={item.coverKey} coverUrl={item.coverUrl} name={item.name} />
+          </div>
+          <div className="manage-sheet-info">
+            <h3>{item.name}</h3>
+            <p>{t('shelf.clearCacheTitle', '清除缓存')}</p>
+            <small>{t('shelf.clearCacheHint', '将清除《{{name}}》已下载的缓存；阅读进度、书架记录与封面不受影响，请选择清除范围。', { name: item.name })}</small>
+          </div>
+          <button type="button" className="subtle-button close-btn" disabled={busy} onClick={onClose} aria-label={t('common.close', '关闭')}><Icon name="close" /></button>
+        </header>
+
+        <div className="manage-sheet-actions">
+          {/* 三个选项一律 danger（红色与「移出书架」同源），互斥三选一 */}
+          <button type="button" className="manage-action-row danger" disabled={busy} onClick={() => onPick('server')}>
+            <div className="action-icon"><Icon name="cloudDownload" /></div>
+            <div className="action-text">
+              <strong>{t('shelf.clearCacheServer', '清除服务器缓存')}</strong>
+              <small>{t('shelf.clearCacheServerDesc', '清掉服务端已下载的图片、音频与正文，下次阅读会重新下载')}</small>
+            </div>
+            <Icon name="arrowRight" />
+          </button>
+
+          <button type="button" className="manage-action-row danger" disabled={busy} onClick={() => onPick('browser')}>
+            <div className="action-icon"><Icon name="download" /></div>
+            <div className="action-text">
+              <strong>{t('shelf.clearCacheBrowser', '清除浏览器缓存')}</strong>
+              <small>{t('shelf.clearCacheBrowserDesc', '只清本机已下载的离线正文，不影响服务端')}</small>
+            </div>
+            <Icon name="arrowRight" />
+          </button>
+
+          <button type="button" className="manage-action-row danger" disabled={busy} onClick={() => onPick('both')}>
+            <div className="action-icon"><Icon name="trash" /></div>
+            <div className="action-text">
+              <strong>{t('shelf.clearCacheBoth', '清理服务器和浏览器缓存')}</strong>
+              <small>{t('shelf.clearCacheBothDesc', '一次清干净：服务端与本机一起清')}</small>
+            </div>
+            <Icon name="arrowRight" />
+          </button>
+
+          {/* 取消：中性色（**不**加 danger），点了什么都不做，只关弹窗 */}
+          <button type="button" className="manage-action-row" disabled={busy} onClick={onClose}>
+            <div className="action-icon"><Icon name="close" /></div>
+            <div className="action-text">
+              <strong>{t('shelf.clearCacheCancel', '取消')}</strong>
+              <small>{t('shelf.clearCacheCancelDesc', '不做任何清理，返回书籍管理')}</small>
+            </div>
+            <Icon name="arrowRight" />
+          </button>
+        </div>
+      </div>
+    </div>,
+    document.body,
   )
 }
 
@@ -2307,7 +2420,16 @@ function BatchMoveGroupModal({
   )
 }
 
-function ShelfPage({ onOpen }: { onOpen: (item: BookshelfItem) => void }) {
+/**
+ * 用户点「缓存」之后**无论如何都继续轮询**的宽限期（毫秒）。
+ *
+ * 存在的理由见 `ShelfPage` 里 `pollGraceRef` 的注释：服务端在「入队 → 第一章进度登账」
+ * 之间会短暂报 ready/idle，而轮询门只认 `cacheState === 'caching'`。没有宽限期，
+ * 一拍踩空就会永久熄火（表现为「退回书架后缓存不动了」）。
+ */
+const CACHE_POLL_GRACE_MS = 30_000
+
+function ShelfPage({ onOpen, theme }: { onOpen: (item: BookshelfItem) => void; theme: ReaderTheme }) {
   const { t } = useTranslation()
   const [items, setItems] = useState<BookshelfItem[]>([])
   const [groups, setGroups] = useState<BookGroup[]>([])
@@ -2316,6 +2438,9 @@ function ShelfPage({ onOpen }: { onOpen: (item: BookshelfItem) => void }) {
   const [message, setMessage] = useState('')
   const [switchingItem, setSwitchingItem] = useState<BookshelfItem | null>(null)
   const [managingItem, setManagingItem] = useState<BookshelfItem | null>(null)
+  // 「清除缓存」范围选择弹窗：与书籍管理弹窗**平级**挂载（不嵌套 backdrop），且此刻后者已关闭
+  const [clearingCacheItem, setClearingCacheItem] = useState<BookshelfItem | null>(null)
+  const [clearingCache, setClearingCache] = useState(false)
   const [uploading, setUploading] = useState(false)
   const [dragOver, setDragOver] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -2380,12 +2505,65 @@ function ShelfPage({ onOpen }: { onOpen: (item: BookshelfItem) => void }) {
     }
   }
 
+  /**
+   * 书架列表的进度轮询门。
+   *
+   * ## 为什么不能只写 `if (!caching) return`
+   * `caching` 完全来自**服务端快照**。而服务端从"入队"到"第一章进度登账"之间有一小段
+   * （抓目录 / 解析第一章清单，实测 300ms~数秒）状态接口返回空 ⇒ 列表这一拍是
+   * `ready`/`idle` ⇒ 上面那个写法会**在这一次就 return，而且永远不再重新评估**
+   * （没有定时器 ⇒ 没有新的 load() ⇒ `caching` 不会变）⇒ 用户看到「退到书架后缓存就不动了」。
+   *
+   * 因此：用户刚点过缓存 ⇒ 给一个**宽限期**，期间即使某一拍不是 caching 也继续轮询；
+   * 宽限期结束后由定时器自己收尾（服务端那边已改成入队即登账，正常情况下这一拍就是 caching）。
+   */
   const caching = items.some(item => item.cacheState === 'caching')
+  const cachingRef = useRef(caching)
+  cachingRef.current = caching
+  const pollGraceRef = useRef(0)
   useEffect(() => {
-    if (!caching) return
-    const timer = window.setInterval(load, 1200)
+    if (!caching && Date.now() > pollGraceRef.current) return
+    const timer = window.setInterval(() => {
+      if (!cachingRef.current && Date.now() > pollGraceRef.current) {
+        // 宽限期过了且这一拍确实没在缓存 ⇒ 收尾，别让列表无意义地每秒重拉
+        window.clearInterval(timer)
+        return
+      }
+      void load()
+    }, 1200)
     return () => window.clearInterval(timer)
   }, [caching, load])
+
+  /**
+   * 让**书籍管理弹窗**跟着列表一起刷新。
+   *
+   * `managingItem` 是弹窗打开那一刻的**快照**（`setManagingItem(item)`），而进度是由上面那个
+   * 定时 `load()` 写进 `items` 的。不把新进度回灌进 `managingItem`，弹窗里的「x/y 章」就
+   * 永远停在打开时的数字 —— 这正是用户反馈的「弹窗里的缓存还是有问题 / 缓存不动」：
+   * 服务端在跑、列表也在涨，唯独弹窗那一份数据是死的。
+   *
+   * 只同步**进度相关字段**，不动书名/封面等可编辑字段（编辑流程走 `setManagingItem(updated)`）。
+   */
+  useEffect(() => {
+    setManagingItem(prev => {
+      if (!prev) return prev
+      const fresh = items.find(value => value.sourceId === prev.sourceId && value.bookUrl === prev.bookUrl)
+      if (!fresh) return prev
+      if (
+        fresh.cachedChapters === prev.cachedChapters
+        && fresh.totalChapters === prev.totalChapters
+        && fresh.cacheState === prev.cacheState
+        && fresh.cacheError === prev.cacheError
+      ) return prev
+      return {
+        ...prev,
+        cachedChapters: fresh.cachedChapters,
+        totalChapters: fresh.totalChapters,
+        cacheState: fresh.cacheState,
+        cacheError: fresh.cacheError,
+      }
+    })
+  }, [items])
 
   const remove = async (item: BookshelfItem) => {
     if (!confirm(t('shelf.removeFromShelfConfirmDetailed', '移出“{{name}}”将清除书架、阅读进度和缓存封面，确定继续吗？', { name: item.name }))) return
@@ -2402,6 +2580,9 @@ function ShelfPage({ onOpen }: { onOpen: (item: BookshelfItem) => void }) {
   const cache = async (item: BookshelfItem) => {
     try {
       await api.cacheBookshelfBook(item.sourceId, item.bookUrl)
+      // 宽限期：服务端「入队 → 第一章进度登账」之间有亚秒~数秒空窗（抓目录时更久），
+      // 这段列表会报 ready/idle。不给宽限期的话轮询门会在这一拍永久熄火（见 pollGraceRef 注释）。
+      pollGraceRef.current = Date.now() + CACHE_POLL_GRACE_MS
       setItems(values => values.map(value => value.sourceId === item.sourceId && value.bookUrl === item.bookUrl ? { ...value, cacheState: 'caching', cacheError: undefined } : value))
       previousStateRef.current.set(`${item.sourceId}\u0000${item.bookUrl}`, 'caching')
       toast.info(t('shelf.addedToCacheQueue', '已加入离线缓存队列，正在下载《{{name}}》...', { name: item.name }))
@@ -2419,6 +2600,56 @@ function ShelfPage({ onOpen }: { onOpen: (item: BookshelfItem) => void }) {
     } catch (error) {
       toast.error(error instanceof Error ? error.message : t('shelf.cancelCacheFailed', '取消缓存失败'))
     }
+  }
+
+  /**
+   * 按**用户选定的范围**清除这一本书已下载的缓存。
+   *
+   * 范围模型见 `shelfClearCache.ts`：`server` 只打三个服务端端点、`browser` 只清本机
+   * IndexedDB、`both` 四步全做；**调用集合完全由 `stepsForScope(scope)` 决定**。
+   *
+   * 作用域**永远只带 `item.sourceId` + `item.bookUrl`**（用户口径：「只清这本书的」），
+   * 四个步骤共用同一张表 ⇒ 不会出现"改了一条分支忘了另一条"而串范围。
+   *
+   * 每一步独立 `try/catch` 记账：只报「全成功」或「具体哪一部分没清掉」，
+   * 且点名只点**实际执行过**的段（只清服务器时不会冒出「本机离线正文」）。
+   */
+  const clearCache = async (item: BookshelfItem, scope: ClearCacheScope) => {
+    setClearingCache(true)
+    const failedParts: string[] = []
+    try {
+      for (const step of stepsForScope(scope)) {
+        try {
+          if (step === 'images') {
+            await api.clearImageCache(item.sourceId, item.bookUrl)
+          } else if (step === 'audio') {
+            await api.clearAudioCache(item.sourceId, item.bookUrl)
+          } else if (step === 'content') {
+            await api.clearBookCacheData(item.sourceId, item.bookUrl)
+          } else {
+            // 本机 IndexedDB 里的离线正文（「本机离线缓存管理」用的同一套存储）。按书删，不做全清。
+            await clearOfflineBook(item.sourceId, item.bookUrl)
+          }
+        } catch {
+          failedParts.push(
+            step === 'images' ? t('shelf.clearCachePartImages', '图片缓存')
+              : step === 'audio' ? t('shelf.clearCachePartAudio', '音频缓存')
+                : step === 'content' ? t('shelf.clearCachePartContent', '正文缓存')
+                  : t('shelf.clearCachePartLocal', '本机离线正文'),
+          )
+        }
+      }
+    } finally {
+      setClearingCache(false)
+      setClearingCacheItem(null)
+    }
+    if (failedParts.length === 0) {
+      toast.success(t('shelf.clearCacheSuccess', '《{{name}}》缓存已清除', { name: item.name }))
+    } else {
+      toast.warning(t('shelf.clearCachePartial', '《{{name}}》部分缓存未清除：{{parts}}，可稍后重试', { name: item.name, parts: failedParts.join('、') }))
+    }
+    // 离线章数已归零：回书架拉一次最新状态，缓存进度条才不会停在旧值上
+    void load()
   }
 
   const handleSwitchShelfSource = async (chosen: { result: SearchResult; chapters: Chapter[]; targetChapterIndex: number }) => {
@@ -2755,14 +2986,14 @@ function ShelfPage({ onOpen }: { onOpen: (item: BookshelfItem) => void }) {
                       {isSelected && <Icon name="check" />}
                     </div>
                   )}
-                  {resolveShelfCover(item) ? (
-                    <img src={resolveShelfCover(item)!} alt="" referrerPolicy="no-referrer" />
-                  ) : (
-                    <span className="cover-fallback">{item.name.slice(0, 1)}</span>
-                  )}
+                  <BookCover
+                    coverKey={item.coverKey}
+                    coverUrl={item.coverUrl}
+                    name={item.name}
+                    fallbackClassName="cover-fallback"
+                  />
                   {isLocal && <span className="shelf-card-tag-local">{t('shelf.localTag', '本地')}</span>}
-                  {item.bookKind === 'comic' && <span className="shelf-card-tag-comic">{t('shelf.comicTag', '漫画')}</span>}
-                  {item.bookKind === 'audio' && <span className="shelf-card-tag-audio">{t('shelf.audioTag', '听书')}</span>}
+                  <ShelfKindTag bookKind={item.bookKind} />
                   {badge && <span className={`shelf-card-badge ${item.cacheState}`}>{badge}</span>}
                   {isCaching && (
                     <div className="shelf-card-progress-track">
@@ -2914,7 +3145,23 @@ function ShelfPage({ onOpen }: { onOpen: (item: BookshelfItem) => void }) {
             setManagingItem(updated)
             void load()
           }}
+          onClearCache={() => {
+            const target = managingItem
+            setManagingItem(null)
+            setClearingCacheItem(target)
+          }}
           onRemove={() => remove(managingItem)}
+        />
+      )}
+
+      {/* 「清除缓存」范围选择弹窗：与书籍管理弹窗**平级**（不是嵌在里面），且自带 portal */}
+      {clearingCacheItem && (
+        <ClearCacheScopeModal
+          item={clearingCacheItem}
+          theme={theme}
+          busy={clearingCache}
+          onClose={() => setClearingCacheItem(null)}
+          onPick={scope => void clearCache(clearingCacheItem, scope)}
         />
       )}
 
@@ -3232,7 +3479,7 @@ function App() {
         ) : page === 'explore' ? (
           <ExplorePage onOpen={(book, index) => openReader(book, index, 'explore')} />
         ) : page === 'shelf' ? (
-          <ShelfPage onOpen={item => void openShelfItem(item)} />
+          <ShelfPage theme={settings.theme} onOpen={item => void openShelfItem(item)} />
         ) : (
           <LibraryPage sources={sources} onOpen={(book, index) => openReader(book, index, 'library')} />
         )}

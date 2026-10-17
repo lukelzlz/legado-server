@@ -75,9 +75,34 @@ export type MangaImageItem = { index: number; key: string; status: MangaImageSta
 export type MangaChapterManifest = { sourceId: string; bookUrl: string; chapterUrl: string; title?: string | null; chapterIndex: number; total: number; ready: number; state: string; images: MangaImageItem[] }
 export type MangaCacheBookStat = { sourceId: string; bookUrl: string; name?: string | null; imageCount: number; totalBytes: number; chapterCount: number; readyChapterCount: number; pinned: boolean }
 export type MangaCacheStats = { totalBytes: number; quotaBytes: number; imageCount: number; diskBytes: number; books: MangaCacheBookStat[] }
-/** 预取受理结果（P2）：`queued=false` 不是错误（开关关了/目录未缓存/区间为空）。 */
+/** 预取受理结果（P2）：`queued=false` 不是错误（开关关了/区间为空）。目录未缓存时也会受理并自己去抓。 */
 export type MangaPrefetchResponse = { queued: boolean; chapters: number; reason?: string | null }
-export type MangaPrefetchStatus = { sourceId: string; bookUrl: string; running: boolean; done: number; planned: number; currentChapterIndex: number }
+/**
+ * 漫画预取进度。
+ *
+ * ⚠️ **单位**：`done`/`planned` 是**章**（`done` 只统计整章图片全部落盘的章），
+ * `doneImages`/`plannedImages` 才是**图片张数**。文案里写"章"就必须用前两个，
+ * 展示图片张数要单独说明单位（历史上把图片张数当"章"显示过：51 章显示成 83/136）。
+ * `failed`/`lastError` 是本任务内的失败张数与首条原因（不静默）。
+ */
+export type MangaPrefetchStatus = {
+  sourceId: string
+  bookUrl: string
+  running: boolean
+  /** 已完成**章节**数 */
+  done: number
+  /** 规划**章节**数 */
+  planned: number
+  currentChapterIndex: number
+  /** 已落盘**图片**张数（细节口径） */
+  doneImages?: number
+  /** 已解析出的**图片**张数（细节口径） */
+  plannedImages?: number
+  /** 本任务失败图片张数 */
+  failed?: number
+  /** 首条失败原因 */
+  lastError?: string | null
+}
 
 // ---------------------------------------------------------------------------
 // 有声书（方案 G2）—— 与漫画清单**同构**，只把「张」换成「段」
@@ -98,7 +123,31 @@ export type AudioChapterManifest = {
 export type AudioCacheBookStat = { sourceId: string; bookUrl: string; name?: string | null; trackCount: number; totalBytes: number; chapterCount: number; readyChapterCount: number; pinned: boolean }
 export type AudioCacheStats = { totalBytes: number; quotaBytes: number; trackCount: number; diskBytes: number; books: AudioCacheBookStat[] }
 export type AudioPrefetchResponse = { queued: boolean; chapters: number; reason?: string | null }
-export type AudioPrefetchStatus = { sourceId: string; bookUrl: string; running: boolean; done: number; planned: number; currentChapterIndex: number }
+/**
+ * 有声书缓存进度。
+ *
+ * ⚠️ **单位**（与 `MangaPrefetchStatus` 同源）：`done`/`planned` 是**章**，
+ * `doneTracks`/`plannedTracks` 才是**分段**数。"章"的文案只能用前两个。
+ * `failed`/`lastError` 是本任务内失败分段数与首条原因（上游超时/403/超限都如实带出来）。
+ */
+export type AudioPrefetchStatus = {
+  sourceId: string
+  bookUrl: string
+  running: boolean
+  /** 已完成**章节**数 */
+  done: number
+  /** 规划**章节**数 */
+  planned: number
+  currentChapterIndex: number
+  /** 已落盘**分段**数（细节口径） */
+  doneTracks?: number
+  /** 已解析出的**分段**数（细节口径） */
+  plannedTracks?: number
+  /** 本任务失败分段数 */
+  failed?: number
+  /** 首条失败原因 */
+  lastError?: string | null
+}
 
 // Safari momentum scrolling can schedule several saves while a production request is still in flight.
 // Serialize saves per book so an older response cannot arrive after a newer position and overwrite it.
@@ -211,13 +260,17 @@ export type BackupImportSummary = {
   books: number
   booksUpdated: number
   progress: number
-  /** 因是本地图书（手机本机文件，服务端读不到）而跳过的条数 */
+  /** 因是手机本地图书（服务端读不到本机文件）而跳过的条数——**唯一会跳过的类别** */
   skippedLocal?: number
-  /** 因是音频/听书（服务端只做文本阅读）而跳过的条数 */
-  skippedAudio?: number
+  /** 本次成功补抓成本地副本的封面张数 */
+  coversFetched?: number
+  /** 其中有多少张是**回源**成功的（备份地址失效 ⇒ 回书源详情页取新地址后下载成功） */
+  coversResourced?: number
+  /** 封面补抓失败的张数（图床失效/防盗链；失败不影响导入，前端显示文字占位） */
+  coversFailed?: number
   /** 本次导入的书签数 */
   bookmarks?: number
-  /** 因所属书籍未导入（本地图书/音频）而跳过的书签数 */
+  /** 因所属书籍未导入（**仅手机本地图书**）而跳过的书签数 */
   bookmarksSkipped?: number
   /** 随书源一起导入的书源分组数（书源分组是书源自带的 `bookSourceGroup`，无独立条目） */
   sourceGroups?: number
@@ -573,6 +626,17 @@ export const api = {
       body: JSON.stringify({ sourceId, bookUrl, fromChapterIndex, ahead, pin }),
     }),
   audioPrefetchStatus: () => request<AudioPrefetchStatus[]>('/api/books/audio/prefetch'),
+  /**
+   * **只取消、不删缓存**（目录底栏的「取消缓存」按钮）。
+   *
+   * 刻意不复用 `clearAudioCache`：那条 DELETE 会把已下好的音频分段与清单一起清掉，
+   * 用户点「取消」只是想停手，不是想把攒下的缓存扔了。
+   */
+  cancelAudioPrefetch: (sourceId: string, bookUrl: string) =>
+    request<void>('/api/books/audio/prefetch/cancel', {
+      method: 'POST',
+      body: JSON.stringify({ sourceId, bookUrl }),
+    }),
   /** 「整本离线」免死金牌开关（GC 永不自动淘汰）。 */
   pinAudioBook: (sourceId: string, bookUrl: string, pinned: boolean) =>
     request<{ pinned: boolean }>(
@@ -602,6 +666,17 @@ export const api = {
     }),
   /** 当前正在跑的预取（同一本书同时只有一条）。 */
   mangaPrefetchStatus: () => request<MangaPrefetchStatus[]>('/api/books/images/prefetch'),
+  /**
+   * **只取消、不删缓存**（目录底栏的「取消缓存」按钮）。
+   *
+   * 刻意不复用 `clearImageCache`：那条 DELETE 会把已下好的图片与清单一起清掉，
+   * 用户点「取消」只是想停手，不是想把攒下的缓存扔了。
+   */
+  cancelMangaPrefetch: (sourceId: string, bookUrl: string) =>
+    request<void>('/api/books/images/prefetch/cancel', {
+      method: 'POST',
+      body: JSON.stringify({ sourceId, bookUrl }),
+    }),
   /** 「整本离线」免死金牌开关（GC 永不自动淘汰）。 */
   pinMangaBook: (sourceId: string, bookUrl: string, pinned: boolean) =>
     request<{ pinned: boolean }>(

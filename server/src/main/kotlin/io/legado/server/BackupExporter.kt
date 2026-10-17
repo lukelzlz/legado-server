@@ -61,9 +61,18 @@ import java.util.zip.ZipOutputStream
  *
  * | 字段 | 说明 |
  * | :--- | :--- |
- * | `durChapterPos` | 服务端存的是**百分比** `scroll_position`，Legado 存的是**字符偏移**，语义不同 ⇒ 写 0（与 [BackupImporter] 注释同源） |
- * | `intro` / `latestChapterTitle` / `variable` / `readConfig` / `wordCount` | 服务端无这些数据 ⇒ 省略 |
- * | `kind` | 真实备份是 `分类,评分,状态,来源` 四段；服务端只知道「是否读完」⇒ 只写状态词（`连载中` / `已完结`），而 [BackupImporter] 判完成正是 `kind.contains("完结")`，往返语义不失真 |
+ * | `intro` / `latestChapterTitle` / `readConfig` / `wordCount` / `latestChapterTime` | 服务端无这些数据 ⇒ 省略 |
+ * | `kind` | 真实备份是 `分类,评分,状态,来源` 四段；服务端只知道「是否读完」⇒ 只写状态词（`连载中` / `已完结`） |
+ *
+ * ## `type` 必须按 `book_kind` 写（**否则导出即丢类型**）
+ *
+ * Legado 的 `Book.type` 是**位标志**（见 `legado-with-MD3` 的 `constant/BookType.kt`）：
+ * `text=8`、`audio=32`、`image=64`（本地 = `256 | 8 = 264`）。手机端**正是按位**决定用哪个阅读器
+ * （`type and BookType.audio > 0` ⇒ 有声书，`type and BookType.image > 0` ⇒ 漫画）。
+ * 这里曾把所有书一律写成 `type = 8`，后果是漫画/听书导出后在手机端全部落进文字阅读器
+ * （表现为"点不开"），而且重新导入本服务时也只能靠 `bookUrl` 里的 `tab` 才勉强救回类型。
+ * 真实备份的 `type` 分布佐证：`{8:374, 24:15, 32:31, 264:14}`（`24 = 8|16`，16 是「更新失败」标志，
+ * 与服务端无关，故本服务只写纯类型位）。
  */
 class BackupExporter(private val database: Database) {
 
@@ -236,8 +245,10 @@ class BackupExporter(private val database: Database) {
         book.coverUrl?.takeIf { it.isNotBlank() }?.let { put("coverUrl", JsonPrimitive(it)) }
         // 阅读进度三件套
         put("durChapterIndex", JsonPrimitive(book.chapterIndex ?: 0))
-        // 语义不同（百分比 vs 字符偏移），刻意写 0 而不是把百分比冒充成偏移
-        put("durChapterPos", JsonPrimitive(0))
+        // `durChapterPos` 的语义**按类型分流**（两套语义绝不混用）：
+        // - 有声书：就是**毫秒**（与 `reading_progress.position_ms` 同语义）⇒ 直传，否则换设备后从头播；
+        // - 文本/漫画：Legado 存的是字符偏移，服务端只有 `0..1` 比例 ⇒ 写 0，绝不把比例冒充成偏移。
+        put("durChapterPos", JsonPrimitive(if (book.bookKind == "audio") book.positionMs ?: 0L else 0L))
         put("durChapterTime", JsonPrimitive(book.lastReadAt))
         put("group", JsonPrimitive(book.groupName?.lowercase()?.let { groupIdByName[it] } ?: 0L))
         put("kind", JsonPrimitive(if (book.completed) "已完结" else "连载中"))
@@ -254,15 +265,31 @@ class BackupExporter(private val database: Database) {
         put("syncTime", JsonPrimitive(book.lastReadAt))
         put("tocUrl", JsonPrimitive(book.tocUrl))
         put("totalChapterNum", JsonPrimitive(book.totalChapters))
-        // type 8 = 在线小说（服务端只处理这一类；本地书 264 / 音频 24 在导入时已被过滤）
-        put("type", JsonPrimitive(8))
+        // 类型位必须跟着 book_kind 走（见类注释「type 必须按 book_kind 写」）：
+        // 一律写 8 会让漫画/听书在手机端落进文字阅读器，等于"导出即丢类型"。
+        put("type", JsonPrimitive(legadoBookType(book.bookKind)))
         // 书籍变量（Legado `Book.variable`）：**必须导出**，否则换设备后听书音色/朗读者设置就丢了。
         // 字段顺序按 Legado 实体声明顺序，`variable` 在 `type` 之后、`wordCount` 之前。
         book.variable?.takeIf { it.isNotBlank() }?.let { put("variable", JsonPrimitive(it)) }
     }
 
-    // ------------------------------------------------------------------ 排版
+    /**
+     * `book_kind` → Legado `Book.type` **位标志**（唯一映射点）。
+     *
+     * 数值与 `legado-with-MD3/app/src/main/java/io/legado/app/constant/BookType.kt` 逐字对齐：
+     * `text = 0b1000 (8)`、`audio = 0b100000 (32)`、`image = 0b1000000 (64)`。
+     * 手机端按位判断用哪个阅读器，所以这里写错就等于「导出后点不开」。
+     *
+     * 刻意**不**带 `updateError(16)` 位：那是手机端"最近一次更新失败"的运行期标志，
+     * 服务端没有该状态，编造 24（`8|16`）只会让手机端以为这本书一直更新失败。
+     */
+    private fun legadoBookType(bookKind: String): Int = when (bookKind.trim().lowercase()) {
+        "audio" -> LEGADO_TYPE_AUDIO
+        "comic" -> LEGADO_TYPE_IMAGE
+        else -> LEGADO_TYPE_TEXT
+    }
 
+    // ------------------------------------------------------------------ 排版
     /** 递归按 2 空格缩进输出（对齐 Gson `setPrettyPrinting` + `disableHtmlEscaping`）。 */
     private fun writeJson(element: JsonElement, depth: Int, out: StringBuilder) {
         when (element) {
@@ -347,4 +374,15 @@ class BackupExporter(private val database: Database) {
     }
 
     private fun JsonObject.str(key: String): String? = (this[key] as? JsonPrimitive)?.takeIf { it.isString }?.content
+
+    private companion object {
+        /** Legado `BookType.text`（0b1000）。 */
+        const val LEGADO_TYPE_TEXT = 8
+
+        /** Legado `BookType.audio`（0b100000）。 */
+        const val LEGADO_TYPE_AUDIO = 32
+
+        /** Legado `BookType.image`（0b1000000，漫画/图片书）。 */
+        const val LEGADO_TYPE_IMAGE = 64
+    }
 }

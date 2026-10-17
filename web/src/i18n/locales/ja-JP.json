@@ -553,6 +553,7 @@
     "downloadToDeviceTitle": "キャッシュされた章を端末に保存し、オフラインでも読めるようにします",
     "manageOfflineCache": "端末オフライン保存の管理",
     "switchSource": "書源切替",
+    "switchSourceNearestPosition": "新しい書源に同名の章がないため、最も近い位置に移動しました",
     "inShelf": "本棚に追加済み",
     "addToShelf": "本棚に追加",
     "firstChapter": "最初の章です",

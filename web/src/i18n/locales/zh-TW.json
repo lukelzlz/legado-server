@@ -553,6 +553,7 @@
     "downloadToDeviceTitle": "將已快取章節下載到手機或電腦本機，斷網脫機可讀",
     "manageOfflineCache": "管理本設備離線快取",
     "switchSource": "換源",
+    "switchSourceNearestPosition": "新書源目錄裡沒有同名章節，已停在最接近的位置",
     "inShelf": "已在書架",
     "addToShelf": "加書架",
     "firstChapter": "已是第一章",

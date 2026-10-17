@@ -602,6 +602,17 @@ export const api = {
     }),
   /** 当前正在跑的预取（同一本书同时只有一条）。 */
   mangaPrefetchStatus: () => request<MangaPrefetchStatus[]>('/api/books/images/prefetch'),
+  /**
+   * **只取消、不删缓存**（目录底栏的「取消缓存」按钮）。
+   *
+   * 刻意不复用 `clearImageCache`：那条 DELETE 会把已下好的图片与清单一起清掉，
+   * 用户点「取消」只是想停手，不是想把攒下的缓存扔了。
+   */
+  cancelMangaPrefetch: (sourceId: string, bookUrl: string) =>
+    request<void>('/api/books/images/prefetch/cancel', {
+      method: 'POST',
+      body: JSON.stringify({ sourceId, bookUrl }),
+    }),
   /** 「整本离线」免死金牌开关（GC 永不自动淘汰）。 */
   pinMangaBook: (sourceId: string, bookUrl: string, pinned: boolean) =>
     request<{ pinned: boolean }>(

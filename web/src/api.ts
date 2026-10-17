@@ -573,6 +573,17 @@ export const api = {
       body: JSON.stringify({ sourceId, bookUrl, fromChapterIndex, ahead, pin }),
     }),
   audioPrefetchStatus: () => request<AudioPrefetchStatus[]>('/api/books/audio/prefetch'),
+  /**
+   * **只取消、不删缓存**（目录底栏的「取消缓存」按钮）。
+   *
+   * 刻意不复用 `clearAudioCache`：那条 DELETE 会把已下好的音频分段与清单一起清掉，
+   * 用户点「取消」只是想停手，不是想把攒下的缓存扔了。
+   */
+  cancelAudioPrefetch: (sourceId: string, bookUrl: string) =>
+    request<void>('/api/books/audio/prefetch/cancel', {
+      method: 'POST',
+      body: JSON.stringify({ sourceId, bookUrl }),
+    }),
   /** 「整本离线」免死金牌开关（GC 永不自动淘汰）。 */
   pinAudioBook: (sourceId: string, bookUrl: string, pinned: boolean) =>
     request<{ pinned: boolean }>(

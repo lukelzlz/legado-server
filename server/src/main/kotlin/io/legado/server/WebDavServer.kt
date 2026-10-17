@@ -178,7 +178,12 @@ fun Route.webDavRoutes(auth: AuthService, storage: WebDavStorage, database: Data
     val locks = WebDavLocks()
     // runner 用于**封面回源**：备份里的 `coverUrl` 常带过期签名（实测番茄 `x-expires` 早已过期 ⇒ 403），
     // 失败时回书源详情页取一份新的封面地址再下载；没有 runner 就退化成"只试备份 URL"。
-    val backupImporter = BackupImporter(database, coverCache, runner, logger = { message -> application.log.info(message) })
+    // `coverBackfillScope` 让补抓在**导入返回之后**继续跑（不限数量、不阻塞导入；随应用停止一起取消）。
+    val backupImporter = BackupImporter(
+        database, coverCache, runner,
+        logger = { message -> application.log.info(message) },
+        coverBackfillScope = application,
+    )
     val backupExporter = BackupExporter(database)
     route("/api/webdav") {
         get("/info") { call.serveWebDavInfo(auth, storage) }

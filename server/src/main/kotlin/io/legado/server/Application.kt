@@ -113,6 +113,23 @@ fun Application.legadoApplication(
         // 封面缓存带库：文件名是 `书名 (书哈希).扩展名`，`file_path` 就是索引里那一列
         // （拿不到库时只能按 key 命名/定位，那是上传接口等"还不知道属于哪本书"的场景）。
         val coverCache = CoverCache(config.coverCacheDirectory, database = database)
+        // 封面**常驻自愈**：后期封面文件丢了（磁盘清理/误删/换卷）自动补回来。
+        // 与 `AudioCacheGc` / `ImageCacheGc` 同风格的低优先级后台 worker：
+        // **延迟启动、分批投放、全局限流、绝不阻塞启动与任何用户请求**（见 AGENTS.md `[启动/缓存]`）。
+        val coverSelfHeal = CoverSelfHeal(database, coverCache, runner, enabled = config.coverSelfHealEnabled) { message -> log.info(message) }
+        if (config.coverSelfHealEnabled) {
+            val coverSelfHealJob = launch {
+                // 先等一会儿：启动期已经有续做/预取在抢 IO 与书源并发，保洁不该挤进去。
+                delay(ServerConfig.COVER_SELF_HEAL_START_DELAY_MS)
+                while (isActive) {
+                    // runOnce 内部把一切异常都收成一行日志，这里不会因单轮失败退出循环。
+                    coverSelfHeal.runOnce()
+                    delay(ServerConfig.COVER_SELF_HEAL_INTERVAL_MS)
+                }
+            }
+            environment.monitor.subscribe(ApplicationStopping) { coverSelfHealJob.cancel() }
+            environment.monitor.subscribe(ApplicationStopped) { coverSelfHealJob.cancel() }
+        }
         // 漫画 P1：L1 字节缓存 + 抓取收口（配额默认 10 GiB，见 ADR-028 的滑窗 GC 裁决）
         val imageCache = ImageCache(config.comicCacheDirectory, database, config.imageCacheQuotaBytes) { message -> log.info(message) }
         val mangaImageFetcher = imageFetcher
@@ -178,6 +195,9 @@ fun Application.legadoApplication(
             audioFetcher,
             audioPrefetch,
             illustrationCache,
+            // 手动触发一轮封面自愈的入口（`POST /api/bookshelf/self-heal-covers`，便于验收）。
+            // 开关关掉时传 null ⇒ 该路由回 503「未启用」，与"不动任何东西"的回滚语义一致。
+            coverSelfHeal.takeIf { config.coverSelfHealEnabled },
         )
         webDavRoutes(auth, webDavStorage, database, coverCache, runner)
         staticWeb()

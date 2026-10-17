@@ -1,5 +1,10 @@
 package io.legado.server
 
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
@@ -9,8 +14,6 @@ import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.longOrNull
 import java.nio.file.Path
-import java.util.concurrent.Executors
-import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.zip.ZipEntry
 import java.util.zip.ZipFile
@@ -45,10 +48,31 @@ class BackupImporter(
     private val logger: (String) -> Unit = {},
     /** 详情页取数接缝（测试用）；缺省走 [fetchBookDetails]（书源规则 + 书籍上下文）。 */
     private val fetchDetails: ((String, String) -> BookDetails?)? = null,
+    /**
+     * 封面补抓的**后台作用域**：给了就把补抓扔到后台 fire-and-forget（生产路径），
+     * 不给就**同步**跑完再返回（单测/需要确定性摘要的场景）。
+     *
+     * 为什么生产必须后台（用户明确要求「导入完立刻返回，封面在后台继续补」）：
+     * 数量上限去掉之后，一个 400 本的备份可能要补几百张封面 + 几百次回源，
+     * 同步跑完会让导入接口在浏览器里看起来像卡死几分钟。摘要里改为如实回报
+     * 「已受理 N 本，后台补抓中」（`coversQueued`）。
+     *
+     * 作用域由调用方持有（生产 = Ktor `Application`，随应用停止一起取消）：
+     * **进程退出可中断**，重启后由 [CoverSelfHeal] 的常驻巡检接续。
+     */
+    private val coverBackfillScope: CoroutineScope? = null,
 ) {
     private val json = Json { ignoreUnknownKeys = true; isLenient = true }
 
     private fun log(message: String) = runCatching { logger(message) }
+
+    /** 封面补抓的唯一实现（与自愈共用，落盘命名规则只有一份）。 */
+    private val backfiller: CoverBackfiller? =
+        coverCache?.let { CoverBackfiller(database, it, runner, fetchDetails) }
+
+    /** 最近一次后台补抓的 Job（[awaitCoverBackfill] 与单测用）。 */
+    @Volatile
+    private var coverBackfillJob: Job? = null
 
     fun import(file: Path): BackupImportSummary = ZipFile(file.toFile()).use { zip ->
         val entries = zip.entries().asSequence().filter { !it.isDirectory }.toList()
@@ -110,11 +134,15 @@ class BackupImporter(
         database.importBookGroups(groups, shelf)
         val bookmarksImported = database.importBookmarks(bookmarks)
         // 备份包只带封面 URL、不带图片本体，落库后 cover_key 为空。
-        // 这里后台把封面抓成本地副本，否则书架封面会完全依赖外部图床
+        // 这里把封面抓成本地副本，否则书架封面会完全依赖外部图床
         // （图床挂了 / 离线阅读时就只剩文字占位符）。
         // **失败必须如实计数**：备份里的 `coverUrl` 常是带过期签名的图床地址（实测番茄
         // `x-expires` 早已过期 ⇒ 403），静默失败会让用户只看到"封面全裂"却不知道原因。
-        val covers = backfillCovers(shelf)
+        //
+        // ⚠️ **不限数量、不阻塞导入**（用户明确要求「导入时优先全补上，不限数量上限」）：
+        // 有 [coverBackfillScope] 时这里只是把全部待补书**受理**下来（`coversQueued`），
+        // 真正的下载/回源在后台继续跑；进程退出可中断，重启后由常驻的 `CoverSelfHeal` 接续。
+        val covers = startCoverBackfill(shelf)
         BackupImportSummary(
             sources = sourceResult.imported,
             sourcesUpdated = sourceResult.updated,
@@ -127,6 +155,7 @@ class BackupImporter(
             coversFetched = covers.fetched,
             coversFailed = covers.failed,
             coversResourced = covers.resourced,
+            coversQueued = covers.queued,
             bookmarks = bookmarksImported,
             bookmarksSkipped = bookmarksSkipped,
             // 书源分组没有独立条目：它是书源自带的 `bookSourceGroup`，随书源一起落库，
@@ -136,131 +165,111 @@ class BackupImporter(
     }
 
     /**
-     * 把书架条目的封面抓成本地缓存副本并回写 `cover_key`。
+     * 受理/执行一次封面补抓。
      *
-     * ## 三步来源（顺序固定，见 [coverFromBackup] / [coverFromSources]）
-     * 1. **备份里的 `coverUrl`**（最快，绝大多数情况够用）；
-     * 2. **回源**：备份地址失败（403/404/超时/字节不是图片）时，用**该书源自己**的详情规则
-     *    （`ruleBookInfo.coverUrl`）取一份**新的**封面地址 —— 手机端备份里的地址往往带过期签名
-     *    （实测番茄 `x-expires` 早已过期 ⇒ 403），回源是唯一能"自动补上"的办法；
-     * 3. **候选源**（`alternateSources`）：本书源不灵时的最后手段。
+     * - **有** [coverBackfillScope]：立刻返回「已受理 N 本」，补抓在后台协程里继续
+     *   （fire-and-forget，随作用域取消；进程退出可中断）；
+     * - **没有**：同步跑完再返回（单测与需要确定性摘要的场景）。
      *
-     * ## 硬性约束
-     * - **回源是增强，不是依赖**：任何失败只计数，绝不影响该书入库、也不影响其余书；
-     * - **有上限**：补抓总数 [_MAX_COVER_BACKFILL]、回源次数 [MAX_COVER_RESOURCE]、
-     *   并发 [COVER_FETCH_CONCURRENCY]、单本超时 [COVER_FETCH_TIMEOUT_SECONDS] 全部受限；
-     * - **落盘只走 [CoverCache]**（命名 = `书名 (书哈希).扩展名`，见缓存布局 v3）：
-     *   导入路径**不得**自己拼封面文件名，否则直出路由按 v3 命名定位不到 ⇒ 书架全裂图；
-     * - **不碰元数据**：回源详情会带回书名/作者/简介，这里**一个都不写库**（导入是恢复，不是校正）。
+     * 待补书目**不设数量上限**（资源上限仍在 [CoverBackfillRunner] 里：并发
+     * [CoverBackfillRunner.CONCURRENCY]、单本 [CoverBackfillRunner.TIMEOUT_SECONDS]、
+     * 单本候选 [CoverBackfiller] 内部的 4 条 —— 那些是防止拖垮服务的，不是数量配额）。
      */
-    private fun backfillCovers(entries: List<BackupShelfEntry>): CoverBackfill {
-        val cache = coverCache ?: return CoverBackfill()
+    private fun startCoverBackfill(entries: List<BackupShelfEntry>): CoverBackfill {
+        val worker = backfiller ?: return CoverBackfill()
         val targets = entries
             .filter { !it.coverUrl.isNullOrBlank() || !it.bookUrl.isBlank() }
             .distinctBy { "${it.sourceId}\u0000${it.bookUrl}" }
-            .take(MAX_COVER_BACKFILL)
         if (targets.isEmpty()) return CoverBackfill()
+        val scope = coverBackfillScope ?: return runCoverBackfill(worker, targets) { true }
+        val job = scope.launch(Dispatchers.IO) {
+            // `isActive` 让作用域被取消后不再开新的一本（阻塞式网络 I/O 本身不可中断，
+            // 因此在书与书之间收手）。
+            runCoverBackfill(worker, targets) { isActive }
+        }
+        coverBackfillJob = job
+        log("backup cover queued: ${targets.size} books, backfill continues in background")
+        return CoverBackfill(queued = targets.size)
+    }
+
+    /**
+     * 等待后台补抓结束（**只给单测/运维脚本用**，生产路径绝不调它）。
+     *
+     * 没有后台任务时立即返回：调用方不必关心当前走的是同步还是后台模式。
+     */
+    suspend fun awaitCoverBackfill() {
+        coverBackfillJob?.join()
+    }
+
+    /** 同步/后台共用的那一轮补抓：逐本走三态，任何单本失败只计数、绝不中断整批。 */
+    private fun runCoverBackfill(
+        worker: CoverBackfiller,
+        targets: List<BackupShelfEntry>,
+        shouldContinue: () -> Boolean,
+    ): CoverBackfill {
         // 计数器跨线程累加 ⇒ 必须原子（普通 Int 会被并发丢失增量，让"失败张数"报少）
         val fetched = AtomicInteger()
         val failed = AtomicInteger()
         val resourced = AtomicInteger()
-        // 回源要给每本失败的书各抓一次详情页（比下载图片贵得多）⇒ 单独一个更小的预算。
-        val resourcedBudget = AtomicInteger(MAX_COVER_RESOURCE)
-        val pool = Executors.newFixedThreadPool(COVER_FETCH_CONCURRENCY)
-        try {
-            targets.map { entry ->
-                pool.submit {
-                    val identity = CoverBookRef(entry.name, entry.sourceId, entry.bookUrl)
-                    // 第 1 步：备份里的地址
-                    val fromBackup = coverFromBackup(cache, entry, identity)
-                    if (fromBackup != null) {
-                        fetched.incrementAndGet()
-                        log("backup cover ok: ${entry.name}")
-                        return@submit
-                    }
-                    // 第 2 步：回源（书源详情 → 候选源）。预算用完就只计失败，绝不再拖时间。
-                    if (resourcedBudget.getAndDecrement() <= 0) {
-                        failed.incrementAndGet()
-                        log("backup cover failed (re-source budget exhausted): ${entry.name}")
-                        return@submit
-                    }
-                    val item = runCatching { database.getShelfBookByUrl(entry.bookUrl) }.getOrNull()
-                    val recovered = if (item != null) coverFromSources(cache, item) else null
-                    if (recovered != null) {
-                        fetched.incrementAndGet()
-                        resourced.incrementAndGet()
-                        log("backup cover re-sourced: ${entry.name}")
-                    } else {
-                        failed.incrementAndGet()
-                        log("backup cover failed (backup url + re-source both failed): ${entry.name}")
-                    }
+        CoverBackfillRunner.run(
+            items = targets,
+            shouldContinue = shouldContinue,
+            work = { entry -> backfillOne(worker, entry) },
+        ) { entry, result ->
+            when (result.outcome) {
+                CoverBackfillOutcome.DIRECT -> {
+                    fetched.incrementAndGet()
+                    log("backup cover ok: ${entry.name}")
                 }
-            }.forEach { runCatching { it.get(COVER_FETCH_TIMEOUT_SECONDS, TimeUnit.SECONDS) } }
-        } finally {
-            pool.shutdownNow()
+                CoverBackfillOutcome.RESOURCED -> {
+                    fetched.incrementAndGet()
+                    resourced.incrementAndGet()
+                    log("backup cover re-sourced: ${entry.name}")
+                }
+                CoverBackfillOutcome.FAILED -> {
+                    failed.incrementAndGet()
+                    log("backup cover failed (backup url + re-source both failed): ${entry.name}${result.note?.let { " [$it]" } ?: ""}")
+                }
+            }
         }
         log("backup cover summary: fetched=${fetched.get()} resourced=${resourced.get()} failed=${failed.get()} targets=${targets.size}")
         return CoverBackfill(fetched.get(), failed.get(), resourced.get())
     }
 
-    /** 封面补抓结果（如实回报给用户，见 [BackupImportSummary.coversFailed]）。 */
-    private data class CoverBackfill(val fetched: Int = 0, val failed: Int = 0, val resourced: Int = 0)
-
-    /** 第 1 步：下载备份里的 `coverUrl`（不覆写 `cover_url`，它本来就是来源）。 */
-    private fun coverFromBackup(cache: CoverCache, entry: BackupShelfEntry, identity: CoverBookRef): CachedCover? {
-        val url = entry.coverUrl?.takeIf { it.isNotBlank() } ?: return null
-        val cached = runCatching { cache.getIfCached(url, identity) ?: cache.cache(url, identity) }.getOrNull() ?: return null
-        return cached.takeIf { runCatching { database.updateBookshelfCover(entry.sourceId, entry.bookUrl, it.key, it.contentType) }.getOrDefault(false) }
-    }
-
     /**
-     * 第 2/3 步：回源取新地址并下载。
+     * 单本补抓：用**备份条目**的身份去落库（`sourceId`/`bookUrl` 以条目为准）。
      *
-     * 顺序：**本书源详情页的 `coverUrl`** → 候选源（`alternateSources`）各自的 `coverUrl` / 详情页。
-     * 下载带着**该书源的请求头**（`header` + `Cookie`）：详情页能过防盗链不代表裸请求也能过。
+     * 为什么条目身份优先于 `getShelfBookByUrl(bookUrl)` 查出来的那一行：`book_shelf` 主键是
+     * `(source_id, book_url)`，同一个 `bookUrl` 可能被两个书源共用 ⇒ 只按 `bookUrl` 查会
+     * 拿到"另一条"。封面必须写回**这本书自己那一行**，否则会出现「A 书的封面贴到 B 书」
+     * 的静默串号。候选源（`alternateSources`）仍从与条目同源的那一行取（有就带上）。
      */
-    private fun coverFromSources(cache: CoverCache, item: BookshelfItem): CachedCover? {
-        for (candidate in freshCoverCandidates(item)) {
-            val headers = headersOf(candidate.sourceId)
-            val cached = materializeCover(database, cache, item, candidate.url, headers) ?: continue
-            return cached
-        }
-        return null
+    private fun backfillOne(worker: CoverBackfiller, entry: BackupShelfEntry): CoverBackfillResult {
+        val shelf = runCatching { database.getShelfBookByUrl(entry.bookUrl) }.getOrNull()
+        // 只有「同源那一行」的信息（候选源/最近阅读）才可以借用，别的源的绝不能混进来。
+        val own = shelf?.takeIf { it.sourceId == entry.sourceId }
+        val item = BookshelfItem(
+            sourceId = entry.sourceId,
+            bookUrl = entry.bookUrl,
+            name = entry.name,
+            author = entry.author,
+            tocUrl = entry.tocUrl,
+            coverUrl = entry.coverUrl,
+            lastReadAt = own?.lastReadAt ?: 0L,
+            alternateSources = own?.alternateSources.orEmpty(),
+        )
+        return runCatching { worker.backfill(item, preferredUrl = entry.coverUrl) }
+            .getOrElse { CoverBackfillResult.failed(it.message) }
     }
 
-    /** 回源候选（**只读详情页，不写库**）。任何一步失败都静默跳过。 */
-    private fun freshCoverCandidates(item: BookshelfItem): List<CoverCandidate> {
-        if (runner == null && fetchDetails == null) return emptyList()
-        val candidates = mutableListOf<CoverCandidate>()
-        // ① 本书源
-        detailsOf(item.sourceId, item.bookUrl)?.coverUrl?.trim()?.takeIf { it.isNotEmpty() }
-            ?.let { candidates += CoverCandidate(it, item.sourceId) }
-        // ② 候选源：先用它手里现成的 coverUrl（免费），再试它的详情页
-        item.alternateSources.forEach { alternate ->
-            alternate.coverUrl?.trim()?.takeIf { it.isNotEmpty() }
-                ?.let { candidates += CoverCandidate(it, alternate.sourceId) }
-            detailsOf(alternate.sourceId, alternate.bookUrl)?.coverUrl?.trim()?.takeIf { it.isNotEmpty() }
-                ?.let { candidates += CoverCandidate(it, alternate.sourceId) }
-        }
-        return candidates.distinctBy { it.url }.take(MAX_COVER_RESOURCE_CANDIDATES)
-    }
-
-    /** 取详情页（书源可能已失效/登录态丢失 ⇒ 静默 null，由调用方计入失败）。 */
-    private fun detailsOf(sourceId: String, bookUrl: String): BookDetails? {
-        val injected = fetchDetails
-        if (injected != null) return runCatching { injected(sourceId, bookUrl) }.getOrNull()
-        val ruleRunner = runner ?: return null
-        // loc_book 没有在线详情页，交给 fetchBookDetails 里的本地分支处理
-        return runCatching { fetchBookDetails(database, ruleRunner, sourceId, bookUrl) }.getOrNull()
-    }
-
-    /** 该书源自带的请求头（`header` + 已落库的 Cookie）；拿不到就空表。 */
-    private fun headersOf(sourceId: String): Map<String, String> {
-        val ruleRunner = runner ?: return emptyMap()
-        return runCatching { database.getSource(sourceId)?.let { ruleRunner.mediaHeaders(it.json, sourceId) } }.getOrNull().orEmpty()
-    }
-
-    private data class CoverCandidate(val url: String, val sourceId: String)
+    /** 封面补抓结果（如实回报给用户，见 [BackupImportSummary.coversFailed] / [BackupImportSummary.coversQueued]）。 */
+    private data class CoverBackfill(
+        val fetched: Int = 0,
+        val failed: Int = 0,
+        val resourced: Int = 0,
+        /** 已受理、转入后台补抓的本数（同步模式下恒为 0）。 */
+        val queued: Int = 0,
+    )
 
     private fun readSection(zip: ZipFile, entries: List<ZipEntry>, fileName: String): String? {
         // ⚠️ 比较必须**两侧都转小写**：包内条目大小写与调用方传参不一致（真实备份是
@@ -441,18 +450,11 @@ class BackupImporter(
     private companion object {
         const val MAX_ENTRY_BYTES = 64L * 1024 * 1024
         const val MAX_TOTAL_BYTES = 256L * 1024 * 1024
-        /** 单次导入最多补抓的封面数，避免大书架把导入请求拖到超时。 */
-        const val MAX_COVER_BACKFILL = 300
-        /**
-         * 单次导入最多**回源**几次（每本失败的书要额外抓一次详情页，比下载图片贵得多）。
-         *
-         * 取值依据：回源并发 [COVER_FETCH_CONCURRENCY]=6、单本超时 15s ⇒ 最坏额外 ≈ 60/6×15 = 150s。
-         * 再多就会让"导入"这个同步接口在浏览器里看起来像卡死（封面只是增强，不能拖垮主流程）。
-         */
-        const val MAX_COVER_RESOURCE = 60
-        /** 单本书最多试几个回源候选（本书源详情 + 候选源现成 coverUrl/详情）。 */
-        const val MAX_COVER_RESOURCE_CANDIDATES = 4
-        const val COVER_FETCH_CONCURRENCY = 6
-        const val COVER_FETCH_TIMEOUT_SECONDS = 15L
+        // ⚠️ 这里**刻意没有任何补抓数量上限**：用户明确要求「导入时优先全补上，不限数量上限」。
+        // 曾经存在的 `MAX_COVER_BACKFILL = 300`（补抓总数）与 `MAX_COVER_RESOURCE = 60`（回源次数）
+        // 会让大批量导入提前耗尽预算（实测真实 220 本备份：备份 URL 成功 3、回源成功 59、仍失败 153，
+        // 其中 60 次预算正是回源被截断的原因）。
+        // **资源上限**（并发 / 单本超时 / 单本候选数）保留在 [CoverBackfillRunner] 与 [CoverBackfiller]：
+        // 那些是防止拖垮服务的，不是数量配额。
     }
 }

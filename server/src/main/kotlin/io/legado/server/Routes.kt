@@ -46,6 +46,9 @@ import java.util.concurrent.atomic.AtomicInteger
  */
 private const val MAX_LOCAL_BOOK_BYTES = 20L * 1024 * 1024
 
+/** 手动触发封面自愈时的单轮上限硬顶（防止一次管理请求把整架书都丢给上游）。 */
+private const val MAX_SELF_HEAL_LIMIT = 500
+
 fun Route.apiRoutes(
     database: Database,
     auth: AuthService,
@@ -82,6 +85,11 @@ fun Route.apiRoutes(
      * 可为 null ⇒ 插图代理路由关闭（老测试构造 `apiRoutes` 时不必关心它）。
      */
     illustrationCache: IllustrationCache? = null,
+    /**
+     * 封面常驻自愈（[CoverSelfHeal]）。可为 null ⇒ 手动触发路由关闭
+     * （老测试构造 `apiRoutes` 时不必关心它；定时巡检在 `Application` 里另有一份接线）。
+     */
+    coverSelfHeal: CoverSelfHeal? = null,
 ) {
     val webView = WebViewProxy(database)
 
@@ -2120,6 +2128,28 @@ fun Route.apiRoutes(
                     resourced = resourced.get(),
                 )
             )
+        }
+        /**
+         * 封面**常驻自愈**：手动触发一轮（运维/验收入口）。
+         *
+         * 与 `POST /bookshelf/refresh-covers` 的区别（两者刻意分开，语义不同）：
+         * - `refresh-covers` 是**一次性修复历史数据**，条件是「`cover_key` 为空**且**有 `cover_url`」；
+         * - 本接口跑的是**常驻 worker 的同一轮逻辑**（[CoverSelfHeal.runOnce]），条件是
+         *   「`cover_key` 为空 **或** `cover_key` 定位不到文件」—— 后者正是「后期封面丢了」
+         *   （磁盘清理/误删/换卷），`refresh-covers` 永远修不到它（它按 `cover_key` 为空过滤）。
+         *
+         * 参数：`?limit=N` 覆盖单轮上限（默认 20，上限 500）。手动触发**忽略失败退避**
+         * （用户点了"现在就补"不该被退避挡住），但不忽略单轮上限（那是防拖垮服务的资源上限）。
+         *
+         * 同步返回本轮结果（每轮最多 20 本、并发 6、单本 15s ⇒ 最坏约 50s，且只阻塞**这一次**管理请求）。
+         */
+        post("/bookshelf/self-heal-covers") {
+            if (auth.requireSession(call, true) == null) return@post
+            val worker = coverSelfHeal
+                ?: return@post call.respond(HttpStatusCode.ServiceUnavailable, ApiError("selfheal_disabled", "封面自愈未启用"))
+            val limit = call.request.queryParameters["limit"]?.toIntOrNull()?.coerceIn(1, MAX_SELF_HEAL_LIMIT)
+            val result = withContext(Dispatchers.IO) { worker.runOnce(force = true, limitOverride = limit) }
+            call.respond(result)
         }
         /**
          * 用**存量原始文件**重新解析本地书，覆盖目录与正文缓存。

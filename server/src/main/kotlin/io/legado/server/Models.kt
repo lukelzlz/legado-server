@@ -976,6 +976,17 @@ data class BackupImportSummary(
      * 而不是静默吞掉。
      */
     val coversFailed: Int = 0,
+    /**
+     * 已**受理**、转入**后台**补抓的本数（导入接口不再等封面抓完就返回）。
+     *
+     * 与 [coversFetched] 的关系：同步模式下它恒为 0（抓完才返回，计数在
+     * `coversFetched/coversFailed`）；后台模式下 `coversFetched/coversFailed/coversResourced`
+     * 都还来不及有结果（如实为 0），真正受理了多少本由本字段说明。
+     *
+     * 为什么不再有「补抓数量上限」：用户明确要求「导入时优先全补上，不限数量上限」。
+     * 没补上的书由 `CoverSelfHeal` 的常驻巡检在之后自动接续（后期封面丢了同样由它补）。
+     */
+    val coversQueued: Int = 0,
     /** 新增的书签数。 */
     val bookmarks: Int = 0,
     /** 因所属书籍未导入（**仅本地图书**）而跳过的书签数。 */

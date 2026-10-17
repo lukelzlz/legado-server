@@ -849,15 +849,10 @@ fun Route.apiRoutes(
                     withTimeout(4000) {
                         // 书籍上下文（含变量）同样要进目录规则：Legado 的 `getChapters(book)` 就带着 Book。
                         val book = database.bookContext(request.sourceId, request.bookUrl)
-                        val chapters = runCatching { runner.chapters(source.json, request.bookUrl, book) }.getOrElse {
-                            val details = runner.details(source.json, request.bookUrl, book)
-                            val toc = runner.chapters(source.json, details.tocUrl, book)
-                            database.saveTocCache(request.sourceId, details.tocUrl, toc)
-                            toc
-                        }
-                        if (chapters.isNotEmpty()) {
-                            database.saveTocCache(request.sourceId, request.bookUrl, chapters)
-                        }
+                        // 与后台缓存**共用同一个**取目录实现（含 details 回退），杜绝"能读不能缓存"。
+                        val chapters = resolveBookChapters(
+                            database, runner, request.sourceId, request.bookUrl, source.json, book,
+                        )
                         database.persistBookVariables(book)
                         chapters
                     }
@@ -2624,6 +2619,60 @@ internal fun tryCacheCover(coverCache: CoverCache, primaryUrl: String?, alternat
  * 书源侧的失败（[RuleExecutionException] 等）原样抛出，由调用方决定转成 HTTP 提示还是计入 failed。
  * **不要在这里把异常吞掉**：`/books/details` 依赖它把书源错误转成明确提示（`source_execution_failed`）。
  */
+/**
+ * 取一本书的目录 —— **阅读路径与后台缓存共用这一份**。
+ *
+ * 历史缺陷（2026-10-17 实测）：后台批量缓存过去直接 `runner.chapters(source, tocUrl)` 只试一次，
+ * 而阅读路径 `/books/chapters` 在失败时会先 `details()` 拿到真正的 tocUrl 再重试。
+ * 聚合源（`data:;base64,…` 的书号/书名）在书架里存的 `toc_url` 可能是一次性错误载荷，
+ * 于是出现「**能读不能缓存**」：阅读器 200 拿到 462 章，缓存却 failed / 目录规则未提取到章节。
+ *
+ * 顺序：TOC 缓存 → [tocUrlHint]（书架里存的） → [bookUrl] → details(bookUrl).tocUrl。
+ * 命中后统一把目录写进 TOC 缓存，并返回章列表（空列表表示真的取不到）。
+ */
+internal suspend fun resolveBookChapters(
+    database: Database,
+    runner: RuleRunner,
+    sourceId: String,
+    bookUrl: String,
+    sourceJson: String,
+    bookContext: BookContext,
+    tocUrlHint: String? = null,
+): List<Chapter> {
+    val cacheKeys = listOfNotNull(
+        bookUrl,
+        tocUrlHint?.takeIf { it.isNotBlank() && it != bookUrl },
+        bookUrl.removeSuffix("/toc") + "/toc",
+    ).distinct()
+    for (key in cacheKeys) {
+        val cached = database.getTocCache(sourceId, key)
+        if (!cached.isNullOrEmpty()) return cached
+    }
+
+    val candidates = listOfNotNull(
+        tocUrlHint?.takeIf { it.isNotBlank() && it != bookUrl },
+        bookUrl,
+    ).distinct()
+    for (url in candidates) {
+        // 单次失败不抛出：继续试下一个候选（最后还有 details 回退），
+        // 这样"某个 url 不可用"不会让整本书的缓存直接失败。
+        val chapters = runCatching { runner.chapters(sourceJson, url, bookContext) }.getOrNull().orEmpty()
+        if (chapters.isNotEmpty()) {
+            database.saveTocCache(sourceId, url, chapters)
+            if (url != bookUrl) database.saveTocCache(sourceId, bookUrl, chapters)
+            return chapters
+        }
+    }
+
+    val details = runner.details(sourceJson, bookUrl, bookContext)
+    val toc = runner.chapters(sourceJson, details.tocUrl, bookContext)
+    if (toc.isNotEmpty()) {
+        database.saveTocCache(sourceId, details.tocUrl, toc)
+        database.saveTocCache(sourceId, bookUrl, toc)
+    }
+    return toc
+}
+
 internal fun fetchBookDetails(database: Database, runner: RuleRunner, sourceId: String, bookUrl: String): BookDetails? {
     if (sourceId == LocalBookParser.LOC_BOOK_SOURCE_ID) {
         val shelf = database.listBookshelf().firstOrNull { it.sourceId == sourceId && it.bookUrl == bookUrl } ?: return null

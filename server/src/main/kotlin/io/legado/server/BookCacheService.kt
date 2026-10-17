@@ -16,6 +16,7 @@ import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
 import java.util.concurrent.atomic.AtomicLong
 
 class BookCacheService(private val database: Database, private val runner: RuleRunner, private val log: (String) -> Unit) {
@@ -86,13 +87,16 @@ class BookCacheService(private val database: Database, private val runner: RuleR
             // 离线缓存也必须带书籍上下文：缓存的正文/目录要跟在线读**一模一样**，
             // 否则按音色/线路参数分派的源会缓存出错版本的正文（Legado 的 CacheBook 同样带着 Book）。
             val bookContext = database.bookContext(book.sourceId, book.bookUrl)
-            val chapters = withContext(Dispatchers.IO) { runner.chapters(source.json, book.tocUrl, bookContext) }
+            // 取目录与阅读路径**共用同一实现**（含 details 回退）：聚合源书架里存的 toc_url
+            // 可能是一次性错误载荷，过去这里只试一次 ⇒ 出现"能读不能缓存"（实测 462 章的书缓存 0 章）。
+            val chapters = withContext(Dispatchers.IO) {
+                resolveBookChapters(
+                    database, runner, book.sourceId, book.bookUrl, source.json, bookContext,
+                    tocUrlHint = book.tocUrl,
+                )
+            }
             database.persistBookVariables(bookContext)
             if (chapters.isEmpty()) throw RuleExecutionException("目录规则未提取到章节")
-            database.saveTocCache(book.sourceId, book.tocUrl, chapters)
-            if (book.bookUrl != book.tocUrl) {
-                database.saveTocCache(book.sourceId, book.bookUrl, chapters)
-            }
 
             // Slice chapters by range if specified
             val targetChapters = if (book.startIndex != null || book.endIndex != null || book.count != null) {
@@ -116,6 +120,9 @@ class BookCacheService(private val database: Database, private val runner: RuleR
             database.beginBookCache(book.sourceId, book.bookUrl, chapters.size)
 
             val failures = AtomicInteger(0)
+            // 只记**第一条**失败原因：过去这里静默只计数，用户只看到"N 章未缓存"，
+            // 完全无从判断是上游登录态、网络不通还是规则问题。
+            val firstFailure = AtomicReference<String?>(null)
             val cachedCount = AtomicInteger(alreadyCached.size)
             val lastProgressUpdate = AtomicLong(0L)
             val semaphore = Semaphore(CACHE_CONCURRENCY)
@@ -150,6 +157,9 @@ class BookCacheService(private val database: Database, private val runner: RuleR
                                     }
                                 } catch (error: Throwable) {
                                     if (error is CancellationException) throw error
+                                    if (firstFailure.compareAndSet(null, "${chapter.url}: ${error.message}")) {
+                                        log("chapter cache failed: ${chapter.url}, error=${error.message}")
+                                    }
                                     failures.incrementAndGet()
                                 }
                             }
@@ -162,7 +172,10 @@ class BookCacheService(private val database: Database, private val runner: RuleR
             }
 
             val totalFailures = failures.get()
-            val error = if (totalFailures == 0) null else "$totalFailures 章未缓存"
+            val error = if (totalFailures == 0) null else {
+                val reason = firstFailure.get()
+                if (reason == null) "$totalFailures 章未缓存" else "$totalFailures 章未缓存（首条原因：$reason）"
+            }
             database.finishBookCache(book.sourceId, book.bookUrl, error)
             log("book cache completed: ${book.bookUrl}, chapters=${chapters.size}, skipped=${alreadyCached.size}, failures=$totalFailures")
         } catch (error: Throwable) {

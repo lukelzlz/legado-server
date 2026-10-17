@@ -745,6 +745,7 @@ mark.search-highlight { background: var(--accent-soft); color: var(--accent); fo
 .shelf-card-badge.failed { background: rgba(210, 45, 45, 0.88); color: #fff; }
 .shelf-card-tag-local { position: absolute; top: 8px; left: 8px; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: 600; background: rgba(14, 116, 144, 0.9); color: #fff; letter-spacing: 0.5px; backdrop-filter: blur(6px); box-shadow: 0 2px 6px rgba(0,0,0,.15); }
 .shelf-card-tag-comic { position: absolute; top: 8px; right: 8px; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: 600; background: rgba(180, 83, 9, 0.92); color: #fff; letter-spacing: 0.5px; backdrop-filter: blur(6px); box-shadow: 0 2px 6px rgba(0,0,0,.15); }
+.shelf-card-tag-audio { position: absolute; top: 8px; right: 8px; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: 600; background: rgba(29, 78, 216, 0.92); color: #fff; letter-spacing: 0.5px; backdrop-filter: blur(6px); box-shadow: 0 2px 6px rgba(0,0,0,.15); }
 .shelf-header-actions { display: flex; align-items: center; gap: 12px; }
 .shelf-import-btn { display: inline-flex; align-items: center; gap: 6px; padding: 6px 14px; border-radius: 8px; font-size: 13px; font-weight: 550; cursor: pointer; border: 1px solid var(--line); background: var(--surface); color: var(--ink); transition: all .15s ease; }
 .shelf-import-btn:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
@@ -6141,3 +6142,80 @@ mark.search-highlight { background: var(--accent-soft); color: var(--accent); fo
 }
 
 
+
+
+/* ==========================================================================
+   有声书播放器（方案 G2 · PROPOSAL-029 / ADR-029）
+   —— 版式参考 `有声书阅读器参考/`，皮肤**全部走主题变量**（light/paper/dark 零额外适配）。
+   严禁在此写死任何颜色：主题切换只靠 --canvas/--surface/--ink/--muted/--line/--accent 这套变量。
+   ========================================================================== */
+.audiobook-workspace { position: relative; min-height: 100vh; min-height: 100dvh; display: flex; flex-direction: column; background: var(--canvas); color: var(--ink); }
+/* 封面模糊底衬：独立图层 + filter: blur()，**刻意不用 backdrop-filter**
+   —— AGENTS.md：backdrop-filter 会破坏 position: fixed 的包含块，浮层会被困在容器里。 */
+.audiobook-backdrop { position: absolute; inset: 0; z-index: 0; overflow: hidden; pointer-events: none; }
+.audiobook-backdrop img { width: 100%; height: 100%; object-fit: cover; filter: blur(52px) saturate(1.15); opacity: .18; transform: scale(1.25); }
+.audiobook-header { position: relative; z-index: 3; flex-shrink: 0; }
+.audiobook-body { position: relative; z-index: 2; flex: 1; min-height: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 20px; padding: 14px clamp(16px, 5vw, 40px) 20px; overflow-y: auto; }
+.audiobook-cover-section { flex-shrink: 0; animation: audiobook-fade .5s ease; }
+.audiobook-cover-wrapper { position: relative; width: min(240px, 54vw); aspect-ratio: 1 / 1; border-radius: 20px; overflow: hidden; background: var(--accent-soft); box-shadow: var(--shadow), 0 20px 60px color-mix(in srgb, var(--ink) 22%, transparent); }
+.audiobook-cover { display: block; width: 100%; height: 100%; object-fit: cover; }
+.audiobook-cover-fallback { display: grid; place-items: center; font-family: Georgia, "Noto Serif SC", serif; font-size: 76px; font-weight: 600; color: var(--accent); }
+.audiobook-cover-overlay { position: absolute; inset: 0; pointer-events: none; background: linear-gradient(transparent 52%, color-mix(in srgb, var(--ink) 32%, transparent)); }
+.audiobook-playing { position: absolute; right: 13px; bottom: 13px; display: flex; gap: 3px; opacity: 0; transition: opacity .3s ease; }
+.audiobook-playing.active { opacity: 1; }
+.audiobook-playing .bar { display: block; width: 3px; height: 16px; border-radius: 2px; background: var(--accent); animation: audiobook-wave 1s ease-in-out infinite; }
+.audiobook-playing .bar:nth-child(2) { animation-delay: .12s; }
+.audiobook-playing .bar:nth-child(3) { animation-delay: .24s; }
+.audiobook-playing .bar:nth-child(4) { animation-delay: .36s; }
+@keyframes audiobook-wave { 0%, 100% { transform: scaleY(.35); } 50% { transform: scaleY(1); } }
+@keyframes audiobook-fade { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+.audiobook-content { width: min(560px, 100%); display: flex; flex-direction: column; gap: 14px; }
+.audiobook-info { text-align: center; }
+.audiobook-episode-title { margin: 0; font-size: 16px; font-weight: 650; line-height: 1.35; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.audiobook-book-title { margin: 4px 0 0; font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.audiobook-track-info { margin: 6px 0 0; font-size: 11px; color: var(--accent); font-variant-numeric: tabular-nums; }
+.audiobook-progress-section { display: grid; gap: 8px; }
+.audiobook-progress { -webkit-appearance: none; appearance: none; width: 100%; height: 4px; border-radius: 2px; outline: none; cursor: pointer;
+  background: linear-gradient(to right, var(--accent) 0%, var(--accent) var(--audiobook-progress, 0%), var(--line) var(--audiobook-progress, 0%), var(--line) 100%); }
+.audiobook-progress::-webkit-slider-thumb { -webkit-appearance: none; width: 13px; height: 13px; border-radius: 50%; background: var(--surface); border: 2px solid var(--accent); box-shadow: 0 2px 8px color-mix(in srgb, var(--accent) 40%, transparent); cursor: grab; }
+.audiobook-progress::-moz-range-thumb { width: 12px; height: 12px; border-radius: 50%; background: var(--surface); border: 2px solid var(--accent); cursor: grab; }
+.audiobook-time-display { display: flex; justify-content: space-between; color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+.audiobook-controls { display: flex; align-items: center; justify-content: center; gap: clamp(10px, 4vw, 20px); }
+.audiobook-control { display: grid; place-items: center; padding: 8px; border: 0; background: none; color: var(--ink); cursor: pointer; transition: transform .15s ease, color .15s ease, opacity .15s ease; }
+.audiobook-control svg { fill: currentColor; }
+.audiobook-control.small { opacity: .72; }
+.audiobook-control.small:hover { opacity: 1; color: var(--accent); }
+.audiobook-control.small svg { width: 22px; height: 22px; }
+.audiobook-skip { position: relative; }
+.audiobook-skip-value { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -52%); font-size: 9px; font-weight: 700; font-variant-numeric: tabular-nums; color: var(--muted); pointer-events: none; }
+.audiobook-skip.forward svg { transform: scaleX(-1); }
+.audiobook-control.main { width: 64px; height: 64px; border-radius: 50%; background: var(--accent); color: var(--surface); box-shadow: 0 8px 25px color-mix(in srgb, var(--accent) 35%, transparent); }
+.audiobook-control.main:hover { transform: scale(1.05); }
+.audiobook-control.main:active { transform: scale(.98); }
+.audiobook-control.main svg { width: 24px; height: 24px; }
+.audiobook-status { margin: 0; color: var(--muted); font-size: 12px; text-align: center; }
+.audiobook-track-failed { display: flex; gap: 9px; align-items: flex-start; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-muted); color: var(--muted); font-size: 12px; line-height: 1.6; }
+.audiobook-track-failed svg { width: 17px; height: 17px; flex: none; margin-top: 1px; color: var(--accent); }
+.audiobook-error-box { width: 100%; }
+.audiobook-audio { display: none; }
+.audiobook-offline-banner { position: relative; z-index: 3; }
+.audiobook-bottom-controls { position: relative; z-index: 3; flex-shrink: 0; display: grid; grid-template-columns: repeat(5, 1fr); gap: 4px; padding: 10px 8px calc(10px + var(--safe-bottom)); border-top: 1px solid var(--line); background: color-mix(in srgb, var(--surface) 92%, transparent); }
+.audiobook-feature { display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 6px 4px; border: 0; border-radius: 8px; background: none; color: var(--muted); font-size: 10px; cursor: pointer; transition: color .15s ease, background .15s ease; }
+.audiobook-feature:hover, .audiobook-feature.active { color: var(--accent); background: var(--accent-soft); }
+.audiobook-feature-value { display: grid; place-items: center; min-height: 20px; font-size: 13px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.audiobook-feature-value svg { width: 18px; height: 18px; }
+/* 倍速弹窗的遮罩**直接复用项目既有的 `.modal-backdrop`**（避免第二套遮罩实现，且它的
+   半透明黑是按全站统一口径给的）；这里只定义面板本身，且**全部用主题变量**。 */
+.audiobook-modal { width: min(420px, 100%); overflow: hidden; border: 1px solid var(--line); border-radius: 16px; background: var(--surface); color: var(--ink); box-shadow: 0 24px 64px color-mix(in srgb, var(--ink) 34%, transparent); animation: scaleUp .18s cubic-bezier(.25, 1, .5, 1); }
+.audiobook-modal-header { display: flex; align-items: center; justify-content: space-between; padding: 13px 16px; border-bottom: 1px solid var(--line); }
+.audiobook-modal-body { display: grid; gap: 14px; padding: 18px; }
+.audiobook-rate-value { margin: 0; color: var(--accent); font-size: 34px; font-weight: 700; font-variant-numeric: tabular-nums; text-align: center; }
+.audiobook-rate-slider { width: 100%; accent-color: var(--accent); }
+.audiobook-rate-presets { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.audiobook-rate-reset { min-height: 34px; border-radius: 6px; cursor: pointer; }
+/* 宽屏双栏（G10）：封面在左、控制区在右 */
+@media (min-width: 900px) {
+  .audiobook-body { flex-direction: row; align-items: center; justify-content: center; gap: clamp(32px, 6vw, 72px); }
+  .audiobook-content { width: min(420px, 46vw); }
+  .audiobook-cover-wrapper { width: min(280px, 30vw); }
+}

@@ -175,6 +175,14 @@ class BookProgressSync(
         chapterIndex: Int,
         chapterTitle: String,
         chapterPos: Int = 0,
+        /**
+         * **有声书**的章内毫秒位置。
+         *
+         * 非空时**覆盖**写进 `durChapterPos` —— 手机端的 `durChapterPos` 对音频就是毫秒，
+         * 与我们 `reading_progress.position_ms` **同语义**，属于"我们负责的字段"（G11）。
+         * 为空时保持既有行为：沿用文件里手机端写的值（文本/漫画的字符偏移量我们无权改写）。
+         */
+        positionMs: Long? = null,
     ): Boolean = runCatching {
         val dir = ensureDirectory() ?: return@runCatching false
         val existing = findFile(bookName, author)
@@ -189,7 +197,13 @@ class BookProgressSync(
         val payload = buildJsonObject {
             put("author", JsonPrimitive(previous?.get("author")?.jsonPrimitive?.contentOrNull ?: author ?: ""))
             put("durChapterIndex", JsonPrimitive(chapterIndex))
-            put("durChapterPos", JsonPrimitive(previous?.get("durChapterPos")?.jsonPrimitive?.intOrNull ?: chapterPos))
+            put(
+                "durChapterPos",
+                JsonPrimitive(
+                    positionMs?.toInt()
+                        ?: (previous?.get("durChapterPos")?.jsonPrimitive?.intOrNull ?: chapterPos),
+                ),
+            )
             put("durChapterTime", JsonPrimitive(System.currentTimeMillis()))
             put("durChapterTitle", JsonPrimitive(chapterTitle))
             put("name", JsonPrimitive(previous?.get("name")?.jsonPrimitive?.contentOrNull ?: bookName))

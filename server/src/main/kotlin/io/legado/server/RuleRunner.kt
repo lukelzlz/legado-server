@@ -642,6 +642,145 @@ class RuleRunner(private val responseFetcher: ((String) -> String)? = null, inte
     fun mediaHeaders(sourceJson: String, sourceId: String? = null): Map<String, String> =
         runCatching { parseSourceHeaders(sourceJson.objectValue(), sourceId) }.getOrDefault(emptyMap())
 
+    // ------------------------------------------------------------------
+    // 有声书（方案 G2）：章节音频地址解析
+    // ------------------------------------------------------------------
+
+    /**
+     * 解析一章的**有序音频分段清单**——与 [mangaImages] 完全同构，只换最后一步的取值语义。
+     *
+     * 三种形态（G1）：
+     * ① **纯文本 URL**（一行一个，Legado 多值规则默认 `\n` 连接）；
+     * ② **JSON 数组**（多分段，**保序**；元素可以是字符串，也可以是 `{url, headers}` 对象）；
+     * ③ **`url,{"headers":{...}}` 扩展头**（每段可带独立请求头，必须随分段一起交给 Fetcher，否则重拉 403）。
+     *
+     * 另额外兼容 HTML 片段里的 `<audio src>` / `<source src>`（部分源的音频规则直接给标签）。
+     *
+     * @return 有序分段规格；**不含上游 URL 的下发**，URL 只留在服务端（见 `AudioCache` 的 key 语义）。
+     */
+    fun audioTracks(sourceJson: String, chapterUrl: String, bookName: String? = null): List<AudioTrackSpec> {
+        val source = sourceJson.objectValue()
+        val sourceUrl = source.string("bookSourceUrl")
+
+        // JS 书源（mainJs）：走 JsSourceRunner 取回文本，再从中提取音频地址
+        if (source.string("mainJs")?.isNotBlank() == true) {
+            val result = JsSourceRunner(this, source).content(chapterUrl)
+            return normalizeTracks(splitAudioTracks(result.content), chapterUrl)
+        }
+
+        return jsSandbox.withSourceContext(
+            sourceContext(source, sourceUrl).let { it.copy(chapterUrl = chapterUrl) },
+        ) {
+            val rule = source.objectValue("ruleContent") ?: throw RuleExecutionException("该书源未配置 ruleContent")
+            val dataPayload = dataUrlPayload(chapterUrl)
+            val body: String
+            val root: NodeValue
+            if (dataPayload != null) {
+                body = dataPayload
+                root = NodeValue.json(dataPayload)
+            } else {
+                val (url, options) = splitUrlOptions(chapterUrl)
+                val mergedOptions = mergeOptions(parseSourceHeaders(source, sourceUrl), options)
+                body = fetchUrl(url, mergedOptions, null, sourceUrl, database)
+                root = NodeValue.document(body)
+            }
+            val raw = root.value(rule.string("content"), jsSandbox, body, chapterUrl)?.trim() ?: ""
+            normalizeTracks(splitAudioTracks(raw), chapterUrl)
+        }
+    }
+
+    /**
+     * 把相对地址补全到章节页，并**保序去重**。
+     *
+     * 为什么去重：对外 key = `sha256(sourceId + '\n' + url)` 是 `audio_cache` 的主键，
+     * 同一章里出现两条完全相同的地址只会互相覆盖（`segment_index` 丢失），
+     * 因此与漫画清单保持同一口径（同一地址只保留首次出现的位置）。
+     */
+    private fun normalizeTracks(tracks: List<AudioTrackSpec>, chapterUrl: String): List<AudioTrackSpec> {
+        val seen = mutableSetOf<String>()
+        return tracks.mapNotNull { spec ->
+            val url = spec.url.absolute(chapterUrl).trim()
+            if (url.isBlank()) return@mapNotNull null
+            if (!seen.add("$url\u0000${spec.headersJson.orEmpty()}")) return@mapNotNull null
+            spec.copy(url = url)
+        }
+    }
+
+    /**
+     * 从规则求值所得的字符串里提取有序音频分段。
+     *
+     * 拆分顺序：JSON 数组 → HTML `<audio>/<source>` → 换行纯文本。
+     * 元素级的 `url,{"headers":…}` / `{"url":…,"headers":…}` 拆解见 [parseAudioTrackItem]。
+     */
+    internal fun splitAudioTracks(raw: String?): List<AudioTrackSpec> {
+        if (raw.isNullOrBlank()) return emptyList()
+        val items = mutableListOf<String>()
+
+        // ① JSON 数组：既可能是 ["url1","url2"]，也可能是 [{"url":…,"headers":…}]
+        val trimmed = raw.trim()
+        if (trimmed.startsWith("[")) {
+            val parsed = runCatching { Json.parseToJsonElement(trimmed) }.getOrNull() as? JsonArray
+            if (parsed != null) {
+                parsed.forEach { element ->
+                    when (element) {
+                        is JsonPrimitive -> element.contentOrNull?.let { items += it }
+                        // 对象形态：**整条对象**交给 parseAudioTrackItem
+                        //（它才知道怎么取 `headers`；只取 url 会把每段专属头静默丢掉 ⇒ 重拉 403）
+                        is JsonObject -> items += element.toString()
+                        else -> Unit
+                    }
+                }
+            }
+        }
+
+        // ② HTML 片段：<audio src> / <source src>（含 <audio><source src=…></audio> 的嵌套形态）
+        if (items.isEmpty()) {
+            val doc = Jsoup.parse(raw)
+            val selected = doc.select("audio[src], source[src]")
+            if (selected.isNotEmpty()) selected.forEach { items += it.attr("src") }
+        }
+
+        // ③ 换行分隔的纯文本（Legado 多元素规则的默认连接符）
+        if (items.isEmpty()) items += raw.lines()
+
+        return items.mapNotNull(::parseAudioTrackItem)
+    }
+
+    /**
+     * 拆解单条音频项，**同时支持两种扩展头写法**：
+     * - `https://a/b.mp3,{"headers":{"Referer":"…"}}`（Legado 的 `url,{options}` 形态）
+     * - `{"url":"https://a/b.mp3","headers":{"Referer":"…"}}`（对象形态）
+     *
+     * 认不出来就当作**裸 URL**（绝不因为"选项解析失败"而丢掉整条音频——
+     * 静默丢数据比报错危险得多，而裸 URL 至少还能播）。
+     */
+    internal fun parseAudioTrackItem(rawItem: String): AudioTrackSpec? {
+        val item = rawItem.trim().trim(',', ' ').removeSurrounding("\"").trim()
+        if (item.isEmpty()) return null
+
+        if (item.startsWith("{")) {
+            val obj = runCatching { Json.parseToJsonElement(item).jsonObject }.getOrNull()
+                ?: return AudioTrackSpec(item, null)
+            val url = obj.string("url") ?: obj.string("src") ?: return null
+            return AudioTrackSpec(cleanAudioUrl(url), obj["headers"]?.toString())
+        }
+
+        // `,{` 与 URL 编码后的 `,%7B` 都出现过（上游/书源会自行编码）
+        val plainIndex = item.indexOf(",{").takeIf { it >= 0 } ?: Int.MAX_VALUE
+        val encodedIndex = item.indexOf(",%7B", ignoreCase = true).takeIf { it >= 0 } ?: Int.MAX_VALUE
+        val index = minOf(plainIndex, encodedIndex)
+        if (index == Int.MAX_VALUE) return AudioTrackSpec(cleanAudioUrl(item), null)
+
+        val url = cleanAudioUrl(item.substring(0, index))
+        val optionsText = item.substring(index + 1).trim()
+        val headers = runCatching {
+            Json.parseToJsonElement(optionsText).jsonObject["headers"]?.toString()
+        }.getOrNull()
+        return AudioTrackSpec(url, headers)
+    }
+
+    private fun cleanAudioUrl(url: String): String = url.trim().trimEnd(',', ' ')
+
     fun parseLoginUi(sourceJson: String): List<SourceLoginUiItem> {
         val source = sourceJson.objectValue()
         val sourceUrl = source.string("bookSourceUrl") ?: ""

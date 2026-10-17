@@ -1,0 +1,136 @@
+---
+id: ADR-029
+title: 采用单进程内嵌式整章音频缓存与流式 Range 直出体系 (方案G2) 支持有声书
+status: accepted
+date: 2026-10-12
+---
+
+# ADR-029: 采用单进程内嵌式整章音频缓存与流式 Range 直出体系 (方案G2) 支持有声书
+
+> 本文件原编号 `ADR-023`（PR #46）。因 `023` 在 `main` 上已被「网络导入预览缓存」占用，
+> 按仓库规范**整体顺延为 `ADR-029`**（配套 `PROPOSAL-029` / `ACCEPT-029`）。
+> **§2.6 与 §2.7 已按实际落地修正**（原文的进度方案在现状下会被 400 拒掉，见 §6）。
+
+## 1. 决策背景 (Context)
+
+为 `legado-server` 与 Web 客户端引入有声书（音频书源）支持时，面临核心架构与实现形态的权衡：
+
+1. **防盗链与音频托管需求**：
+   有声书源大多部署了严格的防盗链（`Referer`）、需要书源登录态（`CookieJar`）或图片/音视频扩展请求头（`url,{"headers": ...}`）。纯前端直连（方案 G1）无法突破此类防盗链，且无法支持离线收听与多端共享。
+2. **大字节流式传输与内存开销**：
+   音频文件体积较大（每章通常 10MB ~ 60MB，整本书几百 MB 到几 GB），严禁将整文件一次性读入 JVM 内存（`readAllBytes()`），且播放器拖动进度条要求服务端提供标准 HTTP `Range`（`206 Partial Content`）支持。
+3. **架构边界与复杂度惩罚**：
+   - 存在将音频抓取与存储拆解为独立多进程微服务（方案 G5 / MediaVault）的提案；
+   - 存在直接接入现有 TTS 会话链路（`/api/tts/*`）的设想。
+   必须依据项目宪法（`AGENTS.md`）与最近落地的漫画架构决策（`ADR-022`），在“系统韧性”、“复杂度惩罚”与“生态深度兼容”之间做出正确裁决。
+4. **Legado 安卓原版工程经验**：
+   原版通过 `WebBook.getContent()` 抓取音频 URL，底层采用 `AudioCacheManager`（按章落盘、`.part` 守卫、原子重命名转正）管理离线缓存，并以毫秒（`currentPosition`）记录 `durChapterPos`。
+
+---
+
+## 2. 裁定方案 (Decision)
+
+**裁定采用【方案 G2：单进程内嵌式整章音频缓存 + 流式 Range 直出体系】，并深度对齐 Legado 原版有声书生态规范**：
+
+1. **统一单进程架构，坚决否决多进程子服务 (No Multi-process MediaVault)**：
+   - 音频代抓、落盘、Range 直出与 GC 完全内嵌在 `legado-server`（端口 8080）中；
+   - 遵循 `ADR-022` 确立的单进程哲学，保持单 Docker 镜像、纯内嵌 SQLite 数据库自包含部署，杜绝跨进程 RPC、HMAC 签名与双写一致性风险。
+2. **规则层复用现有 `RuleRunner.content()` 机制**：
+   - 识别 `bookSourceType == 1` 与书架 `ShelfKind.AUDIO`；
+   - 对齐原版行为：音频源的媒体地址直接声明在 `ruleContent.content` 中，兼容纯文本 URL、JSON 数组（多分段音频）及带自定义请求头的扩展 URL，无需另外制造规则方言。
+3. **内容寻址原子落盘与大文件流式直出**：
+   - 存储路径采用两级散列目录：`data/legado-server/audio/<hash[0:2]>/<hash>`，文件名哈希为 `sha256(source_id + '\n' + 规范化URL)`，避免单目录文件过多；
+   - 落盘严格执行 `tmp_*.part` 临时文件 + `ATOMIC_MOVE` 原则，写入完成并校验字节后原子转正，杜绝半截脏缓存；
+   - 接口 `GET /api/audio/{key}` 实现流式 Range直出：
+     - 复用 WebDAV 模块成熟的 `FileChannel.open(StandardOpenOption.READ)` + `call.respondBytesWriter(...)` 手写单段 Range（206/416）；
+     - 严格流式管道，内存占用恒定（单个连接仅几 KB 缓冲区），彻底杜绝 OOM；
+     - 返回 `Accept-Ranges: bytes`、`ETag` 与 `Cache-Control: public, max-age=31536000, immutable`，支持浏览器及 Service Worker 本地持久缓存。
+4. **与现有 TTS 会话链路彻底物理隔离**：
+   - 音频缓存直出为无状态幂等 HTTP 静态资源，与有状态长连接（`NoStore`、`no-cache`、SSE 进度推进、`MutableSharedFlow` 广播）的 TTS 引擎彻底解耦，互不干扰。
+5. **滑窗前瞻保护与已读历史优先的分档 LRU GC (20 GiB 默认配额)**：
+   - 支持环境变量 `LEGADO_AUDIO_CACHE_MAX_GB` 覆盖配额（默认 20 GiB）；
+   - 后台 `AudioCacheGc` 任务在总磁盘占用超过配额 90% 时触发，淘汰至 75% 停止（滞回保护，防止磁盘临界频繁抖动）；
+   - **基于阅读锚点的滑窗淘汰优先级**（彻底废除“优先淘汰未读”的倒挂逻辑）：
+     - **第 1 顺位淘汰（已读完历史冷数据）**：落后于当前在听位置的已完成章节（`chapter_index < current_index - 5` 且收听进度 > 80%），重读率最低，优先腾挪空间；
+     - **第 2 顺位淘汰（失活弃坑孤立预取）**：非置顶书籍、超过 14 天未访问（或已移出书架）的书籍遗留未读预取；
+     - **滑动窗口前瞻强保护（在读未听）**：当前在读章节后方的 N 个未听前瞻章节（当前进度后 5 章），属于即将消费的核心缓存，受滑窗绝对保护，严禁日常 GC 驱逐；
+     - **免死金牌（Pinned）**：用户在书架手动勾选“下载整本/离线”的书籍享有 GC 免死特权，永不自动淘汰，仅允许用户主动清空；
+   - 写入先盘后表，清理先表后盘。
+6. **进度采用独立毫秒列 `reading_progress.position_ms`（修正：不再是"把毫秒塞进 `scroll_position`"）**：
+   - 原文设想"有声书模式下 `scroll_position` 直接存毫秒"。**实测该方案不可行**：`PUT /api/reading-progress` 现有校验是
+     `scrollPosition ∈ 0.0..1.0`，毫秒值（如 `1834521.0`）会被 **400 直接拒掉**；且一个 `Double` 字段承载
+     "比例/比例/毫秒"三种语义，后来者必踩。
+   - **最终决策**：新增**可空列** `position_ms`（幂等 `alter table`），`scroll_position` 的语义与校验**一个字都不动**；
+     写入用 `coalesce(excluded.position_ms, reading_progress.position_ms)` ⇒ 文本/漫画的写入路径**不会抹掉**音频毫秒；
+     `0` 是**合法进度（章首）**，与"没有毫秒进度（NULL）"必须可区分（AGENTS.md：严禁用可空列做存在性判断）。
+   - 跨端镜像：音频把 `position_ms` **直传**为手机端 `durChapterPos`（同语义，无需换算）；文本/漫画仍保留对端写入的值。
+7. **独立播放器架构（`AudiobookPlayerScreen` · 现代毛玻璃流媒体风，零全局侵入）**：
+   - **落地形态**：`bookKind === 'audio'` 时挂载独立屏幕（与 `ReaderScreen`/`MangaReaderScreen` **同构**），
+     与全站既有导航方式一致；原文设想的 `/audiobook/:sourceId/:bookHash` hash 路由未采用（避免两套导航共存）。
+   - **坚决不做全局 Mini 播放条**：避免对纯阅读/漫画用户造成界面与状态污染；退出即暂停、释放句柄，书架零常驻 DOM；
+   - **皮肤 100% 走主题变量**（`--canvas/--surface/--ink/--muted/--line/--accent`），随主 UI 的 light/paper/dark 切换零额外适配
+     （有自动化测试强制"不得写死任何颜色"）；封面"高斯模糊底衬"用**独立图层 `filter: blur()`**，
+     **不用 `backdrop-filter`**（AGENTS.md：它会破坏 `position: fixed` 的包含块，浮层会被困在容器里）；
+   - **宽屏双栏响应式**：桌面端封面在左、控制区在右；
+   - 全面集成 `navigator.mediaSession`（锁屏/耳机控制），并在连播时提前（播放到 70%）预取下一章，对冲整章下载等待。
+
+---
+
+## 3. 备选方案与否决理由 (Alternatives Considered & Why Rejected)
+
+| 备选方案 | 做法 | 否决 / 不作为核心主线理由 |
+| :--- | :--- | :--- |
+| **方案 G1：前端直连透传** | 服务端只提取音频 URL，浏览器 `<audio src>` 直连 | **无法突破防盗链**（403 频发）、无法带书源 Cookie、无法脱机断网播放、一次性 Token 失效。仅可作为开发初期的冒烟探针，绝不能作为终态交付。 |
+| **方案 G3：纯流式回填边下边播** | 播放时服务端边拉边吐给浏览器，后台双写回填 `.part` | 首帧虽快，但存在复杂的 singleflight 探针竞态、Range 冲突（未下到的字节如何响应）与 partial 中间状态机。**适合作为 G2 稳定后的第二阶段体验增强，不宜作为第一阶段基石**。 |
+| **方案 G4：HLS 分片缓存与本地 m3u8** | 服务端按分片缓存 `.ts`，重写 playlist 并解密 AES-128 | 仅针对 m3u8 源，对主流直链 MP3/M4A 属于过度设计；引入 `hls.js` 依赖，文件数急剧膨胀。作为**按需扩展分支**，不作主线。 |
+| **方案 G5：MediaVault 独立子服务** | 将音视频缓存拆分为独立 8081 端口服务，主服务反代 | **严重违背复杂度惩罚与 ADR-022 决策**：<br/>1. 漫画已裁定内嵌单进程（方案 E），再建独立服务导致架构分裂；<br/>2. 增加内部端口、HMAC 签名与熔断降级负担；<br/>3. 单体部署复杂度徒增。 |
+
+---
+
+## 4. 后果与权衡 (Consequences & Trade-offs)
+
+### 正面收益 (Positive Consequences)
+1. **防盗链与离线能力 100% 覆盖**：服务端作为安全代理与缓存底座，彻底消除 403 裂音与网络断流。
+2. **极速 Seek 体验**：本地流式 Range 直出，拖动进度条秒级响应，媲美本地音乐播放器。
+3. **零额外运维负担**：单镜像部署，零跨进程配置，统一 SQLite 存储。
+4. **生态深度兼容**：与 Legado 安卓原版规则、WebDAV 备份进度及字段语义 100% 互通。
+
+### 潜在风险与防御对策 (Risks & Mitigations)
+1. **未缓存首章加载等待**：
+   - *对策*：在播放器 UI 明确展示“正在下载缓存 X%”进度条；在连播时执行 70% 提前预取下一章，消除连续播放中的等待；后续平滑升级 G3 边下边播。
+2. **大并发下载导致 IO 拥塞**：
+   - *对策*：引入全局信号量（`MAX_GLOBAL_AUDIO_FETCHES = 3`，单源并发 1），使用独立的 IO 协程调度器，严禁阻塞 Rhino 沙箱与主服务请求。
+3. **磁盘空间无节制增长**：
+   - *对策*：内置 `AudioCacheGc` 守护任务，20 GiB 配额硬约束，分档 LRU 淘汰，提供 `stats` 可视化统计。
+
+---
+
+## 5. 与既有 ADR 的关系
+
+- **不推翻 [ADR-028](ADR-028-embedded-content-addressed-manga-cache.md)（漫画内容寻址）**：漫画与音频**各自保留自己的 key 模型**
+  （G-5 裁决）。两者共用的是**落盘原语**（`AtomicFileStore`）与**单段 Range 直出实现**（`ByteRangeServing`），不是缓存语义。
+- 延续三条部落知识：**限流必须在全局**（SESSION-025）、**魔数优先于响应头**（SESSION-027）、
+  **媒体缓存滑窗保护 + 已读历史优先淘汰**（ADR-028 同源）。
+
+---
+
+## 6. 落地实录（2026-10-15 · P0–P3）
+
+| 决策点 | 落地情况 |
+| :--- | :--- |
+| 服务端缓存 + 代理直出（否决前端直连） | ✅ `audio_cache` + `AudioFetcher` + `GET /api/audio/{key}` |
+| 复用 WebDAV 手写 Range | ✅ 提取为 `ByteRangeServing.respondFileRange`，**WebDAV 改为调用它**（一份实现） |
+| 与 TTS 链路物理隔离 | ✅ 独立路由与独立闸门，未触碰 `/api/tts/*` |
+| 20 GiB + 滑窗分档 GC | ✅ `AudioCacheGc`（窗口后方 5 章、gap 5、90/75 滞回、pinned 免死、先表后盘） |
+| 全局 `MAX_GLOBAL_AUDIO_FETCHES = 3` + 单源并发 1 | ✅ `Semaphore(3)` + 按 host 的 `Semaphore(1)` |
+| 进度毫秒 | ⚠️ **按 §2.6 修正后的方案落地**（新增 `position_ms`，不动既有 0..1 校验） |
+| 独立播放器（零全局侵入） | ✅ `AudiobookPlayerScreen`，无 Mini 条、无 createPortal 逃逸 |
+| 不引 ffmpeg / 不做 HLS / 不建子服务 | ✅ 全部遵守（Non-Goals） |
+
+**实施中被测试抓出的三处自伤（已修，值得记入部落知识）**：
+1. **SW 前缀匹配会吃掉统计接口**：`/api/audio/` 前缀会把 `GET /api/audio/cache/stats` 也纳入 `CacheFirst`
+   ⇒ 清理缓存后水位纹丝不动。改为精确 `^/api/audio/[0-9a-f]{64}$`。
+2. **重新登记时旧行字节泄漏占盘**：书源换了某段地址后，新 key 覆盖旧 key 的索引行，但**物理文件没人回收**。
+   已在 `AudioCache.registerChapter` 补回收，且**删文件前仍问一次表**（防跨章共享同一地址时误删）。
+3. **JSON 对象形态的分段头被静默丢弃**：`[{"url":…,"headers":{…}}]` 原先只取 `url`，`headers` 丢失 ⇒ 重拉 403。
+   现在整条对象交给解析器（并对 `,%7B` 编码形态同样兼容）。

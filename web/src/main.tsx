@@ -7,6 +7,7 @@ import { Logo } from './Logo'
 import { Login } from './Login'
 import { OpenBook, ReaderScreen } from './ReaderScreen'
 import { MangaReaderScreen } from './MangaReaderScreen'
+import { AudiobookPlayerScreen } from './AudiobookPlayerScreen'
 import { loadReaderSettings, ReaderSettings, saveReaderSettings } from './readerSettings'
 import { AppHeader } from './AppHeader'
 import { cleanAuthor, cleanTitle, defaultSearchFilters, filterSearchGroups, isExactMatch, isPopularMatch, SearchFilters, SearchGroup, SortMode } from './searchFilters'
@@ -2761,6 +2762,7 @@ function ShelfPage({ onOpen }: { onOpen: (item: BookshelfItem) => void }) {
                   )}
                   {isLocal && <span className="shelf-card-tag-local">{t('shelf.localTag', '本地')}</span>}
                   {item.bookKind === 'comic' && <span className="shelf-card-tag-comic">{t('shelf.comicTag', '漫画')}</span>}
+                  {item.bookKind === 'audio' && <span className="shelf-card-tag-audio">{t('shelf.audioTag', '听书')}</span>}
                   {badge && <span className={`shelf-card-badge ${item.cacheState}`}>{badge}</span>}
                   {isCaching && (
                     <div className="shelf-card-progress-track">
@@ -3173,6 +3175,16 @@ function App() {
         <div className={`app-shell theme-${settings.theme}`}>
           <ToastContainer />
           <MangaReaderScreen openBook={reader.book} startIndex={reader.index} onClose={closeReader} theme={settings.theme} />
+        </div>
+      )
+    }
+    // 有声书（音频书源）同样走独立屏幕：没有正文、进度语义是**毫秒**，
+    // 且绝不做全局常驻播放条（方案 G2 的 Non-Goal）。
+    if (reader.book.bookKind === 'audio') {
+      return (
+        <div className={`app-shell theme-${settings.theme}`}>
+          <ToastContainer />
+          <AudiobookPlayerScreen openBook={reader.book} startIndex={reader.index} onClose={closeReader} theme={settings.theme} />
         </div>
       )
     }

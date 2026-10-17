@@ -46,7 +46,6 @@
 ```powershell
 # Windows 本机必须先固定 JDK（AGENTS.md §3：JAVA_HOME 可能指向失效目录）
 $env:JAVA_HOME="C:\Program Files\Amazon Corretto\jdk21.0.12_9"
-cd C:\Users\w1593\Desktop\legado\legado-server
 
 # 1. 服务端编译
 .\gradlew.bat :server:compileKotlin --console=plain

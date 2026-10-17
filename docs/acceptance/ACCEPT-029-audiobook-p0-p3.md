@@ -12,7 +12,7 @@
 | :--- | :--- |
 | JDK | `$env:JAVA_HOME="C:\Program Files\Amazon Corretto\jdk21.0.12_9"`（不设 Gradle 会直接报错） |
 | 构建 | `.\gradlew.bat :server:fatJar` |
-| 起服务 | `$env:ADMIN_PASSWORD="w71251478"; $env:LEGADO_SECURE_COOKIES=false; $env:LEGADO_DATA_DIR="$env:TEMP\legado-audio-accept"; java -jar server/build/libs/legado-server-0.1.0-all.jar` |
+| 起服务 | `$env:ADMIN_PASSWORD="admin123"; $env:LEGADO_SECURE_COOKIES=false; $env:LEGADO_DATA_DIR="$env:TEMP\legado-audio-accept"; java -jar server/build/libs/legado-server-0.1.0-all.jar` |
 | 浏览器 | `http://127.0.0.1:8080`（明文 HTTP **必须** `LEGADO_SECURE_COOKIES=false`，否则浏览器不回传 Cookie ⇒ "登录后立刻掉线"） |
 
 > ⚠️ 想先确认"没写错"再看效果，可跳过 §1 直接跑 §5 的自动化。**§2–§4 才是人工验收的重点。**
@@ -22,7 +22,7 @@
 ## 1. 快速自检（30 秒）
 
 ```powershell
-cd C:\Users\w1593\Desktop\legado\_wt-sync
+# 切换到项目根目录
 npm.cmd --prefix web run check                       # 前端类型检查
 npx.cmd tsx web/test/run-all.ts                      # 前端全套（含 audiobook-player.test.ts）
 $env:JAVA_HOME="C:\Program Files\Amazon Corretto\jdk21.0.12_9"

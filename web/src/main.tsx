@@ -1865,10 +1865,51 @@ function BookManageModal({
   const [editingInfo, setEditingInfo] = useState(false)
   const [recleaning, setRecleaning] = useState(false)
   const [reparsing, setReparsing] = useState(false)
+  /**
+   * 书型决定**缓存口径**（issue #75）。
+   *
+   * 以前这里只有一套"正文"文案（「正在离线缓存全本 … 章」「预先下载全书正文」），
+   * 有声书/漫画看了全是错话：它们的缓存是**音频分段 / 图片**，不是正文。
+   * 状态完全由服务端给的 `cacheState` 驱动（`caching` / `ready` / `failed`），
+   * 所以任务一结束（完成或失败）下一拍就会自动复位，不会常驻"正在缓存 + 取消缓存"。
+   */
+  const bookKind = item.bookKind || 'novel'
+  const isAudio = bookKind === 'audio'
+  const isComic = bookKind === 'comic'
   const isCaching = item.cacheState === 'caching'
   const isReady = item.cacheState === 'ready'
   const isFailed = item.cacheState === 'failed'
-  const percent = Math.min(100, Math.round((item.cachedChapters / Math.max(1, item.totalChapters || 1)) * 100))
+  // 总章数未知（目录还没缓存）时 `totalChapters` 是 0 —— 显示 `?`，**绝不**当成 1 章算 100%。
+  const percent = item.totalChapters > 0
+    ? Math.min(100, Math.round((item.cachedChapters / item.totalChapters) * 100))
+    : 0
+  const cachingTitle = isAudio
+    ? t('shelf.cachingAllAudio', '正在离线缓存全本音频')
+    : isComic
+      ? t('shelf.cachingAllComic', '正在离线缓存全本漫画')
+      : t('shelf.cachingAll', '正在离线缓存全本')
+  const cacheTitle = isAudio
+    ? t('shelf.cacheAllTitleAudio', '离线缓存全本音频')
+    : isComic
+      ? t('shelf.cacheAllTitleComic', '离线缓存全本漫画')
+      : t('shelf.cacheAllTitle', '离线缓存全本')
+  const recacheTitle = isAudio
+    ? t('shelf.recacheOrVerifyAudio', '重新缓存 / 校验全本音频')
+    : isComic
+      ? t('shelf.recacheOrVerifyComic', '重新缓存 / 校验全本漫画')
+      : t('shelf.recacheOrVerify', '重新缓存 / 校验全本')
+  const idleDesc = isAudio
+    ? t('shelf.cacheAllDescAudioIdle', '预先下载全书音频（按章 + 分段）以供离线收听')
+    : isComic
+      ? t('shelf.cacheAllDescComicIdle', '预先下载全书漫画图片以供离线阅读')
+      : t('shelf.cacheAllDescIdle', '预先下载全书正文以供离线阅读')
+  const readyDesc = isReady
+    ? isAudio
+      ? t('shelf.cacheAllDescAudioReady', '已离线缓存 {{count}} 章 / {{tracks}} 段音频 ✓', { count: item.cachedChapters, tracks: item.cachedTracks ?? 0 })
+      : isComic
+        ? t('shelf.cacheAllDescComicReady', '已离线缓存 {{count}} 章漫画 ✓', { count: item.cachedChapters })
+        : t('shelf.cacheAllDescReady', '已离线缓存 {{count}} 章 ✓', { count: item.cachedChapters })
+    : null
 
   // ESC ≡ 点遮罩 ≡ 关闭一级（回书架）。二级有自己的 ESC（只退一级），
   // 而两级**互斥挂载**，所以永远不会出现"一次 ESC 连退两级"。
@@ -1970,10 +2011,14 @@ function BookManageModal({
                 <div className="manage-cache-info-row">
                   <div className="action-icon"><Icon name="download" /></div>
                   <div className="action-text">
-                    <strong>{t('shelf.cachingAll', '正在离线缓存全本')}</strong>
-                    <small>{percent}% ({item.cachedChapters} / {item.totalChapters || '?'}) {t('reader.cacheCustomUnit', '章')}</small>
+                    <strong>{cachingTitle}</strong>
+                    <small>
+                      {percent}% ({item.cachedChapters} / {item.totalChapters || '?'}) {t('reader.cacheCustomUnit', '章')}
+                      {/* 有声书多一档**分段**口径：一章由多段音频组成，只报"章"看不出卡在哪一段 */}
+                      {isAudio ? t('reader.cacheProgressTracks', '分段 {{done}}/{{planned}}', { done: item.cachedTracks ?? 0, planned: item.totalTracks || '?' }) : null}
+                    </small>
                   </div>
-                  <button className="subtle-button cancel-cache-link" onClick={onCancelCache}>{t('shelf.cancelCacheLink', '取消缓存')}</button>
+                  <button type="button" className="subtle-button cancel-cache-link" onClick={onCancelCache}>{t('shelf.cancelCacheLink', '取消缓存')}</button>
                 </div>
                 <div className="manage-cache-bar-track">
                   <div className="manage-cache-bar-fill" style={{ width: `${percent}%` }} />
@@ -1983,8 +2028,8 @@ function BookManageModal({
               <button className="manage-action-row" onClick={() => onCache()}>
                 <div className="action-icon"><Icon name="download" /></div>
                 <div className="action-text">
-                  <strong>{isReady ? t('shelf.recacheOrVerify', '重新缓存 / 校验全本') : isFailed ? t('shelf.retryCache', '重试离线缓存') : t('shelf.cacheAllTitle', '离线缓存全本')}</strong>
-                  <small>{isReady ? t('shelf.cacheAllDescReady', '已离线缓存 {{count}} 章 ✓', { count: item.cachedChapters }) : isFailed ? (item.cacheError || t('shelf.cacheAllDescFailed', '部分章节未缓存，点击重试')) : t('shelf.cacheAllDescIdle', '预先下载全书正文以供离线阅读')}</small>
+                  <strong>{isReady ? recacheTitle : isFailed ? t('shelf.retryCache', '重试离线缓存') : cacheTitle}</strong>
+                  <small>{isReady ? readyDesc : isFailed ? (item.cacheError || t('shelf.cacheAllDescFailed', '部分章节未缓存，点击重试')) : idleDesc}</small>
                 </div>
                 <Icon name="arrowRight" />
               </button>
@@ -2605,7 +2650,16 @@ function ShelfPage({ onOpen, theme }: { onOpen: (item: BookshelfItem) => void; t
     }
   }
 
-  const cache = async (item: BookshelfItem) => {
+  /**
+   * 触发「离线缓存全本」。**返回是否真的启动了**（issue #75）。
+   *
+   * 为什么要有返回值：弹窗里「正在缓存 + 取消缓存」那一块完全是**乐观置位**出来的。
+   * 以前无论 `POST /bookshelf/cache` 成功与否都先把状态写成 `caching`，
+   * 于是接口一失败（本地书、书不在书架、CSRF、服务端异常）弹窗就**永远停在
+   * 「正在缓存 100%」**且只剩一个「取消缓存」按钮 —— 用户看到的就是"卡住不动"。
+   * 现在只有真的受理了才置 `caching`，失败就保持/恢复服务端的真实状态。
+   */
+  const cache = async (item: BookshelfItem): Promise<boolean> => {
     try {
       await api.cacheBookshelfBook(item.sourceId, item.bookUrl)
       // 宽限期：服务端「入队 → 第一章进度登账」之间有亚秒~数秒空窗（抓目录时更久），
@@ -2614,8 +2668,13 @@ function ShelfPage({ onOpen, theme }: { onOpen: (item: BookshelfItem) => void; t
       setItems(values => values.map(value => value.sourceId === item.sourceId && value.bookUrl === item.bookUrl ? { ...value, cacheState: 'caching', cacheError: undefined } : value))
       previousStateRef.current.set(`${item.sourceId}\u0000${item.bookUrl}`, 'caching')
       toast.info(t('shelf.addedToCacheQueue', '已加入离线缓存队列，正在下载《{{name}}》...', { name: item.name }))
+      return true
     } catch (error) {
       toast.error(error instanceof Error ? error.message : t('shelf.cannotStartCache', '无法开始缓存'))
+      // 让列表/弹窗回到服务端的真实状态，别把乐观置位留在界面上
+      previousStateRef.current.delete(`${item.sourceId}\u0000${item.bookUrl}`)
+      void load()
+      return false
     }
   }
 
@@ -3164,12 +3223,23 @@ function ShelfPage({ onOpen, theme }: { onOpen: (item: BookshelfItem) => void; t
             setSwitchingItem(target)
           }}
           onCache={() => {
-            void cache(managingItem)
-            dispatchShelfModal({ type: 'updateItem', item: { ...managingItem, cacheState: 'caching' } })
+            // issue #75：**先确认服务端真的受理了**再显示"正在缓存"。
+            // 失败时 `cache()` 会重新拉一次书架，把弹窗（经 `syncSnapshot`）恢复成真实状态。
+            void (async () => {
+              const started = await cache(managingItem)
+              if (started) {
+                dispatchShelfModal({ type: 'updateItem', item: { ...managingItem, cacheState: 'caching' } })
+              } else {
+                // 恢复成"没在缓存"：让弹窗回到「离线缓存全本 / 重试」那一行
+                dispatchShelfModal({ type: 'updateItem', item: { ...managingItem, cacheState: managingItem.cacheState === 'caching' ? 'idle' : managingItem.cacheState } })
+              }
+            })()
           }}
           onCancelCache={() => {
-            void cancelCache(managingItem)
-            dispatchShelfModal({ type: 'updateItem', item: { ...managingItem, cacheState: 'failed', cacheError: t('shelf.cacheErrorCancelled', '已取消缓存') } })
+            void (async () => {
+              await cancelCache(managingItem)
+              dispatchShelfModal({ type: 'updateItem', item: { ...managingItem, cacheState: 'failed', cacheError: t('shelf.cacheErrorCancelled', '已取消缓存') } })
+            })()
           }}
           onToggleCompleted={() => setCompleted(managingItem, !managingItem.completed)}
           onUpdateInfo={updated => {

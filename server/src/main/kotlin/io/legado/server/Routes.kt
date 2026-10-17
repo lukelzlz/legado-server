@@ -1783,13 +1783,25 @@ fun Route.apiRoutes(
                 )
             }
             val item = database.saveBookshelf(request.copy(bookKind = bookKind), immediateCover)
-            // 漫画/有声书**不进文本章节缓存队列**：那是给文字阅读器用的（拉章节页→抽正文）。
-            // 实测：一本漫画被误判成小说时会跑 10 章文本缓存、10 章全失败，白刷上游还污染缓存状态。
-            val textBook = BookKind.from(bookKind) == BookKind.NOVEL
-            if (textBook && request.sourceId != LocalBookParser.LOC_BOOK_SOURCE_ID && !request.bookUrl.startsWith("local://")) {
-                bookCache.enqueue(CachedBookRequest(request.sourceId, request.bookUrl, request.tocUrl))
-            } else {
-                database.ensureLocalBookStatusReady(request.sourceId, request.bookUrl)
+            // 加入书架后按**书型**决定要不要动缓存状态（issue #75）：
+            // ① 本地书：正文导入时已全部落库 ⇒ 只有它该被写成 `ready` 占位状态；
+            // ② 漫画/有声：**什么都不写**。`ensureLocalBookStatusReady` 是本地书语义
+            //    （"不用抓，已经全了"），套到媒体书上会把 `book_cache_status` 写成
+            //    `total_chapters=1 / cached_chapters=1 / ready` —— 前端据此显示
+            //    「100% (1/1) 章」，而它们的真相在 `manga_*` / `audio_cache` 里。
+            //    它们的缓存状态由 `bookshelfWithMediaCache` 按媒体口径算，不需要这张表。
+            when (BookKind.from(bookKind)) {
+                BookKind.LOCAL -> database.ensureLocalBookStatusReady(request.sourceId, request.bookUrl)
+                BookKind.COMIC, BookKind.AUDIO -> Unit
+                // 文本书（含历史 `book_kind` 为空的记录）：进文本章节缓存队列。
+                // 漫画/有声**绝不能**走到这里：实测一本漫画被误判成小说时会跑 10 章文本缓存、
+                // 10 章全失败，白刷上游还污染缓存状态。
+                BookKind.NOVEL -> if (
+                    request.sourceId != LocalBookParser.LOC_BOOK_SOURCE_ID &&
+                    !request.bookUrl.startsWith("local://")
+                ) {
+                    bookCache.enqueue(CachedBookRequest(request.sourceId, request.bookUrl, request.tocUrl))
+                }
             }
             // 只在「这本书现在还没有本地副本」时才去补抓一次。
             //
@@ -3249,6 +3261,14 @@ private suspend fun probeSingleSourceHealth(
  *   - 有在跑的预取任务 → `caching` + done/planned（列表进度条能动）
  *   - 否则按"整章就绪章数"给 `ready`/`idle`，且**不再透出正文缓存的错误**（那不是它们的缓存）
  * 小说保持原样（正文缓存）。
+ *
+ * ## 总章数的来源（issue #75 的第二处根因）
+ * 漫画/有声的**总章数只能**来自目录或正在跑的预取任务，**绝不能**读 `book_cache_status`：
+ * 那张表是正文缓存表，而媒体书那行可能是一条本地书语义的占位记录
+ * （历史代码在「加入书架」时对非文本走 `ensureLocalBookStatusReady`，强写
+ * `total_chapters=1 / cached_chapters=1 / ready`）。读它 ⇒ 前端算成「100% (1/1) 章」，
+ * 用户看到「总章数误显示为 1 章」且永远 100%。
+ * 目录未知时**如实给 0**（前端显示 `?`），不编一个 1 出来。
  */
 internal fun bookshelfWithMediaCache(
     database: Database,
@@ -3259,8 +3279,27 @@ internal fun bookshelfWithMediaCache(
     if (books.isEmpty()) return books
     val mangaReady = database.readyMangaChapterCountsByBook()
     val audioReady = database.readyAudioChapterCountsByBook()
+    val audioTracks = database.audioTrackCountsByBook()
+    val audioFailed = database.failedAudioTracksByBook()
+    val tocCounts = database.tocChapterCountsByTocUrl()
     val mangaRunning = mangaPrefetch?.status()?.filter { it.running }?.associateBy { "${it.sourceId}\u0000${it.bookUrl}" }.orEmpty()
     val audioRunning = audioPrefetch?.status()?.filter { it.running }?.associateBy { "${it.sourceId}\u0000${it.bookUrl}" }.orEmpty()
+
+    /**
+     * 这本书的**目录章数**；目录还没缓存时返回 0（= 未知，前端显示 `?`）。
+     *
+     * 三个候选 key 与 `readCachedToc` / `resolveBookChapters` 的兜底链同源：
+     * `bookUrl`、书架 `tocUrl`、以及 `/toc` 变体 —— 目录到底落在哪个 key 上取决于
+     * 它是被阅读器还是被预取抓的，看起来一样但 key 不同。
+     */
+    fun tocTotal(item: BookshelfItem): Int {
+        val candidates = listOfNotNull(
+            item.bookUrl,
+            item.tocUrl.takeIf { it.isNotBlank() && it != item.bookUrl },
+            item.bookUrl.removeSuffix("/toc") + "/toc",
+        )
+        return candidates.firstNotNullOfOrNull { tocCounts["${item.sourceId}\u0000$it"] } ?: 0
+    }
 
     return books.map { item ->
         val key = "${item.sourceId}\u0000${item.bookUrl}"
@@ -3270,7 +3309,7 @@ internal fun bookshelfWithMediaCache(
                 val ready = mangaReady[key] ?: 0
                 item.copy(
                     cachedChapters = running?.done ?: ready,
-                    totalChapters = running?.planned?.takeIf { it > 0 } ?: item.totalChapters.coerceAtLeast(ready),
+                    totalChapters = running?.planned?.takeIf { it > 0 } ?: tocTotal(item).coerceAtLeast(ready),
                     cacheState = when {
                         running != null -> "caching"
                         ready > 0 -> "ready"
@@ -3283,15 +3322,28 @@ internal fun bookshelfWithMediaCache(
             BookKind.AUDIO -> {
                 val running = audioRunning[key]
                 val ready = audioReady[key] ?: 0
+                val tracks = audioTracks[key]
+                val failedTracks = audioFailed[key] ?: 0
                 item.copy(
                     cachedChapters = running?.done ?: ready,
-                    totalChapters = running?.planned?.takeIf { it > 0 } ?: item.totalChapters.coerceAtLeast(ready),
+                    totalChapters = running?.planned?.takeIf { it > 0 } ?: tocTotal(item).coerceAtLeast(ready),
+                    // 分段口径（与章口径分开，见 `AudioPrefetchStatus`）：前端显示「N 段」用它
+                    cachedTracks = running?.doneTracks ?: (tracks?.first ?: 0),
+                    totalTracks = running?.plannedTracks?.takeIf { it > 0 } ?: (tracks?.second ?: 0),
                     cacheState = when {
                         running != null -> "caching"
+                        // 有失败分段且一章都没成 ⇒ 这是"失败"，不是"没开始"：
+                        // 否则任务一结束状态就退回 idle，用户看到"离线缓存全本"按钮，
+                        // 没有任何失败原因与重试入口（issue #75 的第三处现象）。
                         ready > 0 -> "ready"
+                        failedTracks > 0 -> "failed"
                         else -> "idle"
                     },
-                    cacheError = null,
+                    cacheError = if (running == null && ready == 0 && failedTracks > 0) {
+                        "有 $failedTracks 段音频下载失败，点击重试"
+                    } else {
+                        null
+                    },
                 )
             }
             BookKind.NOVEL -> item

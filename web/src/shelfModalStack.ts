@@ -96,6 +96,10 @@ export function shelfModalReducer(state: ShelfModalState, action: ShelfModalActi
         && fresh.totalChapters === prev.totalChapters
         && fresh.cacheState === prev.cacheState
         && fresh.cacheError === prev.cacheError
+        // 有声书的分段口径也要跟着回灌：只同步章数时，弹窗里的"分段"会停在打开那一刻，
+        // 而书架那边一直在涨（issue #75 的"弹窗里进度不动 / 卡在旧状态"同源）。
+        && fresh.cachedTracks === prev.cachedTracks
+        && fresh.totalTracks === prev.totalTracks
       ) return state
       return {
         layer: state.layer,
@@ -105,6 +109,8 @@ export function shelfModalReducer(state: ShelfModalState, action: ShelfModalActi
           totalChapters: fresh.totalChapters,
           cacheState: fresh.cacheState,
           cacheError: fresh.cacheError,
+          cachedTracks: fresh.cachedTracks,
+          totalTracks: fresh.totalTracks,
         },
       }
     }

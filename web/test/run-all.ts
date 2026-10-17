@@ -34,6 +34,7 @@ import './source-group-manager.test.ts'
 import './search-scope-bar.test.ts'
 import './ShelfGrouping.test.ts'
 import './ShelfClearCache.test.ts'
+import './shelf-media-cache.test.ts'
 import './source-settings-result.test.ts'
 import './network-import.test.ts'
 

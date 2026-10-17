@@ -898,6 +898,62 @@ class Database(private val path: String) : Closeable, AutoCloseable {
         }
     }
 
+    /**
+     * 一次查全架：每本书的**目录章数**（key = `"sourceId\u0000tocUrl"`，与 `book_toc_cache` 的 key 同源）。
+     *
+     * 书架列表里漫画/有声的"总章数"**只能**来自这里（或正在跑的预取任务）：
+     * `book_cache_status` 是**正文**缓存表，漫画/有声那行的 `total_chapters` 是本地书语义的
+     * 占位值（历史上被写成 `1`），把它当章数会显示成「100% (1/1) 章」（issue #75）。
+     * 逐本 `getTocCache()` 会把整份目录 JSON 解码一遍（书架近 400 本 × 每份数百章），
+     * 所以这里用 SQLite 的 `json_array_length` 一次取完，**只取计数不取内容**。
+     */
+    fun tocChapterCountsByTocUrl(): Map<String, Int> = connect { db ->
+        db.prepareStatement("select source_id, toc_url, json_array_length(chapters_json) from book_toc_cache").use { ps ->
+            ps.executeQuery().use { rs ->
+                buildMap {
+                    while (rs.next()) {
+                        val count = rs.getInt(3)
+                        // NULL/坏 JSON ⇒ 0（当成"目录未知"），绝不退化成 1
+                        if (count > 0) put("${rs.getString(1)}\u0000${rs.getString(2)}", count)
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * 一次查全架：每本书的音频**分段**数（key = `"sourceId\u0000bookUrl"`），值为 `(已就绪, 已登记)`。
+     *
+     * 章口径（[readyAudioChapterCountsByBook]）回答"几章已离线"，分段口径回答"这一章里
+     * 还有多少段没下"——两者都有用，但不能混成一个数字（历史上把图片张数当章显示过）。
+     */
+    fun audioTrackCountsByBook(): Map<String, Pair<Int, Int>> = connect { db ->
+        db.prepareStatement(
+            "select source_id, book_url, count(*), sum(case when state='ready' then 1 else 0 end) from audio_cache group by source_id, book_url",
+        ).use { ps ->
+            ps.executeQuery().use { rs ->
+                buildMap {
+                    while (rs.next()) put("${rs.getString(1)}\u0000${rs.getString(2)}", rs.getInt(4) to rs.getInt(3))
+                }
+            }
+        }
+    }
+
+    /**
+     * 一次查全架：每本书**失败**的音频分段数（key = `"sourceId\u0000bookUrl"`）。
+     *
+     * 只用来回答"上一次缓存到底成没成"：预取任务结束后进度对象就没了，
+     * 若不看库里的失败行，用户看到的状态会退回 `idle`（"离线缓存全本"，像什么都没发生过），
+     * 完全没有"失败 → 重试"的入口。
+     */
+    fun failedAudioTracksByBook(): Map<String, Int> = connect { db ->
+        db.prepareStatement("select source_id, book_url, count(*) from audio_cache where state='failed' group by source_id, book_url").use { ps ->
+            ps.executeQuery().use { rs ->
+                buildMap { while (rs.next()) put("${rs.getString(1)}\u0000${rs.getString(2)}", rs.getInt(3)) }
+            }
+        }
+    }
+
     /** 手动「整本离线（pinned）」开关：GC 免死金牌。 */
     fun setMangaBookPinned(sourceId: String, bookUrl: String, pinned: Boolean) = write { db ->
         db.prepareStatement("update manga_chapter_cache set pinned=?, updated_at=? where source_id=? and book_url=?").use {

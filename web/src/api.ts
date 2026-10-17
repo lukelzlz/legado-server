@@ -66,7 +66,15 @@ export type BackupExportResult = {
   groups: number
 }
 export type ProgressMergeResponse = { source: 'file' | 'database'; progress?: ReadingProgress; fileFound: boolean; alignedIndex?: number }
-export type BookshelfItem = { sourceId: string; bookUrl: string; name: string; author?: string; tocUrl: string; coverKey?: string; coverUrl?: string; chapterIndex?: number; scrollPosition?: number; lastReadAt: number; cachedChapters: number; totalChapters: number; cacheState: 'idle' | 'caching' | 'ready' | 'failed'; cacheError?: string; completed: boolean; alternateSources?: SearchResult[]; groupName?: string; bookKind?: string; variable?: string }
+/**
+ * 书架条目。
+ *
+ * ⚠️ **单位（issue #75）**：`cachedChapters`/`totalChapters` 是**章**；
+ * `cachedTracks`/`totalTracks` 是**有声书的分段**（一章可能含多段）。两者不能混着显示。
+ * 漫画/有声的 `totalChapters` 由服务端从**目录**（或正在跑的预取任务）给出，
+ * 目录还没缓存时是 `0`（= 未知，界面上显示 `?`）——**不会**再出现"1 章"这种占位值。
+ */
+export type BookshelfItem = { sourceId: string; bookUrl: string; name: string; author?: string; tocUrl: string; coverKey?: string; coverUrl?: string; chapterIndex?: number; scrollPosition?: number; lastReadAt: number; cachedChapters: number; totalChapters: number; cacheState: 'idle' | 'caching' | 'ready' | 'failed'; cacheError?: string; completed: boolean; alternateSources?: SearchResult[]; groupName?: string; bookKind?: string; variable?: string; cachedTracks?: number; totalTracks?: number }
 export type BookshelfWrite = { sourceId: string; bookUrl: string; name: string; author?: string; tocUrl: string; coverUrl?: string; alternateSources?: SearchResult[]; groupName?: string }
 
 /** 漫画清单项（P1）：**只有服务端 key**，上游地址留在服务端（防前端绕过缓存直连）。 */

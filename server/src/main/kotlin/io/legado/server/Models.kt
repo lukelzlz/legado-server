@@ -624,6 +624,14 @@ data class CachedBookRequest(
      * 前端编辑弹窗只编辑它，但底层存的始终是**整张表**的 JSON。
      */
     val variable: String? = null,
+    /**
+     * 有声书的**分段**口径：已整段落盘的音频分段数 / 已登记的音频分段数（issue #75）。
+     *
+     * 与 [cachedChapters]/[totalChapters] 是**两套单位**，绝不能混着显示：
+     * 一章听书往往由多段音频组成，「3 章」与「3 段」完全不是一回事。非 audio 的书恒为 0。
+     */
+    val cachedTracks: Int = 0,
+    val totalTracks: Int = 0,
 )
 
 @Serializable

@@ -225,28 +225,6 @@ class MangaPrefetchService(
         }
     }
 
-    private fun status(
-        task: MangaPrefetchTask,
-        chapterIndex: Int,
-        doneChapters: Int,
-        plannedChapters: Int,
-        doneImages: Int,
-        plannedImages: Int,
-        failedImages: Int,
-        lastError: String?,
-    ): MangaPrefetchStatus = MangaPrefetchStatus(
-        sourceId = task.sourceId,
-        bookUrl = task.bookUrl,
-        running = true,
-        done = doneChapters,
-        planned = plannedChapters,
-        currentChapterIndex = chapterIndex,
-        doneImages = doneImages,
-        plannedImages = plannedImages,
-        failed = failedImages,
-        lastError = lastError,
-    )
-
     /**
      * 入队瞬间的"占位进度"（见 [enqueue] 里的注释）。
      *

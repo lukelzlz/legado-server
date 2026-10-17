@@ -57,6 +57,8 @@ class MangaPrefetchRouteTest {
                 cover = null,
             )
             seed.saveTocCache(sourceId, bookUrl, listOf(Chapter(0, "第 1 话", "ch-0")))
+            // 预置数据等价于"已经升级到 v2 布局的既有部署"：否则启动清理会按 v2 语义清掉预置缓存
+            seed.setSetting(CACHE_LAYOUT_KEY, CACHE_LAYOUT_VERSION)
             seed.saveMangaChapter(
                 MangaChapterRecord(
                     sourceId = sourceId, bookUrl = bookUrl, chapterUrl = "ch-0", chapterIndex = 0,
@@ -65,7 +67,7 @@ class MangaPrefetchRouteTest {
             )
             // 字节先喂进 L1（等价于"这几张用户刚才已经看过"）⇒ 预取不需要上游请求；
             // 但**不刷新就绪度**：整章 state 仍是 pending，ready 必须由预取推上去。
-            val cache = ImageCache(dataDir.resolve("images"), seed, ServerConfig.DEFAULT_IMAGE_CACHE_QUOTA_BYTES)
+            val cache = ImageCache(dataDir.resolve("comic"), seed, ServerConfig.DEFAULT_IMAGE_CACHE_QUOTA_BYTES)
             imageUrls.forEachIndexed { index, url ->
                 cache.put(sourceId, bookUrl, "ch-0", url, "image/jpeg", jpeg(seed = index), chapterIndex = 0, segmentIndex = index)
             }
@@ -78,7 +80,7 @@ class MangaPrefetchRouteTest {
                 host = "0.0.0.0", port = 8080, databasePath = dbPath,
                 coverCacheDirectory = dataDir.resolve("covers"), webDavDirectory = dataDir.resolve("webdav"),
                 initialAdminPassword = "test-password-1234", secureCookies = false,
-                imageCacheDirectory = dataDir.resolve("images"),
+                comicCacheDirectory = dataDir.resolve("comic"),
             )
             application { legadoApplication(config) }
             val client = createClient {
@@ -165,7 +167,7 @@ class MangaPrefetchRouteTest {
                 host = "0.0.0.0", port = 8080, databasePath = dbPath,
                 coverCacheDirectory = dataDir.resolve("covers"), webDavDirectory = dataDir.resolve("webdav"),
                 initialAdminPassword = "test-password-1234", secureCookies = false,
-                imageCacheDirectory = dataDir.resolve("images"),
+                comicCacheDirectory = dataDir.resolve("comic"),
                 mangaPrefetchEnabled = false,
             )
             application { legadoApplication(config) }

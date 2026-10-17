@@ -849,15 +849,10 @@ fun Route.apiRoutes(
                     withTimeout(4000) {
                         // 书籍上下文（含变量）同样要进目录规则：Legado 的 `getChapters(book)` 就带着 Book。
                         val book = database.bookContext(request.sourceId, request.bookUrl)
-                        val chapters = runCatching { runner.chapters(source.json, request.bookUrl, book) }.getOrElse {
-                            val details = runner.details(source.json, request.bookUrl, book)
-                            val toc = runner.chapters(source.json, details.tocUrl, book)
-                            database.saveTocCache(request.sourceId, details.tocUrl, toc)
-                            toc
-                        }
-                        if (chapters.isNotEmpty()) {
-                            database.saveTocCache(request.sourceId, request.bookUrl, chapters)
-                        }
+                        // 与后台缓存**共用同一个**取目录实现（含 details 回退），杜绝"能读不能缓存"。
+                        val chapters = resolveBookChapters(
+                            database, runner, request.sourceId, request.bookUrl, source.json, book,
+                        )
                         database.persistBookVariables(book)
                         chapters
                     }
@@ -1227,6 +1222,10 @@ fun Route.apiRoutes(
          *
          * **幂等且随时可重复调用**：同一本书的重复请求不会新起并行任务，而是让正在跑的循环改目标
          * （见 `MangaPrefetchService.drain`）。返回 `202 Accepted` 表示"已受理"而非"已完成"。
+         *
+         * 目录**还没缓存时也照样受理**（`chapters ≥ 1`）：预取会自己把目录抓进 `book_toc_cache`。
+         * 返回的 `chapters` 只是"已受理的章数"（目录未知时无法先验知道真实章数，按 1 报），
+         * 真实进度一律看 `GET /books/images/prefetch` 的 `done/planned`（**章**口径）。
          */
         post("/books/images/prefetch") {
             if (auth.requireSession(call, true) == null) return@post
@@ -1265,6 +1264,30 @@ fun Route.apiRoutes(
         get("/books/images/prefetch") {
             if (auth.requireSession(call) == null) return@get
             call.respond(mangaPrefetch?.status() ?: emptyList<MangaPrefetchStatus>())
+        }
+        /**
+         * **只取消、不删缓存**的取消入口（目录底栏那个「取消缓存」按钮）。
+         *
+         * 为什么必须单开一条：`DELETE /books/images/cache` 里的 `cancel()` 是「清缓存顺带停任务」，
+         * 直接拿它当取消按钮用，会把用户已经下好的图片连同清单一起删掉（语义不符、且不可恢复）。
+         * 这里只停任务：字节、清单与 pin 一律**原样保留**，用户随时可以再点一次接着缓存。
+         */
+        post("/books/images/prefetch/cancel") {
+            if (auth.requireSession(call, true) == null) return@post
+            val request = call.receive<MangaPrefetchRequest>()
+            if (request.sourceId.isBlank()) {
+                call.respond(HttpStatusCode.BadRequest, ApiError("invalid_manga", "缺少书源"))
+                return@post
+            }
+            val bookUrl = request.bookUrl?.takeIf { it.isNotBlank() }
+                ?: run {
+                    call.respond(HttpStatusCode.BadRequest, ApiError("invalid_manga", "缺少书籍地址"))
+                    return@post
+                }
+            // 服务为 null（预取功能被 `LEGADO_MANGA_PREFETCH=false` 关掉）时"已经没在跑"，等价于取消成功。
+            // ⚠️ 绝不调用 `imageCache.deleteBook` / `database.deleteMangaChapters`：那是 DELETE 的语义。
+            mangaPrefetch?.cancel(request.sourceId, bookUrl)
+            call.respond(HttpStatusCode.NoContent)
         }
         /**
          * 「整本离线」免死金牌开关（环节 E12）。
@@ -1350,7 +1373,11 @@ fun Route.apiRoutes(
                 registered
             } else {
                 // ② 首次解析：规则失败一律 502 `source_execution_failed` + 真实原因
-                val parsed = runCatching { runner.audioTracks(source.json, chapterUrl) }
+                // ⚠️ 必须带书籍上下文：音频地址由 `book.getVariable('custom')`（听书音色）参与拼装，
+                // 不传就等于变量的值永远为空 ⇒ 换了音色却毫无变化（实测踩过，静默无提示）。
+                val book = if (bookUrl.isNotBlank()) database.bookContext(request.sourceId, bookUrl) else null
+                val parsed = runCatching { runner.audioTracks(source.json, chapterUrl, bookName = null, book = book) }
+                book?.let { database.persistBookVariables(it) }
                 val failure = parsed.exceptionOrNull()
                 if (failure != null) {
                     call.respond(
@@ -1431,7 +1458,7 @@ fun Route.apiRoutes(
                     referer = pending.chapterUrl.takeIf { it.startsWith("http") },
                     trackHeadersJson = pending.headersJson,
                     store = audioCache.store,
-                    cacheKey = key,
+                    target = audioCache.targetFor(pending),
                 )
                 when (outcome) {
                     is AudioFetchOutcome.Failure -> {
@@ -1441,7 +1468,7 @@ fun Route.apiRoutes(
                         return@get
                     }
                     is AudioFetchOutcome.Success -> {
-                        audioCache.markReady(pending, outcome.contentType, outcome.byteSize)
+                        audioCache.markReady(pending, outcome.contentType, outcome.byteSize, outcome.filePath)
                         row = audioCache.rowByKey(key)
                             ?: return@get call.respond(HttpStatusCode.InternalServerError, ApiError("cache_error", "音频落盘后索引丢失"))
                     }
@@ -1479,6 +1506,10 @@ fun Route.apiRoutes(
          *
          * **幂等且随时可重复调用**：同一本书的重复请求不会新起并行任务，而是让正在跑的循环改目标。
          * 返回 `202 Accepted` 表示"已受理"而非"已完成"。
+         *
+         * 目录**还没缓存时也照样受理**（与漫画端同一裁决）：缓存会自己把目录抓进 `book_toc_cache`。
+         * 返回的 `chapters` 只是"已受理的章数"（目录未知时按 1 报），
+         * 真实进度看 `GET /books/audio/prefetch` 的 `done/planned`（**章**口径）。
          */
         post("/books/audio/cache") {
             if (auth.requireSession(call, true) == null) return@post
@@ -1513,6 +1544,30 @@ fun Route.apiRoutes(
         get("/books/audio/prefetch") {
             if (auth.requireSession(call) == null) return@get
             call.respond(audioPrefetch?.status() ?: emptyList<AudioPrefetchStatus>())
+        }
+        /**
+         * **只取消、不删缓存**的取消入口（目录底栏那个「取消缓存」按钮）。
+         *
+         * 为什么必须单开一条：`DELETE /audio/cache` 里的 `cancel()` 是「清缓存顺带停任务」，
+         * 直接拿它当取消按钮用，会把用户已经下好的音频分段一起删掉（语义不符、且不可恢复）。
+         * 这里只停任务：字节、清单与 pin 一律**原样保留**，用户随时可以再点一次接着缓存。
+         */
+        post("/books/audio/prefetch/cancel") {
+            if (auth.requireSession(call, true) == null) return@post
+            val request = call.receive<AudioPrefetchRequest>()
+            if (request.sourceId.isBlank()) {
+                call.respond(HttpStatusCode.BadRequest, ApiError("invalid_audio", "缺少书源"))
+                return@post
+            }
+            val bookUrl = request.bookUrl?.takeIf { it.isNotBlank() }
+                ?: run {
+                    call.respond(HttpStatusCode.BadRequest, ApiError("invalid_audio", "缺少书籍地址"))
+                    return@post
+                }
+            // 服务为 null（`LEGADO_AUDIO_PREFETCH=false`）时"已经没在跑"，等价于取消成功。
+            // ⚠️ 绝不调用 `audioCache.deleteBook` / `deleteKey`：那是 DELETE /audio/cache 的语义。
+            audioPrefetch?.cancel(request.sourceId, bookUrl)
+            call.respond(HttpStatusCode.NoContent)
         }
         get("/books/audio/cached-chapters") {
             if (auth.requireSession(call, false) == null) return@get
@@ -1570,7 +1625,7 @@ fun Route.apiRoutes(
         }
         get("/bookshelf") {
             if (auth.requireSession(call) == null) return@get
-            call.respond(database.listBookshelf())
+            call.respond(bookshelfWithMediaCache(database, mangaPrefetch, audioPrefetch))
         }
         post("/bookshelf") {
             if (auth.requireSession(call, true) == null) return@post
@@ -1727,15 +1782,54 @@ fun Route.apiRoutes(
                 call.respond(HttpStatusCode.Accepted, mapOf("status" to "ready"))
                 return@post
             }
-            bookCache.enqueue(CachedBookRequest(
-                item.sourceId,
-                item.bookUrl,
-                item.tocUrl,
-                request.startIndex,
-                request.endIndex,
-                request.count
-            ))
-            call.respond(HttpStatusCode.Accepted, mapOf("status" to "queued"))
+            // 「缓存全本」必须按**书型**分发：漫画/有声的内容是图片/音频，正文缓存对它们
+            // 只会去抓不存在的"正文"（实测:书架里漫画点缓存 ⇒ 0 章 + "N 章未缓存"）。
+            // 与 GET /bookshelf/cached-chapters 的口径保持一致（那里也是按 kind 换数据源）。
+            val from = request.startIndex ?: 0
+            val ahead = when {
+                request.endIndex != null -> (request.endIndex - from).coerceAtLeast(0)
+                request.count != null -> (request.count - 1).coerceAtLeast(0)
+                else -> Int.MAX_VALUE // 「全本」：服务端另有 MAX_AHEAD 上限
+            }
+            val pin = request.endIndex == null && request.count == null
+            when (BookKind.from(database.getBookKind(item.sourceId, item.bookUrl))) {
+                BookKind.COMIC -> {
+                    val service = mangaPrefetch
+                    if (service == null || !service.enabled) {
+                        call.respond(HttpStatusCode.Accepted, mapOf("status" to "prefetch_disabled"))
+                        return@post
+                    }
+                    val queued = service.enqueue(item.sourceId, item.bookUrl, from, ahead, pin)
+                    if (pin && queued > 0) database.setMangaBookPinned(item.sourceId, item.bookUrl, true)
+                    call.respond(
+                        HttpStatusCode.Accepted,
+                        mapOf("status" to if (queued > 0) "queued" else "nothing_to_prefetch"),
+                    )
+                }
+                BookKind.AUDIO -> {
+                    val service = audioPrefetch
+                    if (service == null || !service.enabled) {
+                        call.respond(HttpStatusCode.Accepted, mapOf("status" to "prefetch_disabled"))
+                        return@post
+                    }
+                    val queued = service.enqueue(item.sourceId, item.bookUrl, from, ahead, pin)
+                    call.respond(
+                        HttpStatusCode.Accepted,
+                        mapOf("status" to if (queued > 0) "queued" else "nothing_to_prefetch"),
+                    )
+                }
+                BookKind.NOVEL -> {
+                    bookCache.enqueue(CachedBookRequest(
+                        item.sourceId,
+                        item.bookUrl,
+                        item.tocUrl,
+                        request.startIndex,
+                        request.endIndex,
+                        request.count
+                    ))
+                    call.respond(HttpStatusCode.Accepted, mapOf("status" to "queued"))
+                }
+            }
         }
         get("/bookshelf/cached-chapters") {
             if (auth.requireSession(call, false) == null) return@get
@@ -1765,7 +1859,12 @@ fun Route.apiRoutes(
                 call.respond(HttpStatusCode.BadRequest, ApiError("invalid_bookshelf", "缺少书籍标识"))
                 return@delete
             }
-            bookCache.cancel(sourceId, bookUrl)
+            // 取消也要按书型分发，否则漫画/有声"取消缓存"只是取消了一个并不存在的正文任务。
+            when (BookKind.from(database.getBookKind(sourceId, bookUrl))) {
+                BookKind.COMIC -> mangaPrefetch?.cancel(sourceId, bookUrl)
+                BookKind.AUDIO -> audioPrefetch?.cancel(sourceId, bookUrl)
+                BookKind.NOVEL -> bookCache.cancel(sourceId, bookUrl)
+            }
             if (clearData) {
                 database.clearBookCacheContent(sourceId, bookUrl)
             }
@@ -1942,8 +2041,25 @@ fun Route.apiRoutes(
             val cover = request.coverUrl?.takeIf { it.isNotBlank() }?.let { url ->
                 runCatching { coverCache.cache(url) }.getOrNull()
             }
-            database.updateBookshelfInfo(request, cover)?.let { call.respond(it) }
-                ?: call.respond(HttpStatusCode.NotFound, ApiError("not_found", "书籍不在书架中"))
+            // 改「书籍变量」= 换听书音色 ⇒ **必须让该书已登记的音频清单失效**。
+            //
+            // 为什么非做不可：音频是按 **URL 寻址**缓存的（换音色 ⇒ 换地址 ⇒ 换 key），
+            // 而清单路由对「已登记」的章节**直接返回旧行、不再回源解析**
+            // —— 不失效的话，用户切了音色却发现**已打开过的章节还是旧音色**（且毫无提示）。
+            // 这里只在值**确实变了**时才删，避免"只改书名点保存"白清一遍缓存。
+            val beforeCustom = if (request.customVariable != null) {
+                database.getBookVariables(request.sourceId, request.bookUrl)[Database.CUSTOM_VARIABLE_KEY]
+            } else null
+            database.updateBookshelfInfo(request, cover)?.let { updated ->
+                if (request.customVariable != null) {
+                    val afterCustom = database.getBookVariables(request.sourceId, request.bookUrl)[Database.CUSTOM_VARIABLE_KEY]
+                    if (beforeCustom != afterCustom) {
+                        // 连磁盘文件一起释放（AudioCache.deleteBook 内部会 releaseFiles）
+                        runCatching { audioCache.deleteBook(request.sourceId, request.bookUrl) }
+                    }
+                }
+                call.respond(updated)
+            } ?: call.respond(HttpStatusCode.NotFound, ApiError("not_found", "书籍不在书架中"))
         }
         post("/bookshelf/switch-source") {
             if (auth.requireSession(call, true) == null) return@post
@@ -2555,6 +2671,60 @@ internal fun tryCacheCover(coverCache: CoverCache, primaryUrl: String?, alternat
  * 书源侧的失败（[RuleExecutionException] 等）原样抛出，由调用方决定转成 HTTP 提示还是计入 failed。
  * **不要在这里把异常吞掉**：`/books/details` 依赖它把书源错误转成明确提示（`source_execution_failed`）。
  */
+/**
+ * 取一本书的目录 —— **阅读路径与后台缓存共用这一份**。
+ *
+ * 历史缺陷（2026-10-17 实测）：后台批量缓存过去直接 `runner.chapters(source, tocUrl)` 只试一次，
+ * 而阅读路径 `/books/chapters` 在失败时会先 `details()` 拿到真正的 tocUrl 再重试。
+ * 聚合源（`data:;base64,…` 的书号/书名）在书架里存的 `toc_url` 可能是一次性错误载荷，
+ * 于是出现「**能读不能缓存**」：阅读器 200 拿到 462 章，缓存却 failed / 目录规则未提取到章节。
+ *
+ * 顺序：TOC 缓存 → [tocUrlHint]（书架里存的） → [bookUrl] → details(bookUrl).tocUrl。
+ * 命中后统一把目录写进 TOC 缓存，并返回章列表（空列表表示真的取不到）。
+ */
+internal suspend fun resolveBookChapters(
+    database: Database,
+    runner: RuleRunner,
+    sourceId: String,
+    bookUrl: String,
+    sourceJson: String,
+    bookContext: BookContext,
+    tocUrlHint: String? = null,
+): List<Chapter> {
+    val cacheKeys = listOfNotNull(
+        bookUrl,
+        tocUrlHint?.takeIf { it.isNotBlank() && it != bookUrl },
+        bookUrl.removeSuffix("/toc") + "/toc",
+    ).distinct()
+    for (key in cacheKeys) {
+        val cached = database.getTocCache(sourceId, key)
+        if (!cached.isNullOrEmpty()) return cached
+    }
+
+    val candidates = listOfNotNull(
+        tocUrlHint?.takeIf { it.isNotBlank() && it != bookUrl },
+        bookUrl,
+    ).distinct()
+    for (url in candidates) {
+        // 单次失败不抛出：继续试下一个候选（最后还有 details 回退），
+        // 这样"某个 url 不可用"不会让整本书的缓存直接失败。
+        val chapters = runCatching { runner.chapters(sourceJson, url, bookContext) }.getOrNull().orEmpty()
+        if (chapters.isNotEmpty()) {
+            database.saveTocCache(sourceId, url, chapters)
+            if (url != bookUrl) database.saveTocCache(sourceId, bookUrl, chapters)
+            return chapters
+        }
+    }
+
+    val details = runner.details(sourceJson, bookUrl, bookContext)
+    val toc = runner.chapters(sourceJson, details.tocUrl, bookContext)
+    if (toc.isNotEmpty()) {
+        database.saveTocCache(sourceId, details.tocUrl, toc)
+        database.saveTocCache(sourceId, bookUrl, toc)
+    }
+    return toc
+}
+
 internal fun fetchBookDetails(database: Database, runner: RuleRunner, sourceId: String, bookUrl: String): BookDetails? {
     if (sourceId == LocalBookParser.LOC_BOOK_SOURCE_ID) {
         val shelf = database.listBookshelf().firstOrNull { it.sourceId == sourceId && it.bookUrl == bookUrl } ?: return null
@@ -2888,3 +3058,63 @@ private suspend fun probeSingleSourceHealth(
 }
 
 
+
+/**
+ * 书架列表 + **按书型**的缓存进度。
+ *
+ * 背景：列表里的 `cacheState`/`cachedChapters` 过去只来自 `book_cache_status`（正文缓存表），
+ * 而漫画/有声的缓存是**媒体预取**（图片 / 音频）⇒ 列表永远显示"0 章 / 重试离线缓存"，
+ * 与目录抽屉里绿点在涨自相矛盾（用户反馈"书架弹窗里缓存不动"）。
+ * 这里对 COMIC/AUDIO 用媒体口径覆盖：
+ *   - 有在跑的预取任务 → `caching` + done/planned（列表进度条能动）
+ *   - 否则按"整章就绪章数"给 `ready`/`idle`，且**不再透出正文缓存的错误**（那不是它们的缓存）
+ * 小说保持原样（正文缓存）。
+ */
+internal fun bookshelfWithMediaCache(
+    database: Database,
+    mangaPrefetch: MangaPrefetchService?,
+    audioPrefetch: AudioPrefetchService?,
+): List<BookshelfItem> {
+    val books = database.listBookshelf()
+    if (books.isEmpty()) return books
+    val mangaReady = database.readyMangaChapterCountsByBook()
+    val audioReady = database.readyAudioChapterCountsByBook()
+    val mangaRunning = mangaPrefetch?.status()?.filter { it.running }?.associateBy { "${it.sourceId}\u0000${it.bookUrl}" }.orEmpty()
+    val audioRunning = audioPrefetch?.status()?.filter { it.running }?.associateBy { "${it.sourceId}\u0000${it.bookUrl}" }.orEmpty()
+
+    return books.map { item ->
+        val key = "${item.sourceId}\u0000${item.bookUrl}"
+        when (BookKind.from(item.bookKind)) {
+            BookKind.COMIC -> {
+                val running = mangaRunning[key]
+                val ready = mangaReady[key] ?: 0
+                item.copy(
+                    cachedChapters = running?.done ?: ready,
+                    totalChapters = running?.planned ?: item.totalChapters.coerceAtLeast(ready),
+                    cacheState = when {
+                        running != null -> "caching"
+                        ready > 0 -> "ready"
+                        else -> "idle"
+                    },
+                    // 正文缓存的错误对漫画没有意义，别在列表里报"重试离线缓存"
+                    cacheError = null,
+                )
+            }
+            BookKind.AUDIO -> {
+                val running = audioRunning[key]
+                val ready = audioReady[key] ?: 0
+                item.copy(
+                    cachedChapters = running?.done ?: ready,
+                    totalChapters = running?.planned ?: item.totalChapters.coerceAtLeast(ready),
+                    cacheState = when {
+                        running != null -> "caching"
+                        ready > 0 -> "ready"
+                        else -> "idle"
+                    },
+                    cacheError = null,
+                )
+            }
+            BookKind.NOVEL -> item
+        }
+    }
+}

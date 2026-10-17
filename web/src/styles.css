@@ -746,6 +746,7 @@ mark.search-highlight { background: var(--accent-soft); color: var(--accent); fo
 .shelf-card-tag-local { position: absolute; top: 8px; left: 8px; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: 600; background: rgba(14, 116, 144, 0.9); color: #fff; letter-spacing: 0.5px; backdrop-filter: blur(6px); box-shadow: 0 2px 6px rgba(0,0,0,.15); }
 .shelf-card-tag-comic { position: absolute; top: 8px; right: 8px; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: 600; background: rgba(180, 83, 9, 0.92); color: #fff; letter-spacing: 0.5px; backdrop-filter: blur(6px); box-shadow: 0 2px 6px rgba(0,0,0,.15); }
 .shelf-card-tag-audio { position: absolute; top: 8px; right: 8px; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: 600; background: rgba(29, 78, 216, 0.92); color: #fff; letter-spacing: 0.5px; backdrop-filter: blur(6px); box-shadow: 0 2px 6px rgba(0,0,0,.15); }
+.shelf-card-tag-novel { position: absolute; top: 8px; right: 8px; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: 600; background: rgba(21, 128, 61, 0.92); color: #fff; letter-spacing: 0.5px; backdrop-filter: blur(6px); box-shadow: 0 2px 6px rgba(0,0,0,.15); }
 .shelf-header-actions { display: flex; align-items: center; gap: 12px; }
 .shelf-import-btn { display: inline-flex; align-items: center; gap: 6px; padding: 6px 14px; border-radius: 8px; font-size: 13px; font-weight: 550; cursor: pointer; border: 1px solid var(--line); background: var(--surface); color: var(--ink); transition: all .15s ease; }
 .shelf-import-btn:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
@@ -2896,11 +2897,13 @@ mark.search-highlight { background: var(--accent-soft); color: var(--accent); fo
   cursor: pointer;
   transition: all .15s ease;
 }
-.cache-range-btn:hover {
+.cache-range-btn:hover:not(:disabled) {
   background: var(--accent-soft);
   color: var(--accent-ink);
   border-color: var(--accent);
 }
+/* 缓存进行中：按钮置灰（唯一的"进行中"反馈，复用 offlineRunning 这一个既有状态） */
+.cache-range-btn:disabled { opacity: .55; cursor: not-allowed; }
 .cache-custom-range-box {
   padding: 8px;
   margin-bottom: 8px;
@@ -6213,8 +6216,9 @@ mark.search-highlight { background: var(--accent-soft); color: var(--accent); fo
 .audiobook-error-box { width: 100%; }
 .audiobook-audio { display: none; }
 .audiobook-offline-banner { position: relative; z-index: 3; }
-.audiobook-bottom-controls { position: relative; z-index: 3; flex-shrink: 0; display: grid; grid-template-columns: repeat(5, 1fr); gap: 4px; padding: 10px 8px calc(10px + var(--safe-bottom)); border-top: 1px solid var(--line); background: color-mix(in srgb, var(--surface) 92%, transparent); }
-.audiobook-feature { display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 6px 4px; border: 0; border-radius: 8px; background: none; color: var(--muted); font-size: 10px; cursor: pointer; transition: color .15s ease, background .15s ease; }
+.audiobook-bottom-controls { position: relative; z-index: 3; flex-shrink: 0; display: flex; gap: 4px; padding: 10px 8px calc(10px + var(--safe-bottom)); border-top: 1px solid var(--line); background: color-mix(in srgb, var(--surface) 92%, transparent); }
+.audiobook-feature { flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 6px 4px; border: 0; border-radius: 8px; background: none; color: var(--muted); font-size: 10px; cursor: pointer; transition: color .15s ease, background .15s ease; }
+.audiobook-feature > span { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .audiobook-feature:hover, .audiobook-feature.active { color: var(--accent); background: var(--accent-soft); }
 .audiobook-feature-value { display: grid; place-items: center; min-height: 20px; font-size: 13px; font-weight: 600; font-variant-numeric: tabular-nums; }
 .audiobook-feature-value svg { width: 18px; height: 18px; }

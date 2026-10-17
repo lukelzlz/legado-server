@@ -13,6 +13,8 @@ import org.junit.Test
 import java.io.ByteArrayOutputStream
 import java.nio.file.Files
 import java.nio.file.Path
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
@@ -32,8 +34,18 @@ class MangaPrefetchServiceTest {
         "bookSourceUrl": "https://manga.example.com",
         "bookSourceName": "测试漫画源",
         "bookSourceType": 2,
-        "header": "{\"Referer\":\"https://manga.example.com/\"}"
+        "header": "{\"Referer\":\"https://manga.example.com/\"}",
+        "ruleBookInfo": {"tocUrl": "$.toc"},
+        "ruleToc": {"chapterList": "$.chapters", "chapterName": "$.name", "chapterUrl": "$.url"},
+        "ruleContent": {"content": "$.images"}
     }"""
+
+    private companion object {
+        const val BOOK_URL = "https://manga.example.com/book/1"
+        const val TOC_URL = "https://manga.example.com/book/1/toc"
+        const val CHAPTER_0 = "https://manga.example.com/ch/0"
+        const val CHAPTER_1 = "https://manga.example.com/ch/1"
+    }
 
     @Test
     fun `prefetches a whole chapter and marks it ready for the green dot`() {
@@ -87,11 +99,123 @@ class MangaPrefetchServiceTest {
     }
 
     @Test
-    fun `returns zero instead of failing when the toc is not cached`() {
+    fun `accepts the task and fetches the toc itself when it is not cached`() {
         withService { ctx ->
-            // 只登记了章节清单、没有目录缓存 ⇒ 无法知道"后 N 章"是谁
-            assertEquals(0, ctx.service.enqueue(ctx.sourceId, ctx.bookUrl, 0, 3))
-            assertEquals("不该白抓任何一张图", 0, ctx.fetches.get())
+            // 没有目录缓存、书源也没有目录规则 ⇒ 预取仍然**受理**（返回 ≥1），
+            // 只是这次抓不到目录 ⇒ 不做（绝不返回 0 让上层误判成"没事可做"）。
+            // 这是"只有打开书了进度才动"的回归锁：旧实现在这里返回 0。
+            assertEquals(1, ctx.service.enqueue(ctx.sourceId, ctx.bookUrl, 0, 3))
+            assertEquals("抓不到目录就不能白抓图片", 0, ctx.fetches.get())
+        }
+    }
+
+    /**
+     * 问题 A 的回归：**目录没被阅读器缓存过**，预取也要自己把目录抓下来并把整章缓存完。
+     *
+     * 旧行为：`enqueue` 只读 `book_toc_cache` ⇒ 缺失就返回 0 ⇒ 路由回 `nothing_to_prefetch`
+     * ⇒ 从书架点"缓存全本"什么都不发生，直到用户点开这本书。
+     */
+    @Test
+    fun `fetches the toc with the reading path fallback and caches the whole book`() {
+        val responses = mutableMapOf(
+            // ① 从 bookUrl 取目录：详情页参数载体，`$.chapters` 取到空数组（聚合源常见形态）
+            BOOK_URL to """{"toc":"$TOC_URL","chapters":[]}""",
+            // ② 回退到 details.tocUrl 才拿到真正的目录
+            TOC_URL to """{"chapters":[{"name":"第1话","url":"$CHAPTER_0"},{"name":"第2话","url":"$CHAPTER_1"}]}""",
+            CHAPTER_0 to """{"images":["https://img.example/1-0.jpg","https://img.example/1-1.jpg"]}""",
+            CHAPTER_1 to """{"images":["https://img.example/2-0.jpg","https://img.example/2-1.jpg","https://img.example/2-2.jpg"]}""",
+        )
+        val runner = RuleRunner { url -> responses[url] ?: error("Unexpected URL: $url") }
+        withService(runner = runner) { ctx ->
+            assertTrue("前置条件：目录确实没有缓存", ctx.database.getTocCache(ctx.sourceId, ctx.bookUrl).isNullOrEmpty())
+
+            val accepted = ctx.service.enqueue(ctx.sourceId, ctx.bookUrl, fromChapterIndex = 0, ahead = 1)
+
+            assertEquals("目录未知时也要受理（≥1）", 1, accepted)
+            assertTrue("整章都要落盘（不打开书也能缓存）", ctx.awaitReady(CHAPTER_1))
+            assertEquals(
+                "两章都必须就绪",
+                listOf(CHAPTER_0, CHAPTER_1),
+                ctx.database.listReadyMangaChapterUrls(ctx.sourceId, ctx.bookUrl),
+            )
+            assertEquals("2 + 3 张图都抓到了", 5, ctx.fetches.get())
+            assertEquals(
+                "目录必须落进 book_toc_cache（阅读器不必再抓一次）",
+                2,
+                ctx.database.getTocCache(ctx.sourceId, ctx.bookUrl)?.size,
+            )
+            assertEquals(
+                "详情页给的 tocUrl 也要存一份（与 /books/chapters 同口径）",
+                2,
+                ctx.database.getTocCache(ctx.sourceId, TOC_URL)?.size,
+            )
+        }
+    }
+
+    /**
+     * 问题 B 的回归：**`done/planned` 是章口径，图片张数单独用 `doneImages/plannedImages`**。
+     *
+     * 用户反馈「进度写的是章节，实际是每章图片的进度」（51 章显示成 `83/136`）。
+     * 这里让第 2 章的抓取卡住，在"第 1 章已完成、第 2 章在飞"的瞬间读一次状态：
+     * 2 章 / 3+3 张 ⇒ `planned=2`、`plannedImages=6`、`done=1`、`doneImages=3`。
+     */
+    @Test
+    fun `status reports chapters for done planned and images for doneImages plannedImages`() {
+        val blocking = CountDownLatch(1)
+        val started = CountDownLatch(1)
+        withService(beforeFetch = { url ->
+            if (url.contains("/2-")) {
+                started.countDown()
+                assertTrue("等测试读状态", blocking.await(15, TimeUnit.SECONDS))
+            }
+        }) { ctx ->
+            ctx.seedChapter(0, (0..2).map { "https://img.example/1-$it.jpg" })
+            ctx.seedChapter(1, (0..2).map { "https://img.example/2-$it.jpg" })
+
+            assertEquals(2, ctx.service.enqueue(ctx.sourceId, ctx.bookUrl, fromChapterIndex = 0, ahead = 1))
+            assertTrue("第 2 章必须真的在飞", started.await(15, TimeUnit.SECONDS))
+
+            val snapshot = ctx.service.status().single()
+            assertEquals("planned = 规划**章数**", 2, snapshot.planned)
+            assertEquals("done = 已完成**章数**（第 1 章整章落盘，第 2 章在飞）", 1, snapshot.done)
+            assertEquals("plannedImages = 规划**图片**张数（细节口径）", 6, snapshot.plannedImages)
+            assertEquals("doneImages = 已落盘**图片**张数（细节口径）", 3, snapshot.doneImages)
+
+            blocking.countDown()
+            // 注意：seedChapter 造的章节地址是 `ch-N`（本用例的目录由 seedChapter 写进缓存）
+            assertTrue(ctx.awaitReady("ch-1"))
+            assertTrue("全部完成后不应再有在跑任务", ctx.awaitIdle())
+            assertEquals(
+                "6 张图都 ready（图片口径的最终值）",
+                6,
+                ctx.database.listMangaImagesForChapter(ctx.sourceId, ctx.bookUrl, "ch-0").count { it.state == "ready" } +
+                    ctx.database.listMangaImagesForChapter(ctx.sourceId, ctx.bookUrl, "ch-1").count { it.state == "ready" },
+            )
+        }
+    }
+
+    /** 自动单章预取（`ahead=0`）不得把"全本"顶窄：否则批量任务被切成一条条单章（进度看着不动）。 */
+    @Test
+    fun `automatic single chapter prefetch does not narrow a running bulk task`() {
+        val blocking = CountDownLatch(1)
+        val started = CountDownLatch(1)
+        withService(beforeFetch = { url ->
+            if (url.contains("/1-")) {
+                started.countDown()
+                assertTrue(blocking.await(15, TimeUnit.SECONDS))
+            }
+        }) { ctx ->
+            ctx.seedChapter(0, (0..2).map { "https://img.example/1-$it.jpg" })
+            ctx.seedChapter(1, (0..2).map { "https://img.example/2-$it.jpg" })
+            ctx.service.enqueue(ctx.sourceId, ctx.bookUrl, fromChapterIndex = 0, ahead = 1)
+            assertTrue(started.await(15, TimeUnit.SECONDS))
+
+            // 阅读器此刻投递"下一章"（ahead=0）：它落在批量区间里 ⇒ 忽略，批量继续
+            assertEquals(1, ctx.service.enqueue(ctx.sourceId, ctx.bookUrl, fromChapterIndex = 1, ahead = 0))
+            assertEquals("批量任务的规划章数不能被顶成 1", 2, ctx.service.status().single().planned)
+
+            blocking.countDown()
+            assertTrue("批量任务必须继续跑完第 2 章", ctx.awaitReady("ch-1"))
         }
     }
 
@@ -188,7 +312,15 @@ class MangaPrefetchServiceTest {
         }
     }
 
-    private fun withService(enabled: Boolean = true, failFetches: Boolean = false, block: (Ctx) -> Unit) {
+    private fun withService(
+        enabled: Boolean = true,
+        failFetches: Boolean = false,
+        /** 目录/清单规则走这里：**默认离线**，误触网会立刻抛错（本文件不该有网络依赖）。 */
+        runner: RuleRunner? = null,
+        /** 每张图抓取前的钩子（测试用它在指定章节上"卡住"，好观察中间状态）。 */
+        beforeFetch: (String) -> Unit = {},
+        block: (Ctx) -> Unit,
+    ) {
         val dir = Files.createTempDirectory("legado-manga-prefetch")
         val dbPath = Files.createTempFile("legado-manga-prefetch", ".sqlite").toString()
         val database = Database(dbPath)
@@ -201,6 +333,7 @@ class MangaPrefetchServiceTest {
             val fetcher = MangaImageFetcher(
                 config = testConfig(dir),
                 injectedFetcher = { url, _, _ ->
+                    beforeFetch(url)
                     fetches.incrementAndGet()
                     if (failFetches) throw java.io.IOException("upstream 503")
                     // 每张图字节不同（内容寻址是去重的，字节一样会掩盖"抓了几张"的事实）
@@ -209,7 +342,7 @@ class MangaPrefetchServiceTest {
             )
             val service = MangaPrefetchService(
                 database = database,
-                runner = RuleRunner(database = database),
+                runner = runner ?: RuleRunner { url -> error("Unexpected URL: $url") },
                 imageCache = cache,
                 fetcher = fetcher,
                 scope = scope,

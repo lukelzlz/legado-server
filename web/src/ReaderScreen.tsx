@@ -20,8 +20,7 @@ import {
 } from './readerScrollStream'
 import type { ScrollStreamSlot } from './readerScrollStream'
 import { clampScrollPosition, defaultReaderSettings, getReaderFontFamily, ReaderSettings, scrollPosition, TtsEngineType } from './readerSettings'
-import { SourceSwitchModal } from './SourceSwitchModal'
-import { cleanAuthor, cleanTitle } from './searchFilters'
+import { SourceSwitchModal, switchBookSource } from './sourceSwitch'
 import { toast } from './Toast'
 import { processChapterForTts, TtsChapterData } from './ttsTextProcessor'
 import { ITtsEngine, WebSpeechEngine, HttpAudioTtsEngine, TtsPlayState, TtsSpeakMode, isPlayInterruptedError } from './ttsEngine'
@@ -1563,44 +1562,27 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
     }
   }
 
+  /**
+   * 换源：换源弹窗选定新源后的落地。
+   *
+   * 编排本身（重新解析新源详情 → 封面/书名/作者回退 → 写回书架）已抽到共享模块
+   * `switchBookSource`，这里只做**小说自己的那部分**：把新的 `OpenBook` 灌进阅读器状态、
+   * 把落点下标同步给分页/滚动流、清预加载缓存、更新 sessionStorage。
+   *
+   * 保留这段本地逻辑（而不是把阅读器状态机也搬进共享模块）是刻意的：三端阅读器的
+   * 状态结构差异很大，硬抽只会得到一堆回调参数。
+   */
   const handleSwitchSource = async (chosen: { result: SearchResult; chapters: Chapter[]; targetChapterIndex: number }) => {
-    const details = await api.details(chosen.result.sourceId, chosen.result.bookUrl)
-    const fallbackCover = details.coverUrl?.trim() ||
-      chosen.result.coverUrl?.trim() ||
-      currentBook.details.coverUrl?.trim() ||
-      currentBook.details.alternateSources?.find(s => s.coverUrl?.trim())?.coverUrl?.trim()
-
-    const safeDetails: BookDetails = {
-      ...details,
-      name: cleanTitle(details.name?.trim() || currentBook.details.name || t('common.unknown', '未知书名')) || currentBook.details.name,
-      author: cleanAuthor(details.author?.trim() || currentBook.details.author) || currentBook.details.author,
-      coverUrl: fallbackCover || undefined,
-      intro: details.intro || currentBook.details.intro,
-      alternateSources: currentBook.details.alternateSources,
-    }
-
-    await api.switchBookshelfSource({
-      oldSourceId: currentBook.details.sourceId,
-      oldBookUrl: currentBook.bookUrl,
-      book: {
-        sourceId: safeDetails.sourceId,
-        bookUrl: chosen.result.bookUrl,
-        name: safeDetails.name,
-        author: safeDetails.author,
-        tocUrl: safeDetails.tocUrl,
-        coverUrl: safeDetails.coverUrl,
-      },
-      alternateSources: currentBook.details.alternateSources,
-    })
+    const switched = await switchBookSource(currentBook, chosen, t('common.unknown', '未知书名'))
 
     const newOpenBook: OpenBook = {
-      details: safeDetails,
-      bookUrl: chosen.result.bookUrl,
-      chapters: chosen.chapters,
+      details: switched.book.details,
+      bookUrl: switched.book.bookUrl,
+      chapters: switched.book.chapters,
       progress: {
-        sourceId: safeDetails.sourceId,
-        bookUrl: chosen.result.bookUrl,
-        chapterUrl: chosen.chapters[chosen.targetChapterIndex]?.url || '',
+        sourceId: switched.book.details.sourceId,
+        bookUrl: switched.book.bookUrl,
+        chapterUrl: switched.book.chapters[chosen.targetChapterIndex]?.url || '',
         chapterIndex: chosen.targetChapterIndex,
         scrollPosition: 0,
         updatedAt: Date.now(),

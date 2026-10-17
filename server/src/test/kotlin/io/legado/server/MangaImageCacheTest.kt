@@ -51,17 +51,21 @@ class MangaImageCacheTest {
     }
 
     @Test
-    fun `deduplicates identical bytes across different urls`() {
+    fun `identical bytes in different segments each get their own readable file`() {
         withCache { cache, database ->
             val bytes = jpegBytes(640, 480)
-            val a = cache.put("src-a", "book-1", "ch-1", "https://img.example/1.jpg", "image/jpeg", bytes)
-            val b = cache.put("src-a", "book-1", "ch-2", "https://img.example/2.jpg", "image/jpeg", bytes)
+            // 两章、同一份字节：**内容寻址的去重已被"可读目录"取代**（用户原话：方便我本地查看）
+            val a = cache.put("src-a", "book-1", "ch-1", "https://img.example/1.jpg", "image/jpeg", bytes, chapterIndex = 0, segmentIndex = 0)
+            val b = cache.put("src-a", "book-1", "ch-2", "https://img.example/2.jpg", "image/jpeg", bytes, chapterIndex = 1, segmentIndex = 0)
 
-            assertEquals("相同字节必须落到同一个 cacheKey（内容寻址去重）", a.cacheKey, b.cacheKey)
+            assertEquals("字节相同 ⇒ cacheKey 相同（仍然可用于 ETag 与引用计数）", a.cacheKey, b.cacheKey)
             assertEquals("两个 URL 引用同一份字节", 2, database.countMangaImageRefs(a.cacheKey))
 
-            val files = Files.list(cache.fileFor(a.cacheKey)!!.parent).use { it.count() }
-            assertEquals("盘上只能有一份物理文件", 1L, files)
+            val files = Files.walk(cache.fileFor(a.cacheKey)!!.parent.parent).use { paths ->
+                paths.filter { Files.isRegularFile(it) }.count()
+            }
+            assertEquals("每段都有自己的真实文件（章节目录不同）", 2L, files)
+            assertTrue("文件名是 8 位分段号 + 真实扩展名", cache.fileFor(a.cacheKey)!!.fileName.toString() == "00000000.jpg")
         }
     }
 

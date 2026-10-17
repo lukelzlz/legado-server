@@ -1,9 +1,11 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { api, type MangaImageItem } from './api'
+import { api, type Chapter, type MangaImageItem, type SearchResult } from './api'
 import { Icon } from './icons'
-import { getMangaManifest, putMangaManifest, warmChapterImages } from './mangaOffline'
+import { clearMangaManifests, getMangaManifest, putMangaManifest, warmChapterImages } from './mangaOffline'
+import { OfflineCacheModal } from './OfflineCacheModal'
 import { OpenBook, VirtualChapterList } from './ReaderScreen'
+import { SourceSwitchModal, notifySourceSwitchFallback, remapChapterAfterSourceSwitch, switchBookSource } from './sourceSwitch'
 import { toast } from './Toast'
 import type { ReaderTheme } from './readerSettings'
 
@@ -89,9 +91,54 @@ export function mangaImageFrameClass(isLoaded: boolean): string {
   return isLoaded ? 'manga-image-frame is-loaded' : 'manga-image-frame'
 }
 
+/**
+ * 目录底栏「缓存进行中」那一态（进度条 + 「取消缓存」）。
+ *
+ * **为什么单独抽成一个纯函数**：本仓库的渲染断言用 `renderToStaticMarkup`，而它
+ * **不执行 effect**（服务端预取进度是进页面之后才异步取回来的）⇒ 组件初始态永远是空闲的，
+ * "进行中"那一态在静态渲染里根本出不来。抽成纯函数后，测试可以**直接喂一个 running 状态**渲染断言，
+ * 而不是退化成只对源码 grep。
+ *
+ * class 与文案键与小说阅读器 `ReaderScreen` 完全一致
+ * （`.cache-progress-bar-track/fill`、`.cache-progress-text`、`.cache-cancel-btn`、`reader.cancelCache`）。
+ */
+export function mangaCacheProgressMarkup(props: {
+  percent: number
+  done: number
+  planned: number
+  serverCachingLabel: string
+  unitLabel: string
+  cancelLabel: string
+  onCancel: () => void
+}): React.ReactElement {
+  // 夹紧到 0..100：`planned` 还没回填（0）时绝不出 NaN% 或负宽度
+  const percent = Math.min(100, Math.max(0, Number.isFinite(props.percent) ? props.percent : 0))
+  return (
+    <div className="drawer-cache-progress">
+      <div className="cache-progress-text">
+        <span>{props.serverCachingLabel}</span>
+        <strong>{percent}% ({props.done}/{props.planned}{props.unitLabel})</strong>
+      </div>
+      <div className="cache-progress-bar-track">
+        <div className="cache-progress-bar-fill" style={{ width: `${percent}%` }} />
+      </div>
+      <button type="button" className="cache-cancel-btn" onClick={props.onCancel}>{props.cancelLabel}</button>
+    </div>
+  )
+}
+
 export function MangaReaderScreen({ openBook, startIndex, onClose, theme }: MangaReaderScreenProps) {
   const { t } = useTranslation()
-  const chapters = openBook.chapters
+  /**
+   * 当前书籍。
+   *
+   * 与 `ReaderScreen` 同一模型：**换源会换掉整本书**（sourceId / bookUrl / 目录全变），
+   * 所以必须有一份可变状态，不能只认 `openBook` 这个 prop。`progress` 刻意不进状态
+   * （它只用于「进章恢复一次」，由 `restoredRef` 守卫；把对象塞进状态会让依赖它的
+   * effect 在换源后多跑一轮，白白重拉一次图片清单）。
+   */
+  const [activeBook, setActiveBook] = useState<OpenBook>(openBook)
+  const chapters = activeBook.chapters
   const [chapterIndex, setChapterIndex] = useState(() => Math.max(0, Math.min(startIndex, Math.max(0, chapters.length - 1))))
   const [images, setImages] = useState<MangaImageItem[]>([])
   const [loading, setLoading] = useState(true)
@@ -99,6 +146,8 @@ export function MangaReaderScreen({ openBook, startIndex, onClose, theme }: Mang
   const [failed, setFailed] = useState<Set<number>>(() => new Set())
   const [activeImage, setActiveImage] = useState(0)
   const [activeDrawer, setActiveDrawer] = useState<'toc' | 'settings' | null>(null)
+  /** 换源弹窗（与小说阅读器同一个共用组件，见 `sourceSwitch.tsx`）。 */
+  const [showSourceSwitch, setShowSourceSwitch] = useState(false)
   const [chapterQuery, setChapterQuery] = useState('')
   const [settings, setSettings] = useState<MangaUiSettings>(loadUiSettings)
   const [toolbarsVisible, setToolbarsVisible] = useState(true)
@@ -117,6 +166,28 @@ export function MangaReaderScreen({ openBook, startIndex, onClose, theme }: Mang
   const [cachedChapters, setCachedChapters] = useState<Set<string>>(() => new Set())
   /** 用户手动"整本离线"进行中（只用于显示进度与轮询绿点）。 */
   const [offlineRunning, setOfflineRunning] = useState(false)
+  /**
+   * 服务端预取进度（`done/planned`）。
+   *
+   * **不新加轮询循环**：它由下面那个既有的绿点轮询顺手回填；投递后先给 `null`，
+   * 首次回填前进度条按 0% 渲染（与小说阅读器「正在服务端缓存」那一态的观感一致）。
+   */
+  const [prefetchProgress, setPrefetchProgress] = useState<{ done: number; planned: number } | null>(null)
+  /** 「自定义…」范围缓存（与小说同款交互：第 X 至 Y 章 → 开始缓存）。 */
+  const [customRangeOpen, setCustomRangeOpen] = useState(false)
+  const [customRangeStart, setCustomRangeStart] = useState(1)
+  const [customRangeEnd, setCustomRangeEnd] = useState(50)
+  /** 「管理本设备离线缓存」弹窗（与小说**同一个** `OfflineCacheModal`）。 */
+  const [offlineStatsModal, setOfflineStatsModal] = useState(false)
+  /** 是否已在书架（与小说同一套 API：`api.bookshelf()` 查在架 + add/remove 改）。 */
+  const [inShelf, setInShelf] = useState(true)
+  /**
+   * 本次预取任务的失败情况（服务端如实带出的首条原因）。
+   *
+   * 为什么要显示：旧实现把失败只写进库与日志，界面上只有"正在后台缓存"——
+   * 用户看到进度不动却不知道为什么（防盗链 403？图床挂了？）。这里把"失败几张 + 原因"摆出来。
+   */
+  const [prefetchFailure, setPrefetchFailure] = useState<{ failed: number; reason: string } | null>(null)
   /** 当前渲染用的是**本地清单快照**（脱网回退），用于顶部横幅与失败文案区分。 */
   const [offlineSnapshot, setOfflineSnapshot] = useState(false)
 
@@ -124,6 +195,10 @@ export function MangaReaderScreen({ openBook, startIndex, onClose, theme }: Mang
   const total = images.length
   const loadedCount = loaded.size
   const progressPercent = total > 0 ? Math.round((loadedCount / total) * 100) : 0
+  /** 服务端预取的百分比（`planned` 为 0 时按 0% 渲染，绝不出 NaN%）。 */
+  const prefetchPercent = prefetchProgress && prefetchProgress.planned > 0
+    ? Math.min(100, Math.round((prefetchProgress.done / prefetchProgress.planned) * 100))
+    : 0
 
   const filteredChapters = useMemo(() => {
     const query = chapterQuery.trim()
@@ -175,14 +250,14 @@ export function MangaReaderScreen({ openBook, startIndex, onClose, theme }: Mang
     if (!target) return
     const position = imageTotal > 0 ? Math.min(1, Math.max(0, (imageIndex + 1) / imageTotal)) : 0
     void api.saveProgress(
-      openBook.details.sourceId,
-      openBook.bookUrl,
+      activeBook.details.sourceId,
+      activeBook.bookUrl,
       target.url,
       target.index,
       position,
       target.title,
     ).catch(() => undefined)
-  }, [chapters, openBook.bookUrl, openBook.details.sourceId])
+  }, [chapters, activeBook.bookUrl, activeBook.details.sourceId])
 
   // ---- 载入章节清单（L2 命中时服务端不会再抓章节页） ----
   useEffect(() => {
@@ -201,7 +276,7 @@ export function MangaReaderScreen({ openBook, startIndex, onClose, theme }: Mang
     setRetryTokens({})
     setActiveImage(0)
     restoredRef.current = false
-    void api.mangaManifest(openBook.details.sourceId, target.url, openBook.bookUrl, target.index, controller.signal)
+    void api.mangaManifest(activeBook.details.sourceId, target.url, activeBook.bookUrl, target.index, controller.signal)
       .then(result => {
         if (controller.signal.aborted) return
         const list = result?.images ?? []
@@ -217,8 +292,8 @@ export function MangaReaderScreen({ openBook, startIndex, onClose, theme }: Mang
           // 清单快照 + **整章预热**（P3）：快照让脱网时还能渲染，预热把图片塞进 SW 缓存。
           // 两者都失败静默：离线能力是增强项，绝不能在联网阅读时碍事。
           void putMangaManifest({
-            sourceId: openBook.details.sourceId,
-            bookUrl: openBook.bookUrl,
+            sourceId: activeBook.details.sourceId,
+            bookUrl: activeBook.bookUrl,
             chapterUrl: target.url,
             chapterIndex: target.index,
             title: target.title,
@@ -228,13 +303,13 @@ export function MangaReaderScreen({ openBook, startIndex, onClose, theme }: Mang
         }
         // 后台预取本章（环节 E8 ②）。**刻意放在清单加载之后**：此刻 L2 清单已经落库，
         // 预取走的是缓存路径，不会再去解析一遍章节页（否则同一章会被抓两次）。
-        void api.mangaPrefetch(openBook.details.sourceId, openBook.bookUrl, target.index, 0).catch(() => undefined)
+        void api.mangaPrefetch(activeBook.details.sourceId, activeBook.bookUrl, target.index, 0).catch(() => undefined)
       })
       .catch(async (err: unknown) => {
         if (controller.signal.aborted) return
         // 脱网 / 服务不可达时的兜底：用本地清单快照照常渲染。
         // 不做这一步的话，最难受的形态会出现——**图都在 SW 缓存里，界面却因为拿不到清单而全白**。
-        const snapshot = await getMangaManifest(openBook.details.sourceId, target.url)
+        const snapshot = await getMangaManifest(activeBook.details.sourceId, target.url)
         if (controller.signal.aborted) return
         if (snapshot && snapshot.images.length > 0) {
           setImages(snapshot.images)
@@ -251,15 +326,15 @@ export function MangaReaderScreen({ openBook, startIndex, onClose, theme }: Mang
         if (!controller.signal.aborted) setLoading(false)
       })
     return () => controller.abort()
-  }, [chapterIndex, chapters, openBook.details.sourceId, openBook.bookUrl, persist, t])
+  }, [chapterIndex, chapters, activeBook.details.sourceId, activeBook.bookUrl, persist, t])
 
   // ---- 目录绿点：整章就绪的唯一口径在服务端 ----
   // `/api/bookshelf/cached-chapters` 契约不变，服务端按 book_kind 换源（漫画看 manga_chapter_cache）。
   const refreshCachedChapters = useCallback(() => {
-    void api.getCachedChapters(openBook.details.sourceId, openBook.bookUrl)
+    void api.getCachedChapters(activeBook.details.sourceId, activeBook.bookUrl)
       .then(result => setCachedChapters(new Set(result?.cachedChapterUrls ?? [])))
       .catch(() => undefined) // 绿点只是提示：读不到就当没有，绝不能因此打断阅读
-  }, [openBook.details.sourceId, openBook.bookUrl])
+  }, [activeBook.details.sourceId, activeBook.bookUrl])
 
   useEffect(() => {
     refreshCachedChapters()
@@ -271,29 +346,107 @@ export function MangaReaderScreen({ openBook, startIndex, onClose, theme }: Mang
   }, [total, loadedCount, refreshCachedChapters])
 
   // 「整本离线」进行中：轻量轮询绿点，并在服务端任务跑完时自动收尾
+  // （**复用这一个既有轮询**顺带回填 `done/planned`，绝不新开第二个定时器）
   useEffect(() => {
     if (!offlineRunning) return
     const timer = window.setInterval(() => {
       refreshCachedChapters()
       void api.mangaPrefetchStatus()
         .then(list => {
-          const stillRunning = (list ?? []).some(item => item.sourceId === openBook.details.sourceId && item.bookUrl === openBook.bookUrl)
-          if (!stillRunning) setOfflineRunning(false)
+          const mine = (list ?? []).find(item => item.sourceId === activeBook.details.sourceId && item.bookUrl === activeBook.bookUrl)
+          if (mine) {
+            setPrefetchProgress({ done: mine.done, planned: mine.planned })
+            const failed = Number(mine.failed ?? 0)
+            setPrefetchFailure(failed > 0 ? { failed, reason: mine.lastError ?? '' } : null)
+          } else {
+            setOfflineRunning(false)
+            setPrefetchProgress(null)
+          }
         })
         .catch(() => undefined)
     }, OFFLINE_POLL_MS)
     return () => window.clearInterval(timer)
-  }, [offlineRunning, refreshCachedChapters, openBook.details.sourceId, openBook.bookUrl])
+  }, [offlineRunning, refreshCachedChapters, activeBook.details.sourceId, activeBook.bookUrl])
 
-  /** 用户手动离线：`ahead` = 再往后多少章（0 = 只本章）；覆盖到书末即视为"整本" ⇒ 打 pinned 免死金牌。 */
-  const requestOffline = useCallback((ahead: number) => {
-    const remaining = chapters.length - 1 - chapterIndex
+  /**
+   * 进阅读器时**一次性**对齐服务端上已有的预取任务（刷新页面/从书架重进时，
+   * 底栏要当场显示进度条与「取消缓存」，而不是等用户再点一次缓存）。
+   *
+   * 刻意**不用** `setInterval`：这不是新的轮询循环——只读一次，后续进度由上面那个既有轮询负责。
+   */
+  useEffect(() => {
+    let cancelled = false
+    void api.mangaPrefetchStatus()
+      .then(list => {
+        if (cancelled) return
+        const mine = (list ?? []).find(item => item.sourceId === openBook.details.sourceId && item.bookUrl === openBook.bookUrl)
+        if (mine) {
+          setOfflineRunning(true)
+          setPrefetchProgress({ done: mine.done, planned: mine.planned })
+        }
+      })
+      .catch(() => undefined) // 状态接口读不到只是没有进度条，绝不能打断阅读
+    return () => { cancelled = true }
+  }, [openBook.details.sourceId, openBook.bookUrl])
+
+  // ---- 书架状态与「加书架 / 已在书架」：复用小说阅读器同一套 API ----
+  const refreshShelfState = useCallback(() => {
+    void api.bookshelf()
+      .then(list => setInShelf(list.some(item => item.sourceId === openBook.details.sourceId && item.bookUrl === openBook.bookUrl)))
+      .catch(() => undefined) // 书架状态只是提示：读不到就当未收藏，绝不影响阅读
+  }, [openBook.details.sourceId, openBook.bookUrl])
+
+  useEffect(() => {
+    refreshShelfState()
+  }, [refreshShelfState])
+
+  const toggleShelf = useCallback(async () => {
+    const details = openBook.details
+    try {
+      if (inShelf) {
+        if (!confirm(t('shelf.removeFromShelfConfirm', { name: details.name, defaultValue: `移出“${details.name}”将清除书架、阅读进度和缓存封面，确定继续吗？` }))) return
+        await api.removeFromBookshelf(details.sourceId, openBook.bookUrl)
+        setInShelf(false)
+        toast.info(t('reader.removedFromShelfToast', { name: details.name, defaultValue: `《${details.name}》已移出书架` }))
+        return
+      }
+      // 与小说同款兜底：自身没有封面时，从候选书源里挑一个真实封面 URL（服务端会物化成副本）
+      const fallbackCover = details.coverUrl || details.alternateSources?.find(s => s.coverUrl?.trim())?.coverUrl?.trim()
+      await api.addToBookshelf({
+        sourceId: details.sourceId,
+        bookUrl: openBook.bookUrl,
+        name: details.name,
+        author: details.author,
+        tocUrl: details.tocUrl,
+        coverUrl: fallbackCover || undefined,
+        alternateSources: details.alternateSources,
+      })
+      setInShelf(true)
+      toast.success(t('reader.addedToShelfToast', { name: details.name, defaultValue: `《${details.name}》已加入书架` }))
+    } catch {
+      toast.error(t('shelf.toggleShelfFailed', '操作书架失败'))
+    }
+  }, [inShelf, openBook, t])
+
+  /**
+   * 用户手动离线：`ahead` = 从 `from`（默认当前章）起**再往后多少章**（0 = 只本章）；
+   * 覆盖到书末即视为"整本" ⇒ 打 pinned 免死金牌。
+   *
+   * `from` 参数是给「自定义…」范围用的：既有语义不变（默认仍是当前章），
+   * 这样四按钮的调用点一个字都不用改。
+   */
+  const requestOffline = useCallback((ahead: number, from = chapterIndex) => {
+    const remaining = chapters.length - 1 - from
     const span = Math.min(ahead, Math.max(0, remaining))
     const whole = span >= remaining
-    void api.mangaPrefetch(openBook.details.sourceId, openBook.bookUrl, chapterIndex, span, whole)
+    void api.mangaPrefetch(activeBook.details.sourceId, activeBook.bookUrl, Math.max(0, from), span, whole)
       .then(result => {
         if (result?.queued) {
           setOfflineRunning(true)
+          // 真实进度等既有轮询回填；先给个"进行中"的壳，不让用户点了没反应
+          setPrefetchProgress(null)
+          // 新任务开始 ⇒ 上一次的失败提示作废（否则用户会以为是这次也失败了）
+          setPrefetchFailure(null)
           toast.success(
             whole
               ? t('manga.offlineQueuedAll', '已加入整本离线队列（后台缓存，可继续阅读）')
@@ -304,7 +457,80 @@ export function MangaReaderScreen({ openBook, startIndex, onClose, theme }: Mang
         }
       })
       .catch(() => toast.error(t('manga.offlineFailed', '离线缓存请求失败')))
-  }, [chapters.length, chapterIndex, openBook.details.sourceId, openBook.bookUrl, t])
+  }, [chapters.length, chapterIndex, activeBook.details.sourceId, activeBook.bookUrl, t])
+
+  /**
+   * 换源（漫画）。
+   *
+   * 与小说共用的部分：弹窗、候选排序、重映射规则、写回书架（`switchBookSource`）。
+   * 漫画**额外**要处理两件小说没有的事：
+   * ① 图片清单/离线快照是按 `[sourceId, bookUrl]`（`mangaOffline.ts` 的 `by_book` 索引）
+   *    建键的 ⇒ 换源后 `sourceId` 变了，旧源那本书的快照**再也读不到**，必须清掉；
+   * ② 服务端可能正在为旧源跑「整本离线」预取 —— 它有唯一入口（`DELETE /api/books/images/cache`，
+   *    见 `Routes.kt`：先 `mangaPrefetch.cancel` 再 `imageCache.deleteBook`，只清这一本），
+   *    不停掉的话它会拿着**旧书的地址**继续跑，还在跑的它会把刚清掉的缓存重新抓回来。
+   *
+   * 换源后 `chapterIndex` 变了 ⇒ 下面那个「载入章节清单」的 effect 自己会重新拉新源的图片清单，
+   * 这里不需要手动触发。
+   */
+  const handleSwitchSource = useCallback(async (chosen: { result: SearchResult; chapters: Chapter[]; targetChapterIndex: number }) => {
+    const switched = await switchBookSource(activeBook, chosen, t('common.unknown', '未知书名'))
+    const { sourceId, bookUrl } = switched.previous
+
+    // 先落到新书：界面立刻可用，清理旧源缓存是"善后"，慢一点也不能挡着阅读
+    setActiveBook(prev => ({ ...prev, ...switched.book }))
+    setChapterIndex(switched.targetChapterIndex)
+    setOfflineRunning(false)
+
+    // ① 本机离线快照：只清旧源的那一本（`clearMangaManifests` 走 `by_book` 索引）
+    void clearMangaManifests(sourceId, bookUrl).catch(() => undefined)
+    // ② 服务端：停掉旧源的预取任务并清掉旧源的图片缓存（只这一本）
+    void api.clearImageCache(sourceId, bookUrl).catch(() => undefined)
+
+    // 提示"为什么停在这一章"：标题匹配不到时落点由序号决定，用户看不出原因
+    notifySourceSwitchFallback(
+      remapChapterAfterSourceSwitch(chosen.chapters, chapters[chapterIndex]?.title, chapterIndex),
+      t,
+    )
+  }, [activeBook, chapters, chapterIndex, t])
+
+  /**
+   * 「自定义…」范围缓存：把「第 X 至 Y 章」（1 起、含两端）落到既有的
+   * `api.mangaPrefetch(fromChapterIndex, span)` —— 与四按钮走**同一条**投递路径，不新造接口。
+   */
+  const requestOfflineRange = useCallback((fromChapter: number, toChapter: number) => {
+    const total = chapters.length
+    if (total === 0) return
+    const from = Math.min(Math.max(1, Math.floor(fromChapter) || 1), total)
+    const to = Math.min(Math.max(from, Math.floor(toChapter) || from), total)
+    requestOffline(to - from, from - 1)
+  }, [chapters.length, requestOffline])
+
+  const cancelOffline = useCallback(async () => {
+    try {
+      // 只取消、不删缓存：`clearImageCache`（DELETE /books/images/cache）会把已下好的图一起删掉
+      await api.cancelMangaPrefetch(openBook.details.sourceId, openBook.bookUrl)
+      setOfflineRunning(false)
+      setPrefetchProgress(null)
+      toast.info(t('reader.cancelledCacheToast', { name: openBook.details.name, defaultValue: `已取消《${openBook.details.name}》的离线缓存` }))
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : t('reader.cancelCacheFailed', '无法取消缓存'))
+    }
+  }, [openBook.details.sourceId, openBook.bookUrl, openBook.details.name, t])
+
+  /**
+   * 「下载到本设备（离线脱机）」。
+   *
+   * ## 语义如实说明（与小说那个按钮**不一样**）
+   * 小说那边是前端把**正文文本**写进本机 IndexedDB（真正脱机可读，不依赖服务端）；
+   * 漫画的图片字节则统一落在**服务端**图片缓存里，浏览器侧由 Service Worker 在阅读
+   * （以及清单加载时的整章预热 `warmChapterImages`）过程中按需写入。
+   * 因此这里落地为**触发本书的既有缓存动作**：从第 1 章覆盖到书末 ⇒ 等价于「全本缓存」
+   * （还会打上 pinned 免死金牌）。它不会像小说那个按钮那样一次性把整本写进本机离线库。
+   */
+  const downloadToDevice = useCallback(() => {
+    requestOffline(chapters.length, 0)
+  }, [chapters.length, requestOffline])
 
   // ---- 恢复进度：定位到上次看到的那一张 ----
   // 借鉴参考实现「等图就绪再定位」：只有当目标图**已经有高度**时才滚，
@@ -357,7 +583,7 @@ export function MangaReaderScreen({ openBook, startIndex, onClose, theme }: Mang
           && !prefetchedNextRef.current.has(chapterIndex)) {
           prefetchedNextRef.current.add(chapterIndex)
           if (chapters[chapterIndex + 1]) {
-            void api.mangaPrefetch(openBook.details.sourceId, openBook.bookUrl, chapterIndex + 1, 0).catch(() => undefined)
+            void api.mangaPrefetch(activeBook.details.sourceId, activeBook.bookUrl, chapterIndex + 1, 0).catch(() => undefined)
           }
         }
       })
@@ -368,7 +594,7 @@ export function MangaReaderScreen({ openBook, startIndex, onClose, theme }: Mang
       if (frame) window.cancelAnimationFrame(frame)
       if (saveTimerRef.current) window.clearTimeout(saveTimerRef.current)
     }
-  }, [chapterIndex, total, persist, chapters, openBook.details.sourceId, openBook.bookUrl])
+  }, [chapterIndex, total, persist, chapters, activeBook.details.sourceId, activeBook.bookUrl])
 
   const changeChapter = useCallback((next: number) => {
     if (next < 0 || next >= chapters.length || next === chapterIndex) return
@@ -421,8 +647,8 @@ export function MangaReaderScreen({ openBook, startIndex, onClose, theme }: Mang
           />
           <IconButton label={t('reader.catalog', '目录')} icon="list" onClick={() => { setActiveDrawer(d => d === 'toc' ? null : 'toc'); revealToolbars() }} />
         </div>
-        <strong className="reader-header-title" title={openBook.details.name}>
-          {openBook.details.name}
+        <strong className="reader-header-title" title={activeBook.details.name}>
+          {activeBook.details.name}
           {chapter && <small className="manga-header-chapter">{chapter.title}</small>}
         </strong>
         <div className="reader-header-actions">
@@ -475,6 +701,163 @@ export function MangaReaderScreen({ openBook, startIndex, onClose, theme }: Mang
           autoScrollKey={activeDrawer === 'toc' ? 1 : 0}
           cachedUrlsSet={cachedChapters}
         />
+        {/* 缓存底栏：把「离线缓存」搬到**目录抽屉**里（与小说阅读器的目录底栏同构）。
+            放在列表之后 = 底部固定，不用滚动就能点；点击**不关抽屉**，这样后台缓存跑起来时
+            列表里的绿点当场可见（用户要的就是这个观感："像小说的那个一样"）。 */}
+        <footer className="drawer-footer">
+          <div className="drawer-cache-section">
+            {offlineRunning ? (
+              /* 进行中：与小说同款的进度条 + 「取消缓存」。
+                 进度数据直接来自既有状态接口（`done/planned`），不新造状态机。 */
+              mangaCacheProgressMarkup({
+                percent: prefetchPercent,
+                done: prefetchProgress?.done ?? 0,
+                planned: prefetchProgress?.planned ?? 0,
+                serverCachingLabel: t('reader.serverCaching', '正在服务端缓存'),
+                unitLabel: t('reader.cacheCustomUnit', '章'),
+                cancelLabel: t('reader.cancelCache', '取消缓存'),
+                onCancel: () => void cancelOffline(),
+              })
+            ) : (
+              <div className="drawer-cache-idle">
+                <div className="cache-range-btn-grid">
+                  <button
+                    type="button"
+                    className="cache-range-btn"
+                    disabled={offlineRunning}
+                    title={t('manga.offlineCurrentTitle', '缓存当前这一章的全部图片')}
+                    onClick={() => requestOffline(0)}
+                  >
+                    {t('manga.offlineCurrent', '本章')}
+                  </button>
+                  <button
+                    type="button"
+                    className="cache-range-btn"
+                    disabled={offlineRunning}
+                    title={t('reader.cacheNext50Title', '缓存当前章节后续 50 章')}
+                    onClick={() => requestOffline(50)}
+                  >
+                    {t('reader.cacheNext50', '后 50 章')}
+                  </button>
+                  <button
+                    type="button"
+                    className="cache-range-btn"
+                    disabled={offlineRunning}
+                    title={t('reader.cacheNext100Title', '缓存当前章节后续 100 章')}
+                    onClick={() => requestOffline(100)}
+                  >
+                    {t('reader.cacheNext100', '后 100 章')}
+                  </button>
+                  <button
+                    type="button"
+                    className="cache-range-btn"
+                    disabled={offlineRunning}
+                    title={t('manga.offlineAllTitle', '缓存整本漫画（GC 永不自动淘汰）')}
+                    onClick={() => requestOffline(chapters.length)}
+                  >
+                    {t('reader.cacheAll', '全本缓存')}
+                  </button>
+                  {/* 第 5 格：自定义范围（复用小说那套 class 与文案键） */}
+                  <button
+                    type="button"
+                    className="cache-range-btn"
+                    disabled={offlineRunning}
+                    title={t('reader.cacheCustomTitle', '自定义章节范围')}
+                    onClick={() => setCustomRangeOpen(prev => !prev)}
+                  >
+                    {t('reader.cacheCustom', '自定义...')}
+                  </button>
+                </div>
+
+                {customRangeOpen && (
+                  <div className="cache-custom-range-box">
+                    <div className="range-inputs">
+                      <span>{t('reader.cacheCustomFrom', '第')}</span>
+                      <input
+                        type="number"
+                        min={1}
+                        max={Math.max(1, chapters.length)}
+                        value={customRangeStart}
+                        onChange={event => setCustomRangeStart(Number(event.target.value))}
+                      />
+                      <span>{t('reader.cacheCustomTo', '至')}</span>
+                      <input
+                        type="number"
+                        min={customRangeStart}
+                        max={Math.max(1, chapters.length)}
+                        value={customRangeEnd}
+                        onChange={event => setCustomRangeEnd(Number(event.target.value))}
+                      />
+                      <span>{t('reader.cacheCustomUnit', '章')}</span>
+                    </div>
+                    <button
+                      type="button"
+                      className="primary-button range-start-btn"
+                      onClick={() => {
+                        setCustomRangeOpen(false)
+                        requestOfflineRange(customRangeStart, customRangeEnd)
+                      }}
+                    >
+                      {t('reader.startCache', '开始缓存')}
+                    </button>
+                  </div>
+                )}
+
+                <div className="cache-local-sync-row">
+                  {/* 语义见 `downloadToDevice` 的注释：漫画落到**服务端**缓存，不是本机离线库 */}
+                  <button
+                    type="button"
+                    className="cache-sync-btn"
+                    onClick={downloadToDevice}
+                    title={t('reader.downloadToDeviceTitle', '将已缓存章节下载到手机或电脑本地，断网脱机可读')}
+                  >
+                    <Icon name="download" />
+                    <span>{t('reader.downloadToDevice', '下载到本设备 (离线脱机)')}</span>
+                  </button>
+                  <button
+                    type="button"
+                    className="cache-manage-btn"
+                    onClick={() => setOfflineStatsModal(true)}
+                    title={t('reader.manageOfflineCache', '管理本设备离线缓存')}
+                  >
+                    <Icon name="sliders" />
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* 绿点图例**必须留着**：它是"哪些章已可离线读"的唯一解释 */}
+            <small className="setting-hint">
+              {offlineRunning
+                ? t('manga.offlineRunning', '正在后台缓存，目录里绿点表示该章已可离线阅读')
+                : t('manga.offlineHint', { count: cachedChapters.size, defaultValue: `已离线 ${cachedChapters.size} 章 · 绿点表示整章可离线阅读` })}
+            </small>
+            {/* 失败如实报出：旧实现只写库与日志，用户看到"进度不动"却不知道为什么 */}
+            {prefetchFailure && (
+              <small className="setting-hint cache-failure-hint" role="status">
+                {t('reader.cacheFailedImages', {
+                  count: prefetchFailure.failed,
+                  reason: prefetchFailure.reason || t('common.unknownReason', '未知原因'),
+                  defaultValue: `${prefetchFailure.failed} 张图片缓存失败（最近：${prefetchFailure.reason || '未知原因'}），可稍后重试`,
+                })}
+              </small>
+            )}
+          </div>
+        </footer>
+
+        {/* 目录底栏的动作区：换源在前、加书架在后 */}
+        <div className="drawer-footer-actions">
+          <button
+            type="button"
+            className="shelf-button switch-source-btn"
+            onClick={() => { setActiveDrawer(null); setShowSourceSwitch(true) }}
+          >
+            <Icon name="sliders" />{t('reader.switchSource', '换源')}
+          </button>
+          <button type="button" className="shelf-button" onClick={() => void toggleShelf()}>
+            <Icon name={inShelf ? 'check' : 'plus'} />{inShelf ? t('reader.inShelf', '已在书架') : t('reader.addToShelf', '加书架')}
+          </button>
+        </div>
       </aside>
 
       {/* 设置抽屉：直接复用文本阅读器的设置排版（setting-section / page-modes / setting-hint） */}
@@ -514,46 +897,29 @@ export function MangaReaderScreen({ openBook, startIndex, onClose, theme }: Mang
             </div>
             <small className="setting-hint">{t('manga.immersiveHint', '自动隐藏时单击画面可唤出工具条')}</small>
           </section>
-          {/* 离线缓存：复用文本阅读器的同一套按钮网格与文案键（观感一致，不新造一套） */}
-          <section className="setting-section">
-            <span className="setting-label">{t('manga.offlineCache', '离线缓存')}</span>
-            <div className="cache-range-btn-grid">
-              <button
-                type="button"
-                className="cache-range-btn"
-                title={t('manga.offlineCurrentTitle', '缓存当前这一章的全部图片')}
-                onClick={() => requestOffline(0)}
-              >
-                {t('manga.offlineCurrent', '本章')}
-              </button>
-              <button
-                type="button"
-                className="cache-range-btn"
-                title={t('reader.cacheNext50Title', '缓存当前章节后续 50 章')}
-                onClick={() => requestOffline(50)}
-              >
-                {t('reader.cacheNext50', '后 50 章')}
-              </button>
-              <button
-                type="button"
-                className="cache-range-btn"
-                title={t('manga.offlineAllTitle', '缓存整本漫画（GC 永不自动淘汰）')}
-                onClick={() => requestOffline(chapters.length)}
-              >
-                {t('reader.cacheAll', '全本缓存')}
-              </button>
-            </div>
-            <small className="setting-hint">
-              {offlineRunning
-                ? t('manga.offlineRunning', '正在后台缓存，目录里绿点表示该章已可离线阅读')
-                : t('manga.offlineHint', { count: cachedChapters.size, defaultValue: `已离线 ${cachedChapters.size} 章 · 绿点表示整章可离线阅读` })}
-            </small>
-          </section>
+
         </div>
       </aside>
 
       {(activeDrawer !== null) && (
         <div className="reader-drawer-backdrop" onClick={() => setActiveDrawer(null)} aria-hidden="true" />
+      )}
+
+      {/* 换源弹窗：**与小说阅读器同一个组件**（`sourceSwitch.tsx`），不另写一份。
+          刻意不做 portal 逃逸（到 document.body）：本项目主题靠根节点的 `theme-*` class 下发变量，
+          逃逸后主题会丢（见本文件顶部的主题约定与 test/manga-reader.test.ts 的硬约束）。 */}
+      {showSourceSwitch && (
+        <SourceSwitchModal
+          bookName={activeBook.details.name}
+          author={activeBook.details.author}
+          currentSourceId={activeBook.details.sourceId}
+          currentBookUrl={activeBook.bookUrl}
+          currentChapterTitle={chapter?.title}
+          currentChapterIndex={chapterIndex}
+          knownAlternateSources={activeBook.details.alternateSources}
+          onSwitch={handleSwitchSource}
+          onClose={() => setShowSourceSwitch(false)}
+        />
       )}
 
       {/* 阅读区：点击切换工具条显隐（沉浸式，对齐参考实现） */}
@@ -640,6 +1006,17 @@ export function MangaReaderScreen({ openBook, startIndex, onClose, theme }: Mang
           </button>
         </div>
       </footer>
+
+      {/* 「管理本设备离线缓存」：接的是小说阅读器**同一个** `OfflineCacheModal`
+          （它自带本机 IndexedDB 统计 + 服务端图片缓存统计，不需要额外 props） */}
+      {offlineStatsModal && (
+        <OfflineCacheModal
+          onClose={() => {
+            setOfflineStatsModal(false)
+            refreshCachedChapters()
+          }}
+        />
+      )}
     </main>
   )
 }

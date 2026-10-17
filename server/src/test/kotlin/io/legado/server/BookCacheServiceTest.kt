@@ -51,6 +51,64 @@ class BookCacheServiceTest {
         } finally { Files.deleteIfExists(java.nio.file.Path.of(path)) }
     }
 
+    /**
+     * 回归（2026-10-17）：后台批量的目录只试一次，而阅读路径会`details()`回退 ⇒ **能读不能缓存**。
+     * 实测症状：书架里存的 toc_url 是聚合源的一次性错误载荷，阅读器 200 拿到 462 章，
+     * 缓存却 failed / "目录规则未提取到章节"、cached=0。这里锁定"必须回退并缓存成功"。
+     */
+    @Test
+    fun `toc falls back to details when the stored toc url yields no chapters`() = runBlocking {
+        val path = temporaryDatabase()
+        try {
+            val database = Database(path); database.initialize("test-pass")
+            // 书架里存的是"坏"toc_url；details 的 ruleBookInfo.tocUrl 才给出真正的目录地址
+            val book = BookshelfWriteRequest(
+                "https://s1.test", "https://book/1", "回退测试",
+                tocUrl = "https://book/1/broken-toc",
+            )
+            database.saveBookshelf(book, null)
+
+            val sourceJson = """{"bookSourceUrl":"https://s1.test","ruleBookInfo":{"tocUrl":"$.toc"},"ruleToc":{"chapterList":"$.data","chapterName":"$.title","chapterUrl":"$.url"},"ruleContent":{"content":"$.content"}}"""
+            database.saveSource(SourceCodec.parse(sourceJson), null)
+
+            val runner = RuleRunner { url ->
+                when (url) {
+                    // ① 存进书架的 tocUrl：没有 data 字段 ⇒ 目录规则取不到章节
+                    "https://book/1/broken-toc" -> """{"nothing":true}"""
+                    // ② 直接拿 bookUrl 当目录：同样取不到 ⇒ 必须回退到 details
+                    "https://book/1" -> """{"toc":"https://book/1/real-toc"}"""
+                    // ③ details 给出的真正 tocUrl
+                    "https://book/1/real-toc" -> """{"data":[{"title":"第1章","url":"https://book/1/c1"},{"title":"第2章","url":"https://book/1/c2"}]}"""
+                    "https://book/1/c1" -> """{"content":"回退正文1"}"""
+                    "https://book/1/c2" -> """{"content":"回退正文2"}"""
+                    else -> error("Unexpected URL: $url")
+                }
+            }
+
+            val service = BookCacheService(database, runner) {}
+            service.enqueue(CachedBookRequest("https://s1.test", "https://book/1", "https://book/1/broken-toc"))
+            waitForCondition(5000) {
+                val s = database.listBookshelf().single().cacheState
+                s == "ready" || s == "failed"
+            }
+
+            val shelf = database.listBookshelf().single()
+            assertEquals("目录第一次取不到时必须回退到 details 的 tocUrl", "ready", shelf.cacheState)
+            assertNull("回退成功后不应留下错误", shelf.cacheError)
+            assertEquals(2, shelf.cachedChapters)
+            assertEquals("回退正文1", database.cachedContent("https://s1.test", "https://book/1", "https://book/1/c1")?.content)
+            assertEquals("回退正文2", database.cachedContent("https://s1.test", "https://book/1", "https://book/1/c2")?.content)
+            // 真正的目录地址也要进 TOC 缓存（下次直接命中，不必再走回退）
+            assertTrue(database.getTocCache("https://s1.test", "https://book/1/real-toc")?.isNotEmpty() == true)
+            service.stop()
+        } finally {
+            // 本机 Windows 上 SQLite 仍被占用时 deleteIfExists 必抛 FileSystemException，
+            // 它会把真正的断言失败**盖掉**（该类其余 14 条就是这样全被掩盖的）。
+            // 本条用例是"能否缓存成功"的关键回归，清理失败不允许掩盖断言结果。
+            runCatching { Files.deleteIfExists(java.nio.file.Path.of(path)) }
+        }
+    }
+
     @Test
     fun `breakpoint resume preserves existing cached chapters and completes remaining chapters`() = runBlocking {
         val path = temporaryDatabase()
@@ -237,7 +295,8 @@ class BookCacheServiceTest {
             assertEquals("failed", shelf.cacheState)
             assertEquals(2, shelf.cachedChapters)
             assertEquals(3, shelf.totalChapters)
-            assertEquals("1 章未缓存", shelf.cacheError)
+            assertTrue(shelf.cacheError?.startsWith("1 章未缓存") == true)
+            assertTrue(shelf.cacheError?.contains("HTTP 500 error") == true)
             assertNotNull(database.cachedContent("https://s1.test", "https://book/1", "https://book/1/c1"))
             assertNotNull(database.cachedContent("https://s1.test", "https://book/1", "https://book/1/c3"))
             assertNull(database.cachedContent("https://s1.test", "https://book/1", "https://book/1/c2"))
@@ -273,7 +332,7 @@ class BookCacheServiceTest {
             assertEquals("failed", shelf.cacheState)
             assertEquals(1, shelf.cachedChapters)
             assertEquals(2, shelf.totalChapters)
-            assertEquals("1 章未缓存", shelf.cacheError)
+            assertTrue(shelf.cacheError?.startsWith("1 章未缓存") == true)
             assertNotNull(database.cachedContent("https://s1.test", "https://book/1", "https://book/1/c1"))
             assertNull(database.cachedContent("https://s1.test", "https://book/1", "https://book/1/c2"))
             service.stop()

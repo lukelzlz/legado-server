@@ -658,18 +658,20 @@ class RuleRunner(private val responseFetcher: ((String) -> String)? = null, inte
      *
      * @return 有序分段规格；**不含上游 URL 的下发**，URL 只留在服务端（见 `AudioCache` 的 key 语义）。
      */
-    fun audioTracks(sourceJson: String, chapterUrl: String, bookName: String? = null): List<AudioTrackSpec> {
+    fun audioTracks(sourceJson: String, chapterUrl: String, bookName: String? = null, book: BookContext? = null): List<AudioTrackSpec> {
         val source = sourceJson.objectValue()
         val sourceUrl = source.string("bookSourceUrl")
 
         // JS 书源（mainJs）：走 JsSourceRunner 取回文本，再从中提取音频地址
         if (source.string("mainJs")?.isNotBlank() == true) {
-            val result = JsSourceRunner(this, source).content(chapterUrl)
+            val result = JsSourceRunner(this, source).content(chapterUrl, book)
             return normalizeTracks(splitAudioTracks(result.content), chapterUrl)
         }
 
         return jsSandbox.withSourceContext(
-            sourceContext(source, sourceUrl).let { it.copy(chapterUrl = chapterUrl) },
+            // ⚠️ 必须带上书籍上下文：听书音色就靠源里 `book.getVariable('custom')` 读出来拼进音频地址。
+            // 漏了它 ⇒ 变量永远读成空串 ⇒ 用户改了音色也**毫无变化且不报错**（实测踩过）。
+            sourceContext(source, sourceUrl, book).let { it.copy(chapterUrl = chapterUrl) },
         ) {
             val rule = source.objectValue("ruleContent") ?: throw RuleExecutionException("该书源未配置 ruleContent")
             val dataPayload = dataUrlPayload(chapterUrl)

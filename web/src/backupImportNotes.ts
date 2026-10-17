@@ -8,6 +8,13 @@ export type BackupImportNotes = {
   skipNote: string
   /** 「封面补抓成功 X 张、失败 Y 张」——只在**有失败**时非空（成功无需打扰用户）。 */
   coverNote: string
+  /**
+   * 「已受理 N 本，封面正在后台补抓」——只在 `coversQueued > 0` 时非空。
+   *
+   * 封面补抓改成**后台异步**后，导入接口返回时还没有 `coversFetched` 数字
+   * （那时它恒为 0），所以只能用 `coversQueued` 告知用户"已受理"。
+   */
+  queuedNote: string
   /** 书签提示（含跳过条数）。 */
   markNote: string
 }
@@ -59,5 +66,17 @@ export function backupImportNotes(summary: BackupImportSummary, t: Translate): B
         defaultValue: `；书签 ${bookmarks} 条`,
       })
 
-  return { skipNote, coverNote, markNote }
+  // 封面补抓已改成**后台异步**：接口返回时 `coversFetched/coversFailed` 还来不及有结果
+  // （如实为 0），"到底有没有在补"只能靠 `coversQueued` 告知用户"已受理"。
+  // 用户明确要求"就弹一下就可以了"，所以这里只报受理数量，不做进度界面；
+  // 没补上的书由常驻自愈 worker 之后继续补，不再另弹失败提示。
+  const coversQueued = summary.coversQueued ?? 0
+  const queuedNote = coversQueued > 0
+    ? t('webdav.backupCoverQueuedNote', {
+        count: coversQueued,
+        defaultValue: `；已受理 ${coversQueued} 本，封面正在后台补抓`,
+      })
+    : ''
+
+  return { skipNote, coverNote, markNote, queuedNote }
 }

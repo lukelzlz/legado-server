@@ -268,6 +268,13 @@ export type BackupImportSummary = {
   coversResourced?: number
   /** 封面补抓失败的张数（图床失效/防盗链；失败不影响导入，前端显示文字占位） */
   coversFailed?: number
+  /**
+   * 已**受理**、转入**后台**补抓的本数（导入接口不再等封面抓完就返回）。
+   *
+   * 后台模式下 `coversFetched / coversFailed / coversResourced` 都还来不及有结果
+   * （如实为 0），"到底有没有在补"只能由这个字段说明。
+   */
+  coversQueued?: number
   /** 本次导入的书签数 */
   bookmarks?: number
   /** 因所属书籍未导入（**仅手机本地图书**）而跳过的书签数 */

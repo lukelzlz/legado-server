@@ -75,6 +75,14 @@ data class ServerConfig(
      * 图片缓存 GC 总开关（P2）。`LEGADO_MANGA_GC=false` 关掉 ⇒ 磁盘只增不减（排障用）。
      */
     val mangaGcEnabled: Boolean = true,
+    /**
+     * 封面**常驻自愈**总开关。`LEGADO_COVER_SELFHEAL=false` 关掉 ⇒ 只在导入时补抓，
+     * 后期封面文件丢了不再自动补（排障/回滚用）。
+     *
+     * 默认开：`cover_key` 有值不等于封面还在（文件可能被磁盘清理/误删/换卷搬走），
+     * 只有常驻巡检能把这种「书架一片裂图」自动治回来，见 [CoverSelfHeal]。
+     */
+    val coverSelfHealEnabled: Boolean = true,
 ) {
     companion object {
         /** 漫画缓存根目录名（**唯一来源**：默认路径与环境变量路径都引用它）。 */
@@ -100,6 +108,23 @@ data class ServerConfig(
 
         /** 音频 GC 巡检间隔（同漫画的节奏）。 */
         const val AUDIO_GC_INTERVAL_MS: Long = 5 * 60 * 1000L
+
+        /**
+         * 封面自愈的**首轮延迟**：启动后先等 2 分钟再开始巡检。
+         *
+         * 见 AGENTS.md `[启动/缓存]`：启动期的续做/预取已经要吃 IO 与书源并发，
+         * 封面自愈再挤进来就会把「服务已启动」变成「服务一直超时」。它是**纯保洁**，
+         * 晚两分钟毫无损失。
+         */
+        const val COVER_SELF_HEAL_START_DELAY_MS: Long = 2 * 60 * 1000L
+
+        /**
+         * 封面自愈的巡检间隔（10 分钟一轮，每轮最多 20 本）。
+         *
+         * 20 本 / 10 分钟 = 120 本/小时，一个 400 本的车架半天内扫完一轮；
+         * 而正常状态下「缺封面的书」是个位数，这个节奏对上游几乎不可见。
+         */
+        const val COVER_SELF_HEAL_INTERVAL_MS: Long = 10 * 60 * 1000L
 
         fun fromEnvironment(env: Map<String, String> = System.getenv()): ServerConfig {
             val rawDataDir = env["LEGADO_DATA_DIR"] ?: run {
@@ -139,6 +164,7 @@ data class ServerConfig(
                     ?.takeIf { it > 0 } ?: DEFAULT_MAX_GLOBAL_AUDIO_FETCHES,
                 audioPrefetchEnabled = env["LEGADO_AUDIO_PREFETCH"]?.toBooleanStrictOrNull() ?: true,
                 audioGcEnabled = env["LEGADO_AUDIO_GC"]?.toBooleanStrictOrNull() ?: true,
+                coverSelfHealEnabled = env["LEGADO_COVER_SELFHEAL"]?.toBooleanStrictOrNull() ?: true,
             )
         }
     }

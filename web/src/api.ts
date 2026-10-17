@@ -260,13 +260,17 @@ export type BackupImportSummary = {
   books: number
   booksUpdated: number
   progress: number
-  /** 因是本地图书（手机本机文件，服务端读不到）而跳过的条数 */
+  /** 因是手机本地图书（服务端读不到本机文件）而跳过的条数——**唯一会跳过的类别** */
   skippedLocal?: number
-  /** 因是音频/听书（服务端只做文本阅读）而跳过的条数 */
-  skippedAudio?: number
+  /** 本次成功补抓成本地副本的封面张数 */
+  coversFetched?: number
+  /** 其中有多少张是**回源**成功的（备份地址失效 ⇒ 回书源详情页取新地址后下载成功） */
+  coversResourced?: number
+  /** 封面补抓失败的张数（图床失效/防盗链；失败不影响导入，前端显示文字占位） */
+  coversFailed?: number
   /** 本次导入的书签数 */
   bookmarks?: number
-  /** 因所属书籍未导入（本地图书/音频）而跳过的书签数 */
+  /** 因所属书籍未导入（**仅手机本地图书**）而跳过的书签数 */
   bookmarksSkipped?: number
   /** 随书源一起导入的书源分组数（书源分组是书源自带的 `bookSourceGroup`，无独立条目） */
   sourceGroups?: number

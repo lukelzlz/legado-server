@@ -83,18 +83,21 @@ try {
     process.exit(0)
   }
 
-  // 每张封面都必须真正解码出像素
+  // 判定标准（2026-10-17 按用户反馈修订）：
+  // - **裂图** = 渲染出来的 `<img>` 解不出像素（`naturalWidth === 0` 且 `complete`）⇒ 失败；
+  // - **文字占位** = 没有任何可用来源（本地副本与外部 URL 都失败）时主动回退的 `<span>`，
+  //   这是**正确行为**（用户明确要求"抓不到就显示文字占位，不要裂图"），只报告不计失败。
+  // 历史版本的这条断言把"退化成文字占位"也算失败，与用户需求冲突（备份里的图床常带过期签名）。
   for (const i of imgs) {
     const ok = i.complete && i.w > 0 && i.h > 0
     console.log(`  ${ok ? 'OK    ' : 'BROKEN'} ${String(i.src).slice(0, 90)} natural=${i.w}x${i.h}`)
     if (!ok) failures++
   }
 
-  // 有卡片却没有 <img> 说明全部退化成文字占位符（也是封面不可用）
-  if (imgs.length < cards) {
-    console.log(`  BROKEN 有 ${cards} 张卡片但只有 ${imgs.length} 个 <img>（其余退化成了文字占位符）`)
-    failures++
-  }
+  console.log(
+    `  封面来源分布：本服务 ${imgs.filter((i) => i.src.includes('/api/covers/')).length} 张、` +
+    `外链 ${imgs.filter((i) => !i.src.includes('/api/covers/')).length} 张、文字占位 ${fallbacks} 张`,
+  )
 
   if (failures > 0) {
     console.log('\n封面响应记录（诊断用）:')

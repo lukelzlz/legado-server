@@ -36,6 +36,7 @@ import { changeAppLanguage, normalizeLocale } from './i18n'
 
 import { clearStoredInspections, getInitialOrStoredInspections, inspectAllSourcesConcurrently, SourceHealthInspection } from './sourceInspector'
 import { sanitizeImageUrl } from './sourceImport'
+import { BookCover } from './BookCover'
 
 export { sanitizeImageUrl }
 export type { SourceChoice, SourceChoiceStatus }
@@ -1883,7 +1884,7 @@ function BookManageModal({
       <div className="book-manage-sheet" onClick={e => e.stopPropagation()} role="dialog" aria-modal="true" aria-label={t('shelf.bookManageWithTitle', '书籍管理: {{name}}', { name: item.name })}>
         <header className="manage-sheet-header">
           <div className="manage-sheet-cover">
-            {resolveShelfCover(item) ? <img src={resolveShelfCover(item)!} alt="" referrerPolicy="no-referrer" /> : <span>{item.name.slice(0, 1)}</span>}
+            <BookCover coverKey={item.coverKey} coverUrl={item.coverUrl} name={item.name} />
           </div>
           <div className="manage-sheet-info">
             <h3>{item.name}</h3>
@@ -2105,7 +2106,7 @@ function ClearCacheScopeModal({
       >
         <header className="manage-sheet-header">
           <div className="manage-sheet-cover">
-            {resolveShelfCover(item) ? <img src={resolveShelfCover(item)!} alt="" referrerPolicy="no-referrer" /> : <span>{item.name.slice(0, 1)}</span>}
+            <BookCover coverKey={item.coverKey} coverUrl={item.coverUrl} name={item.name} />
           </div>
           <div className="manage-sheet-info">
             <h3>{item.name}</h3>
@@ -2985,11 +2986,12 @@ function ShelfPage({ onOpen, theme }: { onOpen: (item: BookshelfItem) => void; t
                       {isSelected && <Icon name="check" />}
                     </div>
                   )}
-                  {resolveShelfCover(item) ? (
-                    <img src={resolveShelfCover(item)!} alt="" referrerPolicy="no-referrer" />
-                  ) : (
-                    <span className="cover-fallback">{item.name.slice(0, 1)}</span>
-                  )}
+                  <BookCover
+                    coverKey={item.coverKey}
+                    coverUrl={item.coverUrl}
+                    name={item.name}
+                    fallbackClassName="cover-fallback"
+                  />
                   {isLocal && <span className="shelf-card-tag-local">{t('shelf.localTag', '本地')}</span>}
                   <ShelfKindTag bookKind={item.bookKind} />
                   {badge && <span className={`shelf-card-badge ${item.cacheState}`}>{badge}</span>}

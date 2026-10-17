@@ -52,9 +52,8 @@ class RealBackupGroupAndBookmarkTest {
         try {
             val summary = BackupImporter(db).import(backup!!)
 
-            // ---- 书架：220 条里过滤掉 5 条本地图书（本备份没有音频）----
-            assertEquals("本备份应跳过 5 本本地图书", 5, summary.skippedLocal)
-            assertEquals("本备份没有音频条目", 0, summary.skippedAudio)
+            // ---- 书架：220 条里过滤掉 5 条本地图书（本备份没有音频/漫画）----
+            assertEquals("本备份应跳过 5 本本地图书（唯一会被过滤的类别）", 5, summary.skippedLocal)
             assertEquals(
                 "在线小说应为 215 本（220 - 5）",
                 215,

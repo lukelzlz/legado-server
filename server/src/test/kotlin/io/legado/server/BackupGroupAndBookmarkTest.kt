@@ -400,9 +400,7 @@ class BackupGroupAndBookmarkTest {
             )
 
             assertEquals("应导入 3 本（2 在线书 + 1 音频书）", 3, summary.books)
-            assertEquals("应跳过 1 本本地书", 1, summary.skippedLocal)
-            // G0（方案 G2）起音频不再被丢弃：这里恒为 0，且必须能在书架上查到它
-            assertEquals("音频不再被跳过", 0, summary.skippedAudio)
+            assertEquals("应跳过 1 本本地书（唯一会被过滤的类别）", 1, summary.skippedLocal)
             val audioBook = db.listBookshelf().firstOrNull { it.name == "听书C" }
             assertNotNull("音频书必须真的入架", audioBook)
             assertEquals("音频书的 book_kind 必须是 audio", "audio", audioBook!!.bookKind)

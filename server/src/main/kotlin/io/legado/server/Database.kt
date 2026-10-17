@@ -311,6 +311,31 @@ class Database(private val path: String) : Closeable, AutoCloseable {
                 create index if not exists idx_audio_cache_state on audio_cache(state);
                 create index if not exists idx_audio_cache_access on audio_cache(last_access_at asc);
                 create index if not exists idx_audio_cache_pinned on audio_cache(pinned);
+                -- ------------------------------------------------------------------
+                -- 小说正文插图链路：
+                --   illustration_cache = 插图字节索引（URL 寻址 + 章节内序号 + 落盘相对路径）
+                -- 落盘在 <data>/images/（与漫画 <data>/comic/ 分开，见 ADR-033）。
+                -- 序号来自**正文里的出现顺序**，首次登记后不再改写（保证「序号 ↔ 文件」单射）。
+                -- 详见 docs/proposals/PROPOSAL-034-* 与 docs/decisions/ADR-033-*
+                -- ------------------------------------------------------------------
+                create table if not exists illustration_cache (
+                  url_hash       text primary key,
+                  source_id      text not null,
+                  book_url       text not null default '',
+                  chapter_url    text not null default '',
+                  chapter_index  integer not null default 0,
+                  segment_index  integer not null default 0,
+                  upstream_url   text not null,
+                  content_type   text not null default '',
+                  byte_size      integer not null default 0,
+                  cache_key      text not null default '',
+                  state          text not null default 'pending',
+                  created_at     integer not null,
+                  last_access_at integer not null,
+                  file_path      text not null default ''
+                );
+                create index if not exists idx_illustration_chapter on illustration_cache(source_id, book_url, chapter_url, segment_index);
+                create index if not exists idx_illustration_book on illustration_cache(source_id, book_url);
             """.trimIndent())
         }
         migrateReadingProgress(db)
@@ -1017,10 +1042,16 @@ class Database(private val path: String) : Closeable, AutoCloseable {
      * 章节标题（缓存目录用）：先按 `tocUrl = bookUrl` / `bookUrl + "/toc"` 两种形态查 TOC 缓存，
      * 按章节地址匹配、退而按序号匹配；都拿不到再退到 `getChapterTitle`（like 兜底）。
      *
+     * 第 4 条回退是**聚合源的必需品**：大灰狼这类源的目录缓存在**书架行的 `toc_url`** 下
+     * （`data:;base64,…{"type":"qingtian2"}`），而 `bookUrl` 是另一个 `data:` 载荷
+     * —— 少了这一条，整本书的章节目录就全退化成 `未命名 (哈希)`（实测）。
+     *
      * 一律允许返回 null —— **标题只是给人看的装饰**，取不到就只用 8 位章节号。
      */
     fun cacheChapterTitle(sourceId: String, bookUrl: String, chapterUrl: String, chapterIndex: Int): String? {
-        val chapters = getTocCache(sourceId, bookUrl) ?: getTocCache(sourceId, "$bookUrl/toc")
+        val chapters = getTocCache(sourceId, bookUrl)
+            ?: getTocCache(sourceId, "$bookUrl/toc")
+            ?: getShelfBookByUrl(bookUrl)?.tocUrl?.takeIf { it.isNotBlank() && it != bookUrl }?.let { getTocCache(sourceId, it) }
         val title = chapters?.let { list ->
             list.firstOrNull { it.url == chapterUrl }?.title
                 ?: list.firstOrNull { it.index == chapterIndex }?.title
@@ -1438,6 +1469,132 @@ class Database(private val path: String) : Closeable, AutoCloseable {
         contentType = getString(9), byteSize = getLong(10), durationMs = getLong(11), state = getString(12),
         lastError = getString(13), pinned = getInt(14) != 0, listened = getInt(15) != 0,
         createdAt = getLong(16), lastAccessAt = getLong(17), filePath = getString(18).orEmpty(),
+    )
+
+    // ------------------------------------------------------------------
+    // 小说正文插图链路 · 插图字节索引（`images/`）
+    //
+    // 为什么**不**复用 `manga_image_cache`：漫画的序号来自"整章清单"，
+    // 插图的序号来自"正文里的出现顺序"，两套语义混表会让任何一方的口径变更污染另一方
+    // （见 ADR-033）。这里只有一张表：URL 寻址 + 落盘路径 + 序号。
+    // ------------------------------------------------------------------
+
+    fun findIllustrationByUrlHash(urlHash: String): IllustrationRecord? = connect { db ->
+        db.prepareStatement(ILLUSTRATION_SELECT + " where url_hash=?").use {
+            it.setString(1, urlHash)
+            it.executeQuery().use { rs -> if (rs.next()) rs.toIllustration() else null }
+        }
+    }
+
+    /**
+     * 按正文顺序**登记**一章的插图（幂等批量）。
+     *
+     * `on conflict do nothing` 是刻意的：序号一旦分配就**永不改写**，否则"正文顺序变了"
+     * 会让老文件的序号与文件名错位（读取只认哈希 + 序号 ⇒ 可能拿到另一张图）。
+     */
+    fun insertIllustrationRows(records: List<IllustrationRecord>): Int {
+        if (records.isEmpty()) return 0
+        return write { db ->
+            var affected = 0
+            db.autoCommit = false
+            try {
+                db.prepareStatement(
+                    """insert into illustration_cache(url_hash,source_id,book_url,chapter_url,chapter_index,segment_index,upstream_url,content_type,byte_size,cache_key,state,created_at,last_access_at)
+                       values(?,?,?,?,?,?,?,'',0,'','pending',?,?)
+                       on conflict(url_hash) do nothing""",
+                ).use { st ->
+                    val now = System.currentTimeMillis()
+                    records.forEach { r ->
+                        st.setString(1, r.urlHash); st.setString(2, r.sourceId); st.setString(3, r.bookUrl)
+                        st.setString(4, r.chapterUrl); st.setInt(5, r.chapterIndex); st.setInt(6, r.segmentIndex)
+                        st.setString(7, r.upstreamUrl)
+                        st.setLong(8, if (r.createdAt > 0) r.createdAt else now)
+                        st.setLong(9, if (r.lastAccessAt > 0) r.lastAccessAt else now)
+                        st.addBatch()
+                    }
+                    affected = st.executeBatch().sum()
+                }
+                db.commit()
+                affected
+            } catch (error: Throwable) {
+                db.rollback()
+                throw error
+            } finally {
+                db.autoCommit = true
+            }
+        }
+    }
+
+    /** 记录一次成功落盘（**先盘后表**：文件已经写好才把行置 `ready`）。 */
+    fun recordIllustration(record: IllustrationRecord) = write { db ->
+        val now = System.currentTimeMillis()
+        db.prepareStatement(
+            """insert into illustration_cache(url_hash,source_id,book_url,chapter_url,chapter_index,segment_index,upstream_url,content_type,byte_size,cache_key,state,created_at,last_access_at,file_path)
+               values(?,?,?,?,?,?,?,?,?,?,'ready',?,?,?)
+               on conflict(url_hash) do update set
+                 content_type=excluded.content_type, byte_size=excluded.byte_size, cache_key=excluded.cache_key,
+                 state='ready', last_access_at=excluded.last_access_at,
+                 file_path=coalesce(nullif(excluded.file_path,''), illustration_cache.file_path)""",
+        ).use {
+            it.setString(1, record.urlHash); it.setString(2, record.sourceId); it.setString(3, record.bookUrl)
+            it.setString(4, record.chapterUrl); it.setInt(5, record.chapterIndex); it.setInt(6, record.segmentIndex)
+            it.setString(7, record.upstreamUrl); it.setString(8, record.contentType); it.setLong(9, record.byteSize)
+            it.setString(10, record.cacheKey)
+            it.setLong(11, if (record.createdAt > 0) record.createdAt else now)
+            it.setLong(12, if (record.lastAccessAt > 0) record.lastAccessAt else now)
+            // 空路径只是"不知道"，不是"没有文件"：绝不能把已有行的可用路径抹成空
+            it.setString(13, record.filePath)
+            it.executeUpdate()
+        }
+    }
+
+    fun listIllustrationsForChapter(sourceId: String, bookUrl: String, chapterUrl: String): List<IllustrationRecord> = connect { db ->
+        db.prepareStatement(
+            ILLUSTRATION_SELECT + " where source_id=? and book_url=? and chapter_url=? order by segment_index asc",
+        ).use {
+            it.setString(1, sourceId); it.setString(2, bookUrl); it.setString(3, chapterUrl)
+            it.executeQuery().use { rs -> buildList { while (rs.next()) add(rs.toIllustration()) } }
+        }
+    }
+
+    fun listIllustrationsByBook(sourceId: String, bookUrl: String): List<IllustrationRecord> = connect { db ->
+        db.prepareStatement(ILLUSTRATION_SELECT + " where source_id=? and book_url=?").use {
+            it.setString(1, sourceId); it.setString(2, bookUrl)
+            it.executeQuery().use { rs -> buildList { while (rs.next()) add(rs.toIllustration()) } }
+        }
+    }
+
+    fun deleteIllustrationRow(urlHash: String) = write { db ->
+        db.prepareStatement("delete from illustration_cache where url_hash=?").use {
+            it.setString(1, urlHash); it.executeUpdate()
+        }
+    }
+
+    fun deleteIllustrationRowsByBook(sourceId: String, bookUrl: String): Int = write { db ->
+        db.prepareStatement("delete from illustration_cache where source_id=? and book_url=?").use {
+            it.setString(1, sourceId); it.setString(2, bookUrl); it.executeUpdate()
+        }
+    }
+
+    fun updateIllustrationFilePath(urlHash: String, filePath: String) = write { db ->
+        db.prepareStatement("update illustration_cache set file_path=? where url_hash=?").use {
+            it.setString(1, filePath); it.setString(2, urlHash); it.executeUpdate()
+        }
+    }
+
+    fun countIllustrationPaths(filePath: String): Int = connect { db ->
+        db.prepareStatement("select count(*) from illustration_cache where file_path=?").use {
+            it.setString(1, filePath)
+            it.executeQuery().use { rs -> if (rs.next()) rs.getInt(1) else 0 }
+        }
+    }
+
+    private fun java.sql.ResultSet.toIllustration(): IllustrationRecord = IllustrationRecord(
+        urlHash = getString(1), sourceId = getString(2), bookUrl = getString(3), chapterUrl = getString(4),
+        upstreamUrl = getString(5), chapterIndex = getInt(6), segmentIndex = getInt(7),
+        contentType = getString(8), byteSize = getLong(9), cacheKey = getString(10),
+        state = getString(11), createdAt = getLong(12), lastAccessAt = getLong(13),
+        filePath = getString(14).orEmpty(),
     )
 
     private fun java.sql.ResultSet.toMangaChapter(): MangaChapterRecord = MangaChapterRecord(
@@ -3800,6 +3957,9 @@ class Database(private val path: String) : Closeable, AutoCloseable {
         /** 音频索引的列顺序必须与 `toAudioCache()` 的取值下标逐一对齐。 */
         private const val AUDIO_SELECT =
             "select cache_key,source_id,book_url,chapter_url,chapter_index,segment_index,upstream_url,headers_json,content_type,byte_size,duration_ms,state,last_error,pinned,listened,created_at,last_access_at,file_path from audio_cache"
+        /** 插图索引的列顺序必须与 `toIllustration()` 的取值下标逐一对齐。 */
+        private const val ILLUSTRATION_SELECT =
+            "select url_hash,source_id,book_url,chapter_url,upstream_url,chapter_index,segment_index,content_type,byte_size,cache_key,state,created_at,last_access_at,file_path from illustration_cache"
         private const val PBKDF2_ITERATIONS = 600_000
         private const val SALT_BYTES = 16
         private const val HASH_BITS = 256

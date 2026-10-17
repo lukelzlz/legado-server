@@ -1252,6 +1252,15 @@ data class MangaImageRecord(
     val lastError: String? = null,
     val createdAt: Long = 0,
     val lastAccessAt: Long = 0,
+    /**
+     * 落盘的**相对路径**（如 `十日终焉 (3f9c21ab7d0412e8c9f0)/00000499 真正的生路/00000001.mp3`）。
+     *
+     * ⚠️ 它只是**快路径缓存**，不是唯一真相：读取定位的第二级是
+     * `AtomicFileStore.findByNameFree`（只认 `sha256(sourceId+'\n'+bookUrl)` 前
+     * `AtomicFileStore.BOOK_HASH_LENGTH` 位 + 两个 8 位序号）。
+     * 为空（或指向的文件已不在）时按"快路径未命中"处理，绝不因此判定"文件不存在"。
+     */
+    val filePath: String = "",
 )
 
 /** 按书聚合的缓存占用（缓存管理 UI 与 stats 接口用）。 */
@@ -1415,6 +1424,13 @@ data class AudioCacheRecord(
     val listened: Boolean = false,
     val createdAt: Long = 0,
     val lastAccessAt: Long = 0,
+    /**
+     * 落盘的**相对路径**（如 `十日终焉 (3f9c21ab7d0412e8c9f0)/00000499 真正的生路/00000001.mp3`）。
+     *
+     * ⚠️ 同 [MangaImageRecord.filePath]：**快路径缓存**而已，读取的第二级是无中文定位
+     * （`AtomicFileStore.findByNameFree`），因此中文目录被改名也读得到。
+     */
+    val filePath: String = "",
 )
 
 /** 按书聚合的音频缓存占用。 */

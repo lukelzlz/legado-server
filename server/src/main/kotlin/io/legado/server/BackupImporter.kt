@@ -141,7 +141,9 @@ class BackupImporter(
                 pool.submit {
                     val url = entry.coverUrl ?: return@submit
                     // 已缓存过就跳过，避免重复下载同一张图。
-                    val cached = runCatching { cache.getIfCached(url) ?: cache.cache(url) }.getOrNull()
+                    // 补抓时**带上书籍身份**：封面文件名要的是 `书名 (书哈希).扩展名`（哈希与书目录同源）。
+                    val identity = CoverBookRef(entry.name, entry.sourceId, entry.bookUrl)
+                    val cached = runCatching { cache.getIfCached(url, identity) ?: cache.cache(url, identity) }.getOrNull()
                         ?: return@submit
                     runCatching {
                         database.updateBookshelfCover(entry.sourceId, entry.bookUrl, cached.key, cached.contentType)

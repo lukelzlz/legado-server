@@ -1,5 +1,6 @@
 package io.legado.server
 
+import java.nio.file.Files
 import java.nio.file.Path
 
 /** 一次命中的音频（`fromCache=true` 表示**零上游请求**）。 */
@@ -9,6 +10,13 @@ data class CachedAudio(
     val byteSize: Long,
     val fromCache: Boolean,
 )
+
+/**
+ * 一段音频的落盘目标：相对目录 + 成品名生成器（真实内容类型 → 文件名）。
+ *
+ * 生成器而不是写死的文件名，是因为**扩展名来自抓到头部字节后定下的真实内容类型**。
+ */
+data class AudioTarget(val directory: String, val nameOf: (String) -> String)
 
 /**
  * 方案 G2 的 **L1 层**：音频字节的**唯一副本** + 上游地址索引。
@@ -22,10 +30,15 @@ data class CachedAudio(
  *    （见 `Database.readyAudioChapters`）。多一张表就多一处要同步的状态。
  *
  * ## 三条不变量（与漫画逐字同源）
- * 1. **先盘后表**：文件已在磁盘上才写 `ready` 行；`ready` ⇒ 文件一定在。
+ * 1. **先盘后表**：文件已在磁盘上才写 `ready` 行；`ready` ⇒ 文件存在（`file_path` 或
+ *    「哈希 + 序号」两级定位之一能找到）。
  * 2. **`pending`/`failed` 不是命中**：命中检查必须返回 null 让调用方去抓，
  *    但**绝不能删这些行**——删了服务端就再也找不到那段音频的地址了（key 不可逆）。
  * 3. **GC 先表后盘**，且所有删除都由表驱动。
+ *
+ * ## 落盘目录结构（`AtomicFileStore` 负责拼装与校验）
+ * `<root>/<书名 (书哈希)>/<章节名 (章节哈希)>/<8位分段号.扩展名>`
+ * —— 用户拍板「方便我本地查看」。**读取不依赖这些中文**：见 [locate] 的两级策略。
  */
 class AudioCache(
     directory: Path,
@@ -41,9 +54,64 @@ class AudioCache(
      */
     val store = AtomicFileStore(directory)
 
+    private val planner = CachePathPlanner(database)
+
     /** 对外 key：`sha256(sourceId + '\n' + URL)`。含 sourceId，防跨源脏命中（同漫画的裁决）。 */
     fun cacheKey(sourceId: String, upstreamUrl: String): String =
         AudioBytes.sha256("$sourceId\n${upstreamUrl.trim()}")
+
+    // ------------------------------------------------------------------
+    // 落盘位置（可读目录）与定位（不依赖中文）
+    // ------------------------------------------------------------------
+
+    /**
+     * 该段应落的**相对目录**：`<书名 (书哈希)>/<章节名 (章节哈希)>`。
+     *
+     * 抓取前就要知道目录（`.part` 必须与成品同目录才能 `ATOMIC_MOVE`），而**扩展名**
+     * 要等拿到头部字节、定下真实 `content_type` 之后才知道 ⇒ 由 [AudioFetcher] 两段式提交。
+     * 真正落盘用 [targetFor]（它会优先沿用该行已有的目录，避免重复抓取留孤儿）。
+     */
+    fun fileDirFor(row: AudioCacheRecord): String =
+        planner.directory(row.sourceId, row.bookUrl, row.chapterUrl, row.chapterIndex)
+
+    /** 该段**已知内容类型**时的首选相对路径（测试与预置数据用）。 */
+    fun relativePathFor(row: AudioCacheRecord, contentType: String): String =
+        "${fileDirFor(row)}/${segmentFileName(row.segmentIndex, contentType)}"
+
+    /**
+     * 该段的**落盘目标**（目录 + 成品名生成器）：抓取前必须先定下来，因为 `.part` 要与成品同目录。
+     *
+     * 成品名要等真实内容类型才知道 ⇒ 用生成器表达。章节目录名带**章节哈希**，
+     * 因此路径天生单射（两章不可能算出同一路径），不需要任何冲突兜底。
+     */
+    fun targetFor(row: AudioCacheRecord): AudioTarget {
+        if (row.filePath.isNotBlank()) {
+            // 已有落盘记录：沿用它的目录，绝不搬家 —— 否则每次重抓都会在新地方多留一份孤儿文件
+            val directory = row.filePath.substringBeforeLast('/', "")
+            return AudioTarget(directory) { contentType -> segmentFileName(row.segmentIndex, contentType) }
+        }
+        return AudioTarget(fileDirFor(row)) { contentType -> segmentFileName(row.segmentIndex, contentType) }
+    }
+
+    /**
+     * 定位某段的物理文件（**读取路径，绝不依赖中文**）：
+     * ① 行里的 `file_path`（快路径）；② 命中不到就按「书哈希 → 章节哈希 → 8 位分段号前缀」无中文扫描，
+     * 命中后**回填 `file_path`**。两条都 miss ⇒ null（调用方按"重新下载"处理），**不抛异常**。
+     */
+    private fun locate(row: AudioCacheRecord): Path? {
+        val fast = row.filePath.takeIf { it.isNotBlank() }?.let { store.resolveOrNull(it) }
+        if (fast != null && Files.isRegularFile(fast)) return fast
+        val found = store.findByNameFree(
+            bookCacheHash(row.sourceId, row.bookUrl),
+            chapterCacheHash(row.sourceId, row.bookUrl, row.chapterUrl),
+            row.segmentIndex,
+        ) ?: return null
+        store.relativeOf(found)?.let { relative ->
+            runCatching { database.updateAudioFilePath(row.cacheKey, relative) }
+                .onFailure { log("audio file_path backfill failed: ${row.cacheKey} (${it.message})") }
+        }
+        return found
+    }
 
     /**
      * 清单阶段：登记本章的全部分段（幂等），返回按段序号排列的行。
@@ -92,13 +160,14 @@ class AudioCache(
     /**
      * 命中检查（只有 `ready` 且**文件在**才算命中）。
      *
-     * ⚠️ 若行是 `ready` 但文件没了（外部清理/磁盘事故），**删掉这行**再返回 null：
+     * ⚠️ 若行是 `ready` 但文件真的找不到（外部清理/磁盘事故），**删掉这行**再返回 null：
      * 绝不能"假装命中"，否则播放器拿到 404，而数据库看起来一切正常。
+     * 「文件在不在」走 [locate] 的两级定位 ⇒ 中文目录被改名也不会误判。
      */
     fun getByKey(cacheKey: String): AudioCacheRecord? {
         val row = database.findAudioByKey(cacheKey) ?: return null
         if (row.state != "ready") return null
-        if (!store.exists(cacheKey)) {
+        if (locate(row) == null) {
             log("audio row without file, dropping: $cacheKey")
             database.deleteAudioRow(cacheKey)
             return null
@@ -115,19 +184,38 @@ class AudioCache(
      * `block: (OutputStream) -> Unit` 这种写法——那会要求调用方把字节再提供一遍，
      * 正是"两次落盘 / 空文件覆盖"这类事故的来源）。
      *
+     * @param filePath [AudioFetcher] 提交后的**相对路径**（成品名含真实扩展名，
+     *   只有抓到头部字节之后才定得下来）——它是 `file_path` 快路径的来源。
      * @throws IllegalArgumentException 文件不在时拒绝写 `ready`：
      *   绝不允许出现"表说 ready、盘上没有"的行（那会让播放器拿到 404 而数据库看起来一切正常）。
      */
-    fun markReady(row: AudioCacheRecord, contentType: String, byteSize: Long): CachedAudio {
-        require(store.exists(row.cacheKey)) { "音频文件未落盘，拒绝写 ready：${row.cacheKey}" }
-        val actualSize = byteSize.takeIf { it > 0 } ?: (store.size(row.cacheKey) ?: 0L)
+    fun markReady(row: AudioCacheRecord, contentType: String, byteSize: Long, filePath: String): CachedAudio {
+        require(store.exists(filePath)) { "音频文件未落盘，拒绝写 ready：$filePath" }
+        val actualSize = byteSize.takeIf { it > 0 } ?: (store.size(filePath) ?: 0L)
         database.recordAudioTrack(
-            row.copy(contentType = contentType, byteSize = actualSize, state = "ready", lastError = null),
+            row.copy(contentType = contentType, byteSize = actualSize, state = "ready", lastError = null, filePath = filePath),
         )
         return CachedAudio(row.cacheKey, contentType, actualSize, fromCache = false)
     }
 
     fun markFailed(cacheKey: String, error: String?) = database.markAudioFailed(cacheKey, error)
+
+    /**
+     * **预置/注入一份已就绪的缓存**（字节已在手上，不走抓取链路）。
+     *
+     * 存在的理由是**路径装配必须同源**：预置数据（测试、以及任何"已经有字节"的内部调用方）
+     * 若自己拼一遍目录，就会和 `AudioFetcher` 拼出不同的路径 —— 那正是"表里说 ready、
+     * 直出却 404"这类事故的温床。
+     *
+     * @return 落盘的相对路径（与 `AudioFetcher` 提交的完全同形）
+     */
+    fun putReady(row: AudioCacheRecord, contentType: String, bytes: ByteArray): String {
+        val target = targetFor(row)
+        val relative = "${target.directory}/${target.nameOf(contentType)}"
+        store.write(relative, bytes)
+        markReady(row, contentType, bytes.size.toLong(), relative)
+        return relative
+    }
 
     fun updateDuration(cacheKey: String, durationMs: Long): Int = database.updateAudioDuration(cacheKey, durationMs)
 
@@ -149,7 +237,11 @@ class AudioCache(
         }
     }
 
-    fun fileFor(cacheKey: String): Path? = if (store.exists(cacheKey)) store.pathFor(cacheKey) else null
+    /** 按 key 定位（内部先取行，再走两级定位；未命中返回 null 而非抛错）。 */
+    fun fileFor(cacheKey: String): Path? = database.findAudioByKey(cacheKey)?.let { locate(it) }
+
+    /** 按**具体行**定位文件（直出路由必须用这个：一行一个文件，问别的行会串味）。 */
+    fun fileFor(row: AudioCacheRecord): Path? = locate(row)
 
     /** 删除整本书的音频缓存：**先表后盘**。 */
     fun deleteBook(sourceId: String, bookUrl: String): Int {
@@ -176,13 +268,12 @@ class AudioCache(
     }
 
     private fun releaseFiles(rows: List<AudioCacheRecord>) {
-        // 音频是 URL 寻址（一个 key 一份字节），但仍**必须问一次表**再删：
-        // 同一段音频可能被另一章（甚至另一本书）引用（共享片头/同地址多章），
-        // 无条件删文件会造成"表里还有行、盘上却没了"的裂图式事故。
-        rows.map { it.cacheKey }.filter { it.isNotBlank() }.distinct().forEach { key ->
+        // 一个 key 一份字节，但仍**必须问一次表**再删：同一段音频可能被另一章（甚至另一本书）
+        // 引用（共享片头/同地址多章），无条件删文件会造成"表里还有行、盘上却没了"的裂图式事故。
+        rows.map { it.filePath }.filter { it.isNotBlank() }.distinct().forEach { filePath ->
             runCatching {
-                if (database.findAudioByKey(key) == null) store.delete(key)
-            }.onFailure { log("audio file delete failed: $key (${it.message})") }
+                if (database.countAudioPaths(filePath) == 0) store.delete(filePath)
+            }.onFailure { log("audio file delete failed: $filePath (${it.message})") }
         }
     }
 
@@ -201,12 +292,14 @@ class AudioCache(
         if (rows.isEmpty()) return 0L
         database.deleteAudioRows(rows.map { it.cacheKey })
         var freed = 0L
-        rows.map { it.cacheKey }.filter { it.isNotBlank() }.distinct().forEach { key ->
+        rows.map { it.filePath }.filter { it.isNotBlank() }.distinct().forEach { filePath ->
             runCatching {
-                // 先量再删：删完再问大小恒为 0，上报的释放量会永远是 0
-                val size = store.size(key) ?: 0L
-                if (store.delete(key)) freed += size
-            }.onFailure { log("audio gc file delete failed: $key (${it.message})") }
+                if (database.countAudioPaths(filePath) == 0) {
+                    // 先量再删：删完再问大小恒为 0，上报的释放量会永远是 0
+                    val size = store.size(filePath) ?: 0L
+                    if (store.delete(filePath)) freed += size
+                }
+            }.onFailure { log("audio gc file delete failed: $filePath (${it.message})") }
         }
         return freed
     }

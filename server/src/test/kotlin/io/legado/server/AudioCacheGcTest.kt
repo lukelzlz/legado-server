@@ -77,7 +77,7 @@ class AudioCacheGcTest {
             assertTrue("必须真的淘汰了东西", evicted.isNotEmpty())
             evicted.forEach { key ->
                 assertNull("被淘汰的行必须删掉", database.findAudioByKey(key))
-                assertFalse("被淘汰的字节必须回收", Files.exists(cache.store.pathFor(key)))
+                assertNull("被淘汰的字节必须回收", cache.fileFor(key))
             }
             assertTrue("淘汰后表与盘必须一致", cache.stats().totalBytes == cache.stats().diskBytes)
         }
@@ -207,8 +207,7 @@ class AudioCacheGcTest {
     ): String {
         val rows = cache.registerChapter(SOURCE, BOOK, chapterUrl, chapterIndex, listOf(AudioTrackSpec(upstreamUrl)))
         val key = rows.first().cacheKey
-        cache.store.writeStream(key) { it.write(mp3OfSize(TRACK_BYTES, seed = chapterIndex)) }
-        cache.markReady(rows.first(), "audio/mpeg", TRACK_BYTES.toLong())
+        cache.putReady(rows.first(), "audio/mpeg", mp3OfSize(TRACK_BYTES, seed = chapterIndex))
         database.touchAudio(key, lastAccessAt)
         return key
     }

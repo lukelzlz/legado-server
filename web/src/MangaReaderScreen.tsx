@@ -181,6 +181,13 @@ export function MangaReaderScreen({ openBook, startIndex, onClose, theme }: Mang
   const [offlineStatsModal, setOfflineStatsModal] = useState(false)
   /** 是否已在书架（与小说同一套 API：`api.bookshelf()` 查在架 + add/remove 改）。 */
   const [inShelf, setInShelf] = useState(true)
+  /**
+   * 本次预取任务的失败情况（服务端如实带出的首条原因）。
+   *
+   * 为什么要显示：旧实现把失败只写进库与日志，界面上只有"正在后台缓存"——
+   * 用户看到进度不动却不知道为什么（防盗链 403？图床挂了？）。这里把"失败几张 + 原因"摆出来。
+   */
+  const [prefetchFailure, setPrefetchFailure] = useState<{ failed: number; reason: string } | null>(null)
   /** 当前渲染用的是**本地清单快照**（脱网回退），用于顶部横幅与失败文案区分。 */
   const [offlineSnapshot, setOfflineSnapshot] = useState(false)
 
@@ -347,8 +354,11 @@ export function MangaReaderScreen({ openBook, startIndex, onClose, theme }: Mang
       void api.mangaPrefetchStatus()
         .then(list => {
           const mine = (list ?? []).find(item => item.sourceId === activeBook.details.sourceId && item.bookUrl === activeBook.bookUrl)
-          if (mine) setPrefetchProgress({ done: mine.done, planned: mine.planned })
-          else {
+          if (mine) {
+            setPrefetchProgress({ done: mine.done, planned: mine.planned })
+            const failed = Number(mine.failed ?? 0)
+            setPrefetchFailure(failed > 0 ? { failed, reason: mine.lastError ?? '' } : null)
+          } else {
             setOfflineRunning(false)
             setPrefetchProgress(null)
           }
@@ -435,6 +445,8 @@ export function MangaReaderScreen({ openBook, startIndex, onClose, theme }: Mang
           setOfflineRunning(true)
           // 真实进度等既有轮询回填；先给个"进行中"的壳，不让用户点了没反应
           setPrefetchProgress(null)
+          // 新任务开始 ⇒ 上一次的失败提示作废（否则用户会以为是这次也失败了）
+          setPrefetchFailure(null)
           toast.success(
             whole
               ? t('manga.offlineQueuedAll', '已加入整本离线队列（后台缓存，可继续阅读）')
@@ -820,6 +832,16 @@ export function MangaReaderScreen({ openBook, startIndex, onClose, theme }: Mang
                 ? t('manga.offlineRunning', '正在后台缓存，目录里绿点表示该章已可离线阅读')
                 : t('manga.offlineHint', { count: cachedChapters.size, defaultValue: `已离线 ${cachedChapters.size} 章 · 绿点表示整章可离线阅读` })}
             </small>
+            {/* 失败如实报出：旧实现只写库与日志，用户看到"进度不动"却不知道为什么 */}
+            {prefetchFailure && (
+              <small className="setting-hint cache-failure-hint" role="status">
+                {t('reader.cacheFailedImages', {
+                  count: prefetchFailure.failed,
+                  reason: prefetchFailure.reason || t('common.unknownReason', '未知原因'),
+                  defaultValue: `${prefetchFailure.failed} 张图片缓存失败（最近：${prefetchFailure.reason || '未知原因'}），可稍后重试`,
+                })}
+              </small>
+            )}
           </div>
         </footer>
 
@@ -875,6 +897,7 @@ export function MangaReaderScreen({ openBook, startIndex, onClose, theme }: Mang
             </div>
             <small className="setting-hint">{t('manga.immersiveHint', '自动隐藏时单击画面可唤出工具条')}</small>
           </section>
+
         </div>
       </aside>
 

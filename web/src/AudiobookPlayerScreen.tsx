@@ -176,6 +176,14 @@ export function AudiobookPlayerScreen({ openBook, startIndex, onClose, theme }: 
   const [offlineStatsModal, setOfflineStatsModal] = useState(false)
   /** 是否已在书架（与小说同一套 API：`api.bookshelf()` 查在架 + add/remove 改）。 */
   const [inShelf, setInShelf] = useState(true)
+  /**
+   * 本次缓存任务的失败情况（服务端如实带出的首条原因）。
+   *
+   * 为什么要显示：实测上游音频站会成片地连不上（`HTTP connect timed out` / `Connection reset`），
+   * 旧实现只把失败写进库、界面上只有"正在缓存/进度不动"——用户完全无从判断是上游挂了、
+   * 要登录、还是分段超限。这里把"失败几段 + 最近一条原因"直接摆在缓存区里。
+   */
+  const [prefetchFailure, setPrefetchFailure] = useState<{ failed: number; reason: string } | null>(null)
   /** 睡眠定时：剩余毫秒（0 = 未开启）。 */
   const [sleepRemainingMs, setSleepRemainingMs] = useState(0)
   /** 睡眠定时："播完本章即停"。 */
@@ -334,8 +342,11 @@ export function AudiobookPlayerScreen({ openBook, startIndex, onClose, theme }: 
       void api.audioPrefetchStatus()
         .then(list => {
           const mine = (list ?? []).find(item => item.sourceId === activeBook.details.sourceId && item.bookUrl === activeBook.bookUrl)
-          if (mine) setPrefetchProgress({ done: mine.done, planned: mine.planned })
-          else {
+          if (mine) {
+            setPrefetchProgress({ done: mine.done, planned: mine.planned })
+            const failed = Number(mine.failed ?? 0)
+            setPrefetchFailure(failed > 0 ? { failed, reason: mine.lastError ?? '' } : null)
+          } else {
             setCaching(false)
             setPrefetchProgress(null)
           }
@@ -422,6 +433,8 @@ export function AudiobookPlayerScreen({ openBook, startIndex, onClose, theme }: 
           setCaching(true)
           // 真实进度等既有轮询回填；先给个"进行中"的壳，不让用户点了没反应
           setPrefetchProgress(null)
+          // 新任务开始 ⇒ 上一次的失败提示作废（否则用户会以为是这次也失败了）
+          setPrefetchFailure(null)
           toast.success(
             whole
               ? t('audiobook.cacheQueuedAll', '已加入整本离线队列（后台缓存，可继续播放）')
@@ -1194,6 +1207,16 @@ export function AudiobookPlayerScreen({ openBook, startIndex, onClose, theme }: 
                   defaultValue: `已离线 ${cachedChapters.size} 章 · 服务端缓存 ${bookStats?.trackCount ?? 0} 段（${bookStats ? `${Math.round(bookStats.totalBytes / 1024 / 1024)} MB` : '0 MB'}）`,
                 })}
             </small>
+            {/* 失败如实报出：是"上游连不上"还是"要登录/超限"，用户与排障者都需要这一行 */}
+            {prefetchFailure && (
+              <small className="setting-hint cache-failure-hint" role="status">
+                {t('reader.cacheFailedTracks', {
+                  count: prefetchFailure.failed,
+                  reason: prefetchFailure.reason || t('common.unknownReason', '未知原因'),
+                  defaultValue: `${prefetchFailure.failed} 段音频缓存失败（最近：${prefetchFailure.reason || '未知原因'}），可稍后重试`,
+                })}
+              </small>
+            )}
           </section>
         </div>
       </aside>

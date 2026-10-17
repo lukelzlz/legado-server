@@ -118,6 +118,8 @@
     "searchPlaceholder": "作品名または著者名を入力",
     "startSearch": "検索",
     "stopSearch": "検索停止",
+    "clearSearch": "検索をクリア",
+    "searching": "検索中",
     "filterResults": "結果を絞り込み",
     "filterPlaceholder": "作品名や著者を絞り込む",
     "sortLabel": "並び替え",

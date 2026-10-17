@@ -118,6 +118,8 @@
     "searchPlaceholder": "Enter book title or author",
     "startSearch": "Search",
     "stopSearch": "Stop",
+    "clearSearch": "Clear search",
+    "searching": "Searching",
     "filterResults": "Filter results",
     "filterPlaceholder": "Filter title or author",
     "sortLabel": "Sort",

@@ -118,6 +118,8 @@
     "searchPlaceholder": "輸入書名或作者",
     "startSearch": "搜尋",
     "stopSearch": "停止搜尋",
+    "clearSearch": "清空搜尋",
+    "searching": "正在搜尋",
     "filterResults": "篩選搜尋結果",
     "filterPlaceholder": "篩選書名或作者",
     "sortLabel": "排序",

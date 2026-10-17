@@ -23,6 +23,7 @@ import { ExplorePage } from './ExplorePage'
 import { OfflineCacheModal } from './OfflineCacheModal'
 import { SourceHealthModal } from './SourceHealthModal'
 import { SourceGroupManagerModal } from './SourceGroupManagerModal'
+import { SearchBox } from './SearchBox'
 import { SearchScopeBar } from './SearchScopeBar'
 import { ShelfKindTag } from './ShelfKindTag'
 import { isLocalBook } from './localBook'
@@ -1066,10 +1067,6 @@ function LibraryPage({ sources, onOpen }: { sources: SourceSummary[]; onOpen: (b
   useEffect(() => {
     void api.sourceGroups().then(setSourceGroups).catch(() => undefined)
   }, [sources])
-  const handleSearch = (event: FormEvent) => {
-    event.preventDefault()
-    search.startSearch()
-  }
   /**
    * 搜索范围 = 「全部书源」+ 每个书源分组 + 未分组，作为搜索栏**下面**的一排选项卡
    * （结构与「全部书源」默认项由 [SearchScopeBar] 负责，分组的新建/改名/删除在「书源」页面做）。
@@ -1089,36 +1086,13 @@ function LibraryPage({ sources, onOpen }: { sources: SourceSummary[]; onOpen: (b
         <span className="section-kicker">{t('library.heroKicker', '在线书库')}</span>
         <h1>{t('library.heroTitle', '找一本书，安静地读下去。')}</h1>
         <p>{t('library.heroSubtitle', '从已配置的书源搜索并继续上次阅读。')}</p>
-        <form onSubmit={handleSearch}>
-          <Icon name="search" />
-          <input
-            value={search.keyword}
-            onChange={event => search.setKeyword(event.target.value)}
-            placeholder={t('library.searchPlaceholder', '输入书名或作者')}
-          />
-          {search.loading ? (
-            <button
-              key="stop-search-btn"
-              type="button"
-              className="primary-button"
-              onClick={e => {
-                e.preventDefault()
-                e.stopPropagation()
-                search.stopSearch()
-              }}
-            >
-              {t('library.stopSearch', '停止搜索')}
-            </button>
-          ) : (
-            <button
-              key="start-search-btn"
-              type="submit"
-              className="primary-button"
-            >
-              {t('library.startSearch', '搜索')}
-            </button>
-          )}
-        </form>
+        <SearchBox
+          keyword={search.keyword}
+          loading={search.loading}
+          onChange={search.setKeyword}
+          onSubmit={() => search.startSearch()}
+          onStop={search.stopSearch}
+        />
         {/* 搜索范围：搜索栏**下面**的选项卡（分组的新建/改名/删除在「书源」页面里做） */}
         <SearchScopeBar
           groups={sourceGroups}

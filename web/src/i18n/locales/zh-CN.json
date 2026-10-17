@@ -118,6 +118,8 @@
     "searchPlaceholder": "输入书名或作者",
     "startSearch": "搜索",
     "stopSearch": "停止搜索",
+    "clearSearch": "清空搜索",
+    "searching": "正在搜索",
     "filterResults": "筛选搜索结果",
     "filterPlaceholder": "筛选书名或作者",
     "sortLabel": "排序",

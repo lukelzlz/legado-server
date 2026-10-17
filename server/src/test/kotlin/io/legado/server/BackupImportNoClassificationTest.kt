@@ -45,7 +45,6 @@ class BackupImportNoClassificationTest {
         ) { database, summary ->
             assertEquals("漫画书必须被导入，绝不能因为分类而被跳过", 1, summary.books)
             assertEquals(0, summary.skippedLocal)
-            assertEquals(0, summary.skippedAudio)
             assertEquals(
                 "书自己的 tab=漫画 ⇒ 必须是 comic：只认源声明会把聚合源里的漫画判成小说（用户实测反馈）",
                 "comic",

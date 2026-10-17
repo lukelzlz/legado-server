@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next'
 import { i18n } from './i18n'
 import { api, joinWebDavPath, webDavFileUrl, WebDavInfo, ProgressSyncSettings, BackupExportSettings } from './api'
 import { toast } from './Toast'
+import { backupImportNotes } from './backupImportNotes'
 import { Icon } from './icons'
 
 /**
@@ -385,33 +386,14 @@ export function WebDavSettingsPage() {
   }
 
   const handleImport = async (entry: { name: string; path: string }) => {
-    if (!window.confirm(t('webdav.importBackupConfirm', { name: entry.name, defaultValue: `导入备份「${entry.name}」？\n会写入其中的书源、替换净化规则、书架、分组、书签与阅读进度（同名书源/规则按其 ID 覆盖，书架按书合并，进度只在更新时间较新时覆盖）。\n\n本地图书与音频（听书）会被跳过——服务端读不到手机本机文件，也只支持文本阅读；挂在被跳过书籍上的书签同样跳过。` }))) return
+    if (!window.confirm(t('webdav.importBackupConfirm', { name: entry.name, defaultValue: `导入备份「${entry.name}」？\n会写入其中的书源、替换净化规则、书架、分组、书签与阅读进度（同名书源/规则按其 ID 覆盖，书架按书合并，进度只在更新时间较新时覆盖）。\n\n只有**手机本地图书**会被跳过——content:// / file:// 这类路径指向手机本机文件，服务端读不到。文本、漫画与听书都会正常导入（各自进对应的阅读器）；挂在被跳过书籍上的书签同样跳过。` }))) return
     setBusy(true)
     try {
       const summary = await api.webDavImport(entry.path)
       const total = (a: number, b: number) => a + b
-      // 本地图书（手机本机文件）与音频/听书在服务端没有可用能力，导入时会被跳过，
-      // 这里如实告知用户，避免「明明导入了却少了几十本」的困惑。
-      const skipped = (summary.skippedLocal ?? 0) + (summary.skippedAudio ?? 0)
-      const skipNote = skipped > 0
-        ? t('webdav.backupSkipLocalNote', {
-            count: skipped,
-            local: summary.skippedLocal ?? 0,
-            audio: summary.skippedAudio ?? 0,
-            defaultValue: `；已跳过 ${skipped} 条服务端用不了的书（本地图书 ${summary.skippedLocal ?? 0}、音频听书 ${summary.skippedAudio ?? 0}）`,
-          })
-        : ''
-      // 书签同理：挂在被跳过书籍上的书签没有展示位置，也一并跳过并如实报告。
-      const markNote = (summary.bookmarksSkipped ?? 0) > 0
-        ? t('webdav.backupBookmarksSkippedNote', {
-            count: summary.bookmarks ?? 0,
-            skipped: summary.bookmarksSkipped,
-            defaultValue: `；书签 ${summary.bookmarks ?? 0} 条（跳过 ${summary.bookmarksSkipped} 条，其所属书籍未导入）`,
-          })
-        : t('webdav.backupBookmarksNote', {
-            count: summary.bookmarks ?? 0,
-            defaultValue: `；书签 ${summary.bookmarks ?? 0} 条`,
-          })
+      // 提示**由服务端摘要数据驱动**（见 backupImportNotes）：
+      // 只有真的跳过了手机本地图书才报"已跳过"，漫画/听书不再出现在"被忽略"里。
+      const { skipNote, coverNote, markNote } = backupImportNotes(summary, t)
       if (total(summary.sources, summary.sourcesUpdated) + total(summary.rules, summary.rulesUpdated) + total(summary.books, summary.booksUpdated) === 0) {
         toast.warning(t('webdav.backupEmptyWarning', { skipNote, defaultValue: `备份包里没有可导入的内容（已忽略 RSS / TTS / 主题等条目）${skipNote}` }))
       } else {
@@ -429,12 +411,14 @@ export function WebDavSettingsPage() {
             progress: summary.progress,
             markNote,
             skipNote,
+            coverNote,
             defaultValue:
               `导入完成：书源 ${total(summary.sources, summary.sourcesUpdated)}${sourceGroupNote}，` +
               `替换规则 ${total(summary.rules, summary.rulesUpdated)}，` +
               `书籍 ${total(summary.books, summary.booksUpdated)}，阅读进度 ${summary.progress}` +
               markNote +
-              skipNote,
+              skipNote +
+              coverNote,
           }),
         )
       }

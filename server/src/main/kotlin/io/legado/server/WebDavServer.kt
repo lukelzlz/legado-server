@@ -174,9 +174,11 @@ private class WebDavLocks {
  * WebDAV 服务端入口：`/webdav` 与 `/webdav/<路径>` 同时映射到数据目录下的 `webdav` 文件夹；
  * `/api/webdav/info` 为 Web 设置页面提供存储状态与目录列表。
  */
-fun Route.webDavRoutes(auth: AuthService, storage: WebDavStorage, database: Database, coverCache: CoverCache? = null) {
+fun Route.webDavRoutes(auth: AuthService, storage: WebDavStorage, database: Database, coverCache: CoverCache? = null, runner: RuleRunner? = null) {
     val locks = WebDavLocks()
-    val backupImporter = BackupImporter(database, coverCache)
+    // runner 用于**封面回源**：备份里的 `coverUrl` 常带过期签名（实测番茄 `x-expires` 早已过期 ⇒ 403），
+    // 失败时回书源详情页取一份新的封面地址再下载；没有 runner 就退化成"只试备份 URL"。
+    val backupImporter = BackupImporter(database, coverCache, runner, logger = { message -> application.log.info(message) })
     val backupExporter = BackupExporter(database)
     route("/api/webdav") {
         get("/info") { call.serveWebDavInfo(auth, storage) }

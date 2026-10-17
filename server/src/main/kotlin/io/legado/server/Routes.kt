@@ -2617,12 +2617,20 @@ internal fun resolveFreshCoverUrl(item: BookshelfItem, fetchDetails: (BookshelfI
  * 注意这里走的是 [CoverCache.cache]——内置下载路径的魔数校验与 gzip 兜底解压都在它内部，
  * 不要绕过（历史踩坑：gzip 字节当 JPEG 落盘 ⇒ 接口 200 但 `<img>` 是裂图）。
  * 下载失败静默返回 null，由调用方计入 failed 并继续处理下一本。
+ *
+ * @param headers 书源自带的 `header` / `Cookie`（回源下载必须带上，否则防盗链 403）。
  */
-internal fun materializeCover(database: Database, coverCache: CoverCache, item: BookshelfItem, url: String): CachedCover? =
+internal fun materializeCover(
+    database: Database,
+    coverCache: CoverCache,
+    item: BookshelfItem,
+    url: String,
+    headers: Map<String, String> = emptyMap(),
+): CachedCover? =
     runCatching {
         // 带着书籍身份去落盘：文件名就是 `书名 (书哈希).扩展名`（哈希与书目录同源）
         val identity = CoverBookRef(item.name, item.sourceId, item.bookUrl)
-        coverCache.getIfCached(url, identity) ?: coverCache.cache(url, identity)
+        coverCache.getIfCached(url, identity) ?: coverCache.cache(url, identity, headers)
     }.getOrNull()
         ?.takeIf { database.updateBookshelfCover(item.sourceId, item.bookUrl, it.key, it.contentType, coverUrl = url) }
 

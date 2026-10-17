@@ -159,7 +159,7 @@ fun Application.legadoApplication(config: ServerConfig = ServerConfig.fromEnviro
             audioFetcher,
             audioPrefetch,
         )
-        webDavRoutes(auth, webDavStorage, database, coverCache)
+        webDavRoutes(auth, webDavStorage, database, coverCache, runner)
         staticWeb()
     }
 }

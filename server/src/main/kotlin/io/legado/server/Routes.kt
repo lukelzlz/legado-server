@@ -1514,6 +1514,30 @@ fun Route.apiRoutes(
             if (auth.requireSession(call) == null) return@get
             call.respond(audioPrefetch?.status() ?: emptyList<AudioPrefetchStatus>())
         }
+        /**
+         * **只取消、不删缓存**的取消入口（目录底栏那个「取消缓存」按钮）。
+         *
+         * 为什么必须单开一条：`DELETE /audio/cache` 里的 `cancel()` 是「清缓存顺带停任务」，
+         * 直接拿它当取消按钮用，会把用户已经下好的音频分段一起删掉（语义不符、且不可恢复）。
+         * 这里只停任务：字节、清单与 pin 一律**原样保留**，用户随时可以再点一次接着缓存。
+         */
+        post("/books/audio/prefetch/cancel") {
+            if (auth.requireSession(call, true) == null) return@post
+            val request = call.receive<AudioPrefetchRequest>()
+            if (request.sourceId.isBlank()) {
+                call.respond(HttpStatusCode.BadRequest, ApiError("invalid_audio", "缺少书源"))
+                return@post
+            }
+            val bookUrl = request.bookUrl?.takeIf { it.isNotBlank() }
+                ?: run {
+                    call.respond(HttpStatusCode.BadRequest, ApiError("invalid_audio", "缺少书籍地址"))
+                    return@post
+                }
+            // 服务为 null（`LEGADO_AUDIO_PREFETCH=false`）时"已经没在跑"，等价于取消成功。
+            // ⚠️ 绝不调用 `audioCache.deleteBook` / `deleteKey`：那是 DELETE /audio/cache 的语义。
+            audioPrefetch?.cancel(request.sourceId, bookUrl)
+            call.respond(HttpStatusCode.NoContent)
+        }
         get("/books/audio/cached-chapters") {
             if (auth.requireSession(call, false) == null) return@get
             val sourceId = call.request.queryParameters["sourceId"]

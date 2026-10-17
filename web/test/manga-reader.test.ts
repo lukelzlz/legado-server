@@ -130,9 +130,10 @@ test('main.tsx - 按 bookKind 分派到漫画阅读器', () => {
 
   assert.ok(source.includes("bookKind === 'comic'"), '必须按 bookKind 分派')
   assert.ok(source.includes('MangaReaderScreen'), '必须挂载漫画阅读器')
-  // 书架卡片的类型角标（漫画 / 听书 / 小说）已抽到 src/ShelfKindTag.tsx（便于 renderToStaticMarkup 断言），
+  // 书架卡片的类型角标（本地 / 漫画 / 听书 / 小说）已抽到 src/ShelfKindTag.tsx（便于 renderToStaticMarkup 断言），
   // 故徽标断言落在那里，此处只锁 main.tsx 的接线。
-  assert.ok(source.includes('<ShelfKindTag bookKind={item.bookKind} />'), '书架卡片必须挂载类型角标')
+  // issue #66：本地书按身份判 `local`（四类互斥），因此接线多一个 `local` prop。
+  assert.ok(source.includes('<ShelfKindTag bookKind={item.bookKind} local={isLocalBook(item)} />'), '书架卡片必须挂载类型角标')
   assert.ok(read('../src/ShelfKindTag.tsx').includes('shelf-card-tag-comic'), '书架卡片必须有漫画徽标')
 })
 

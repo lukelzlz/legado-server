@@ -286,6 +286,9 @@ class BackupExporter(private val database: Database) {
     private fun legadoBookType(bookKind: String): Int = when (bookKind.trim().lowercase()) {
         "audio" -> LEGADO_TYPE_AUDIO
         "comic" -> LEGADO_TYPE_IMAGE
+        // 本地书 = `local(256) | text(8)` = 264（真实备份里 14 条就是本地书）。
+        // 只写 8 会让手机端把本地书当普通网络小说；带上 256 位才是「本地书籍」。
+        "local" -> LEGADO_TYPE_LOCAL
         else -> LEGADO_TYPE_TEXT
     }
 
@@ -384,5 +387,8 @@ class BackupExporter(private val database: Database) {
 
         /** Legado `BookType.image`（0b1000000，漫画/图片书）。 */
         const val LEGADO_TYPE_IMAGE = 64
+
+        /** Legado `BookType.local`（0b100000000，256）**按位或**文本位 ⇒ 264。 */
+        const val LEGADO_TYPE_LOCAL = 256 or LEGADO_TYPE_TEXT
     }
 }

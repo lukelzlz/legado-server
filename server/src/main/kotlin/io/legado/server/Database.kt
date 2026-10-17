@@ -721,7 +721,7 @@ class Database(private val path: String) : Closeable, AutoCloseable {
     }
 
     /**
-     * 读书架上的书籍类型（`comic` / `novel`）。
+     * 读书架上的书籍类型（`comic` / `audio` / `local` / `novel`）。
      *
      * ⚠️ **不在书架上不是错误**：调用方要的是"这本书是不是漫画"，
      * 不在书架上（例如从书源页直接打开）一律按 `novel` 处理，与 `BookshelfItem.bookKind` 的默认值同源。
@@ -2223,13 +2223,17 @@ class Database(private val path: String) : Closeable, AutoCloseable {
             val now = System.currentTimeMillis()
 
             // 1. Insert/update book_shelf
+            // `book_kind` 显式写 `local`（issue #66）：本地书自成一类，四类角标（本地/漫画/听书/小说）互斥。
+            // 本地书**定义上**就是 local，因此 on conflict 直接覆盖（不像在线书那样 coalesce 保留旧值），
+            // 这样历史被误写成 `novel` 的本地书在重新导入时也会被纠正。
             db.prepareStatement("""
-                insert into book_shelf(source_id, book_url, name, author, toc_url, cover_url, cover_key, last_read_at, completed, alternate_sources)
-                values(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                insert into book_shelf(source_id, book_url, name, author, toc_url, cover_url, cover_key, last_read_at, completed, alternate_sources, book_kind)
+                values(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 on conflict(source_id, book_url) do update set
                     name = excluded.name, author = excluded.author, toc_url = excluded.toc_url,
                     cover_key = coalesce(excluded.cover_key, book_shelf.cover_key),
-                    last_read_at = excluded.last_read_at
+                    last_read_at = excluded.last_read_at,
+                    book_kind = excluded.book_kind
             """.trimIndent()).use { stmt ->
                 stmt.setString(1, sourceId)
                 stmt.setString(2, bookUrl)
@@ -2241,6 +2245,7 @@ class Database(private val path: String) : Closeable, AutoCloseable {
                 stmt.setLong(8, now)
                 stmt.setInt(9, 0)
                 stmt.setString(10, "[]")
+                stmt.setString(11, BookKind.LOCAL.wire)
                 stmt.executeUpdate()
             }
 
@@ -2441,7 +2446,18 @@ class Database(private val path: String) : Closeable, AutoCloseable {
             }
         }
     }
+    /**
+     * 删除一本书的正文缓存（仅"服务端缓存"范围会走到这里）。
+     *
+     * **本地书恒不删正文**（issue #66 的数据层守卫）：本地书的正文是用户上传的原文件解析后落库的，
+     * 线上没有"下次阅读会重新下载"这一步 —— 删了只能靠「重新解析本地文件」从留存的原文件重建。
+     * 前端已经不给本地书任何缓存/清缓存入口，这道守卫是**防 UI 绕过**（直接打 HTTP 也一样安全），
+     * 因此放在数据层而不是路由层。
+     *
+     * @return 实际删除的正文行数；本地书恒为 0
+     */
     fun clearBookCacheContent(sourceId: String, bookUrl: String): Int = write { db ->
+        if (BookKind.isLocalRef(sourceId, bookUrl)) return@write 0
         val deleted = db.prepareStatement("delete from book_content_cache where source_id = ? and book_url = ?").use { statement ->
             statement.setString(1, sourceId)
             statement.setString(2, bookUrl)
@@ -3341,7 +3357,10 @@ class Database(private val path: String) : Closeable, AutoCloseable {
             alternateSources = altSources,
             groupName = runCatching { getString(16) }.getOrNull()?.trim()?.takeIf { it.isNotEmpty() },
             coverUrl = runCatching { getString(17) }.getOrNull()?.trim()?.takeIf { it.isNotEmpty() },
-            bookKind = runCatching { getString(18) }.getOrNull()?.trim()?.takeIf { it.isNotEmpty() } ?: "novel",
+            // 本地书（issue #66）：列若为空（极老的数据、或迁移中途）仍按身份兜底成 `local`，
+            // 保证前端四类角标与备份导出 `type=264` 不会因为"列没写"而退化成小说。
+            bookKind = runCatching { getString(18) }.getOrNull()?.trim()?.takeIf { it.isNotEmpty() }
+                ?: if (isLocal) BookKind.LOCAL.wire else BookKind.NOVEL.wire,
             // 有声书的毫秒位置（文本/漫画恒为 null，语义不可混用）；导出行回、进度同步都用它
             positionMs = runCatching { (getObject(20) as? Number)?.toLong() }.getOrNull(),
             variable = runCatching { getString(19) }.getOrNull()?.trim()?.takeIf { it.isNotEmpty() },
@@ -3742,10 +3761,15 @@ class Database(private val path: String) : Closeable, AutoCloseable {
     }
 
     /**
-     * 一次性回填书架 `book_kind`：**书自己的 `tab` 优先，书源声明兜底**（见 [BookKind.resolveOrNull]）。
+     * 一次性回填书架 `book_kind`：**本地书身份优先 → 书自己的 `tab` → 书源声明兜底**
+     * （见 [BookKind.isLocalRef] / [BookKind.resolveOrNull]）。
      *
-     * 覆盖两类历史数据：老书架行 `book_kind` 为空；以及备份导入时"书自己没说类型"但书源声明了类型的行。
-     * 「新数据不再出错」≠「老数据自动好了」（AGENTS.md）：此函数幂等，只动 null/空值。
+     * 覆盖三类历史数据：老书架行 `book_kind` 为空；备份导入时"书自己没说类型"但书源声明了类型的行；
+     * 以及**本地导入书**（可能是空、也可能是早年按小说写成的 `novel`）—— issue #66 起本地书自成一类，
+     * 必须落库成 `local`，否则前端只能靠 `sourceId` 猜、备份导出的 `type` 位也写不对。
+     *
+     * 「新数据不再出错」≠「老数据自动好了」（AGENTS.md）：此函数幂等，只动上面这三类；
+     * 只做一次 `select` + 少量 `update`，**不解析任何书**（启动路径不许重 I/O）。
      */
     private fun backfillBookKind(db: Connection) {
         val resolved = mutableListOf<Triple<String, String, String>>()
@@ -3762,8 +3786,14 @@ class Database(private val path: String) : Closeable, AutoCloseable {
                     val sourceId = rs.getString(1)
                     val bookUrl = rs.getString(2)
                     val current = rs.getString(3)?.trim()?.lowercase().orEmpty()
-                    // 书自己的 tab 优先（聚合源不声明类型，只能靠这个）；都没有 ⇒ 不写
-                    val kind = BookKind.resolveOrNull(null, bookUrl, rs.getString(4)) ?: continue
+                    // 本地书是**身份**而非"书的说法"：`loc_book` / `local://` 一律 `local`，
+                    // 绝不让它掉进下面的 tab/源声明推导（那是给在线书用的）。
+                    val kind = if (BookKind.isLocalRef(sourceId, bookUrl)) {
+                        BookKind.LOCAL.wire
+                    } else {
+                        // 书自己的 tab 优先（聚合源不声明类型，只能靠这个）；都没有 ⇒ 不写
+                        BookKind.resolveOrNull(null, bookUrl, rs.getString(4)) ?: continue
+                    }
                     if (kind == current) continue // 已经是这个值 ⇒ 跳过，不做无谓写库
                     resolved.add(Triple(sourceId, bookUrl, kind))
                 }

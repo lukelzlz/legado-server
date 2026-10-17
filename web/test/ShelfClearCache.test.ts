@@ -11,6 +11,8 @@ import {
   isServerStep,
   stepsForScope,
 } from '../src/shelfClearCache'
+import { SHELF_MODAL_SHELF, shelfModalReducer, type ShelfModalState } from '../src/shelfModalStack'
+import type { BookshelfItem } from '../src/api'
 
 /**
  * 「清除缓存」功能（独立 PR：`feat/shelf-clear-cache`）。
@@ -29,6 +31,10 @@ import {
  *   `renderToStaticMarkup` 无从谈起（把弹窗拆成独立模块属于另一个 refactor，本 PR 不做）。
  *   源码断言按**真实 JSX 兄弟节点顺序**（= 渲染后的 DOM 顺序）与逐字 class/文案取值，
  *   配合浏览器端 e2e（`web/test/e2e-browser-reclean-a11y.ts` 真实点击 `.book-manage-sheet`）。
+ *
+ * - **两级层级（issue #66）** 在 `src/shelfModalStack.ts` 这个纯 reducer 上做**真实运行时**断言：
+ *   「取消 / ESC / 点遮罩 / 清理执行完 ⇒ 只退一级、仍停留在书籍管理」不再能只靠 grep 源码
+ *   （grep 抓不到"状态被清掉"），必须把转移序列真跑一遍。
  */
 
 const __filename = fileURLToPath(import.meta.url)
@@ -47,6 +53,8 @@ const CLEAR_CACHE_KEYS = [
   'clearCacheHint',
   'clearCacheServer',
   'clearCacheServerDesc',
+  // 本地导入书的「服务器缓存」副说明（本地书正文不可重建，不能说"下次重新下载"）
+  'clearCacheServerLocalDesc',
   'clearCacheBrowser',
   'clearCacheBrowserDesc',
   'clearCacheBoth',
@@ -76,6 +84,7 @@ const MODAL_KEYS = [
   'clearCacheHint',
   'clearCacheServer',
   'clearCacheServerDesc',
+  'clearCacheServerLocalDesc',
   'clearCacheBrowser',
   'clearCacheBrowserDesc',
   'clearCacheBoth',
@@ -189,21 +198,31 @@ test('shelf-clear-cache - 顺序断言：「清除缓存」紧挨在「移出书
   assert.equal(removeIndex, rows.length - 1, '「移出书架」必须仍是弹窗里的最后一行')
 })
 
-test('shelf-clear-cache - 点这一行不再 confirm，而是先 onClose() 再打开范围弹窗（沿用 onClearCache props 链路）', () => {
+test('shelf-clear-cache - 点这一行不再 confirm，而是打 onClearCache 打开范围弹窗（**不先关父级**，issue #66）', () => {
   const clearRow = manageActionRows().find(r => r.strong.includes('shelf.clearCache'))
   assert.ok(clearRow, '清除缓存行必须存在')
 
+  // issue #66 的根因就在这一行：修复前是 `onClose(); onClearCache()` ——
+  // 先关掉书籍管理弹窗，范围弹窗取消后就无父级可回，于是两级一起消失回到书架。
   assert.ok(
-    /onClose\(\)\s*;\s*onClearCache\(\)/.test(onClickOf(clearRow!.element)),
-    `onClick 必须「先关书籍管理弹窗再打开范围弹窗」，实际：${onClickOf(clearRow!.element)}`,
+    !/onClose/.test(onClickOf(clearRow!.element)),
+    `onClick 不得先关闭书籍管理弹窗（根因），实际：${onClickOf(clearRow!.element)}`,
+  )
+  assert.ok(
+    /onClearCache\(\)/.test(onClickOf(clearRow!.element)),
+    `onClick 必须只打 onClearCache 打开范围弹窗，实际：${onClickOf(clearRow!.element)}`,
   )
 
   const source = readSource('main.tsx')
   // props 链路：声明 → 书架页传入 → 弹窗内部不绕过 props 直调
   assert.ok(/onClearCache:\s*\(\)\s*=>\s*void/.test(bookManageModalSource()), 'BookManageModal 必须声明 onClearCache prop')
   assert.ok(
-    /onClearCache=\{\(\)\s*=>\s*\{[\s\S]{0,240}?setManagingItem\(null\)[\s\S]{0,240}?setClearingCacheItem\(target\)/.test(source),
-    '书架页必须把 onClearCache 接到「关闭书籍管理 + 打开范围弹窗」',
+    /onClearCache=\{\(\)\s*=>\s*dispatchShelfModal\(\{\s*type:\s*'openClearCacheScope'\s*\}\)\}/.test(source),
+    '书架页必须把 onClearCache 接到「只叠加二级」的层级转移（不得顺手把一级置空）',
+  )
+  assert.ok(
+    !/setManagingItem|setClearingCacheItem/.test(source),
+    '两级弹窗不得再用两个彼此独立的可空状态（那正是 #66 的成因），必须走 shelfModalStack 状态机',
   )
   assert.ok(
     !/api\.(clearImageCache|clearAudioCache|clearBookCacheData)|clearOfflineBook\(/.test(bookManageModalSource()),
@@ -385,14 +404,19 @@ test('shelf-clear-cache - 每步独立 try/catch 单点记账（只点名实际�
   assert.ok(finallyAt > -1 && finallyAt > loopAt, '必须有 finally 兜底，且它罩住整个循环')
   const finallyBlock = handler.slice(finallyAt, handler.indexOf('\n    }', finallyAt))
   assert.ok(/setClearingCache\(false\)/.test(finallyBlock), 'finally 必须复位忙碌态')
-  assert.ok(/setClearingCacheItem\(null\)/.test(finallyBlock), 'finally 必须关闭范围弹窗')
+  // issue #66：执行完的落点 = 与「取消」同一个转移（只退一级回到书籍管理），不是回书架
+  assert.ok(
+    /dispatchShelfModal\(\{\s*type:\s*'closeClearCacheScope'\s*\}\)/.test(finallyBlock),
+    'finally 必须退回一级「书籍管理」（closeClearCacheScope），不得直接清空弹窗',
+  )
+  assert.ok(!/setClearingCacheItem|setManagingItem/.test(finallyBlock), 'finally 不得再用「置空」方式关弹窗')
 
   // confirm() 已彻底移除（弹窗本身就是确认）
   assert.ok(!/\bconfirm\(/.test(handler), 'clearCache 不得再用 confirm()')
   assert.ok(!/\bconfirm\(/.test(clearCacheModalSource()), '范围弹窗不得用 confirm()')
 })
 
-test('shelf-clear-cache - 范围弹窗在书架页以平级条件分支挂载，并把 theme 一路传下去', () => {
+test('shelf-clear-cache - 范围弹窗在书架页以平级条件分支挂载（层级互斥），并把 theme 一路传下去', () => {
   const source = readSource('main.tsx')
 
   assert.ok(/\{clearingCacheItem && \(\s*\n\s*<ClearCacheScopeModal/.test(source), '范围弹窗必须由 {clearingCacheItem && ...} 平级挂载（不嵌在书籍管理弹窗里）')
@@ -406,6 +430,194 @@ test('shelf-clear-cache - 范围弹窗在书架页以平级条件分支挂载，
   const manageAt = source.indexOf('{managingItem && (')
   const clearAt = source.indexOf('{clearingCacheItem && (')
   assert.ok(manageAt > -1 && clearAt > manageAt, '两个弹窗必须是相邻的平级分支')
+
+  // issue #66：两个分支的"可见性"必须由**同一个**层级状态派生 ⇒ 结构上不可能同时渲染
+  // （同一时刻最多一个非 null）⇒ 不可能出现两层遮罩叠在一起或 backdrop 嵌套。
+  assert.ok(
+    /const managingItem = shelfModal\.layer === 'manage' \? shelfModal\.item : null/.test(source),
+    '一级弹窗的 item 必须由层级状态派生（manage 层才可见）',
+  )
+  assert.ok(
+    /const clearingCacheItem = shelfModal\.layer === 'clearCacheScope' \? shelfModal\.item : null/.test(source),
+    '二级弹窗的 item 必须由层级状态派生（clearCacheScope 层才可见）',
+  )
+})
+
+// ---------------------------------------------------------------------------
+// 8. issue #66：两级弹窗的层级状态机（纯模块，真实运行时断言）
+// ---------------------------------------------------------------------------
+
+/** 测试用的书架条目（只填必需字段，其余按需覆盖）。 */
+function shelfBook(overrides: Partial<BookshelfItem> = {}): BookshelfItem {
+  return {
+    sourceId: 'src-1',
+    bookUrl: 'https://example.com/book/1',
+    name: '测试书',
+    tocUrl: 'https://example.com/toc',
+    lastReadAt: 0,
+    cachedChapters: 3,
+    totalChapters: 10,
+    cacheState: 'ready',
+    completed: false,
+    ...overrides,
+  }
+}
+
+/** 状态机里的 item（联合类型窄化辅助，测试里只读）。 */
+const itemOf = (state: ShelfModalState): BookshelfItem | undefined => 'item' in state ? state.item : undefined
+
+test('shelf-clear-cache - issue #66：打开范围弹窗后「取消」⇒ 仍停留在「书籍管理」层级（真实状态转移）', () => {
+  const book = shelfBook()
+
+  // ① 书架点「管理」⇒ 一级
+  let state = shelfModalReducer(SHELF_MODAL_SHELF, { type: 'openManage', item: book })
+  assert.equal(state.layer, 'manage')
+
+  // ② 一级里点「清除缓存」⇒ 叠加二级，**一级的书必须原样保留**（否则取消无处可回）
+  state = shelfModalReducer(state, { type: 'openClearCacheScope' })
+  assert.equal(state.layer, 'clearCacheScope', '点「清除缓存」应叠加上范围选择弹窗')
+  assert.equal(itemOf(state), book, '二级打开时必须保留一级那本书（issue #66 的根因就是这里把它丢了）')
+
+  // ③ 取消（以及 ESC / 点遮罩 / 清理执行完 —— 组件侧都是同一个转移）⇒ 只退一级
+  state = shelfModalReducer(state, { type: 'closeClearCacheScope' })
+  assert.equal(state.layer, 'manage', '取消后必须回到「书籍管理」层级，而不是直接回书架')
+  assert.equal(itemOf(state), book, '回到的一级必须还是同一本书')
+
+  // ④ 这时再关一级才回书架
+  state = shelfModalReducer(state, { type: 'closeManage' })
+  assert.equal(state.layer, 'shelf')
+})
+
+test('shelf-clear-cache - issue #66：ESC / 点遮罩 / 执行完在组件侧都走同一个「只退一级」转移', () => {
+  const modal = clearCacheModalSource()
+
+  // 点遮罩：busy 时禁用，否则 onClose
+  assert.ok(/onClick=\{busy \? undefined : onClose\}/.test(modal), '点遮罩必须等价于取消（onClose），清理中禁用')
+  // ESC：与取消等价（清理中忽略）
+  assert.ok(/event\.key === 'Escape'/.test(modal), '范围弹窗必须支持 ESC 关闭')
+  assert.ok(/Escape' && !busy\) onClose\(\)/.test(modal), 'ESC 必须与取消等价：只调 onClose，且清理中忽略')
+  // 取消行：只调 onClose，不触发任何清理
+  const rows = extractButtonElements(modal).filter(e => /className="[^"]*manage-action-row/.test(e))
+  const cancel = rows.filter(e => !classesOf(e).includes('danger'))[0]
+  assert.ok(/onClose/.test(onClickOf(cancel)), '取消只应关闭弹窗（由父级解释为"退回一级"）')
+  assert.ok(!/onPick/.test(onClickOf(cancel)), '取消不得触发任何 scope')
+
+  // 而 onClose 在书架页被解释成 closeClearCacheScope（只退一级，不关一级）
+  const source = readSource('main.tsx')
+  assert.ok(
+    /onClose=\{\(\) => dispatchShelfModal\(\{\s*type: 'closeClearCacheScope'\s*\}\)\}/.test(source),
+    '范围弹窗的 onClose 必须只退一级（closeClearCacheScope）',
+  )
+  // 一级自己也支持 ESC（回书架）；因为两级互斥挂载，不会一次连退两级
+  assert.ok(/event\.key === 'Escape'/.test(bookManageModalSource()), '书籍管理弹窗也必须支持 ESC 关闭')
+})
+
+test('shelf-clear-cache - issue #66：层级是单一状态 ⇒ 二级不可能脱离一级单独出现（也不会两层同显）', () => {
+  const book = shelfBook()
+
+  // 书架层直接开二级 ⇒ 无效（保持书架层）：二级永远有父级
+  assert.equal(shelfModalReducer(SHELF_MODAL_SHELF, { type: 'openClearCacheScope' }).layer, 'shelf')
+
+  const manage: ShelfModalState = { layer: 'manage', item: book }
+  // 一级层收到「关二级」⇒ 无效（绝不能被顺手降级成书架）
+  assert.deepEqual(shelfModalReducer(manage, { type: 'closeClearCacheScope' }), manage)
+
+  // 二级层的 updateItem / syncSnapshot 仍保持二级（层级不会被回灌改动）
+  const scope: ShelfModalState = { layer: 'clearCacheScope', item: book }
+  const updated = shelfBook({ name: '改过的书名' })
+  const afterUpdate = shelfModalReducer(scope, { type: 'updateItem', item: updated })
+  assert.equal(afterUpdate.layer, 'clearCacheScope', 'updateItem 不得改层级')
+  assert.equal(itemOf(afterUpdate)?.name, '改过的书名')
+
+  // 书架层收到 updateItem / syncSnapshot ⇒ 保持书架（不会凭空冒出弹窗）
+  assert.equal(shelfModalReducer(SHELF_MODAL_SHELF, { type: 'updateItem', item: book }).layer, 'shelf')
+  assert.equal(shelfModalReducer(SHELF_MODAL_SHELF, { type: 'syncSnapshot', items: [book] }).layer, 'shelf')
+})
+
+test('shelf-clear-cache - issue #66：列表轮询只回灌进度字段（不覆盖编辑结果、不改变层级）', () => {
+  const edited = shelfBook({ name: '我改的书名', author: '我改的作者' })
+  const state: ShelfModalState = { layer: 'clearCacheScope', item: edited }
+
+  const fresh = shelfBook({
+    name: '服务端原名',
+    author: '服务端原作者',
+    cachedChapters: 9,
+    totalChapters: 20,
+    cacheState: 'caching',
+    cacheError: undefined,
+  })
+  const next = shelfModalReducer(state, { type: 'syncSnapshot', items: [fresh] })
+  assert.equal(next.layer, 'clearCacheScope', '回灌不得改变层级')
+  const item = itemOf(next)!
+  assert.equal(item.cachedChapters, 9, '进度字段必须跟着列表刷新')
+  assert.equal(item.totalChapters, 20)
+  assert.equal(item.cacheState, 'caching')
+  assert.equal(item.name, '我改的书名', '回灌不得覆盖用户编辑过的书名')
+  assert.equal(item.author, '我改的作者')
+
+  // 无变化的快照必须返回**同一个 state**（避免多渲染一拍）
+  assert.equal(shelfModalReducer(next, { type: 'syncSnapshot', items: [fresh] }), next)
+
+  // 列表里找不到这本书 ⇒ 保持原状（不闪没、不改层级）
+  assert.equal(shelfModalReducer(next, { type: 'syncSnapshot', items: [] }), next)
+})
+
+// ---------------------------------------------------------------------------
+// 9. #64 交过来的条件文案：本地书（loc_book / local://）不能说"正文下次重新下载"
+// ---------------------------------------------------------------------------
+
+test('shelf-clear-cache - 本地书的「服务器缓存」副说明走条件文案，网络书原值不变', () => {
+  const modal = clearCacheModalSource()
+  const zhCN = translationOf('zh-CN').shelf
+
+  assert.ok(
+    /isLocalBook\(item\) \? t\('shelf\.clearCacheServerLocalDesc'/.test(modal),
+    '本地书（loc_book / local://）必须换成"不清本地书正文"的副说明',
+  )
+  assert.ok(
+    modal.includes(`t('shelf.clearCacheServerDesc', '${zhCN.clearCacheServerDesc}')`),
+    '网络书那句原值必须逐字保留（只加分支，不改原值）',
+  )
+  assert.ok(
+    modal.includes(`t('shelf.clearCacheServerLocalDesc', '${zhCN.clearCacheServerLocalDesc}')`),
+    '新 key 的内联默认值必须与 zh-CN 逐字一致',
+  )
+
+  // 判定纯函数按仓库既有写法：loc_book 虚拟书源 / local:// 路径。
+  // issue #66 第二片：判据抽到 `src/localBook.ts`（书架角标 / 书籍管理弹窗 / 阅读器目录抽屉三处共用）。
+  const helper = windowFrom(readSource('localBook.ts'), 'export function isLocalBook(', 260)
+  assert.ok(helper.includes("item.sourceId === 'loc_book'"), 'isLocalBook 必须判 loc_book')
+  assert.ok(helper.includes("item.bookUrl.startsWith('local://')"), 'isLocalBook 必须判 local:// 路径')
+  // main.tsx 必须复用同一份判据，不得再各自内联一份（否则三个入口迟早分叉）
+  assert.ok(
+    /import \{ isLocalBook \} from '\.\/localBook'/.test(readSource('main.tsx')),
+    'main.tsx 必须从 localBook 模块复用 isLocalBook',
+  )
+
+  // 四语齐全、非空、互不雷同，且都必须点明"正文不会被删"
+  const mustSayKept: Record<(typeof LOCALES)[number], RegExp> = {
+    'zh-CN': /不删除|不会删除/,
+    'zh-TW': /不刪除|不會刪除/,
+    'en-US': /is kept|not removed|kept/i,
+    'ja-JP': /失われません|削除しません|残り/,
+  }
+  for (const locale of LOCALES) {
+    const shelf = translationOf(locale).shelf as Record<string, string>
+    const value = shelf.clearCacheServerLocalDesc
+    assert.equal(typeof value, 'string', `${locale}.shelf.clearCacheServerLocalDesc 必须存在`)
+    assert.ok(value.trim().length > 0, `${locale}.shelf.clearCacheServerLocalDesc 不得为空`)
+    assert.ok(mustSayKept[locale].test(value), `${locale} 本地书副说明必须点明正文不受影响：${value}`)
+    if (locale !== 'zh-CN') {
+      assert.notEqual(value, zhCN.clearCacheServerLocalDesc, `${locale} 不得直接复制简体中文`)
+    }
+    if (locale === 'en-US') assert.ok(!/[\u4e00-\u9fff]/.test(value), 'en-US 不得含中文')
+  }
+  // 「取消」的承诺（不做任何清理、返回书籍管理）与这条无关，仍是四语保留的既有文案
+  for (const locale of LOCALES) {
+    const shelf = translationOf(locale).shelf as Record<string, string>
+    assert.ok(typeof shelf.clearCacheCancelDesc === 'string' && shelf.clearCacheCancelDesc.length > 0, `${locale} 取消副说明必须保留`)
+  }
+  assert.equal(zhCN.clearCacheCancelDesc, '不做任何清理，返回书籍管理')
 })
 
 // ---------------------------------------------------------------------------

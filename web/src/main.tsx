@@ -1,4 +1,4 @@
-import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { FormEvent, useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { createRoot } from 'react-dom/client'
 import { useTranslation } from 'react-i18next'
@@ -25,10 +25,12 @@ import { SourceHealthModal } from './SourceHealthModal'
 import { SourceGroupManagerModal } from './SourceGroupManagerModal'
 import { SearchScopeBar } from './SearchScopeBar'
 import { ShelfKindTag } from './ShelfKindTag'
+import { isLocalBook } from './localBook'
 import { PwaManager } from './PwaManager'
 import { ErrorBoundary } from './ErrorBoundary'
 import { clearOfflineBook, flushOfflineProgress } from './offlineStorage'
 import { ClearCacheScope, stepsForScope } from './shelfClearCache'
+import { SHELF_MODAL_SHELF, shelfModalReducer } from './shelfModalStack'
 import { toast, ToastContainer } from './Toast'
 import './styles.css'
 import './i18n'
@@ -54,6 +56,9 @@ function resolveShelfCover(item: { coverKey?: string; coverUrl?: string }): stri
   if (item.coverKey) return api.cover(item.coverKey)
   return sanitizeImageUrl(item.coverUrl)
 }
+
+// 「本地导入书」的判定（`loc_book` / `local://`）统一走 `./localBook` 的 `isLocalBook`：
+// 与服务端 `BookKind.isLocalRef` 同源，角标、书籍管理弹窗、阅读器目录抽屉三处共用同一判据。
 
 type Page = 'sources' | 'subscriptions' | 'library' | 'shelf' | 'reader' | 'rules' | 'webdav' | 'explore'
 const readerStorageKey = 'legado-open-book-v1'
@@ -1865,6 +1870,18 @@ function BookManageModal({
   const isFailed = item.cacheState === 'failed'
   const percent = Math.min(100, Math.round((item.cachedChapters / Math.max(1, item.totalChapters || 1)) * 100))
 
+  // ESC ≡ 点遮罩 ≡ 关闭一级（回书架）。二级有自己的 ESC（只退一级），
+  // 而两级**互斥挂载**，所以永远不会出现"一次 ESC 连退两级"。
+  // 编辑子页（BookInfoEditModal）自己管自己，这里不抢它的 ESC。
+  useEffect(() => {
+    if (editingInfo) return
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') onClose()
+    }
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [editingInfo, onClose])
+
   if (editingInfo) {
     return (
       <BookInfoEditModal
@@ -1933,7 +1950,7 @@ function BookManageModal({
             <Icon name="arrowRight" />
           </button>
 
-          {item.sourceId !== 'loc_book' && (
+          {!isLocalBook(item) && (
             <button className="manage-action-row" onClick={() => { onClose(); onSwitchSource() }}>
               <div className="action-icon"><Icon name="sliders" /></div>
               <div className="action-text">
@@ -1944,7 +1961,10 @@ function BookManageModal({
             </button>
           )}
 
-          {item.sourceId !== 'loc_book' && (
+          {/* 「离线缓存全本 / 重新缓存 / 重试离线缓存」对本地书**整段不渲染**（issue #66 用户原话：
+              「缓存按钮也不该有」）。原因是本地书正文就是用户上传文件解析后落库的那份，
+              没有"抓取"这一步 —— 摆一个永远无事可做的缓存按钮只会误导。 */}
+          {!isLocalBook(item) && (
             isCaching ? (
               <div className="manage-cache-box">
                 <div className="manage-cache-info-row">
@@ -2000,7 +2020,7 @@ function BookManageModal({
 
           {/* 本地书专用：解析器缺陷修复之后，老书需要按留存的原文件重新解析才能拿到分段正文。
               线上书源的书走不到这里（它们的正文是即时抓取的，不涉及解析器版本）。 */}
-          {item.sourceId === 'loc_book' && (
+          {isLocalBook(item) && (
             <button
               className="manage-action-row"
               disabled={reparsing}
@@ -2042,15 +2062,19 @@ function BookManageModal({
 
           {/* 「清除缓存」与「移出书架」同为**危险动作**（都不可逆、都要重新联网下载），
               因此共用 danger 红色配色；但语义严格区分：本行只回收磁盘，书还在书架上、
-              进度与封面都不动。 */}
-          <button className="manage-action-row danger" onClick={() => { onClose(); onClearCache() }}>
-            <div className="action-icon"><Icon name="trash" /></div>
-            <div className="action-text">
-              <strong>{t('shelf.clearCache', '清除缓存')}</strong>
-              <small>{t('shelf.clearCacheDesc', '清除本书已下载的图片、音频与正文缓存（含本机离线）')}</small>
-            </div>
-            <Icon name="arrowRight" />
-          </button>
+              进度与封面都不动。
+              本地书（issue #66 用户原话：「本地书根本不要有清除缓存的按钮」）**整行不渲染**：
+              它的正文只能从留存的原文件重新解析得到，不存在"清掉再下载"这条路径。 */}
+          {!isLocalBook(item) && (
+            <button className="manage-action-row danger" onClick={() => onClearCache()}>
+              <div className="action-icon"><Icon name="trash" /></div>
+              <div className="action-text">
+                <strong>{t('shelf.clearCache', '清除缓存')}</strong>
+                <small>{t('shelf.clearCacheDesc', '清除本书已下载的图片、音频与正文缓存（含本机离线）')}</small>
+              </div>
+              <Icon name="arrowRight" />
+            </button>
+          )}
 
           <button className="manage-action-row danger" onClick={() => { onClose(); onRemove() }}>
             <div className="action-icon"><Icon name="close" /></div>
@@ -2077,8 +2101,12 @@ function BookManageModal({
  *
  * 样式铁律（AGENTS.md）：① 浮层用 `createPortal(..., document.body)` 逃出带 `backdrop-filter`
  * 的包含块，并**显式**绑 `theme-${theme}` —— 否则脱离 `.app-shell` 后主题变量回退，夜间模式下
- * 会出现透光背景 + 隐形黑字；② 本弹窗由书架页以**平级条件分支**挂载（此时书籍管理弹窗已关闭），
- * 杜绝"带动画的 `modal-backdrop` 里再嵌一层 `modal-backdrop`"；③ 所有按钮显式 `type="button"`。
+ * 会出现透光背景 + 隐形黑字；② 本弹窗由书架页按**互斥层级**挂载（此时一级「书籍管理」不渲染，
+ * 但它的书由状态机保留）⇒ 一层 backdrop，杜绝"带动画的 `modal-backdrop` 里再嵌一层"；
+ * ③ 所有按钮显式 `type="button"`。
+ *
+ * 关闭语义（issue #66）：取消 / ESC / 点遮罩三者**完全等价** —— 都只调 `onClose`，
+ * 由父级把它解释成「退回一级书籍管理」，不做任何清理；清理执行完也走同一个转移。
  */
 function ClearCacheScopeModal({
   item,
@@ -2094,6 +2122,15 @@ function ClearCacheScopeModal({
   onClose: () => void
 }) {
   const { t } = useTranslation()
+
+  // ESC ≡ 取消（清理中忽略，避免把正在跑的清理"关掉"造成误解）
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape' && !busy) onClose()
+    }
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [busy, onClose])
 
   return createPortal(
     <div className={`modal-backdrop top-layer-modal-backdrop theme-${theme}`} onClick={busy ? undefined : onClose}>
@@ -2122,7 +2159,7 @@ function ClearCacheScopeModal({
             <div className="action-icon"><Icon name="cloudDownload" /></div>
             <div className="action-text">
               <strong>{t('shelf.clearCacheServer', '清除服务器缓存')}</strong>
-              <small>{t('shelf.clearCacheServerDesc', '清掉服务端已下载的图片、音频与正文，下次阅读会重新下载')}</small>
+              <small>{isLocalBook(item) ? t('shelf.clearCacheServerLocalDesc', '只清理可重建的图片缓存；本地书正文由原文件解析而来，清除缓存不会删除') : t('shelf.clearCacheServerDesc', '清掉服务端已下载的图片、音频与正文，下次阅读会重新下载')}</small>
             </div>
             <Icon name="arrowRight" />
           </button>
@@ -2437,9 +2474,17 @@ function ShelfPage({ onOpen, theme }: { onOpen: (item: BookshelfItem) => void; t
   const [statusFilter, setStatusFilter] = useState<'all' | 'reading' | 'completed'>('all')
   const [message, setMessage] = useState('')
   const [switchingItem, setSwitchingItem] = useState<BookshelfItem | null>(null)
-  const [managingItem, setManagingItem] = useState<BookshelfItem | null>(null)
-  // 「清除缓存」范围选择弹窗：与书籍管理弹窗**平级**挂载（不嵌套 backdrop），且此刻后者已关闭
-  const [clearingCacheItem, setClearingCacheItem] = useState<BookshelfItem | null>(null)
+  /**
+   * 书籍管理（一级）与「清除缓存」范围选择（二级）的**层级状态机**（见 `src/shelfModalStack.ts`）。
+   *
+   * 修复 issue #66：原先这里是两个彼此独立的可空状态，打开二级时把一级置 `null`，
+   * 于是二级的「取消」只关掉自己 ⇒ 两级一起消失、回到书架，与文案「返回书籍管理」矛盾。
+   * 现在层级只有这一份状态，`closeClearCacheScope` 只退一级 ⇒ 一级的书永远还在。
+   */
+  const [shelfModal, dispatchShelfModal] = useReducer(shelfModalReducer, SHELF_MODAL_SHELF)
+  /** 当前可见的一级 / 二级（两者**互斥**：同一时刻最多一个非 null ⇒ 不会双层遮罩）。 */
+  const managingItem = shelfModal.layer === 'manage' ? shelfModal.item : null
+  const clearingCacheItem = shelfModal.layer === 'clearCacheScope' ? shelfModal.item : null
   const [clearingCache, setClearingCache] = useState(false)
   const [uploading, setUploading] = useState(false)
   const [dragOver, setDragOver] = useState(false)
@@ -2537,32 +2582,15 @@ function ShelfPage({ onOpen, theme }: { onOpen: (item: BookshelfItem) => void; t
   /**
    * 让**书籍管理弹窗**跟着列表一起刷新。
    *
-   * `managingItem` 是弹窗打开那一刻的**快照**（`setManagingItem(item)`），而进度是由上面那个
-   * 定时 `load()` 写进 `items` 的。不把新进度回灌进 `managingItem`，弹窗里的「x/y 章」就
-   * 永远停在打开时的数字 —— 这正是用户反馈的「弹窗里的缓存还是有问题 / 缓存不动」：
-   * 服务端在跑、列表也在涨，唯独弹窗那一份数据是死的。
+   * 弹窗里的 item 是打开那一刻的**快照**，而进度是由上面那个定时 `load()` 写进 `items` 的。
+   * 不把新进度回灌进弹窗，弹窗里的「x/y 章」就永远停在打开时的数字 —— 这正是用户反馈的
+   * 「弹窗里的缓存还是有问题 / 缓存不动」：服务端在跑、列表也在涨，唯独弹窗那一份数据是死的。
    *
-   * 只同步**进度相关字段**，不动书名/封面等可编辑字段（编辑流程走 `setManagingItem(updated)`）。
+   * 回灌逻辑搬进状态机的 `syncSnapshot`：只同步**进度相关字段**，不动书名/封面等可编辑字段
+   * （编辑流程走 `updateItem`），且「没变化就返回同一个 state」⇒ 不会多渲染一次。
    */
   useEffect(() => {
-    setManagingItem(prev => {
-      if (!prev) return prev
-      const fresh = items.find(value => value.sourceId === prev.sourceId && value.bookUrl === prev.bookUrl)
-      if (!fresh) return prev
-      if (
-        fresh.cachedChapters === prev.cachedChapters
-        && fresh.totalChapters === prev.totalChapters
-        && fresh.cacheState === prev.cacheState
-        && fresh.cacheError === prev.cacheError
-      ) return prev
-      return {
-        ...prev,
-        cachedChapters: fresh.cachedChapters,
-        totalChapters: fresh.totalChapters,
-        cacheState: fresh.cacheState,
-        cacheError: fresh.cacheError,
-      }
-    })
+    dispatchShelfModal({ type: 'syncSnapshot', items })
   }, [items])
 
   const remove = async (item: BookshelfItem) => {
@@ -2641,7 +2669,10 @@ function ShelfPage({ onOpen, theme }: { onOpen: (item: BookshelfItem) => void; t
       }
     } finally {
       setClearingCache(false)
-      setClearingCacheItem(null)
+      // 清理执行完的落点：**退回一级「书籍管理」**（与取消 / ESC / 点遮罩同一个转移）。
+      // 为什么不是回书架：清缓存是从这本书的管理弹窗里发起的，执行完立刻在**同一本书**上
+      // 看到「0 章已缓存」比把人踢回书架更符合最小惊讶，也省掉"再点进去确认"的一步。
+      dispatchShelfModal({ type: 'closeClearCacheScope' })
     }
     if (failedParts.length === 0) {
       toast.success(t('shelf.clearCacheSuccess', '《{{name}}》缓存已清除', { name: item.name }))
@@ -2688,7 +2719,7 @@ function ShelfPage({ onOpen, theme }: { onOpen: (item: BookshelfItem) => void; t
   }
 
   const cacheBadge = (item: BookshelfItem) => {
-    if (item.sourceId === 'loc_book' || item.bookUrl.startsWith('local://')) {
+    if (isLocalBook(item)) {
       const count = item.cachedChapters || item.totalChapters || 0
       return count > 0 ? t('shelf.chaptersCached', '{{count}}章已缓存', { count }) : null
     }
@@ -2962,7 +2993,6 @@ function ShelfPage({ onOpen, theme }: { onOpen: (item: BookshelfItem) => void; t
           {visibleItems.map(item => {
             const badge = cacheBadge(item)
             const isCaching = item.cacheState === 'caching'
-            const isLocal = item.sourceId === 'loc_book'
             const percent = Math.min(100, Math.round((item.cachedChapters / Math.max(1, item.totalChapters || 1)) * 100))
             const itemKey = `${item.sourceId}\u0000${item.bookUrl}`
             const isSelected = selectedKeys.has(itemKey)
@@ -2992,8 +3022,9 @@ function ShelfPage({ onOpen, theme }: { onOpen: (item: BookshelfItem) => void; t
                     name={item.name}
                     fallbackClassName="cover-fallback"
                   />
-                  {isLocal && <span className="shelf-card-tag-local">{t('shelf.localTag', '本地')}</span>}
-                  <ShelfKindTag bookKind={item.bookKind} />
+                  {/* 四类角标（本地 / 漫画 / 听书 / 小说）互斥，唯一产出点是 ShelfKindTag。
+                      `local` 按身份判（`loc_book` / `local://`），与服务端 `book_kind='local'` 双保险。 */}
+                  <ShelfKindTag bookKind={item.bookKind} local={isLocalBook(item)} />
                   {badge && <span className={`shelf-card-badge ${item.cacheState}`}>{badge}</span>}
                   {isCaching && (
                     <div className="shelf-card-progress-track">
@@ -3033,7 +3064,7 @@ function ShelfPage({ onOpen, theme }: { onOpen: (item: BookshelfItem) => void; t
                     <button
                       type="button"
                       className="shelf-btn-manage"
-                      onClick={() => setManagingItem(item)}
+                      onClick={() => dispatchShelfModal({ type: 'openManage', item })}
                       aria-label={t('shelf.manageBook', '管理 {{name}}', { name: item.name })}
                       title={t('shelf.bookManage', '书籍管理')}
                     >
@@ -3120,47 +3151,47 @@ function ShelfPage({ onOpen, theme }: { onOpen: (item: BookshelfItem) => void; t
         </aside>
       )}
 
-      {/* Book Management Modal */}
+      {/* Book Management Modal（一级）：只在 `manage` 层挂载。打开二级时它**不渲染**，
+          但它在状态机里的 item 仍被保留 ⇒ 取消 / ESC / 点遮罩 / 清理执行完都能回到它 */}
       {managingItem && (
         <BookManageModal
           item={managingItem}
           groups={groups}
-          onClose={() => setManagingItem(null)}
+          onClose={() => dispatchShelfModal({ type: 'closeManage' })}
           onSwitchSource={() => {
             const target = managingItem
-            setManagingItem(null)
+            dispatchShelfModal({ type: 'closeManage' })
             setSwitchingItem(target)
           }}
           onCache={() => {
             void cache(managingItem)
-            setManagingItem(prev => prev ? { ...prev, cacheState: 'caching' } : null)
+            dispatchShelfModal({ type: 'updateItem', item: { ...managingItem, cacheState: 'caching' } })
           }}
           onCancelCache={() => {
             void cancelCache(managingItem)
-            setManagingItem(prev => prev ? { ...prev, cacheState: 'failed', cacheError: t('shelf.cacheErrorCancelled', '已取消缓存') } : null)
+            dispatchShelfModal({ type: 'updateItem', item: { ...managingItem, cacheState: 'failed', cacheError: t('shelf.cacheErrorCancelled', '已取消缓存') } })
           }}
           onToggleCompleted={() => setCompleted(managingItem, !managingItem.completed)}
           onUpdateInfo={updated => {
             setItems(values => values.map(v => v.sourceId === updated.sourceId && v.bookUrl === updated.bookUrl ? updated : v))
-            setManagingItem(updated)
+            dispatchShelfModal({ type: 'updateItem', item: updated })
             void load()
           }}
-          onClearCache={() => {
-            const target = managingItem
-            setManagingItem(null)
-            setClearingCacheItem(target)
-          }}
+          // issue #66：这里**只叠加二级**，绝不关闭一级 —— 一级是哪本书由状态机保留，
+          // 二级「取消」才能回到「书籍管理」（文案承诺的行为）。
+          onClearCache={() => dispatchShelfModal({ type: 'openClearCacheScope' })}
           onRemove={() => remove(managingItem)}
         />
       )}
 
-      {/* 「清除缓存」范围选择弹窗：与书籍管理弹窗**平级**（不是嵌在里面），且自带 portal */}
+      {/* 「清除缓存」范围选择弹窗（二级）：与一级**互斥**挂载（同一时刻只渲染一层，不是嵌在
+          一级的 modal-backdrop 里），且自带 portal。取消 / ESC / 点遮罩 / 执行完都只退一级 */}
       {clearingCacheItem && (
         <ClearCacheScopeModal
           item={clearingCacheItem}
           theme={theme}
           busy={clearingCache}
-          onClose={() => setClearingCacheItem(null)}
+          onClose={() => dispatchShelfModal({ type: 'closeClearCacheScope' })}
           onPick={scope => void clearCache(clearingCacheItem, scope)}
         />
       )}

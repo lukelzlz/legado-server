@@ -403,10 +403,22 @@ data class SourceLoginStateRecord(
     val bookUrl: String,
     val chapterUrl: String,
     val chapterIndex: Int,
+    /**
+     * 文本/漫画的**比例**位置（0.0~1.0）。
+     *
+     * ⚠️ **仅 audio 之外的书籍使用它**：有声书的进度语义是**毫秒偏移**，
+     * 走 [positionMs]。两者共用一个字段会让「一个 Double 三种语义」，
+     * 且现有校验（`!in 0.0..1.0` ⇒ 400）会把毫秒值直接拒掉（G2 §8 的裁决，选 (a) 新增列）。
+     */
     val scrollPosition: Double = 0.0,
     val updatedAt: Long = 0,
     /** 可选：前端已知章节标题时一并传入，免去服务端回查目录缓存。 */
     val chapterTitle: String? = null,
+    /**
+     * 有声书的**毫秒偏移**（与安卓 `durChapterPos` 同语义 ⇒ 跨端镜像可直传，无需换算）。
+     * 非 audio 的书一律为 `null`。
+     */
+    val positionMs: Long? = null,
 )
 
 // ---------------------------------------------------------------------------
@@ -907,11 +919,16 @@ data class BackupImportSummary(
     val progress: Int,
     /** 因是**本地图书**（手机本机文件，服务端读不到）而跳过的条数。 */
     val skippedLocal: Int = 0,
-    /** 因是**音频/听书**（服务端只做文本阅读）而跳过的条数。 */
+    /**
+     * 因是**音频/听书**而跳过的条数。
+     *
+     * ⚠️ 自方案 G2 的 G0 起**恒为 0**：音频不再被过滤（服务端已能解析/缓存/直出音频）。
+     * 字段保留只为不改动前端契约（"已跳过 N"仅在 > 0 时显示）。
+     */
     val skippedAudio: Int = 0,
     /** 新增的书签数。 */
     val bookmarks: Int = 0,
-    /** 因所属书籍未导入（本地图书/音频）而跳过的书签数。 */
+    /** 因所属书籍未导入（**仅本地图书**）而跳过的书签数。 */
     val bookmarksSkipped: Int = 0,
     /**
      * 随书源一起导入的**不同书源分组**个数。
@@ -934,6 +951,14 @@ data class BackupShelfEntry(
     val completed: Boolean,
     val chapterIndex: Int,
     val readAt: Long,
+    /**
+     * 手机端的**章内位置**（`durChapterPos`）。
+     *
+     * ⚠️ 只有**有声书**会用它：对音频它就是毫秒，与 `reading_progress.position_ms` **同语义、直传**
+     * （G11）。文本/漫画**刻意不导入它**——安卓的字符偏移量与我们的 `0..1` 比例不是一回事
+     * （AGENTS.md 明文：「Android 的字符偏移量 `durChapterPos` 不得强塞入服务端的百分比 `scroll_position`」）。
+     */
+    val chapterPos: Int = 0,
     /** 类别判定结果，用于导入时过滤本地图书与音频（见 [ShelfKind]）。 */
     val kind: ShelfKind = ShelfKind.ONLINE,
     /**
@@ -1267,6 +1292,181 @@ data class MangaPinResponse(
     val sourceId: String,
     val bookUrl: String,
     val pinned: Boolean,
+)
+
+// ---------------------------------------------------------------------------
+// 有声书（音频书源）—— 方案 G2（PROPOSAL-029 / ADR-029）
+// ---------------------------------------------------------------------------
+
+/**
+ * 一章里的**一个音频分段**。
+ *
+ * ⚠️ 与漫画清单同一条铁律：**只给服务端 key，绝不给上游 URL**
+ * （给了前端就会绕过缓存直连上游 ⇒ 防盗链、离线、Range 复用全部失效）。
+ */
+@Serializable
+data class AudioTrack(
+    /** 段内序号（0 起）；一章多分段时前端按它顺序串播。 */
+    val index: Int,
+    /** `GET /api/audio/{key}` 的 key（= sha256(sourceId + '\n' + 规范化上游URL)）。 */
+    val key: String,
+    /** 与 [index] 同值，显式带出便于前端与 DB 对齐（DB 列名就是 `segment_index`）。 */
+    val segmentIndex: Int = 0,
+    /** pending | downloading | ready | failed */
+    val status: String = "pending",
+    /** 毫秒时长；由前端 `loadedmetadata` 回传（服务端不引音频解析库）。 */
+    val durationMs: Long = 0,
+    val byteSize: Long = 0,
+)
+
+/** 一章音频清单（`POST /api/books/audio` 的响应）。 */
+@Serializable
+data class AudioChapterManifest(
+    val sourceId: String,
+    val bookUrl: String,
+    val chapterUrl: String,
+    val chapterIndex: Int = 0,
+    val total: Int,
+    /** 已就绪分段数；`ready == total` ⇒ 整章可离线（目录绿点 `●` 的唯一口径）。 */
+    val ready: Int = 0,
+    /** pending | partial | ready | failed */
+    val state: String = "pending",
+    val tracks: List<AudioTrack> = emptyList(),
+)
+
+/** 音频清单请求。`chapterIndex` 由前端从目录带过来，用于滑窗 GC 的锚点计算。 */
+@Serializable
+data class AudioManifestRequest(
+    val sourceId: String,
+    val bookUrl: String? = null,
+    val chapterUrl: String = "",
+    val chapterIndex: Int = 0,
+)
+
+/**
+ * 解析出来的「一段音频」的抓取规格。
+ *
+ * `url,{"headers":{...}}` 形态（Legado 生态常态）里每段可带**独立请求头**，
+ * 必须随分段一起传给 Fetcher，否则重拉时会 403（G2 §5.1 的第 2 处规格缺口）。
+ */
+data class AudioTrackSpec(
+    val url: String,
+    val headersJson: String? = null,
+)
+
+/** 一段音频的缓存索引行（`audio_cache`，L1）。 */
+data class AudioCacheRecord(
+    /** sha256(sourceId + '\n' + 规范化URL)：**含 sourceId**，防跨源脏命中。对外即 `/api/audio/{key}`。 */
+    val cacheKey: String,
+    val sourceId: String,
+    val bookUrl: String,
+    val chapterUrl: String,
+    val chapterIndex: Int = 0,
+    /** 一章内第几段（多分段保序拼装用）。 */
+    val segmentIndex: Int = 0,
+    /** 仅服务端可见，**绝不下发前端**。 */
+    val upstreamUrl: String,
+    /** 该段专属请求头 JSON（`{"headers":{...}}` 的 `headers` 部分），重拉/GC 后重下必需。 */
+    val headersJson: String? = null,
+    val contentType: String = "",
+    val byteSize: Long = 0,
+    val durationMs: Long = 0,
+    /** pending | downloading | ready | failed */
+    val state: String = "pending",
+    val lastError: String? = null,
+    /** 免死金牌（用户手动「下载整本」）：GC 永不自动淘汰。 */
+    val pinned: Boolean = false,
+    /** 听完（完成度 > 80%）⇒ GC 第 1 顺位淘汰候选。 */
+    val listened: Boolean = false,
+    val createdAt: Long = 0,
+    val lastAccessAt: Long = 0,
+)
+
+/** 按书聚合的音频缓存占用。 */
+@Serializable
+data class AudioCacheBookStat(
+    val sourceId: String,
+    val bookUrl: String,
+    val name: String? = null,
+    val trackCount: Int,
+    val totalBytes: Long,
+    val chapterCount: Int = 0,
+    val readyChapterCount: Int = 0,
+    val pinned: Boolean = false,
+)
+
+/**
+ * 音频缓存总体统计（`GET /api/audio/cache/stats`）。
+ *
+ * `totalBytes`（表内字节和）与 `diskBytes`（实际磁盘占用）**分开报**：两者漂移即说明有孤儿文件或失效行。
+ */
+@Serializable
+data class AudioCacheStats(
+    val totalBytes: Long,
+    val quotaBytes: Long,
+    val trackCount: Int,
+    val diskBytes: Long,
+    val books: List<AudioCacheBookStat> = emptyList(),
+)
+
+/** 批量缓存请求（`POST /api/books/audio/cache`）。 */
+@Serializable
+data class AudioPrefetchRequest(
+    val sourceId: String,
+    val bookUrl: String? = null,
+    val chapterUrl: String? = null,
+    val fromChapterIndex: Int = 0,
+    /** 从起始章起缓存多少章（含起始章）。 */
+    val ahead: Int = 1,
+    /** `true` = 用户手动「整本离线」⇒ 顺手打 pinned 免死金牌。 */
+    val pin: Boolean = false,
+)
+
+/** 批量缓存受理结果。**`queued=false` 不是错误**（开关关了/目录未缓存/区间为空）。 */
+@Serializable
+data class AudioPrefetchResponse(
+    val queued: Boolean,
+    val chapters: Int = 0,
+    val reason: String? = null,
+)
+
+/** 一本书的音频缓存任务进度（`GET /api/books/audio/prefetch`）。 */
+@Serializable
+data class AudioPrefetchStatus(
+    val sourceId: String,
+    val bookUrl: String,
+    val running: Boolean = true,
+    val done: Int = 0,
+    val planned: Int = 0,
+    val currentChapterIndex: Int = 0,
+)
+
+/** pin 开关结果（`PUT /api/audio/cache/pin`）。 */
+@Serializable
+data class AudioPinResponse(
+    val sourceId: String,
+    val bookUrl: String,
+    val pinned: Boolean,
+)
+
+/**
+ * 前端 `loadedmetadata` 回传的音频时长（`POST /api/audio/duration`）。
+ *
+ * 服务端**不引音频解析库**（Non-Goal）：时长只用于统计与 GC 的"听完"判据，
+ * 拿不到就保持 0，绝不能因此影响播放。
+ */
+@Serializable
+data class AudioDurationRequest(
+    val key: String,
+    val durationMs: Long,
+    /**
+     * 当前播放位置（毫秒），可空。
+     *
+     * 前端**顺手带一次**就够了：服务端据 `positionMs / durationMs >= 80%` 给这一段打
+     * 「听完」标记（GC 的输入之一）。刻意不新增一个"上报收听进度"的接口——
+     * 位置本身已经通过 `/api/reading-progress` 的 `position_ms` 落库了，这里只是附带的判据。
+     */
+    val positionMs: Long = 0,
 )
 
 

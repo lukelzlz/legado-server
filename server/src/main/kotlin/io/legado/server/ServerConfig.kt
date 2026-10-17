@@ -18,9 +18,30 @@ data class ServerConfig(
     val imageCacheDirectory: Path = coverCacheDirectory.resolveSibling("images"),
     /**
      * 有声书音频缓存目录（方案 G2）。默认 `<data>/audio`。
-     * P1 阶段暂未使用，先落配置以免后续再动这个类（见《方案G2-详细设计》G3）。
      */
     val audioCacheDirectory: Path = coverCacheDirectory.resolveSibling("audio"),
+    /**
+     * 有声书音频缓存配额（字节）。默认 **20 GiB**（G-4 裁决），环境变量 `LEGADO_AUDIO_CACHE_MAX_GB`。
+     *
+     * 与漫画的 10 GiB **分开配置**：两者是不同量级的字节（一章音频 10~60 MiB vs 一章漫画十几 MB），
+     * 共用一个配额会让"听书把漫画的额度挤掉"变成常态。
+     */
+    val audioCacheQuotaBytes: Long = DEFAULT_AUDIO_CACHE_QUOTA_BYTES,
+    /**
+     * 整机同时在飞的音频抓取上限。默认 **3**（ADR-029 定 `MAX_GLOBAL_AUDIO_FETCHES = 3`）。
+     *
+     * 数字比图片（6）小是刻意的：音频是 10~60 MiB 的大流，并发 3 已经在吃满带宽。
+     * 同 AGENTS.md：必须加在**抓取收口**，加在单章任务内等于没限流。
+     */
+    val maxGlobalAudioFetches: Int = DEFAULT_MAX_GLOBAL_AUDIO_FETCHES,
+    /**
+     * 音频后台缓存/预取总开关（P2）。`LEGADO_AUDIO_PREFETCH=false` ⇒ 只按需抓当前播放的那一段。
+     */
+    val audioPrefetchEnabled: Boolean = true,
+    /**
+     * 音频缓存 GC 总开关（P2）。`LEGADO_AUDIO_GC=false` ⇒ 磁盘只增不减（排障用）。
+     */
+    val audioGcEnabled: Boolean = true,
     /**
      * 漫画图片缓存配额（字节）。默认 **10 GiB** —— 由 lukelzlz 于 2026-10-13 拍板
      * （PR #45 commit `0ab69e2`：原 2 GiB 上调至 10GB），环境变量 `LEGADO_MANGA_CACHE_MAX_GB` 覆盖。
@@ -51,8 +72,16 @@ data class ServerConfig(
         const val DEFAULT_IMAGE_CACHE_QUOTA_BYTES: Long = (DEFAULT_IMAGE_CACHE_QUOTA_GB * 1024 * 1024 * 1024).toLong()
         const val DEFAULT_MAX_GLOBAL_IMAGE_FETCHES: Int = 6
 
+        /** 音频默认 20 GiB（G-4 裁决）与并发 3（ADR-029）。 */
+        const val DEFAULT_AUDIO_CACHE_QUOTA_GB: Double = 20.0
+        const val DEFAULT_AUDIO_CACHE_QUOTA_BYTES: Long = (DEFAULT_AUDIO_CACHE_QUOTA_GB * 1024 * 1024 * 1024).toLong()
+        const val DEFAULT_MAX_GLOBAL_AUDIO_FETCHES: Int = 3
+
         /** GC 巡检间隔。占用检查很便宜（一条 `sum`），真正的全盘扫描只在超阈值时才发生。 */
         const val IMAGE_GC_INTERVAL_MS: Long = 5 * 60 * 1000L
+
+        /** 音频 GC 巡检间隔（同漫画的节奏）。 */
+        const val AUDIO_GC_INTERVAL_MS: Long = 5 * 60 * 1000L
 
         fun fromEnvironment(env: Map<String, String> = System.getenv()): ServerConfig {
             val rawDataDir = env["LEGADO_DATA_DIR"] ?: run {
@@ -83,6 +112,14 @@ data class ServerConfig(
                     ?.takeIf { it > 0 } ?: DEFAULT_MAX_GLOBAL_IMAGE_FETCHES,
                 mangaPrefetchEnabled = env["LEGADO_MANGA_PREFETCH"]?.toBooleanStrictOrNull() ?: true,
                 mangaGcEnabled = env["LEGADO_MANGA_GC"]?.toBooleanStrictOrNull() ?: true,
+                // 音频：配额按 GB 配置（支持小数），默认 20 GiB（G-4 裁决）
+                audioCacheQuotaBytes = (env["LEGADO_AUDIO_CACHE_MAX_GB"]?.toDoubleOrNull() ?: DEFAULT_AUDIO_CACHE_QUOTA_GB)
+                    .takeIf { it > 0 }?.let { (it * 1024 * 1024 * 1024).toLong() }
+                    ?: DEFAULT_AUDIO_CACHE_QUOTA_BYTES,
+                maxGlobalAudioFetches = env["LEGADO_MAX_GLOBAL_AUDIO_FETCHES"]?.toIntOrNull()
+                    ?.takeIf { it > 0 } ?: DEFAULT_MAX_GLOBAL_AUDIO_FETCHES,
+                audioPrefetchEnabled = env["LEGADO_AUDIO_PREFETCH"]?.toBooleanStrictOrNull() ?: true,
+                audioGcEnabled = env["LEGADO_AUDIO_GC"]?.toBooleanStrictOrNull() ?: true,
             )
         }
     }

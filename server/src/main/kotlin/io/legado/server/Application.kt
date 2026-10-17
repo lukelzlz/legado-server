@@ -104,6 +104,30 @@ fun Application.legadoApplication(config: ServerConfig = ServerConfig.fromEnviro
             environment.monitor.subscribe(ApplicationStopping) { gcJob.cancel() }
             environment.monitor.subscribe(ApplicationStopped) { gcJob.cancel() }
         }
+        // 有声书 P1/P2：L1 字节缓存 + 抓取收口 + 滑窗 GC + 后台批量缓存（方案 G2）
+        val audioCache = AudioCache(config.audioCacheDirectory, database, config.audioCacheQuotaBytes) { message -> log.info(message) }
+        val audioFetcher = AudioFetcher(config, log = { message -> log.info(message) })
+        val audioGc = AudioCacheGc(database, audioCache, config.audioCacheQuotaBytes, config.audioGcEnabled) { message -> log.info(message) }
+        val audioPrefetch = AudioPrefetchService(
+            database = database,
+            runner = runner,
+            audioCache = audioCache,
+            fetcher = audioFetcher,
+            scope = this@legadoApplication,
+            gc = audioGc,
+            enabled = config.audioPrefetchEnabled,
+        ) { message -> log.info(message) }
+        if (config.audioGcEnabled) {
+            // 定时巡检：不抓音频的时候也要能收敛（例如用户手动改小了 LEGADO_AUDIO_CACHE_MAX_GB）
+            val audioGcJob = launch {
+                while (isActive) {
+                    delay(ServerConfig.AUDIO_GC_INTERVAL_MS)
+                    audioGc.maybeRun()
+                }
+            }
+            environment.monitor.subscribe(ApplicationStopping) { audioGcJob.cancel() }
+            environment.monitor.subscribe(ApplicationStopped) { audioGcJob.cancel() }
+        }
         authRoutes(auth)
         apiRoutes(
             database, auth, runner, coverCache, subscriptions, bookCache, edgeTts, ttsSessions,
@@ -115,6 +139,9 @@ fun Application.legadoApplication(config: ServerConfig = ServerConfig.fromEnviro
             imageCache,
             mangaImageFetcher,
             mangaPrefetch,
+            audioCache,
+            audioFetcher,
+            audioPrefetch,
         )
         webDavRoutes(auth, webDavStorage, database, coverCache)
         staticWeb()

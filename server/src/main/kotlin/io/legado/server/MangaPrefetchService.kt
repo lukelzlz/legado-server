@@ -134,6 +134,14 @@ class MangaPrefetchService(
         else ((start + requestedAhead).coerceAtMost(chapters.size - 1)) - start
 
         requests[key] = MangaPrefetchTask(sourceId, bookUrl, start, span)
+        // ⚠️ **必须在返回前就把进度登账**（本函数是同步的，`drain` 之后才会第一次写 `progress`）：
+        // `GET /books/images/prefetch` 与 `GET /bookshelf` 的 `cacheState='caching'` 都只认
+        // `progress ∩ 活动 job`。以前这里不写 ⇒ 从入队到第一章清单解析完这段（抓目录时可达数秒）
+        // 状态接口返回空 ⇒ 书架列表报 `idle/ready` ⇒ 前端那个 `if (!caching) return` 的轮询门
+        // 直接**永久熄火**，用户看到的正是「退到书架后缓存就不动了」（实测：入队后 53ms 与 265ms
+        // 两次采样都是 `ready`，直到 ~1s 才变 `caching`）。
+        // `putIfAbsent`：已有在跑的进度绝不能被这次投递重置成 0。
+        progress.putIfAbsent(key, seedStatus(sourceId, bookUrl, start, if (chapters == null) 0 else span + 1))
         launchLoop(key)
         // 目录未知 ⇒ 只回报"已受理"（1）：真实章数要抓完目录才知道，`planned` 由 drain 回填。
         // **绝不能返回 0**——上层会把 0 当成"没事可做"（`nothing_to_prefetch`），
@@ -216,6 +224,47 @@ class MangaPrefetchService(
             if (!requests.containsKey(key)) return
         }
     }
+
+    private fun status(
+        task: MangaPrefetchTask,
+        chapterIndex: Int,
+        doneChapters: Int,
+        plannedChapters: Int,
+        doneImages: Int,
+        plannedImages: Int,
+        failedImages: Int,
+        lastError: String?,
+    ): MangaPrefetchStatus = MangaPrefetchStatus(
+        sourceId = task.sourceId,
+        bookUrl = task.bookUrl,
+        running = true,
+        done = doneChapters,
+        planned = plannedChapters,
+        currentChapterIndex = chapterIndex,
+        doneImages = doneImages,
+        plannedImages = plannedImages,
+        failed = failedImages,
+        lastError = lastError,
+    )
+
+    /**
+     * 入队瞬间的"占位进度"（见 [enqueue] 里的注释）。
+     *
+     * [planned] 为 0 表示"目录还没抓到、真实章数未知"——列表侧必须把 0 当未知而不是当 0 章。
+     */
+    private fun seedStatus(
+        sourceId: String,
+        bookUrl: String,
+        currentChapterIndex: Int,
+        planned: Int,
+    ): MangaPrefetchStatus = MangaPrefetchStatus(
+        sourceId = sourceId,
+        bookUrl = bookUrl,
+        running = true,
+        done = 0,
+        planned = planned,
+        currentChapterIndex = currentChapterIndex,
+    )
 
     private fun status(
         task: MangaPrefetchTask,

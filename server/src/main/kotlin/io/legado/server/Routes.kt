@@ -116,7 +116,13 @@ fun Route.apiRoutes(
             }
 
             val coverKey = if (parsed.coverBytes != null && parsed.coverBytes.isNotEmpty()) {
-                covers.saveCoverBytes(parsed.coverBytes, parsed.coverContentType ?: "image/jpeg")
+                covers.saveCoverBytes(
+                    parsed.coverBytes,
+                    parsed.coverContentType ?: "image/jpeg",
+                    // 本地书的身份在这里就能定死（与 `Database.importLocalBook` 同一口径）：
+                    // `sourceId = loc_book`、`bookUrl = local://<bookId>` ⇒ 封面文件名就是 `书名 (书哈希).扩展名`
+                    CoverBookRef(parsed.title, LocalBookParser.LOC_BOOK_SOURCE_ID, "local://$bookId"),
+                )
             } else null
 
             val item = db.importLocalBook(bookId, parsed, coverKey)
@@ -1203,7 +1209,7 @@ fun Route.apiRoutes(
                     ?: return@get call.respond(HttpStatusCode.InternalServerError, ApiError("cache_error", "图片落盘后索引丢失"))
             }
 
-            val file = imageCache.fileFor(row.cacheKey)
+            val file = imageCache.fileFor(row)
                 ?: return@get call.respond(HttpStatusCode.NotFound, ApiError("not_found", "图片文件不存在"))
             call.response.headers.append(HttpHeaders.ETag, "\"${row.cacheKey}\"")
             call.response.headers.append(HttpHeaders.CacheControl, "private, max-age=31536000, immutable")
@@ -1475,7 +1481,7 @@ fun Route.apiRoutes(
                 }
             }
 
-            val file = audioCache.fileFor(row.cacheKey)
+            val file = audioCache.fileFor(row)
                 ?: return@get call.respond(HttpStatusCode.NotFound, ApiError("not_found", "音频文件不存在"))
             call.respondFileRange(
                 file = file,
@@ -1631,7 +1637,10 @@ fun Route.apiRoutes(
             if (auth.requireSession(call, true) == null) return@post
             val request = call.receive<BookshelfWriteRequest>()
             if (request.sourceId.isBlank() || request.bookUrl.isBlank() || request.name.isBlank() || request.tocUrl.isBlank()) { call.respond(HttpStatusCode.BadRequest, ApiError("invalid_bookshelf", "书架数据无效")); return@post }
-            val immediateCover = tryFindCachedCover(coverCache, request.coverUrl, request.alternateSources)
+            val immediateCover = tryFindCachedCover(
+                coverCache, request.coverUrl, request.alternateSources,
+                CoverBookRef(request.name, request.sourceId, request.bookUrl),
+            )
             // 类型判定：**书自己的说法优先，源声明兜底**。
             // ⚠️ 实测教训：聚合源（大灰狼）不声明 `bookSourceType`，但它里面有漫画频道；
             // 只看源声明会把这些漫画判成小说 ⇒ 进文字阅读器 ⇒ 用户看到的是"漫画打不开"。
@@ -1658,7 +1667,10 @@ fun Route.apiRoutes(
             // item 是 upsert 之后的结果，coverKey 非空即代表这本书已经有封面可用 ⇒ 不必再抓。
             if (item.coverKey == null && (!request.coverUrl.isNullOrBlank() || !request.alternateSources.isNullOrEmpty())) {
                 application.launch(Dispatchers.IO) {
-                    val cached = tryCacheCover(coverCache, request.coverUrl, request.alternateSources)
+                    val cached = tryCacheCover(
+                        coverCache, request.coverUrl, request.alternateSources,
+                        CoverBookRef(request.name, request.sourceId, request.bookUrl),
+                    )
                     if (cached != null) {
                         database.updateBookshelfCover(request.sourceId, request.bookUrl, cached.key, cached.contentType)
                     }
@@ -1939,7 +1951,9 @@ fun Route.apiRoutes(
                                 }
                             } else {
                                 val url = item.coverUrl!!
-                                val cached = runCatching { coverCache.getIfCached(url) ?: coverCache.cache(url) }.getOrNull()
+                                // deep=false 也要带身份落盘：文件名与书目录用同一个书哈希
+                                val identity = CoverBookRef(item.name, item.sourceId, item.bookUrl)
+                                val cached = runCatching { coverCache.getIfCached(url, identity) ?: coverCache.cache(url, identity) }.getOrNull()
                                 if (cached != null && database.updateBookshelfCover(item.sourceId, item.bookUrl, cached.key, cached.contentType)) {
                                     refreshed.incrementAndGet()
                                 } else {
@@ -2038,8 +2052,9 @@ fun Route.apiRoutes(
                 call.respond(HttpStatusCode.BadRequest, ApiError("invalid_bookshelf", "书名不能为空"))
                 return@put
             }
+            val identity = CoverBookRef(request.name, request.sourceId, request.bookUrl)
             val cover = request.coverUrl?.takeIf { it.isNotBlank() }?.let { url ->
-                runCatching { coverCache.cache(url) }.getOrNull()
+                runCatching { coverCache.cache(url, identity) }.getOrNull()
             }
             // 改「书籍变量」= 换听书音色 ⇒ **必须让该书已登记的音频清单失效**。
             //
@@ -2051,6 +2066,9 @@ fun Route.apiRoutes(
                 database.getBookVariables(request.sourceId, request.bookUrl)[Database.CUSTOM_VARIABLE_KEY]
             } else null
             database.updateBookshelfInfo(request, cover)?.let { updated ->
+                // 上传的封面在写入那一刻还不知道属于哪本书（文件名是 `未命名 (key).扩展名`），
+                // 与书籍关联的这一刻才知道 ⇒ 在这里归位成 `书名 (书哈希).扩展名`（只改名，不重写内容）。
+                request.coverKey?.takeIf { it.isNotBlank() }?.let { coverCache.adopt(it, identity) }
                 if (request.customVariable != null) {
                     val afterCustom = database.getBookVariables(request.sourceId, request.bookUrl)[Database.CUSTOM_VARIABLE_KEY]
                     if (beforeCustom != afterCustom) {
@@ -2067,7 +2085,10 @@ fun Route.apiRoutes(
             val book = request.book
             if (request.oldSourceId.isBlank() || request.oldBookUrl.isBlank() || book.sourceId.isBlank() || book.bookUrl.isBlank() || book.name.isBlank() || book.tocUrl.isBlank()) { call.respond(HttpStatusCode.BadRequest, ApiError("invalid_bookshelf", "书架数据无效")); return@post }
             val altList = (request.alternateSources ?: emptyList()) + (book.alternateSources ?: emptyList())
-            val cover = tryCacheCover(coverCache, book.coverUrl, altList)
+            val cover = tryCacheCover(
+                coverCache, book.coverUrl, altList,
+                CoverBookRef(book.name, book.sourceId, book.bookUrl),
+            )
             val bookKind = database.getSource(book.sourceId)?.let { BookKind.fromSourcePayload(it.json).name.lowercase() } ?: "novel"
             val bookWithKind = book.copy(bookKind = bookKind)
             bookCache.cancel(request.oldSourceId, request.oldBookUrl)
@@ -2636,7 +2657,7 @@ private suspend fun ApplicationCall.respondCatching(block: suspend () -> Any) {
     catch (error: Exception) { respond(HttpStatusCode.BadGateway, ApiError("source_execution_failed", error.message ?: "书源执行失败")) }
 }
 
-internal fun tryFindCachedCover(coverCache: CoverCache, primaryUrl: String?, alternateSources: List<SearchResult>?): CachedCover? {
+internal fun tryFindCachedCover(coverCache: CoverCache, primaryUrl: String?, alternateSources: List<SearchResult>?, book: CoverBookRef? = null): CachedCover? {
     val candidates = buildList {
         primaryUrl?.takeIf { it.isNotBlank() }?.let { add(it) }
         alternateSources?.forEach { s ->
@@ -2644,13 +2665,13 @@ internal fun tryFindCachedCover(coverCache: CoverCache, primaryUrl: String?, alt
         }
     }
     for (url in candidates) {
-        val cached = coverCache.getIfCached(url)
+        val cached = coverCache.getIfCached(url, book)
         if (cached != null) return cached
     }
     return null
 }
 
-internal fun tryCacheCover(coverCache: CoverCache, primaryUrl: String?, alternateSources: List<SearchResult>?): CachedCover? {
+internal fun tryCacheCover(coverCache: CoverCache, primaryUrl: String?, alternateSources: List<SearchResult>?, book: CoverBookRef? = null): CachedCover? {
     val candidates = buildList {
         primaryUrl?.takeIf { it.isNotBlank() }?.let { add(it) }
         alternateSources?.forEach { s ->
@@ -2658,7 +2679,7 @@ internal fun tryCacheCover(coverCache: CoverCache, primaryUrl: String?, alternat
         }
     }
     for (url in candidates) {
-        val cached = runCatching { coverCache.cache(url) }.getOrNull()
+        val cached = runCatching { coverCache.cache(url, book) }.getOrNull()
         if (cached != null) return cached
     }
     return null
@@ -2767,7 +2788,11 @@ internal fun resolveFreshCoverUrl(item: BookshelfItem, fetchDetails: (BookshelfI
  * 下载失败静默返回 null，由调用方计入 failed 并继续处理下一本。
  */
 internal fun materializeCover(database: Database, coverCache: CoverCache, item: BookshelfItem, url: String): CachedCover? =
-    runCatching { coverCache.getIfCached(url) ?: coverCache.cache(url) }.getOrNull()
+    runCatching {
+        // 带着书籍身份去落盘：文件名就是 `书名 (书哈希).扩展名`（哈希与书目录同源）
+        val identity = CoverBookRef(item.name, item.sourceId, item.bookUrl)
+        coverCache.getIfCached(url, identity) ?: coverCache.cache(url, identity)
+    }.getOrNull()
         ?.takeIf { database.updateBookshelfCover(item.sourceId, item.bookUrl, it.key, it.contentType, coverUrl = url) }
 
 private fun jsonEvent(message: String): String = Json.encodeToString(message)
@@ -3090,7 +3115,7 @@ internal fun bookshelfWithMediaCache(
                 val ready = mangaReady[key] ?: 0
                 item.copy(
                     cachedChapters = running?.done ?: ready,
-                    totalChapters = running?.planned ?: item.totalChapters.coerceAtLeast(ready),
+                    totalChapters = running?.planned?.takeIf { it > 0 } ?: item.totalChapters.coerceAtLeast(ready),
                     cacheState = when {
                         running != null -> "caching"
                         ready > 0 -> "ready"
@@ -3105,7 +3130,7 @@ internal fun bookshelfWithMediaCache(
                 val ready = audioReady[key] ?: 0
                 item.copy(
                     cachedChapters = running?.done ?: ready,
-                    totalChapters = running?.planned ?: item.totalChapters.coerceAtLeast(ready),
+                    totalChapters = running?.planned?.takeIf { it > 0 } ?: item.totalChapters.coerceAtLeast(ready),
                     cacheState = when {
                         running != null -> "caching"
                         ready > 0 -> "ready"

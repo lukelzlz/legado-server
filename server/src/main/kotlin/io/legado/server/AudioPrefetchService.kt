@@ -93,6 +93,11 @@ class AudioPrefetchService(
         else ((start + requestedAhead).coerceAtMost(chapters.size - 1)) - start
 
         requests[key] = AudioPrefetchTask(sourceId, bookUrl, start, span)
+        // ⚠️ 与漫画端同一条教训：`GET /books/audio/prefetch` 与书架 `cacheState` 都只认
+        // `progress ∩ 活动 job`。入队时就把占位进度登账，否则"入队 → 第一章分段清单解析完"
+        // 这段（抓目录时可达数秒）状态为空 ⇒ 书架列表报 idle/ready ⇒ 前端轮询门永久熄火，
+        // 用户看到的就是「退回书架后缓存不动了」。`putIfAbsent`：不重置已在跑的进度。
+        progress.putIfAbsent(key, seedStatus(sourceId, bookUrl, start, if (chapters == null) 0 else span + 1))
         launchLoop(key)
         // 目录未知 ⇒ 只回报"已受理"（1）；真实章数由 drain 抓完目录后回填到 `planned`。
         // **绝不能返回 0**：上层会把它当成 `nothing_to_cache`，于是书架的"缓存全本"什么都不会发生。
@@ -194,6 +199,24 @@ class AudioPrefetchService(
         lastError = lastError,
     )
 
+    /**
+     * 入队瞬间的"占位进度"（见 [enqueue] 里的注释）。
+     *
+     * [planned] 为 0 表示"目录还没抓到、真实章数未知"——列表侧必须把 0 当未知而不是当 0 章。
+     */
+    private fun seedStatus(
+        sourceId: String,
+        bookUrl: String,
+        currentChapterIndex: Int,
+        planned: Int,
+    ): AudioPrefetchStatus = AudioPrefetchStatus(
+        sourceId = sourceId,
+        bookUrl = bookUrl,
+        running = true,
+        done = 0,
+        planned = planned,
+        currentChapterIndex = currentChapterIndex,
+    )
     /** 确保某章已登记分段（本地已有行就**完全不回源抓章节页**）。返回本章分段数。 */
     private suspend fun ensureTracks(sourceId: String, bookUrl: String, chapter: Chapter): Int {
         val existing = audioCache.chapterRows(sourceId, bookUrl, chapter.url)

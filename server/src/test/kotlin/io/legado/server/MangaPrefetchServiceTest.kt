@@ -219,6 +219,68 @@ class MangaPrefetchServiceTest {
         }
     }
 
+    /**
+     * 回归：**入队那一刻就必须能被 `status()` 看到**。
+     *
+     * 书架的 `cacheState='caching'`（以及前端那个「只要不是 caching 就停表」的轮询门）
+     * 都只认 `status()`。旧实现只在 `drain` 里第一章清单解析完才第一次写 `progress`
+     * ⇒ 入队后有一段（抓目录时可达数秒）状态为空 ⇒ 书架列表报 `idle/ready` ⇒
+     * 前端轮询**永久熄火**，用户看到的就是「退回书架后缓存不动了」。
+     *
+     * 真机实测（8099 实例、真实书架）：入队后 53ms / 265ms 两次采样都还是 `ready`。
+     */
+    @Test
+    fun `reports a running task immediately after enqueue`() {
+        val blocking = CountDownLatch(1)
+        val started = CountDownLatch(1)
+        withService(beforeFetch = { _ ->
+            started.countDown()
+            blocking.await(15, TimeUnit.SECONDS)
+        }) { ctx ->
+            ctx.seedChapter(0, (0..2).map { "https://img.example/$it.jpg" })
+
+            assertEquals(1, ctx.service.enqueue(ctx.sourceId, ctx.bookUrl, fromChapterIndex = 0, ahead = 0))
+
+            // 刻意**不等**抓完：入队返回后立刻查状态（旧实现在这里 `single()` 会抛 NoSuchElementException）
+            val snapshot = ctx.service.status().single()
+            assertEquals(ctx.sourceId, snapshot.sourceId)
+            assertEquals("目录已知 ⇒ planned 立刻就是章数", 1, snapshot.planned)
+            assertEquals("还没抓完 ⇒ done 必须是 0", 0, snapshot.done)
+            assertTrue("必须如实报 running", snapshot.running)
+
+            blocking.countDown()
+            assertTrue(ctx.awaitReady("ch-0"))
+        }
+    }
+
+    /**
+     * 回归：目录**还没抓到**时也要先登账（`planned=0` 表示"章数未知"）。
+     *
+     * 锁的是「不打开书就点缓存」的最坏时序：抓目录要几跳网络请求，期间状态接口绝不能是空的
+     * ——否则书架列表会先报一次 `idle`，把前端的轮询门关掉。
+     */
+    @Test
+    fun `reports a running task while it is still fetching the toc`() {
+        val blocking = CountDownLatch(1)
+        val started = CountDownLatch(1)
+        val runner = RuleRunner { url ->
+            started.countDown()
+            blocking.await(15, TimeUnit.SECONDS)
+            throw IllegalStateException("目录抓不到: $url")
+        }
+        withService(runner = runner) { ctx ->
+            assertTrue("前置条件：目录确实没有缓存", ctx.database.getTocCache(ctx.sourceId, ctx.bookUrl).isNullOrEmpty())
+
+            ctx.service.enqueue(ctx.sourceId, ctx.bookUrl, fromChapterIndex = 0, ahead = 3)
+            assertTrue("预取必须真的去抓目录", started.await(15, TimeUnit.SECONDS))
+
+            val snapshot = ctx.service.status().single()
+            assertEquals("目录未知 ⇒ planned=0（未知），不能被当成 0 章", 0, snapshot.planned)
+            assertEquals(0, snapshot.done)
+            blocking.countDown()
+        }
+    }
+
     @Test
     fun `is a hard no-op when disabled`() {
         withService(enabled = false) { ctx ->

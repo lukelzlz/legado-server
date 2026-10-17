@@ -83,7 +83,11 @@ class BookCacheService(private val database: Database, private val runner: RuleR
         }
         try {
             val source = database.getSource(book.sourceId) ?: throw IllegalArgumentException("书源不存在")
-            val chapters = withContext(Dispatchers.IO) { runner.chapters(source.json, book.tocUrl) }
+            // 离线缓存也必须带书籍上下文：缓存的正文/目录要跟在线读**一模一样**，
+            // 否则按音色/线路参数分派的源会缓存出错版本的正文（Legado 的 CacheBook 同样带着 Book）。
+            val bookContext = database.bookContext(book.sourceId, book.bookUrl)
+            val chapters = withContext(Dispatchers.IO) { runner.chapters(source.json, book.tocUrl, bookContext) }
+            database.persistBookVariables(bookContext)
             if (chapters.isEmpty()) throw RuleExecutionException("目录规则未提取到章节")
             database.saveTocCache(book.sourceId, book.tocUrl, chapters)
             if (book.bookUrl != book.tocUrl) {
@@ -127,8 +131,13 @@ class BookCacheService(private val database: Database, private val runner: RuleR
                                 try {
                                     // 全局闸门：把「整机同时在飞的章节抓取」限制住，
                                     // 避免多本书并行时把线程池与连接池吃光（详见 globalGate 注释）。
+                                    // ⚠️ 每个章节抓取拿**自己的变量表副本**：下面这些抓取是并发的，
+                                    // 共享同一个可变的 MutableMap 会在规则写变量时产生竞态。
+                                    // 副本只用于"读到当前的变量"（这才是刚需）；此路径不回写变量，
+                                    // 因为并发合并语义复杂，而离线缓存本身不需要产生变量。
+                                    val contentBook = bookContext.copy(variables = bookContext.variables.toMutableMap())
                                     val content = withContext(Dispatchers.IO) {
-                                        globalGate.withPermit { runner.content(source.json, chapter.url, bookName) }
+                                        globalGate.withPermit { runner.content(source.json, chapter.url, bookName, contentBook) }
                                     }
                                     if (content.content.toByteArray().size <= MAX_CHAPTER_BYTES) {
                                         database.cacheBookContent(

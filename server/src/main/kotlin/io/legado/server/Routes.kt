@@ -847,15 +847,18 @@ fun Route.apiRoutes(
             call.respondCatching {
                 try {
                     withTimeout(4000) {
-                        val chapters = runCatching { runner.chapters(source.json, request.bookUrl) }.getOrElse {
-                            val details = runner.details(source.json, request.bookUrl)
-                            val toc = runner.chapters(source.json, details.tocUrl)
+                        // 书籍上下文（含变量）同样要进目录规则：Legado 的 `getChapters(book)` 就带着 Book。
+                        val book = database.bookContext(request.sourceId, request.bookUrl)
+                        val chapters = runCatching { runner.chapters(source.json, request.bookUrl, book) }.getOrElse {
+                            val details = runner.details(source.json, request.bookUrl, book)
+                            val toc = runner.chapters(source.json, details.tocUrl, book)
                             database.saveTocCache(request.sourceId, details.tocUrl, toc)
                             toc
                         }
                         if (chapters.isNotEmpty()) {
                             database.saveTocCache(request.sourceId, request.bookUrl, chapters)
                         }
+                        database.persistBookVariables(book)
                         chapters
                     }
                 } catch (error: Throwable) {
@@ -1046,8 +1049,13 @@ fun Route.apiRoutes(
                 call.respond(cached)
             } else call.respondCatching {
                 try {
-                    runner.content(source.json, request.chapterUrl, bookName).also { content ->
+                    // 书籍上下文（含变量）：正文规则里 `book.getVariable('custom')` 与 `book.variable`
+                    // 都靠它 —— 听书音色、按书切换线路的书源都依赖这一条。
+                    // bookUrl 未知时传 null，保持与从前一致（book 各字段为空串）。
+                    val book = bookUrl?.let { database.bookContext(request.sourceId, it) }
+                    runner.content(source.json, request.chapterUrl, bookName, book).also { content ->
                         bookUrl?.let { database.cacheBookContent(request.sourceId, it, request.chapterUrl, content) }
+                        book?.let { database.persistBookVariables(it) }
                     }
                 } catch (error: Throwable) {
                     if (cached != null && cached.content.isNotBlank()) cached
@@ -1087,7 +1095,14 @@ fun Route.apiRoutes(
                     // ② 首次解析：失败一律 502 `source_execution_failed` + 真实原因，与
                     // `/books/content` 一致（抛 500「服务器内部错误」会把「书源规则没配好」
                     // 伪装成「服务端故障」，是最容易误导排障的形态）。
-                    val parsed = runCatching { runner.mangaImages(source.json, chapterUrl) }
+                    val parsed = runCatching {
+                        val book = bookUrl.takeIf { it.isNotBlank() }?.let { database.bookContext(request.sourceId, it) }
+                        try {
+                            runner.mangaImages(source.json, chapterUrl, bookName = null, book = book)
+                        } finally {
+                            book?.let { database.persistBookVariables(it) }
+                        }
+                    }
                     val failure = parsed.exceptionOrNull()
                     if (failure != null) {
                         call.respond(
@@ -2550,10 +2565,18 @@ internal fun fetchBookDetails(database: Database, runner: RuleRunner, sourceId: 
             intro = null,
             coverUrl = shelf.coverKey?.let { "/api/covers/$it" },
             tocUrl = shelf.tocUrl,
+            variables = database.getBookVariables(sourceId, bookUrl),
         )
     }
     val source = database.getSource(sourceId) ?: return null
-    return runner.details(source.json, bookUrl)
+    // 详情规则也带书籍上下文：Legado 的 `getBookInfo(book)` 里 `book.getVariable(...)` 是常见写法
+    // （音色/线路参数往往在详情步骤就参与拼 URL）。
+    val book = database.bookContext(sourceId, bookUrl)
+    val details = runner.details(source.json, bookUrl, book)
+    database.persistBookVariables(book)
+    // 详情页也要吐出变量表：前端「编辑书籍信息」的书籍变量设置栏据此回显当前音色。
+    // 取落库后的值（而不是 `book.variables`）：规则里刚写过的变量也要一并可见。
+    return details.copy(variables = database.getBookVariables(sourceId, bookUrl))
 }
 
 /**

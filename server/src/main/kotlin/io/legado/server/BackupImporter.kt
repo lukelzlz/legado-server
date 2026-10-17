@@ -274,6 +274,9 @@ class BackupImporter(
                 // 源声明作为**兜底**由导入结束后的 backfillBookKindFromSources() 统一处理。
                 bookKind = BookKind.resolveOrNull(null, book.text("bookUrl"), null),
                 groupName = groupId?.let { nameById[it] },
+                // 书籍变量（Legado `Book.variable`，JSON 对象字符串）：听书音色/朗读者就存在这里，
+                // 不导入它，用户换设备后音色设置就丢了（导入侧见 `Database.importLibrary` 的 upsert）。
+                variable = book.text("variable")?.trim()?.takeIf { it.isNotEmpty() && it != "null" },
             )
         }
     }

@@ -889,6 +889,8 @@ mark.search-highlight { background: var(--accent-soft); color: var(--accent); fo
 .edit-form-label input { height: 38px; padding: 0 12px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); color: var(--ink); font-size: 13px; outline: 0; }
 .edit-form-label input:focus { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft); }
 .edit-form-label small { font-size: 11px; color: var(--muted); font-weight: normal; }
+/* 书籍变量等字段的用法提示：需要可换行（提示文案较长，挤在一行会被截断） */
+.edit-form-label small.edit-form-hint { line-height: 1.5; white-space: normal; }
 
 .input-with-icon { position: relative; display: flex; align-items: center; }
 .input-with-icon svg { position: absolute; left: 10px; width: 16px; height: 16px; color: var(--muted); pointer-events: none; }

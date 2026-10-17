@@ -41,6 +41,8 @@ data class JsExecutionContext(
     val bookAuthor: String? = null,
     val bookTocUrl: String? = null,
     val bookType: Int? = null,
+    /** 书籍类型（`novel`/`comic`/`audio`）—— 供 `book.kind` 读取（Legado 的 `Book.kind`）。 */
+    val bookKind: String? = null,
     val bookVariables: MutableMap<String, String> = mutableMapOf(),
     /** 当前章节上下文，供 chapter 桥接对象读取 */
     val chapterUrl: String? = null,
@@ -245,18 +247,30 @@ class JsSandbox(private val runner: RuleRunner? = null) {
     }
 
     /**
-     * `book` 桥接对象。     *
-     * Legado 书源 JS 经常通过 `book.getVariable('custom')` 读取书籍级变量来决定请求参数；
-     * 这里提供真实可存取的变量表，而不是让它抛错中断整段脚本。
+     * `book` 桥接对象。
+     *
+     * 语义**逐条对齐开源阅读**（`legado-with-MD3`）：
+     * - `book.variable` = **整张变量表的 JSON 字符串**（Legado `BaseBook.variable = GSON.toJson(variableMap)`）；
+     *   书源里 `JSON.parse(book.variable)`、`if (!book.variable)` 这类写法都依赖它。空表给**空串**
+     *   （保持假值语义，与"从未设置过"一致）；
+     * - `book.variableMap` = 变量表本身（Legado 由 `RuleDataInterface` 暴露）；
+     * - `book.getVariable(key)`：**键不存在返回空串**（Legado：`variableMap[key] ?: getBigVariable(key) ?: ""`）
+     *   —— 这里**刻意不是**字符串 `"null"`；
+     * - `book.putVariable(key, value)`：`value == null` ⇒ **删除该键**，否则写入（Legado 同款分派）。
+     *
+     * 规则执行期间对变量的修改只落在内存表里；调用方（Routes）在规则跑完后比对并落库，
+     * 与 Legado「改完 Book 对象再 saveBook」等价。
      */
     private fun createBookBridge(scope: Scriptable, execContext: JsExecutionContext?): NativeObject {
         val book = NativeObject()
         book.parentScope = scope
+        val variables = execContext?.bookVariables ?: mutableMapOf()
         ScriptableObject.putProperty(book, "type", execContext?.bookType ?: 0)
         ScriptableObject.putProperty(book, "name", execContext?.bookName ?: "")
         ScriptableObject.putProperty(book, "author", execContext?.bookAuthor ?: "")
         ScriptableObject.putProperty(book, "bookUrl", execContext?.bookUrl ?: "")
         ScriptableObject.putProperty(book, "tocUrl", execContext?.bookTocUrl ?: "")
+        ScriptableObject.putProperty(book, "kind", execContext?.bookKind ?: "")
         ScriptableObject.putProperty(book, "durChapterIndex", execContext?.chapterIndex ?: 0)
         ScriptableObject.putProperty(book, "durChapterTitle", "")
         ScriptableObject.putProperty(book, "order", 0)
@@ -264,18 +278,44 @@ class JsSandbox(private val runner: RuleRunner? = null) {
         readConfig.parentScope = scope
         ScriptableObject.putProperty(book, "readConfig", readConfig)
 
+        // `variable` / `variableMap` 必须在**每次写入后**重新同步：
+        // 书源里"先 putVariable 再 JSON.parse(book.variable)"是真实写法，读到旧值就前功尽弃。
+        val variableMap = NativeObject()
+        variableMap.parentScope = scope
+        fun syncVariableViews() {
+            ScriptableObject.putProperty(book, "variable", bookVariableJson(variables))
+            variables.forEach { (key, value) -> ScriptableObject.putProperty(variableMap, key, value) }
+        }
+        syncVariableViews()
+        // ⚠️ 这一行不能少：只声明不挂载 ⇒ JS 里 `book.variableMap` 是 `undefined`，
+        // 而 `book.variableMap['x']` 会抛 TypeError。**抛在规则内部是静默的**（`<js>` 求值失败后
+        // 正文规则会回退到页面正文抽取，不报错），表现为"书源规则没生效"却毫无提示。
+        // 实测由本文件的用例抓出：漏挂载时 `typeof book.variableMap` 是 `'undefined'`。
+        ScriptableObject.putProperty(book, "variableMap", variableMap)
+
         ScriptableObject.putProperty(book, "getVariable", object : BaseFunction() {
             override fun call(cx: Context, s: Scriptable, thisObj: Scriptable, args: Array<out Any?>): Any {
-                val key = args.firstOrNull()?.toString() ?: return "null"
-                return execContext?.bookVariables?.get(key) ?: "null"
+                val key = args.firstOrNull()?.toString() ?: return ""
+                // Legado：缺失返回**空串**
+                return variables[key] ?: ""
             }
         })
+        ScriptableObject.putProperty(book, "putVariable", object : BaseFunction() {
+            override fun call(cx: Context, s: Scriptable, thisObj: Scriptable, args: Array<out Any?>): Any {
+                val key = args.firstOrNull()?.toString() ?: return Context.getUndefinedValue()
+                val raw = args.getOrNull(1)
+                if (raw == null || raw === Context.getUndefinedValue()) variables.remove(key)
+                else variables[key] = raw.toString()
+                syncVariableViews()
+                return Context.getUndefinedValue()
+            }
+        })
+        // 兼容别名：书源生态里 `setVariable` 也常见（Legado 的老写法）
         ScriptableObject.putProperty(book, "setVariable", object : BaseFunction() {
             override fun call(cx: Context, s: Scriptable, thisObj: Scriptable, args: Array<out Any?>): Any {
-                val key = args.firstOrNull()?.toString()
-                if (key != null) {
-                    execContext?.bookVariables?.put(key, args.getOrNull(1)?.toString() ?: "")
-                }
+                val key = args.firstOrNull()?.toString() ?: return Context.getUndefinedValue()
+                variables[key] = args.getOrNull(1)?.toString() ?: ""
+                syncVariableViews()
                 return Context.getUndefinedValue()
             }
         })
@@ -285,6 +325,38 @@ class JsSandbox(private val runner: RuleRunner? = null) {
         }
         ScriptableObject.putProperty(book, "setUseReplaceRule", noop)
         return book
+    }
+
+    /**
+     * 变量表 → **JSON 字符串**（`book.variable`）。
+     *
+     * 空表返回空串而不是 `"{}"`：书源里 `if (!book.variable)` 这类判空在"确实没有变量"时要成立
+     * —— 这正是 `🍅大灰狼聚合` 源判断"缺少必要参数"的那一行。
+     *
+     * 手写而不是用 kotlinx 序列化：这是**给 JS 用的**字符串，必须保证与 `JSON.parse` 互通，
+     * 且转义要显式覆盖引号/反斜杠/控制字符（书名里出现换行是真实数据，见 AGENTS.md）。
+     */
+    private fun bookVariableJson(variables: Map<String, String>): String =
+        if (variables.isEmpty()) "" else buildString {
+            append('{')
+            variables.entries.forEachIndexed { index, (key, value) ->
+                if (index > 0) append(',')
+                append('"').append(escapeJsonText(key)).append("\":\"").append(escapeJsonText(value)).append('"')
+            }
+            append('}')
+        }
+
+    private fun escapeJsonText(raw: String): String = buildString(raw.length + 8) {
+        raw.forEach { char ->
+            when (char) {
+                '"' -> append("\\\"")
+                '\\' -> append("\\\\")
+                '\n' -> append("\\n")
+                '\r' -> append("\\r")
+                '\t' -> append("\\t")
+                else -> if (char < ' ') append("\\u%04x".format(char.code)) else append(char)
+            }
+        }
     }
 
     /**

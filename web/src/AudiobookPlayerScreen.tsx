@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next'
 import { api, type AudioCacheStats, type AudioTrackItem } from './api'
 import { Icon } from './icons'
 import { getAudioManifest, putAudioManifest, warmChapterAudio } from './audioOffline'
+import { OfflineCacheModal } from './OfflineCacheModal'
 import { OpenBook, VirtualChapterList } from './ReaderScreen'
 import { toast } from './Toast'
 import type { ReaderTheme } from './readerSettings'
@@ -95,6 +96,42 @@ function IconButton({ label, icon, onClick }: { label: string; icon: Parameters<
   )
 }
 
+/**
+ * 目录底栏「缓存进行中」那一态（进度条 + 「取消缓存」）。
+ *
+ * **为什么单独抽成一个纯函数**：本仓库的渲染断言用 `renderToStaticMarkup`，而它
+ * **不执行 effect**（服务端缓存进度是进页面之后才异步取回来的）⇒ 组件初始态永远是空闲的，
+ * "进行中"那一态在静态渲染里根本出不来。抽成纯函数后，测试可以**直接喂一个 running 状态**渲染断言，
+ * 而不是退化成只对源码 grep。
+ *
+ * class 与文案键与小说阅读器 `ReaderScreen` 完全一致
+ * （`.cache-progress-bar-track/fill`、`.cache-progress-text`、`.cache-cancel-btn`、`reader.cancelCache`）。
+ */
+export function audiobookCacheProgressMarkup(props: {
+  percent: number
+  done: number
+  planned: number
+  serverCachingLabel: string
+  unitLabel: string
+  cancelLabel: string
+  onCancel: () => void
+}): React.ReactElement {
+  // 夹紧到 0..100：`planned` 还没回填（0）时绝不出 NaN% 或负宽度
+  const percent = Math.min(100, Math.max(0, Number.isFinite(props.percent) ? props.percent : 0))
+  return (
+    <div className="drawer-cache-progress">
+      <div className="cache-progress-text">
+        <span>{props.serverCachingLabel}</span>
+        <strong>{percent}% ({props.done}/{props.planned}{props.unitLabel})</strong>
+      </div>
+      <div className="cache-progress-bar-track">
+        <div className="cache-progress-bar-fill" style={{ width: `${percent}%` }} />
+      </div>
+      <button type="button" className="cache-cancel-btn" onClick={props.onCancel}>{props.cancelLabel}</button>
+    </div>
+  )
+}
+
 export function AudiobookPlayerScreen({ openBook, startIndex, onClose, theme }: AudiobookPlayerScreenProps) {
   const { t } = useTranslation()
   const chapters = openBook.chapters
@@ -115,6 +152,21 @@ export function AudiobookPlayerScreen({ openBook, startIndex, onClose, theme }: 
   const [offlineSnapshot, setOfflineSnapshot] = useState(false)
   const [stats, setStats] = useState<AudioCacheStats | null>(null)
   const [caching, setCaching] = useState(false)
+  /**
+   * 服务端缓存进度（`done/planned`）。
+   *
+   * **不新加轮询循环**：它由下面那个既有轮询顺手回填；投递后先给 `null`，
+   * 首次回填前进度条按 0% 渲染（与小说阅读器「正在服务端缓存」那一态的观感一致）。
+   */
+  const [prefetchProgress, setPrefetchProgress] = useState<{ done: number; planned: number } | null>(null)
+  /** 「自定义…」范围缓存（与小说同款交互：第 X 至 Y 章 → 开始缓存）。 */
+  const [customRangeOpen, setCustomRangeOpen] = useState(false)
+  const [customRangeStart, setCustomRangeStart] = useState(1)
+  const [customRangeEnd, setCustomRangeEnd] = useState(50)
+  /** 「管理本设备离线缓存」弹窗（与小说**同一个** `OfflineCacheModal`）。 */
+  const [offlineStatsModal, setOfflineStatsModal] = useState(false)
+  /** 是否已在书架（与小说同一套 API：`api.bookshelf()` 查在架 + add/remove 改）。 */
+  const [inShelf, setInShelf] = useState(true)
   /** 睡眠定时：剩余毫秒（0 = 未开启）。 */
   const [sleepRemainingMs, setSleepRemainingMs] = useState(0)
   /** 睡眠定时："播完本章即停"。 */
@@ -140,6 +192,11 @@ export function AudiobookPlayerScreen({ openBook, startIndex, onClose, theme }: 
     () => stats?.books.find(item => item.sourceId === openBook.details.sourceId && item.bookUrl === openBook.bookUrl) ?? null,
     [stats, openBook.details.sourceId, openBook.bookUrl],
   )
+
+  /** 服务端缓存的百分比（`planned` 为 0 时按 0% 渲染，绝不出 NaN%）。 */
+  const prefetchPercent = prefetchProgress && prefetchProgress.planned > 0
+    ? Math.min(100, Math.round((prefetchProgress.done / prefetchProgress.planned) * 100))
+    : 0
 
   const filteredChapters = useMemo(() => {
     const query = chapterQuery.trim()
@@ -259,6 +316,7 @@ export function AudiobookPlayerScreen({ openBook, startIndex, onClose, theme }: 
   }, [refreshCachedChapters])
 
   // 后台缓存进行中：轻量轮询绿点与统计，并在服务端任务跑完时自动收尾
+  // （**复用这一个既有轮询**顺带回填 `done/planned`，绝不新开第二个定时器）
   useEffect(() => {
     if (!caching) return
     const timer = window.setInterval(() => {
@@ -266,23 +324,95 @@ export function AudiobookPlayerScreen({ openBook, startIndex, onClose, theme }: 
       void api.audioCacheStats().then(setStats).catch(() => undefined)
       void api.audioPrefetchStatus()
         .then(list => {
-          const stillRunning = (list ?? []).some(item => item.sourceId === openBook.details.sourceId && item.bookUrl === openBook.bookUrl)
-          if (!stillRunning) setCaching(false)
+          const mine = (list ?? []).find(item => item.sourceId === openBook.details.sourceId && item.bookUrl === openBook.bookUrl)
+          if (mine) setPrefetchProgress({ done: mine.done, planned: mine.planned })
+          else {
+            setCaching(false)
+            setPrefetchProgress(null)
+          }
         })
         .catch(() => undefined)
     }, 3000)
     return () => window.clearInterval(timer)
   }, [caching, refreshCachedChapters, openBook.details.sourceId, openBook.bookUrl])
 
-  /** 用户手动缓存：`ahead` = 再往后多少章（0 = 只本章）；覆盖到书末即视为"整本" ⇒ 打 pinned 免死金牌。 */
-  const requestCache = useCallback((ahead: number) => {
-    const remaining = chapters.length - 1 - chapterIndex
+  /**
+   * 进播放器时**一次性**对齐服务端上已有的缓存任务（刷新页面/从书架重进时，
+   * 底栏要当场显示进度条与「取消缓存」，而不是等用户再点一次缓存）。
+   *
+   * 刻意**不用** `setInterval`：这不是新的轮询循环——只读一次，后续进度由上面那个既有轮询负责。
+   */
+  useEffect(() => {
+    let cancelled = false
+    void api.audioPrefetchStatus()
+      .then(list => {
+        if (cancelled) return
+        const mine = (list ?? []).find(item => item.sourceId === openBook.details.sourceId && item.bookUrl === openBook.bookUrl)
+        if (mine) {
+          setCaching(true)
+          setPrefetchProgress({ done: mine.done, planned: mine.planned })
+        }
+      })
+      .catch(() => undefined) // 状态接口读不到只是没有进度条，绝不能影响播放
+    return () => { cancelled = true }
+  }, [openBook.details.sourceId, openBook.bookUrl])
+
+  // ---- 书架状态与「加书架 / 已在书架」：复用小说阅读器同一套 API ----
+  const refreshShelfState = useCallback(() => {
+    void api.bookshelf()
+      .then(list => setInShelf(list.some(item => item.sourceId === openBook.details.sourceId && item.bookUrl === openBook.bookUrl)))
+      .catch(() => undefined) // 书架状态只是提示：读不到就当未收藏，绝不影响播放
+  }, [openBook.details.sourceId, openBook.bookUrl])
+
+  useEffect(() => {
+    refreshShelfState()
+  }, [refreshShelfState])
+
+  const toggleShelf = useCallback(async () => {
+    const details = openBook.details
+    try {
+      if (inShelf) {
+        if (!confirm(t('shelf.removeFromShelfConfirm', { name: details.name, defaultValue: `移出“${details.name}”将清除书架、阅读进度和缓存封面，确定继续吗？` }))) return
+        await api.removeFromBookshelf(details.sourceId, openBook.bookUrl)
+        setInShelf(false)
+        toast.info(t('reader.removedFromShelfToast', { name: details.name, defaultValue: `《${details.name}》已移出书架` }))
+        return
+      }
+      // 与小说同款兜底：自身没有封面时，从候选书源里挑一个真实封面 URL（服务端会物化成副本）
+      const fallbackCover = details.coverUrl || details.alternateSources?.find(s => s.coverUrl?.trim())?.coverUrl?.trim()
+      await api.addToBookshelf({
+        sourceId: details.sourceId,
+        bookUrl: openBook.bookUrl,
+        name: details.name,
+        author: details.author,
+        tocUrl: details.tocUrl,
+        coverUrl: fallbackCover || undefined,
+        alternateSources: details.alternateSources,
+      })
+      setInShelf(true)
+      toast.success(t('reader.addedToShelfToast', { name: details.name, defaultValue: `《${details.name}》已加入书架` }))
+    } catch {
+      toast.error(t('shelf.toggleShelfFailed', '操作书架失败'))
+    }
+  }, [inShelf, openBook, t])
+
+  /**
+   * 用户手动缓存：`ahead` = 从 `from`（默认当前章）起**再往后多少章**（0 = 只本章）；
+   * 覆盖到书末即视为"整本" ⇒ 打 pinned 免死金牌。
+   *
+   * `from` 参数是给「自定义…」范围用的：既有语义不变（默认仍是当前章），
+   * 这样四按钮的调用点一个字都不用改。
+   */
+  const requestCache = useCallback((ahead: number, from = chapterIndex) => {
+    const remaining = chapters.length - 1 - from
     const span = Math.min(ahead, Math.max(0, remaining))
     const whole = span >= remaining
-    void api.audioPrefetch(openBook.details.sourceId, openBook.bookUrl, chapterIndex, span, whole)
+    void api.audioPrefetch(openBook.details.sourceId, openBook.bookUrl, Math.max(0, from), span, whole)
       .then(result => {
         if (result?.queued) {
           setCaching(true)
+          // 真实进度等既有轮询回填；先给个"进行中"的壳，不让用户点了没反应
+          setPrefetchProgress(null)
           toast.success(
             whole
               ? t('audiobook.cacheQueuedAll', '已加入整本离线队列（后台缓存，可继续播放）')
@@ -294,6 +424,45 @@ export function AudiobookPlayerScreen({ openBook, startIndex, onClose, theme }: 
       })
       .catch(() => toast.error(t('audiobook.cacheFailed', '离线缓存请求失败')))
   }, [chapters.length, chapterIndex, openBook.details.sourceId, openBook.bookUrl, t])
+
+  /**
+   * 「自定义…」范围缓存：把「第 X 至 Y 章」（1 起、含两端）落到既有的
+   * `api.audioPrefetch(fromChapterIndex, span)` —— 与四按钮走**同一条**投递路径，不新造接口。
+   */
+  const requestCacheRange = useCallback((fromChapter: number, toChapter: number) => {
+    const total = chapters.length
+    if (total === 0) return
+    const from = Math.min(Math.max(1, Math.floor(fromChapter) || 1), total)
+    const to = Math.min(Math.max(from, Math.floor(toChapter) || from), total)
+    requestCache(to - from, from - 1)
+  }, [chapters.length, requestCache])
+
+  const cancelCache = useCallback(async () => {
+    try {
+      // 只取消、不删缓存：`clearAudioCache`（DELETE /audio/cache）会把已下好的音频一起删掉
+      await api.cancelAudioPrefetch(openBook.details.sourceId, openBook.bookUrl)
+      setCaching(false)
+      setPrefetchProgress(null)
+      toast.info(t('reader.cancelledCacheToast', { name: openBook.details.name, defaultValue: `已取消《${openBook.details.name}》的离线缓存` }))
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : t('reader.cancelCacheFailed', '无法取消缓存'))
+    }
+  }, [openBook.details.sourceId, openBook.bookUrl, openBook.details.name, t])
+
+  /**
+   * 「下载到本设备（离线脱机）」。
+   *
+   * ## 语义如实说明（与小说那个按钮**不一样**）
+   * 小说那边是前端把**正文文本**写进本机 IndexedDB（真正脱机可读，不依赖服务端）；
+   * 有声书的音频分段则统一落在**服务端**音频缓存里，浏览器侧由 Service Worker 在播放
+   * （以及清单加载时的整章预热 `warmChapterAudio`）过程中按需写入。
+   * 因此这里落地为**触发本书的既有缓存动作**：从第 1 章覆盖到书末 ⇒ 等价于「全本缓存」
+   * （还会打上 pinned 免死金牌）。它不会像小说那个按钮那样一次性把整本写进本机离线库
+   * —— 对本就有几十 MB/段的音频来说，一次性灌进浏览器配额反而更危险。
+   */
+  const downloadToDevice = useCallback(() => {
+    requestCache(chapters.length, 0)
+  }, [chapters.length, requestCache])
 
   // ---- 播放控制 ----
   const safePlay = useCallback(() => {
@@ -743,47 +912,142 @@ export function AudiobookPlayerScreen({ openBook, startIndex, onClose, theme }: 
           cachedUrlsSet={cachedChapters}
         />
         {/* 离线缓存入口已从底部功能条搬进目录抽屉（与小说阅读器同构的 drawer-footer）；
-            `caching` 为真时置灰，避免重复投递同一批章节。 */}
+            进行中显示与小说同款的进度条 + 「取消缓存」，空闲时四按钮 + 自定义范围，
+            点击**不关抽屉**（后台缓存跑起来时列表里的绿点当场可见）。 */}
         <footer className="drawer-footer">
-          <div className="cache-range-btn-grid">
-            <button
-              type="button"
-              className="cache-range-btn"
-              disabled={caching}
-              title={t('audiobook.cacheCurrentTitle', '缓存当前这一章的全部音频')}
-              onClick={() => requestCache(0)}
-            >
-              {t('audiobook.cacheCurrent', '本章')}
-            </button>
-            <button
-              type="button"
-              className="cache-range-btn"
-              disabled={caching}
-              title={t('reader.cacheNext50Title', '缓存当前章节后续 50 章')}
-              onClick={() => requestCache(50)}
-            >
-              {t('reader.cacheNext50', '后 50 章')}
-            </button>
-            <button
-              type="button"
-              className="cache-range-btn"
-              disabled={caching}
-              title={t('reader.cacheNext100Title', '缓存当前章节后续 100 章')}
-              onClick={() => requestCache(100)}
-            >
-              {t('reader.cacheNext100', '后 100 章')}
-            </button>
-            <button
-              type="button"
-              className="cache-range-btn"
-              disabled={caching}
-              title={t('audiobook.cacheAllTitle', '缓存整本有声书（GC 永不自动淘汰）')}
-              onClick={() => requestCache(chapters.length)}
-            >
-              {t('reader.cacheAll', '全本缓存')}
-            </button>
+          <div className="drawer-cache-section">
+            {caching ? (
+              /* 进行中：进度数据直接来自既有状态接口（`done/planned`），不新造状态机 */
+              audiobookCacheProgressMarkup({
+                percent: prefetchPercent,
+                done: prefetchProgress?.done ?? 0,
+                planned: prefetchProgress?.planned ?? 0,
+                serverCachingLabel: t('reader.serverCaching', '正在服务端缓存'),
+                unitLabel: t('reader.cacheCustomUnit', '章'),
+                cancelLabel: t('reader.cancelCache', '取消缓存'),
+                onCancel: () => void cancelCache(),
+              })
+            ) : (
+              <div className="drawer-cache-idle">
+                <div className="cache-range-btn-grid">
+                  <button
+                    type="button"
+                    className="cache-range-btn"
+                    disabled={caching}
+                    title={t('audiobook.cacheCurrentTitle', '缓存当前这一章的全部音频')}
+                    onClick={() => requestCache(0)}
+                  >
+                    {t('audiobook.cacheCurrent', '本章')}
+                  </button>
+                  <button
+                    type="button"
+                    className="cache-range-btn"
+                    disabled={caching}
+                    title={t('reader.cacheNext50Title', '缓存当前章节后续 50 章')}
+                    onClick={() => requestCache(50)}
+                  >
+                    {t('reader.cacheNext50', '后 50 章')}
+                  </button>
+                  <button
+                    type="button"
+                    className="cache-range-btn"
+                    disabled={caching}
+                    title={t('reader.cacheNext100Title', '缓存当前章节后续 100 章')}
+                    onClick={() => requestCache(100)}
+                  >
+                    {t('reader.cacheNext100', '后 100 章')}
+                  </button>
+                  <button
+                    type="button"
+                    className="cache-range-btn"
+                    disabled={caching}
+                    title={t('audiobook.cacheAllTitle', '缓存整本有声书（GC 永不自动淘汰）')}
+                    onClick={() => requestCache(chapters.length)}
+                  >
+                    {t('reader.cacheAll', '全本缓存')}
+                  </button>
+                  {/* 第 5 格：自定义范围（复用小说那套 class 与文案键） */}
+                  <button
+                    type="button"
+                    className="cache-range-btn"
+                    disabled={caching}
+                    title={t('reader.cacheCustomTitle', '自定义章节范围')}
+                    onClick={() => setCustomRangeOpen(prev => !prev)}
+                  >
+                    {t('reader.cacheCustom', '自定义...')}
+                  </button>
+                </div>
+
+                {customRangeOpen && (
+                  <div className="cache-custom-range-box">
+                    <div className="range-inputs">
+                      <span>{t('reader.cacheCustomFrom', '第')}</span>
+                      <input
+                        type="number"
+                        min={1}
+                        max={Math.max(1, chapters.length)}
+                        value={customRangeStart}
+                        onChange={event => setCustomRangeStart(Number(event.target.value))}
+                      />
+                      <span>{t('reader.cacheCustomTo', '至')}</span>
+                      <input
+                        type="number"
+                        min={customRangeStart}
+                        max={Math.max(1, chapters.length)}
+                        value={customRangeEnd}
+                        onChange={event => setCustomRangeEnd(Number(event.target.value))}
+                      />
+                      <span>{t('reader.cacheCustomUnit', '章')}</span>
+                    </div>
+                    <button
+                      type="button"
+                      className="primary-button range-start-btn"
+                      onClick={() => {
+                        setCustomRangeOpen(false)
+                        requestCacheRange(customRangeStart, customRangeEnd)
+                      }}
+                    >
+                      {t('reader.startCache', '开始缓存')}
+                    </button>
+                  </div>
+                )}
+
+                <div className="cache-local-sync-row">
+                  {/* 语义见 `downloadToDevice` 的注释：音频落到**服务端**缓存，不是本机离线库 */}
+                  <button
+                    type="button"
+                    className="cache-sync-btn"
+                    onClick={downloadToDevice}
+                    title={t('reader.downloadToDeviceTitle', '将已缓存章节下载到手机或电脑本地，断网脱机可读')}
+                  >
+                    <Icon name="download" />
+                    <span>{t('reader.downloadToDevice', '下载到本设备 (离线脱机)')}</span>
+                  </button>
+                  <button
+                    type="button"
+                    className="cache-manage-btn"
+                    onClick={() => setOfflineStatsModal(true)}
+                    title={t('reader.manageOfflineCache', '管理本设备离线缓存')}
+                  >
+                    <Icon name="sliders" />
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         </footer>
+
+        {/* 目录底栏的**动作区**：与小说阅读器同构（`drawer-footer` 放缓存动作，
+            其下 `drawer-footer-actions` 放换源 + 加书架）。
+            ⚠️ 换源按钮由 `feat/shared-source-switch` 那个 PR 加在**同一锚点**上；合并时
+            两者必须落在**同一个** div 里（顺序照小说：换源在前、加书架在后），
+            因为这个 div 是 `grid-template-columns: 1fr 1fr` ⇒ 两个 div 会变成两行、各占左半格。
+            本 PR 刻意不重复实现换源（那是另一个 PR 的能力），只补用户反馈缺失的这一格。 */}
+        <div className="drawer-footer-actions">
+          <button type="button" className="shelf-button" onClick={() => void toggleShelf()}>
+            <Icon name={inShelf ? 'check' : 'plus'} />{inShelf ? t('reader.inShelf', '已在书架') : t('reader.addToShelf', '加书架')}
+          </button>
+        </div>
       </aside>
 
       {/* 设置抽屉：直接复用文本阅读器的设置排版（setting-section / page-modes / setting-hint） */}
@@ -915,6 +1179,18 @@ export function AudiobookPlayerScreen({ openBook, startIndex, onClose, theme }: 
             </div>
           </div>
         </div>
+      )}
+
+      {/* 「管理本设备离线缓存」：接的是小说阅读器**同一个** `OfflineCacheModal`
+          （自带本机 IndexedDB 统计 + 服务端缓存统计，不需要额外 props） */}
+      {offlineStatsModal && (
+        <OfflineCacheModal
+          onClose={() => {
+            setOfflineStatsModal(false)
+            refreshCachedChapters()
+            void api.audioCacheStats().then(setStats).catch(() => undefined)
+          }}
+        />
       )}
     </main>
   )

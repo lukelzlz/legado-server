@@ -830,6 +830,38 @@ class Database(private val path: String) : Closeable, AutoCloseable {
         }
     }
 
+    /**
+     * 一次查全架：每本书"整章图片全部落盘"的章数（key = "sourceId\u0000bookUrl"）。
+     *
+     * 书架列表要按**媒体口径**显示漫画/有声的缓存进度（过去只读 book_cache_status 这张
+     * 正文缓存表 ⇒ 漫画/有声永远显示 0 章 / 失败，与目录抽屉里绿点在涨自相矛盾）。
+     * 逐本查会变成 N 次 SQL（书架近 400 本），所以这里按书聚合一次取完。
+     */
+    fun readyMangaChapterCountsByBook(): Map<String, Int> = connect { db ->
+        db.prepareStatement(
+            "select source_id, book_url, count(*) from manga_chapter_cache where state='ready' group by source_id, book_url",
+        ).use { ps ->
+            ps.executeQuery().use { rs ->
+                buildMap { while (rs.next()) put("${rs.getString(1)}\u0000${rs.getString(2)}", rs.getInt(3)) }
+            }
+        }
+    }
+
+    /** 同上，有声：整章所有音频分段都 ready 才算一章（与 [readyAudioChapters] 同口径）。 */
+    fun readyAudioChapterCountsByBook(): Map<String, Int> = connect { db ->
+        db.prepareStatement(
+            """select source_id, book_url, count(*) from (
+                   select source_id, book_url, chapter_url from audio_cache
+                    group by source_id, book_url, chapter_url
+                   having count(*) > 0 and sum(case when state='ready' then 1 else 0 end) = count(*)
+               ) group by source_id, book_url""",
+        ).use { ps ->
+            ps.executeQuery().use { rs ->
+                buildMap { while (rs.next()) put("${rs.getString(1)}\u0000${rs.getString(2)}", rs.getInt(3)) }
+            }
+        }
+    }
+
     fun countReadyMangaChapters(sourceId: String, bookUrl: String): Int = connect { db ->
         db.prepareStatement("select count(*) from manga_chapter_cache where source_id=? and book_url=? and state='ready'").use {
             it.setString(1, sourceId); it.setString(2, bookUrl)

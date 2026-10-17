@@ -1570,7 +1570,7 @@ fun Route.apiRoutes(
         }
         get("/bookshelf") {
             if (auth.requireSession(call) == null) return@get
-            call.respond(database.listBookshelf())
+            call.respond(bookshelfWithMediaCache(database, mangaPrefetch, audioPrefetch))
         }
         post("/bookshelf") {
             if (auth.requireSession(call, true) == null) return@post
@@ -2888,3 +2888,63 @@ private suspend fun probeSingleSourceHealth(
 }
 
 
+
+/**
+ * 书架列表 + **按书型**的缓存进度。
+ *
+ * 背景：列表里的 `cacheState`/`cachedChapters` 过去只来自 `book_cache_status`（正文缓存表），
+ * 而漫画/有声的缓存是**媒体预取**（图片 / 音频）⇒ 列表永远显示"0 章 / 重试离线缓存"，
+ * 与目录抽屉里绿点在涨自相矛盾（用户反馈"书架弹窗里缓存不动"）。
+ * 这里对 COMIC/AUDIO 用媒体口径覆盖：
+ *   - 有在跑的预取任务 → `caching` + done/planned（列表进度条能动）
+ *   - 否则按"整章就绪章数"给 `ready`/`idle`，且**不再透出正文缓存的错误**（那不是它们的缓存）
+ * 小说保持原样（正文缓存）。
+ */
+internal fun bookshelfWithMediaCache(
+    database: Database,
+    mangaPrefetch: MangaPrefetchService?,
+    audioPrefetch: AudioPrefetchService?,
+): List<BookshelfItem> {
+    val books = database.listBookshelf()
+    if (books.isEmpty()) return books
+    val mangaReady = database.readyMangaChapterCountsByBook()
+    val audioReady = database.readyAudioChapterCountsByBook()
+    val mangaRunning = mangaPrefetch?.status()?.filter { it.running }?.associateBy { "${it.sourceId}\u0000${it.bookUrl}" }.orEmpty()
+    val audioRunning = audioPrefetch?.status()?.filter { it.running }?.associateBy { "${it.sourceId}\u0000${it.bookUrl}" }.orEmpty()
+
+    return books.map { item ->
+        val key = "${item.sourceId}\u0000${item.bookUrl}"
+        when (BookKind.from(item.bookKind)) {
+            BookKind.COMIC -> {
+                val running = mangaRunning[key]
+                val ready = mangaReady[key] ?: 0
+                item.copy(
+                    cachedChapters = running?.done ?: ready,
+                    totalChapters = running?.planned ?: item.totalChapters.coerceAtLeast(ready),
+                    cacheState = when {
+                        running != null -> "caching"
+                        ready > 0 -> "ready"
+                        else -> "idle"
+                    },
+                    // 正文缓存的错误对漫画没有意义，别在列表里报"重试离线缓存"
+                    cacheError = null,
+                )
+            }
+            BookKind.AUDIO -> {
+                val running = audioRunning[key]
+                val ready = audioReady[key] ?: 0
+                item.copy(
+                    cachedChapters = running?.done ?: ready,
+                    totalChapters = running?.planned ?: item.totalChapters.coerceAtLeast(ready),
+                    cacheState = when {
+                        running != null -> "caching"
+                        ready > 0 -> "ready"
+                        else -> "idle"
+                    },
+                    cacheError = null,
+                )
+            }
+            BookKind.NOVEL -> item
+        }
+    }
+}

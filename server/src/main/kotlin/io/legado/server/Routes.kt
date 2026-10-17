@@ -1766,14 +1766,22 @@ fun Route.apiRoutes(
                 coverCache, request.coverUrl, request.alternateSources,
                 CoverBookRef(request.name, request.sourceId, request.bookUrl),
             )
-            // 类型判定：**书自己的说法优先，源声明兜底**。
+            // 类型判定：**本地书身份优先，其次书自己的说法，源声明兜底**（issue #66）。
             // ⚠️ 实测教训：聚合源（大灰狼）不声明 `bookSourceType`，但它里面有漫画频道；
             // 只看源声明会把这些漫画判成小说 ⇒ 进文字阅读器 ⇒ 用户看到的是"漫画打不开"。
-            val bookKind = BookKind.resolve(
-                explicit = request.bookKind,
-                bookUrl = request.bookUrl,
-                sourcePayload = database.getSource(request.sourceId)?.json,
-            )
+            // ⚠️ 本地书（`loc_book` / `local://`）不能被 `tab`/源声明推导：它自成一类 `local`，
+            // 且「加入书架」会被重复调用（每次开书都会调），若这里推导成 `novel`，
+            // upsert 的 `book_kind = coalesce(excluded.book_kind, book_shelf.book_kind)` 会把已有的
+            // `local` 冲成 `novel` ⇒ 本地书角标与导出 `type=264` 全丢。
+            val bookKind = if (BookKind.isLocalRef(request.sourceId, request.bookUrl)) {
+                BookKind.LOCAL.wire
+            } else {
+                BookKind.resolve(
+                    explicit = request.bookKind,
+                    bookUrl = request.bookUrl,
+                    sourcePayload = database.getSource(request.sourceId)?.json,
+                )
+            }
             val item = database.saveBookshelf(request.copy(bookKind = bookKind), immediateCover)
             // 漫画/有声书**不进文本章节缓存队列**：那是给文字阅读器用的（拉章节页→抽正文）。
             // 实测：一本漫画被误判成小说时会跑 10 章文本缓存、10 章全失败，白刷上游还污染缓存状态。
@@ -1966,6 +1974,12 @@ fun Route.apiRoutes(
                     ))
                     call.respond(HttpStatusCode.Accepted, mapOf("status" to "queued"))
                 }
+                // 本地书正文在导入时就已全部落库（上面的 isLocal 分支已经拦下），这里是**兜底**：
+                // `book_kind='local'` 绝不能掉进 NOVEL 分支被排进"网络抓正文"队列。
+                BookKind.LOCAL -> {
+                    database.ensureLocalBookStatusReady(item.sourceId, item.bookUrl)
+                    call.respond(HttpStatusCode.Accepted, mapOf("status" to "ready"))
+                }
             }
         }
         get("/bookshelf/cached-chapters") {
@@ -1983,6 +1997,9 @@ fun Route.apiRoutes(
                 BookKind.COMIC -> database.listReadyMangaChapterUrls(sourceId, bookUrl)
                 BookKind.AUDIO -> database.readyAudioChapters(sourceId, bookUrl)
                 BookKind.NOVEL -> database.cachedChapterUrls(sourceId, bookUrl).toList()
+                // 本地书（issue #66）：正文同样落在 `book_content_cache`（导入即写满），
+                // 所以"已缓存章节"的绿点口径与文本一致 —— 不新增数据源、不让前端退化。
+                BookKind.LOCAL -> database.cachedChapterUrls(sourceId, bookUrl).toList()
             }
             val total = database.getTocCache(sourceId, bookUrl)?.size ?: 0
             call.respond(CachedChaptersResponse(sourceId, bookUrl, cachedUrls, cachedUrls.size, total))
@@ -2001,6 +2018,9 @@ fun Route.apiRoutes(
                 BookKind.COMIC -> mangaPrefetch?.cancel(sourceId, bookUrl)
                 BookKind.AUDIO -> audioPrefetch?.cancel(sourceId, bookUrl)
                 BookKind.NOVEL -> bookCache.cancel(sourceId, bookUrl)
+                // 本地书没有可取消的网络任务；真正的正文保护在 data 层
+                // （`Database.clearBookCacheContent` 对本地书恒返回 0，防 UI 绕过）。
+                BookKind.LOCAL -> Unit
             }
             if (clearData) {
                 database.clearBookCacheContent(sourceId, bookUrl)
@@ -3275,6 +3295,9 @@ internal fun bookshelfWithMediaCache(
                 )
             }
             BookKind.NOVEL -> item
+            // 本地书（issue #66）：缓存进度就是导入时落库的正文行数（`book_cache_status` 已是 ready），
+            // 列表原样透出即可 —— 这是 `when` 的表达式分支，漏写会直接编译不过。
+            BookKind.LOCAL -> item
         }
     }
 }

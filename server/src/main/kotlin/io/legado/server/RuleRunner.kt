@@ -50,7 +50,7 @@ data class BookContext(
     val name: String? = null,
     val author: String? = null,
     val tocUrl: String? = null,
-    /** `novel` / `comic` / `audio`（[BookKind] 的 wire 值）。 */
+    /** `novel` / `comic` / `audio` / `local`（[BookKind] 的 wire 值）。 */
     val kind: String? = null,
     /** 书籍变量表（Legado `Book.variableMap`）。 */
     val variables: MutableMap<String, String> = mutableMapOf(),

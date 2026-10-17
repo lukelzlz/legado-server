@@ -293,6 +293,7 @@
     "clearCachePartLocal": "本机离线正文",
     "clearCacheServer": "清除服务器缓存",
     "clearCacheServerDesc": "清掉服务端已下载的图片、音频与正文，下次阅读会重新下载",
+    "clearCacheServerLocalDesc": "只清理可重建的图片缓存；本地书正文由原文件解析而来，清除缓存不会删除",
     "clearCacheBrowser": "清除浏览器缓存",
     "clearCacheBrowserDesc": "只清本机已下载的离线正文，不影响服务端",
     "clearCacheBoth": "清理服务器和浏览器缓存",

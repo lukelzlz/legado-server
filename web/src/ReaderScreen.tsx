@@ -36,6 +36,7 @@ import {
 import { splitIllustrationSegments, stripIllustrations } from './inlineIllustrations'
 import type { IllustrationContext } from './inlineIllustrations'
 import { IllustrationLightbox, InlineIllustration } from './ReaderIllustration'
+import { isLocalBook } from './localBook'
 
 export type OpenBook = { details: BookDetails; bookUrl: string; chapters: Chapter[]; progress?: ReadingProgress; bookKind?: string }
 
@@ -1502,7 +1503,10 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
     setActiveDrawer(null)
   }, [chapterIndex, currentBook.chapters.length, persist, settings.ttsEngine, showBoundaryNotice, stopTts, stopAllEngines, t])
 
-  const isLocalBook = currentBook.details.sourceId === 'loc_book' || currentBook.bookUrl.startsWith('local://')
+  // 本地导入书（`loc_book` / `local://`）：正文就在服务端本地库里，没有"下载/缓存"这一步。
+  // 用户要求（issue #66）：「本地书根本不要有清除缓存的按钮」「缓存按钮也不该有」——
+  // 因此目录抽屉里的**整个缓存区**（后 50/100 章、全本、自定义范围、下载到本设备）对它不渲染。
+  const localBook = isLocalBook({ sourceId: currentBook.details.sourceId, bookUrl: currentBook.bookUrl })
 
   const toggleShelf = async () => {
     if (inShelf) {
@@ -2492,7 +2496,11 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
         autoScrollKey={activeDrawer === 'toc' || settings.sidebarPinned ? 1 : 0}
       />
       <footer className="drawer-footer">
-        {/* Cache Control Section */}
+        {/* Cache Control Section
+            本地书（`loc_book` / `local://`）**整段不渲染**（issue #66 用户原话：「缓存按钮也不该有」）：
+            它的正文本来就已在本机/本地库，缓存区里 4 个范围按钮与「下载到本设备」全是空动作。
+            隐藏范围只有这一段，换源 / 加书架等其它 footer 动作保持原样。 */}
+        {!localBook && (
         <div className="drawer-cache-section">
           {cacheStatus.state === 'caching' ? (
             <div className="drawer-cache-progress">
@@ -2521,9 +2529,7 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
             </div>
           ) : (
             <div className="drawer-cache-idle">
-              {!isLocalBook && (
-                <>
-                  <div className="cache-range-btn-grid">
+              <div className="cache-range-btn-grid">
                     <button
                       type="button"
                       className="cache-range-btn"
@@ -2591,8 +2597,6 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
                       </button>
                     </div>
                   )}
-                </>
-              )}
 
               <div className="cache-local-sync-row">
                 <button
@@ -2616,6 +2620,7 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
             </div>
           )}
         </div>
+        )}
 
         {/* Action Buttons */}
         <div className="drawer-footer-actions">

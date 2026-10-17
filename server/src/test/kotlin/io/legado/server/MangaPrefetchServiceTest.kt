@@ -13,6 +13,8 @@ import org.junit.Test
 import java.io.ByteArrayOutputStream
 import java.nio.file.Files
 import java.nio.file.Path
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
@@ -92,6 +94,40 @@ class MangaPrefetchServiceTest {
             // 只登记了章节清单、没有目录缓存 ⇒ 无法知道"后 N 章"是谁
             assertEquals(0, ctx.service.enqueue(ctx.sourceId, ctx.bookUrl, 0, 3))
             assertEquals("不该白抓任何一张图", 0, ctx.fetches.get())
+        }
+    }
+
+    /**
+     * 回归：**入队那一刻就必须能被 `status()` 看到**。
+     *
+     * 书架的 `cacheState='caching'`（以及前端那个「只要不是 caching 就停表」的轮询门）
+     * 都只认 `status()`。旧实现只在 `drain` 里第一章清单解析完才第一次写 `progress`
+     * ⇒ 入队后有一段（抓目录时可达数秒）状态为空 ⇒ 书架列表报 `idle/ready` ⇒
+     * 前端轮询**永久熄火**，用户看到的就是「退回书架后缓存不动了」。
+     *
+     * 真机实测（8099 实例、真实书架）：入队后 53ms / 265ms 两次采样都还是 `ready`。
+     */
+    @Test
+    fun `reports a running task immediately after enqueue`() {
+        val blocking = CountDownLatch(1)
+        val started = CountDownLatch(1)
+        withService(beforeFetch = { _ ->
+            started.countDown()
+            blocking.await(15, TimeUnit.SECONDS)
+        }) { ctx ->
+            ctx.seedChapter(0, (0..2).map { "https://img.example/$it.jpg" })
+
+            assertEquals(1, ctx.service.enqueue(ctx.sourceId, ctx.bookUrl, fromChapterIndex = 0, ahead = 0))
+
+            // 刻意**不等**抓完：入队返回后立刻查状态（旧实现在这里 `single()` 会抛 NoSuchElementException）
+            val snapshot = ctx.service.status().single()
+            assertEquals(ctx.sourceId, snapshot.sourceId)
+            assertEquals("目录已知 ⇒ planned 立刻就是章数", 1, snapshot.planned)
+            assertEquals("还没抓完 ⇒ done 必须是 0", 0, snapshot.done)
+            assertTrue("必须如实报 running", snapshot.running)
+
+            blocking.countDown()
+            assertTrue(ctx.awaitReady("ch-0"))
         }
     }
 
@@ -188,7 +224,12 @@ class MangaPrefetchServiceTest {
         }
     }
 
-    private fun withService(enabled: Boolean = true, failFetches: Boolean = false, block: (Ctx) -> Unit) {
+    private fun withService(
+        enabled: Boolean = true,
+        failFetches: Boolean = false,
+        beforeFetch: ((String) -> Unit)? = null,
+        block: (Ctx) -> Unit,
+    ) {
         val dir = Files.createTempDirectory("legado-manga-prefetch")
         val dbPath = Files.createTempFile("legado-manga-prefetch", ".sqlite").toString()
         val database = Database(dbPath)
@@ -201,6 +242,7 @@ class MangaPrefetchServiceTest {
             val fetcher = MangaImageFetcher(
                 config = testConfig(dir),
                 injectedFetcher = { url, _, _ ->
+                    beforeFetch?.invoke(url)
                     fetches.incrementAndGet()
                     if (failFetches) throw java.io.IOException("upstream 503")
                     // 每张图字节不同（内容寻址是去重的，字节一样会掩盖"抓了几张"的事实）

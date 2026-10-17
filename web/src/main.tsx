@@ -2307,6 +2307,15 @@ function BatchMoveGroupModal({
   )
 }
 
+/**
+ * 用户点「缓存」之后**无论如何都继续轮询**的宽限期（毫秒）。
+ *
+ * 存在的理由见 `ShelfPage` 里 `pollGraceRef` 的注释：服务端在「入队 → 第一章进度登账」
+ * 之间会短暂报 ready/idle，而轮询门只认 `cacheState === 'caching'`。没有宽限期，
+ * 一拍踩空就会永久熄火（表现为「退回书架后缓存不动了」）。
+ */
+const CACHE_POLL_GRACE_MS = 30_000
+
 function ShelfPage({ onOpen }: { onOpen: (item: BookshelfItem) => void }) {
   const { t } = useTranslation()
   const [items, setItems] = useState<BookshelfItem[]>([])
@@ -2380,12 +2389,65 @@ function ShelfPage({ onOpen }: { onOpen: (item: BookshelfItem) => void }) {
     }
   }
 
+  /**
+   * 书架列表的进度轮询门。
+   *
+   * ## 为什么不能只写 `if (!caching) return`
+   * `caching` 完全来自**服务端快照**。而服务端从"入队"到"第一章进度登账"之间有一小段
+   * （抓目录 / 解析第一章清单，实测 300ms~数秒）状态接口返回空 ⇒ 列表这一拍是
+   * `ready`/`idle` ⇒ 上面那个写法会**在这一次就 return，而且永远不再重新评估**
+   * （没有定时器 ⇒ 没有新的 load() ⇒ `caching` 不会变）⇒ 用户看到「退到书架后缓存就不动了」。
+   *
+   * 因此：用户刚点过缓存 ⇒ 给一个**宽限期**，期间即使某一拍不是 caching 也继续轮询；
+   * 宽限期结束后由定时器自己收尾（服务端那边已改成入队即登账，正常情况下这一拍就是 caching）。
+   */
   const caching = items.some(item => item.cacheState === 'caching')
+  const cachingRef = useRef(caching)
+  cachingRef.current = caching
+  const pollGraceRef = useRef(0)
   useEffect(() => {
-    if (!caching) return
-    const timer = window.setInterval(load, 1200)
+    if (!caching && Date.now() > pollGraceRef.current) return
+    const timer = window.setInterval(() => {
+      if (!cachingRef.current && Date.now() > pollGraceRef.current) {
+        // 宽限期过了且这一拍确实没在缓存 ⇒ 收尾，别让列表无意义地每秒重拉
+        window.clearInterval(timer)
+        return
+      }
+      void load()
+    }, 1200)
     return () => window.clearInterval(timer)
   }, [caching, load])
+
+  /**
+   * 让**书籍管理弹窗**跟着列表一起刷新。
+   *
+   * `managingItem` 是弹窗打开那一刻的**快照**（`setManagingItem(item)`），而进度是由上面那个
+   * 定时 `load()` 写进 `items` 的。不把新进度回灌进 `managingItem`，弹窗里的「x/y 章」就
+   * 永远停在打开时的数字 —— 这正是用户反馈的「弹窗里的缓存还是有问题 / 缓存不动」：
+   * 服务端在跑、列表也在涨，唯独弹窗那一份数据是死的。
+   *
+   * 只同步**进度相关字段**，不动书名/封面等可编辑字段（编辑流程走 `setManagingItem(updated)`）。
+   */
+  useEffect(() => {
+    setManagingItem(prev => {
+      if (!prev) return prev
+      const fresh = items.find(value => value.sourceId === prev.sourceId && value.bookUrl === prev.bookUrl)
+      if (!fresh) return prev
+      if (
+        fresh.cachedChapters === prev.cachedChapters
+        && fresh.totalChapters === prev.totalChapters
+        && fresh.cacheState === prev.cacheState
+        && fresh.cacheError === prev.cacheError
+      ) return prev
+      return {
+        ...prev,
+        cachedChapters: fresh.cachedChapters,
+        totalChapters: fresh.totalChapters,
+        cacheState: fresh.cacheState,
+        cacheError: fresh.cacheError,
+      }
+    })
+  }, [items])
 
   const remove = async (item: BookshelfItem) => {
     if (!confirm(t('shelf.removeFromShelfConfirmDetailed', '移出“{{name}}”将清除书架、阅读进度和缓存封面，确定继续吗？', { name: item.name }))) return
@@ -2402,6 +2464,9 @@ function ShelfPage({ onOpen }: { onOpen: (item: BookshelfItem) => void }) {
   const cache = async (item: BookshelfItem) => {
     try {
       await api.cacheBookshelfBook(item.sourceId, item.bookUrl)
+      // 宽限期：服务端「入队 → 第一章进度登账」之间有亚秒~数秒空窗（抓目录时更久），
+      // 这段列表会报 ready/idle。不给宽限期的话轮询门会在这一拍永久熄火（见 pollGraceRef 注释）。
+      pollGraceRef.current = Date.now() + CACHE_POLL_GRACE_MS
       setItems(values => values.map(value => value.sourceId === item.sourceId && value.bookUrl === item.bookUrl ? { ...value, cacheState: 'caching', cacheError: undefined } : value))
       previousStateRef.current.set(`${item.sourceId}\u0000${item.bookUrl}`, 'caching')
       toast.info(t('shelf.addedToCacheQueue', '已加入离线缓存队列，正在下载《{{name}}》...', { name: item.name }))

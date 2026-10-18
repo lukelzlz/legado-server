@@ -456,6 +456,8 @@ AI 与人类协作时必须明确当前达到的完成度阶梯，严禁混淆�
 | 2026-10-18 | Fix | **审查与合入 PR #80：移出书架时同步清理漫画/音频/插图缓存（DB + 磁盘 + 取消预取）**：① 单本移出与批量移出收口至单一入口 `purgeBookMediaCaches`，彻底解决移出书架后漫画、音频、插图残留在库盘成为孤儿泄漏的缺陷；② 先取消正在跑的后台预取任务防止协程复活刚删文件；③ 漫画章节清单连带清理消除 `pinned` 免死标记造成的永久泄漏；④ 各缓存引用计数保证共享物理文件不被误删；⑤ 每步独立 `runCatching` 兜底不阻断移出书架主流程。新增 `RemoveShelfMediaPurgeTest` 3 项用例，全量 352 项前端单测与服务端单测全绿 | [`docs/sessions/SESSION-051-shelf-remove-media-purge.md`](docs/sessions/SESSION-051-shelf-remove-media-purge.md) | Accepted & Pushed |
 | 2026-10-18 | Feat | **统一按钮加载微动画与防连击保护 (Issue #67) ＋ 搜索界面 UI 优化 (Issue #73)**：① 抽取通用 `<ButtonSpinner />` 并规范 `.btn-spinner` / `is-loading` / `aria-busy` 样式规范（边框继承 `currentColor`，适配全部主题与危险红，减弱动效守卫）；② 全面覆盖关键异步场景：清除缓存弹窗选中项转圈加锁、换源弹窗切源转圈与互斥禁用、书籍编辑保存/联网搜索/封面上传、本地书重新解析/正文重洗、书源登录动作按钮与保存登录、网络导入拉取/确认、书源订阅同步、阅读器目录离线范围缓存；③ 搜索框独立组件 `SearchBox.tsx`（高 48px、圆角 10px、聚焦环主题色、右侧清空回焦、胶囊搜索按钮、空文本禁用、搜索中复用 Spinner 切换停止搜索）；④ 搜索结果点击立即打开详情弹窗并显示加载反馈，网络失败可关闭重试。前端 375 项通过、服务端测试通过 | [`docs/sessions/SESSION-052-loading-spinner-and-search-ui.md`](docs/sessions/SESSION-052-loading-spinner-and-search-ui.md) · [`docs/acceptance/ACCEPT-034-ui-loading-spinners-and-search-box.md`](docs/acceptance/ACCEPT-034-ui-loading-spinners-and-search-box.md) | Accepted & Pushed |
 
+| 2026-10-18 | Fix | 修复书库搜索结果二次筛选输入框缩成原生小框：补齐输入框 flex/宽度并移除内层原生边框；同步更新本地 :8080 服务，前端 376 项及服务端测试通过 | - | Accepted & Pushed |
+
 ---
 
 ## 7. Project Structure & Module Organization

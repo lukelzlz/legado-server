@@ -42,6 +42,14 @@ function tagOf(html: string, className: string): string | null {
   return re.exec(html)?.[0] ?? null
 }
 
+test('search box - 结果二次筛选输入框填满可用宽度，且不露出原生输入框边框', () => {
+  const css = stylesCss()
+  assert.match(css, /\.library-result-filters label:first-child input\s*\{[^}]*flex:\s*1\s*;[^}]*width:\s*100%\s*;[^}]*min-width:\s*0\s*;[^}]*border:\s*0\s*;/,
+    '筛选输入框必须撑满 label，而不是以原生宽度渲染一个内层小方框')
+  assert.match(css, /\.library-result-filters label:first-child\s*\{[^}]*flex:\s*1\s+1\s+180px/,
+    '筛选标签必须占据剩余空间')
+})
+
 test('search box - 空输入：不出现清空按钮，提交按钮 disabled', () => {
   const html = render({ keyword: '' })
 

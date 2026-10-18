@@ -668,9 +668,10 @@ button[aria-busy="true"] {
 .library-search-status { color: var(--muted); font-size: 12px; }
 .library-result-filters { display: flex; flex-wrap: wrap; align-items: center; gap: 9px; margin: 24px 0 12px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); color: var(--muted); font-size: 12px; }
 .library-result-filters label { display: inline-flex; align-items: center; gap: 6px; min-height: 29px; }
-.library-result-filters label:first-child { flex: 1 1 180px; padding: 0 8px; border: 1px solid var(--line); border-radius: 4px; }
-.library-result-filters svg { width: 14px; }
-.library-result-filters input[type="text"], .library-result-filters input:not([type]) { min-width: 0; padding: 3px 0; background: transparent; }
+.library-result-filters label:first-child { flex: 1 1 180px; min-width: 0; padding: 0 8px; border: 1px solid var(--line); border-radius: 4px; }
+.library-result-filters label:first-child:focus-within { border-color: var(--accent); }
+.library-result-filters svg { width: 14px; flex: none; }
+.library-result-filters label:first-child input { flex: 1; width: 100%; min-width: 0; padding: 3px 0; border: 0; outline: none; background: transparent; color: var(--ink); }
 .library-result-filters select { min-height: 28px; padding: 0 20px 0 5px; border: 1px solid var(--line); border-radius: 4px; background: var(--surface); color: var(--ink); font: inherit; }
 .library-result-filters input[type="checkbox"] { width: 14px; height: 14px; accent-color: var(--accent); }
 .library-filter-empty { padding: 30px 20px; color: var(--muted); font-size: 13px; }

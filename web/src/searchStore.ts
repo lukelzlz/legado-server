@@ -31,6 +31,7 @@ export interface SearchStoreState {
   loading: boolean
   stopped: boolean
   detailLoading: boolean
+  detailError: string
   progress: SearchStreamEvent | null
   filters: SearchFilters
 }
@@ -174,6 +175,7 @@ const initialSearchState: SearchStoreState = {
   loading: false,
   stopped: false,
   detailLoading: false,
+  detailError: '',
   progress: null,
   filters: defaultSearchFilters,
 }
@@ -182,6 +184,7 @@ export class SearchStore {
   private state: SearchStoreState = { ...initialSearchState }
   private listeners = new Set<() => void>()
   private socket: WebSocket | null = null
+  private detailRequestId = 0
 
   getSnapshot = (): SearchStoreState => this.state
 
@@ -224,7 +227,8 @@ export class SearchStore {
   }
 
   setOpenBook = (openBook: OpenBook | null) => {
-    this.setState({ openBook })
+    if (!openBook) this.detailRequestId++
+    this.setState({ openBook, detailLoading: false, detailError: '' })
   }
 
   setChoices = (choices: SourceChoice[]) => {
@@ -255,6 +259,7 @@ export class SearchStore {
       this.socket = null
     }
 
+    this.detailRequestId++
     this.setState({
       keyword: query,
       selectedSourceId: source,
@@ -263,6 +268,8 @@ export class SearchStore {
       message: '',
       progress: null,
       openBook: null,
+      detailLoading: false,
+      detailError: '',
       choices: [],
       results: [],
       filters: defaultSearchFilters,
@@ -345,16 +352,24 @@ export class SearchStore {
   }
 
   openGroup = async (group: SearchGroup) => {
-    this.setState({
-      detailLoading: true,
-      message: '',
-      openBook: null,
-    })
-
+    if (this.state.detailLoading || !group.sources.length) return
+    const requestId = ++this.detailRequestId
+    const first = group.sources[0]
+    const placeholder: OpenBook = {
+      details: {
+        sourceId: first.sourceId,
+        tocUrl: '',
+        name: group.name,
+        author: group.author,
+        intro: first.intro,
+        coverUrl: group.sources.find(source => source.coverUrl)?.coverUrl,
+      },
+      bookUrl: first.bookUrl,
+      chapters: [],
+    }
     const initialChoices: SourceChoice[] = group.sources.map(result => ({ result, status: 'idle' }))
-    this.setState({ choices: initialChoices })
+    this.setState({ detailLoading: true, detailError: '', message: '', openBook: placeholder, choices: initialChoices })
 
-    let loadedBook: OpenBook | null = null
     for (let i = 0; i < group.sources.length; i++) {
       const candidate = group.sources[i]
       this.setState(prev => ({
@@ -362,12 +377,15 @@ export class SearchStore {
       }))
       try {
         const book = await loadSourceBook(candidate, group.sources)
+        if (requestId !== this.detailRequestId) return
         this.setState(prev => ({
           choices: prev.choices.map((c, idx) => (idx === i ? { ...c, book, status: 'loaded' } : c)),
+          openBook: book,
+          detailLoading: false,
         }))
-        loadedBook = book
-        break
+        return
       } catch (err) {
+        if (requestId !== this.detailRequestId) return
         const errMsg = err instanceof Error ? err.message : i18n.t('search.cannotReadSource', '无法读取此书源')
         this.setState(prev => ({
           choices: prev.choices.map((c, idx) => (idx === i ? { ...c, status: 'error', error: errMsg } : c)),
@@ -375,11 +393,7 @@ export class SearchStore {
       }
     }
 
-    if (loadedBook) {
-      this.setState({ openBook: loadedBook, detailLoading: false })
-    } else {
-      this.setState({ message: i18n.t('search.allSourcesUnreadable', '所有书源均无法读取'), detailLoading: false })
-    }
+    this.setState({ detailError: i18n.t('search.allSourcesUnreadable', '所有书源均无法读取'), detailLoading: false })
   }
 
   chooseSource = async (choice: SourceChoice, groupSources?: SearchResult[]) => {
@@ -444,6 +458,7 @@ export class SearchStore {
   }
 
   reset = () => {
+    this.detailRequestId++
     if (this.socket) {
       try {
         if (this.socket.readyState === WebSocket.OPEN) {

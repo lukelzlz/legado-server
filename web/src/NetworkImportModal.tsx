@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { api, type ImportResponse, type NetworkImportPreview } from './api'
 import { Icon } from './icons'
+import { ButtonSpinner } from './ButtonSpinner'
 
 /** 「不分组」用的哨兵：与真实分组名区分开。 */
 const NO_GROUP = ''
@@ -251,7 +252,14 @@ export const NetworkImportModal: React.FC<NetworkImportModalProps> = ({
                 onChange={event => { setUrl(event.target.value); setPreview(null); setSelected(new Set()) }}
                 onKeyDown={event => { if (event.key === 'Enter') void runPreview(url) }}
               />
-              <button type="button" className="network-import-fetch-btn" disabled={fetching} onClick={() => void runPreview(url)}>
+              <button
+                type="button"
+                className={`network-import-fetch-btn ${fetching ? 'is-loading' : ''}`}
+                disabled={fetching}
+                aria-busy={fetching}
+                onClick={() => void runPreview(url)}
+              >
+                {fetching && <ButtonSpinner size={12} />}
                 {fetching ? t('source.networkImportFetching', '拉取中…') : t('source.networkImportFetch', '拉取')}
               </button>
             </div>
@@ -330,10 +338,12 @@ export const NetworkImportModal: React.FC<NetworkImportModalProps> = ({
           </button>
           <button
             type="button"
-            className="network-import-confirm-btn"
+            className={`network-import-confirm-btn ${committing ? 'is-loading' : ''}`}
             disabled={!preview || committing || fetching}
+            aria-busy={committing}
             onClick={() => void handleConfirm()}
           >
+            {committing && <ButtonSpinner size={12} />}
             {committing ? t('common.loading', '处理中…') : t('source.networkImportConfirm', '确认')}
           </button>
         </footer>

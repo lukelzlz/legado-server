@@ -414,6 +414,70 @@ svg { width: 18px; height: 18px; flex: none; }
 .danger-button { color: var(--danger); background: transparent; }
 .danger-button:hover { background: color-mix(in srgb, var(--danger) 10%, transparent); }
 
+/* ==========================================================================
+   Button Loading Spinner & In-Flight Lock (Issue #67)
+   ========================================================================== */
+@keyframes btnSpin {
+  to { transform: rotate(360deg); }
+}
+
+.btn-spinner {
+  width: 14px;
+  height: 14px;
+  border: 2px solid color-mix(in srgb, currentColor 28%, transparent);
+  border-top-color: currentColor;
+  border-radius: 50%;
+  animation: btnSpin 0.75s linear infinite;
+  display: inline-block;
+  flex-shrink: 0;
+  vertical-align: middle;
+  box-sizing: border-box;
+}
+
+.btn-spinner-sm {
+  width: 12px;
+  height: 12px;
+  border-width: 1.5px;
+}
+
+.btn-spinner-lg {
+  width: 18px;
+  height: 18px;
+  border-width: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .btn-spinner {
+    animation-duration: 2s;
+  }
+}
+
+/* 按钮 Loading 状态及防连击交互锁 */
+.primary-button.is-loading,
+.secondary-button.is-loading,
+.subtle-button.is-loading,
+.danger-button.is-loading,
+.ghost-button.is-loading,
+.manage-action-row.is-loading,
+.cache-range-btn.is-loading,
+.source-login-btn.is-loading,
+button[aria-busy="true"] {
+  pointer-events: none !important;
+  cursor: wait !important;
+}
+
+.primary-button.is-loading,
+.secondary-button.is-loading,
+.subtle-button.is-loading,
+.danger-button.is-loading {
+  opacity: 0.85;
+}
+
+.manage-action-row.is-loading {
+  opacity: 0.85;
+  background: color-mix(in srgb, var(--ink) 4%, transparent);
+}
+
 /* 通用图标/关闭按钮基类 */
 .close-btn, .close-button, .icon-btn, .icon-only {
   width: 32px;
@@ -564,9 +628,26 @@ svg { width: 18px; height: 18px; flex: none; }
 .library-page { width: min(1000px, 100%); display: grid; gap: 30px; padding: clamp(38px, 7vw, 86px) clamp(20px, 5vw, 58px); margin: 0 auto; }
 .library-hero { display: grid; gap: 13px; padding: 8px 0 28px; border-bottom: 1px solid var(--line); }
 .library-hero p { color: var(--muted); font-size: 14px; }
-.library-hero form { width: min(660px, 100%); height: 48px; display: flex; align-items: center; gap: 10px; margin-top: 17px; padding-left: 15px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); color: var(--muted); box-shadow: var(--shadow); }
-.library-hero form input { width: 100%; min-width: 0; padding: 0; border: 0; background: transparent; color: var(--ink); outline: none; }
-.library-hero form .primary-button { height: 48px; padding: 0 20px; border-radius: 0 5px 5px 0; }
+/* 搜索框（书库页主入口）：统一高度/圆角/内距，聚焦环只取主题变量（--accent / --accent-soft），不写死色值。 */
+.library-hero form { width: min(660px, 100%); height: 48px; display: flex; align-items: center; gap: 8px; margin-top: 17px; padding: 4px 4px 4px 14px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); color: var(--muted); box-shadow: var(--shadow); transition: border-color .16s ease, box-shadow .16s ease, background-color .16s ease; }
+.library-hero form:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft), var(--shadow); }
+.library-hero form > svg { flex: none; width: 17px; height: 17px; color: var(--muted); transition: color .16s ease; }
+.library-hero form:focus-within > svg { color: var(--accent); }
+.library-hero form input { flex: 1 1 auto; width: 100%; min-width: 0; height: 100%; padding: 0; border: 0; background: transparent; color: var(--ink); font-size: 14px; outline: none; }
+.library-hero form input::placeholder { color: var(--muted); opacity: 1; }
+/* 输入框自身不再画第二层焦点框：外层 :focus-within 的聚焦环已足够醒目，双描边只会显脏。 */
+.library-hero form input:focus-visible { outline: none; }
+/* 右侧清空按钮（仅在有内容时渲染，见 SearchBox）：点击清空并把焦点交还输入框。 */
+.library-search-clear { flex: none; width: 28px; height: 28px; display: inline-grid; place-items: center; border-radius: 7px; color: var(--muted); background: transparent; transition: background-color .15s ease, color .15s ease; cursor: pointer; border: 0; }
+.library-search-clear:hover { color: var(--ink); background: var(--surface-muted); }
+.library-search-clear svg { width: 14px; height: 14px; }
+/* 主按钮：内嵌在胶囊里（不再贴右边框），禁用态用主题柔和色而不是整块变灰。 */
+.library-hero form .library-search-submit { flex: none; white-space: nowrap; height: 100%; padding: 0 16px; border-radius: 7px; font-size: 13px; }
+.library-hero form .library-search-submit:disabled { background: var(--accent-soft); color: var(--accent); opacity: 1; cursor: not-allowed; }
+/* 本地内联的最小加载指示器：*/
+.library-search-spinner { flex: none; width: 14px; height: 14px; border: 2px solid var(--line); border-top-color: var(--accent); border-radius: 50%; animation: library-search-spin .7s linear infinite; }
+@keyframes library-search-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .library-search-spinner { animation: none; } }
 .library-source-select { display: inline-flex; align-items: center; gap: 9px; color: var(--muted); font-size: 12px; }
 .library-source-select select { max-width: 190px; padding: 4px 22px 4px 6px; border: 0; background: transparent; color: var(--ink); outline: 0; font-size: 12px; }
 
@@ -650,6 +731,7 @@ mark.search-highlight { background: var(--accent-soft); color: var(--accent); fo
   height: 15px;
 }
 .book-detail-modal-body { flex: 1 1 auto; overflow-y: auto; padding: 16px 0; display: flex; flex-direction: column; gap: 16px; }
+.book-detail-loading { min-height: 180px; display: flex; align-items: center; justify-content: center; gap: 12px; color: var(--ink); }
 .book-detail-section { padding: 0 22px; }
 .book-detail-section .source-choice-list { margin: 0; }
 .book-detail-section .book-intro { padding: 0; }
@@ -1511,8 +1593,12 @@ mark.search-highlight { background: var(--accent-soft); color: var(--accent); fo
   .source-sidebar-heading { padding: 14px 14px 10px; }
   .sources-content { padding: 28px 18px; }
   .page-title { align-items: start; }
-  .library-page { gap: 22px; padding: 42px 18px; }
+  /* 左右内距叠加安全区（刘海/圆角屏），不硬编码覆盖 --safe-*。 */
+  .library-page { gap: 22px; padding: 42px max(18px, var(--safe-right)) calc(42px + var(--safe-bottom)) max(18px, var(--safe-left)); }
   .library-hero h1 { font-size: 30px; }
+  /* 搜索框在窄屏收窄左内距与按钮内距；宽度仍由 min(660px, 100%) 自适应，不写死。 */
+  .library-hero form { gap: 6px; padding-left: 12px; }
+  .library-hero form .library-search-submit { padding: 0 13px; }
   .library-results > div { grid-template-columns: 1fr; }
   .library-book-detail > header { align-items: stretch; flex-direction: column; }
   .book-detail-modal { width: min(600px, 94vw); max-height: 88vh; border-radius: 14px; }

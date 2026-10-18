@@ -28,6 +28,7 @@ import { TtsSettingsModal, SleepTimerOption } from './TtsSettingsModal'
 import { TtsPlayerBar } from './TtsPlayerBar'
 import { ReplaceRulesModal } from './ReplaceRulesModal'
 import { OfflineCacheModal } from './OfflineCacheModal'
+import { ButtonSpinner } from './ButtonSpinner'
 import {
   downloadChaptersToOffline,
   getOfflineChaptersSet,
@@ -332,6 +333,7 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
   const [customRangeOpen, setCustomRangeOpen] = useState(false)
   const [customRangeStart, setCustomRangeStart] = useState(1)
   const [customRangeEnd, setCustomRangeEnd] = useState(50)
+  const [requestingRange, setRequestingRange] = useState<string | null>(null)
   const [offlineTtsConfirmOpen, setOfflineTtsConfirmOpen] = useState(false)
 
   const [cacheStatus, setCacheStatus] = useState<{ state: string; cached: number; total: number; error?: string }>({
@@ -1535,6 +1537,7 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
   }
 
   const handleCacheRange = async (mode: 'next50' | 'next100' | 'all' | 'custom', start?: number, end?: number) => {
+    setRequestingRange(mode)
     let s = chapterIndex
     let count: number | undefined
     let e: number | undefined
@@ -1572,6 +1575,8 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
       setCacheStatus(prev => ({ ...prev, state: 'caching', error: undefined }))
     } catch (err) {
       toast.error(err instanceof Error ? err.message : t('shelf.cannotStartCache', '发起缓存失败'))
+    } finally {
+      setRequestingRange(null)
     }
   }
 
@@ -2533,30 +2538,40 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
                     <button
                       type="button"
                       className="cache-range-btn"
+                      disabled={requestingRange !== null}
+                      aria-busy={requestingRange === 'next50'}
                       title={t('reader.cacheNext50Title', '缓存当前章节后续 50 章')}
                       onClick={() => void handleCacheRange('next50')}
                     >
+                      {requestingRange === 'next50' && <ButtonSpinner size={12} />}
                       {t('reader.cacheNext50', '后 50 章')}
                     </button>
                     <button
                       type="button"
                       className="cache-range-btn"
+                      disabled={requestingRange !== null}
+                      aria-busy={requestingRange === 'next100'}
                       title={t('reader.cacheNext100Title', '缓存当前章节后续 100 章')}
                       onClick={() => void handleCacheRange('next100')}
                     >
+                      {requestingRange === 'next100' && <ButtonSpinner size={12} />}
                       {t('reader.cacheNext100', '后 100 章')}
                     </button>
                     <button
                       type="button"
                       className="cache-range-btn"
+                      disabled={requestingRange !== null}
+                      aria-busy={requestingRange === 'all'}
                       title={t('reader.cacheAllTitle', '缓存全本小说')}
                       onClick={() => void handleCacheRange('all')}
                     >
+                      {requestingRange === 'all' && <ButtonSpinner size={12} />}
                       {t('reader.cacheAll', '全本缓存')}
                     </button>
                     <button
                       type="button"
                       className="cache-range-btn"
+                      disabled={requestingRange !== null}
                       title={t('reader.cacheCustomTitle', '自定义章节范围')}
                       onClick={() => setCustomRangeOpen(prev => !prev)}
                     >
@@ -2587,12 +2602,15 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
                       </div>
                       <button
                         type="button"
-                        className="primary-button range-start-btn"
+                        className={`primary-button range-start-btn ${requestingRange === 'custom' ? 'is-loading' : ''}`}
+                        disabled={requestingRange !== null}
+                        aria-busy={requestingRange === 'custom'}
                         onClick={() => {
                           setCustomRangeOpen(false)
                           void handleCacheRange('custom', customRangeStart, customRangeEnd)
                         }}
                       >
+                        {requestingRange === 'custom' && <ButtonSpinner size={12} />}
                         {t('reader.startCache', '开始缓存')}
                       </button>
                     </div>

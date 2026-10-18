@@ -7,6 +7,7 @@ import { api, BookDetails, Chapter, SearchResult, SearchStreamEvent, streamSearc
 import { Icon } from './icons'
 import { cleanAuthor, cleanTitle } from './searchFilters'
 import { matchBestChapter, normalizeChapterTitle, remapChapterAfterSourceSwitch } from './sourceSwitchRemap'
+import { ButtonSpinner } from './ButtonSpinner'
 import { toast } from './Toast'
 
 /**
@@ -362,10 +363,12 @@ export function SourceSwitchModal({
                     <span className="current-indicator">{t('source.inUse', '使用中')}</span>
                   ) : (
                     <button
-                      className="primary-button switch-btn"
-                      disabled={isSwitching}
+                      className={`primary-button switch-btn ${isSwitching ? 'is-loading' : ''}`}
+                      disabled={isSwitching || switchingSourceId !== null}
+                      aria-busy={isSwitching}
                       onClick={() => void handleSelect(c)}
                     >
+                      {isSwitching && <ButtonSpinner size={12} />}
                       {isSwitching ? t('source.switching', '切换中...') : t('source.switch', '切换')}
                     </button>
                   )}

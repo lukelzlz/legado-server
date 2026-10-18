@@ -4,6 +4,7 @@ import { api, SourceLoginUiItem, SourceLoginUiResponse } from './api'
 import { SourceWebViewModal } from './SourceWebViewModal'
 import { NetworkImportModal } from './NetworkImportModal'
 import { isInlineBrowserTarget } from './sourceSettingsResult'
+import { ButtonSpinner } from './ButtonSpinner'
 
 interface SourceLoginModalProps {
   sourceId: string
@@ -21,6 +22,7 @@ export const SourceLoginModal: React.FC<SourceLoginModalProps> = ({
   const { t } = useTranslation()
   const [loading, setLoading] = useState(true)
   const [executing, setExecuting] = useState(false)
+  const [executingAction, setExecutingAction] = useState<string | null>(null)
   const [uiResponse, setUiResponse] = useState<SourceLoginUiResponse | null>(null)
   const [formData, setFormData] = useState<Record<string, string>>({})
   const [menuOpen, setMenuOpen] = useState(false)
@@ -86,6 +88,7 @@ export const SourceLoginModal: React.FC<SourceLoginModalProps> = ({
     if (!actionCode && actionCode !== '') return
     try {
       setExecuting(true)
+      setExecutingAction(actionCode)
       const trimmed = actionCode.trim()
       if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) {
         window.open(trimmed, '_blank', 'noopener,noreferrer')
@@ -129,12 +132,14 @@ export const SourceLoginModal: React.FC<SourceLoginModalProps> = ({
       onToast(err.message || t('source.executeActionFailed', '执行操作失败'), 'error')
     } finally {
       setExecuting(false)
+      setExecutingAction(null)
     }
   }
 
   const handleSaveAndLogin = async () => {
     try {
       setExecuting(true)
+      setExecutingAction('login(true)')
       await api.saveSourceLoginInfo(sourceId, formData)
       const res = await api.executeSourceLoginAction(sourceId, 'login(true)', formData, false)
       if (res.error) {
@@ -162,6 +167,7 @@ export const SourceLoginModal: React.FC<SourceLoginModalProps> = ({
       onToast(err.message || t('source.saveOrLoginFailed', '保存或登录失败'), 'error')
     } finally {
       setExecuting(false)
+      setExecutingAction(null)
     }
   }
 
@@ -263,18 +269,21 @@ export const SourceLoginModal: React.FC<SourceLoginModalProps> = ({
     }
 
     if (type === 'button') {
+      const isThisAction = executing && executingAction === item.action
       return (
         <div key={`${key}-${index}`} style={flexStyle} className="login-ui-item-btn">
           <button
             type="button"
-            className="source-login-btn primary-subtle"
+            className={`source-login-btn primary-subtle ${isThisAction ? 'is-loading' : ''}`}
             disabled={executing}
+            aria-busy={isThisAction}
             onClick={() => handleAction(item.action, false)}
             onContextMenu={e => {
               e.preventDefault()
               handleAction(item.action, true)
             }}
           >
+            {isThisAction && <ButtonSpinner size={12} />}
             {label}
           </button>
         </div>
@@ -376,12 +385,13 @@ export const SourceLoginModal: React.FC<SourceLoginModalProps> = ({
             </button>
             <button
               type="button"
-              className="source-login-action-btn primary"
+              className={`source-login-action-btn primary ${executing && executingAction === 'login(true)' ? 'is-loading' : ''}`}
               title={t('source.saveAndLogin', '保存并登录')}
               disabled={executing || loading}
+              aria-busy={executing && executingAction === 'login(true)'}
               onClick={handleSaveAndLogin}
             >
-              ✓
+              {executing && executingAction === 'login(true)' ? <ButtonSpinner size={12} /> : '✓'}
             </button>
             <div className="source-login-menu-container">
               <button

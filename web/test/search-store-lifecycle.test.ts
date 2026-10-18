@@ -64,6 +64,77 @@ test('searchStore - bookKey and loadSourceBook helper', async () => {
   }
 })
 
+test('searchStore - opens loading placeholder immediately, ignores late response after close', async () => {
+  const originalDetails = api.details
+  const originalChapters = api.chapters
+  const originalProgress = api.progress
+  let resolveDetails!: (value: Awaited<ReturnType<typeof api.details>>) => void
+  try {
+    searchStore.reset()
+    api.details = async () => new Promise(resolve => { resolveDetails = resolve })
+    api.chapters = async () => []
+    api.progress = async () => undefined
+    const group: SearchGroup = {
+      key: 'test', name: '测试书', author: '作者',
+      sources: [{ sourceId: 'src', bookUrl: '/book', name: '测试书' }],
+    }
+    const pending = searchStore.openGroup(group)
+    assert.equal(searchStore.getSnapshot().detailLoading, true)
+    assert.equal(searchStore.getSnapshot().openBook?.details.name, '测试书')
+    assert.equal(searchStore.getSnapshot().openBook?.chapters.length, 0)
+    searchStore.setOpenBook(null)
+    resolveDetails({ sourceId: 'src', tocUrl: '/toc', name: '测试书' })
+    await pending
+    assert.equal(searchStore.getSnapshot().openBook, null)
+    assert.equal(searchStore.getSnapshot().detailLoading, false)
+  } finally {
+    api.details = originalDetails
+    api.chapters = originalChapters
+    api.progress = originalProgress
+    searchStore.reset()
+  }
+})
+
+test('searchStore - failed detail remains dismissible and retryable', async () => {
+  const originalDetails = api.details
+  try {
+    searchStore.reset()
+    api.details = async () => { throw new Error('离线') }
+    const group: SearchGroup = { key: 'bad', name: '故障书', sources: [{ sourceId: 'src', bookUrl: '/book', name: '故障书' }] }
+    await searchStore.openGroup(group)
+    assert.equal(searchStore.getSnapshot().detailLoading, false)
+    assert.ok(searchStore.getSnapshot().detailError)
+    assert.equal(searchStore.getSnapshot().openBook?.details.name, '故障书')
+    searchStore.setOpenBook(null)
+    assert.equal(searchStore.getSnapshot().detailError, '')
+    await searchStore.openGroup(group)
+    assert.ok(searchStore.getSnapshot().detailError)
+  } finally {
+    api.details = originalDetails
+    searchStore.reset()
+  }
+})
+
+test('searchStore - openGroup prevents concurrent double click', async () => {
+  const originalDetails = api.details
+  let resolveDetails!: (value: Awaited<ReturnType<typeof api.details>>) => void
+  let calls = 0
+  try {
+    searchStore.reset()
+    api.details = async () => { calls++; return new Promise(resolve => { resolveDetails = resolve }) }
+    const group: SearchGroup = { key: 'one', name: '书', sources: [{ sourceId: 'src', bookUrl: '/book', name: '书' }] }
+    const pending = searchStore.openGroup(group)
+    await searchStore.openGroup(group)
+    assert.equal(calls, 1)
+    searchStore.setOpenBook(null)
+    resolveDetails({ sourceId: 'src', tocUrl: '/toc', name: '书' })
+    await pending
+  } finally {
+    api.details = originalDetails
+    searchStore.reset()
+  }
+})
+
 test('searchStore - openGroup and candidate source fallback', async () => {
   const originalDetails = api.details
   const originalChapters = api.chapters

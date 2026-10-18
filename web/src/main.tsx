@@ -23,6 +23,7 @@ import { ExplorePage } from './ExplorePage'
 import { OfflineCacheModal } from './OfflineCacheModal'
 import { SourceHealthModal } from './SourceHealthModal'
 import { SourceGroupManagerModal } from './SourceGroupManagerModal'
+import { SearchBox } from './SearchBox'
 import { SearchScopeBar } from './SearchScopeBar'
 import { ShelfKindTag } from './ShelfKindTag'
 import { isLocalBook } from './localBook'
@@ -31,6 +32,7 @@ import { ErrorBoundary } from './ErrorBoundary'
 import { clearOfflineBook, flushOfflineProgress } from './offlineStorage'
 import { ClearCacheScope, stepsForScope } from './shelfClearCache'
 import { SHELF_MODAL_SHELF, shelfModalReducer } from './shelfModalStack'
+import { ButtonSpinner } from './ButtonSpinner'
 import { toast, ToastContainer } from './Toast'
 import './styles.css'
 import './i18n'
@@ -219,6 +221,8 @@ function SourceChoiceList({
 function BookDetailModal({
   book,
   choices,
+  loading,
+  error,
   resumeIndex,
   onOpen,
   onChooseSource,
@@ -226,6 +230,8 @@ function BookDetailModal({
 }: {
   book: OpenBook
   choices: SourceChoice[]
+  loading: boolean
+  error: string
   resumeIndex: number
   onOpen: (index: number) => void
   onChooseSource: (choice: SourceChoice) => void
@@ -275,12 +281,13 @@ function BookDetailModal({
   }, [choices])
 
   useEffect(() => {
+    if (loading || error) return
     runInspection()
     return () => {
       cancelInspectRef.current = true
       abortControllerRef.current?.abort()
     }
-  }, [runInspection])
+  }, [runInspection, loading, error])
 
   const handleClose = useCallback(() => {
     cancelInspectRef.current = true
@@ -295,6 +302,7 @@ function BookDetailModal({
   }
 
   useEffect(() => {
+    if (loading || error) return
     let active = true
     void api.bookshelf().then(items => {
       if (!active) return
@@ -310,7 +318,7 @@ function BookDetailModal({
     return () => {
       active = false
     }
-  }, [book.details.sourceId, book.bookUrl, book.details.name, book.details.author])
+  }, [book.details.sourceId, book.bookUrl, book.details.name, book.details.author, loading, error])
 
   const toggleShelf = async () => {
     if (shelfBusy) return
@@ -409,13 +417,13 @@ function BookDetailModal({
               type="button"
               className={`subtle-button shelf-toggle-btn ${inShelf ? 'in-shelf' : ''}`}
               onClick={toggleShelf}
-              disabled={shelfBusy || inShelf === null}
+              disabled={shelfBusy || inShelf === null || loading || Boolean(error)}
               title={inShelf ? t('shelf.removeFromShelf', '从书架中移出') : t('shelf.addToShelf', '加入书架')}
             >
               <Icon name="book" />
               <span>{inShelf ? t('shelf.inShelf', '已在书架') : t('shelf.addToShelf', '加入书架')}</span>
             </button>
-            <button className="primary-button read-btn" onClick={() => handleOpenReader(resumeIndex)}>
+            <button className="primary-button read-btn" disabled={loading || Boolean(error)} onClick={() => handleOpenReader(resumeIndex)}>
               {book.progress ? t('shelf.continueReading', '继续阅读') : t('shelf.startReading', '开始阅读')}
               <Icon name="arrowRight" />
             </button>
@@ -426,6 +434,11 @@ function BookDetailModal({
         </header>
 
         <div className="book-detail-modal-body">
+          {loading ? (
+            <div className="book-detail-loading" role="status"><ButtonSpinner />{t('library.loadingBookDetail', '正在获取最新书籍详情与目录...')}</div>
+          ) : error ? (
+            <p className="form-error" role="alert">{error}</p>
+          ) : <>
           {choices.length > 1 && (
             <div className="book-detail-section">
               <SourceChoiceList
@@ -473,14 +486,12 @@ function BookDetailModal({
               <p className="chapter-count">{t('reader.previewTocMore', { count: book.chapters.length, defaultValue: `共 ${book.chapters.length} 章，进入阅读器查看完整目录` })}</p>
             )}
           </div>
+          </>}
         </div>
       </div>
     </div>
   )
 }
-
-
-
 
 function SourceEditor({
   selected,
@@ -538,7 +549,7 @@ function SubscriptionPanel({ onSourcesChange }: { onSourcesChange: () => void })
   const updateAll = async () => { setBusy('all'); try { const result = await api.updateSubscriptions(); setNotice(t('subscription.syncAllSummary', '全部同步完成：成功 {{updated}}，失败 {{failed}}', { updated: result.updated, failed: result.failed })); onSourcesChange(); await load() } catch (error) { setNotice(error instanceof Error ? error.message : t('subscription.syncFailed', '同步失败')) } finally { setBusy(null) } }
   const toggle = async (item: SourceSubscription) => { setBusy(item.id); try { await api.saveSubscription(item.url, !item.enabled); await load() } catch (error) { setNotice(error instanceof Error ? error.message : t('subscription.updateFailed', '更新失败')) } finally { setBusy(null) } }
   const remove = async (item: SourceSubscription) => { if (!confirm(t('subscription.deleteConfirm', '删除订阅“{{url}}”？已导入的书源会保留。', { url: item.url }))) return; setBusy(item.id); try { await api.removeSubscription(item.id); await load() } catch (error) { setNotice(error instanceof Error ? error.message : t('subscription.deleteFailed', '删除失败')) } finally { setBusy(null) } }
-  return <section className="subscription-panel"><header><div><span className="section-kicker">{t('subscription.autoUpdateKicker', '自动更新')}</span><h2>{t('subscription.subscriptionTitle', '书源订阅')}</h2><p>{t('subscription.subscriptionDesc', '每 6 小时自动同步；同一地址的书源会统一覆盖更新。')}</p></div><button className="subtle-button" onClick={() => void updateAll()} disabled={busy !== null}>{busy === 'all' ? t('subscription.syncing', '同步中...') : t('subscription.syncAll', '全部同步')}</button></header><form onSubmit={add}><input value={url} onChange={event => setUrl(event.target.value)} placeholder="https://example.com/sources.json" inputMode="url" /><button className="primary-button" disabled={busy !== null}>{t('subscription.addSubscription', '添加订阅')}</button></form>{notice && <p className="sidebar-notice">{notice}</p>}<div className="subscription-list">{items.length === 0 ? <p>{t('subscription.emptySubscriptions', '还没有书源订阅。')}</p> : items.map(item => <article key={item.id}><div><strong>{item.url}</strong><small>{item.lastError ? t('subscription.lastErrorPrefix', '最近失败：{{error}}', { error: item.lastError }) : item.lastSuccessAt ? t('subscription.lastSyncPrefix', '最近同步：{{time}}，处理 {{count}} 个书源', { time: new Date(item.lastSuccessAt).toLocaleString(), count: item.lastImported }) : t('subscription.notSyncedYet', '尚未同步')}</small></div><div className="subscription-actions"><button className="subtle-button" onClick={() => void toggle(item)} disabled={busy !== null}>{item.enabled ? t('common.enabled', '已启用') : t('common.disabled', '已停用')}</button><button className="subtle-button" onClick={() => void update(item.id)} disabled={busy !== null || !item.enabled}>{busy === item.id ? t('subscription.syncing', '同步中...') : t('subscription.syncNow', '立即同步')}</button><button className="shelf-remove" aria-label={t('subscription.deleteSubscription', '删除订阅')} onClick={() => void remove(item)} disabled={busy !== null}><Icon name="close" /></button></div></article>)}</div></section>
+  return <section className="subscription-panel"><header><div><span className="section-kicker">{t('subscription.autoUpdateKicker', '自动更新')}</span><h2>{t('subscription.subscriptionTitle', '书源订阅')}</h2><p>{t('subscription.subscriptionDesc', '每 6 小时自动同步；同一地址的书源会统一覆盖更新。')}</p></div><button className={`subtle-button ${busy === 'all' ? 'is-loading' : ''}`} onClick={() => void updateAll()} disabled={busy !== null} aria-busy={busy === 'all'}>{busy === 'all' && <ButtonSpinner size={12} />}{busy === 'all' ? t('subscription.syncing', '同步中...') : t('subscription.syncAll', '全部同步')}</button></header><form onSubmit={add}><input value={url} onChange={event => setUrl(event.target.value)} placeholder="https://example.com/sources.json" inputMode="url" /><button className={`primary-button ${busy === 'all' ? 'is-loading' : ''}`} disabled={busy !== null}>{t('subscription.addSubscription', '添加订阅')}</button></form>{notice && <p className="sidebar-notice">{notice}</p>}<div className="subscription-list">{items.length === 0 ? <p>{t('subscription.emptySubscriptions', '还没有书源订阅。')}</p> : items.map(item => <article key={item.id}><div><strong>{item.url}</strong><small>{item.lastError ? t('subscription.lastErrorPrefix', '最近失败：{{error}}', { error: item.lastError }) : item.lastSuccessAt ? t('subscription.lastSyncPrefix', '最近同步：{{time}}，处理 {{count}} 个书源', { time: new Date(item.lastSuccessAt).toLocaleString(), count: item.lastImported }) : t('subscription.notSyncedYet', '尚未同步')}</small></div><div className="subscription-actions"><button className="subtle-button" onClick={() => void toggle(item)} disabled={busy !== null}>{item.enabled ? t('common.enabled', '已启用') : t('common.disabled', '已停用')}</button><button className={`subtle-button ${busy === item.id ? 'is-loading' : ''}`} onClick={() => void update(item.id)} disabled={busy !== null || !item.enabled} aria-busy={busy === item.id}>{busy === item.id && <ButtonSpinner size={12} />}{busy === item.id ? t('subscription.syncing', '同步中...') : t('subscription.syncNow', '立即同步')}</button><button className="shelf-remove" aria-label={t('subscription.deleteSubscription', '删除订阅')} onClick={() => void remove(item)} disabled={busy !== null}><Icon name="close" /></button></div></article>)}</div></section>
 }
 
 function SubscriptionPage({ onSourcesChange }: { onSourcesChange: () => void }) {
@@ -1066,10 +1077,6 @@ function LibraryPage({ sources, onOpen }: { sources: SourceSummary[]; onOpen: (b
   useEffect(() => {
     void api.sourceGroups().then(setSourceGroups).catch(() => undefined)
   }, [sources])
-  const handleSearch = (event: FormEvent) => {
-    event.preventDefault()
-    search.startSearch()
-  }
   /**
    * 搜索范围 = 「全部书源」+ 每个书源分组 + 未分组，作为搜索栏**下面**的一排选项卡
    * （结构与「全部书源」默认项由 [SearchScopeBar] 负责，分组的新建/改名/删除在「书源」页面做）。
@@ -1089,36 +1096,13 @@ function LibraryPage({ sources, onOpen }: { sources: SourceSummary[]; onOpen: (b
         <span className="section-kicker">{t('library.heroKicker', '在线书库')}</span>
         <h1>{t('library.heroTitle', '找一本书，安静地读下去。')}</h1>
         <p>{t('library.heroSubtitle', '从已配置的书源搜索并继续上次阅读。')}</p>
-        <form onSubmit={handleSearch}>
-          <Icon name="search" />
-          <input
-            value={search.keyword}
-            onChange={event => search.setKeyword(event.target.value)}
-            placeholder={t('library.searchPlaceholder', '输入书名或作者')}
-          />
-          {search.loading ? (
-            <button
-              key="stop-search-btn"
-              type="button"
-              className="primary-button"
-              onClick={e => {
-                e.preventDefault()
-                e.stopPropagation()
-                search.stopSearch()
-              }}
-            >
-              {t('library.stopSearch', '停止搜索')}
-            </button>
-          ) : (
-            <button
-              key="start-search-btn"
-              type="submit"
-              className="primary-button"
-            >
-              {t('library.startSearch', '搜索')}
-            </button>
-          )}
-        </form>
+        <SearchBox
+          keyword={search.keyword}
+          loading={search.loading}
+          onChange={search.setKeyword}
+          onSubmit={() => search.startSearch()}
+          onStop={search.stopSearch}
+        />
         {/* 搜索范围：搜索栏**下面**的选项卡（分组的新建/改名/删除在「书源」页面里做） */}
         <SearchScopeBar
           groups={sourceGroups}
@@ -1213,6 +1197,7 @@ function LibraryPage({ sources, onOpen }: { sources: SourceSummary[]; onOpen: (b
                     key={group.key}
                     className={`search-result-item ${isExact ? 'exact-match' : ''}`}
                     onClick={() => void search.openGroup(group)}
+                    disabled={search.detailLoading}
                   >
                     <span className="result-mark"><Icon name="book" /></span>
                     <span className="result-main-info">
@@ -1239,9 +1224,11 @@ function LibraryPage({ sources, onOpen }: { sources: SourceSummary[]; onOpen: (b
         <BookDetailModal
           book={search.openBook}
           choices={search.choices}
+          loading={search.detailLoading}
+          error={search.detailError}
           resumeIndex={resumeIndex}
           onOpen={index => onOpen(search.openBook!, index)}
-          onChooseSource={choice => void search.chooseSource(choice)}
+          onChooseSource={choice => { if (!search.detailLoading) void search.chooseSource(choice) }}
           onClose={() => search.setOpenBook(null)}
         />
       )}
@@ -1554,10 +1541,11 @@ function BookInfoEditModal({
                     {searching ? (
                       <button
                         type="button"
-                        className="subtle-button meta-search-btn stop-btn"
+                        className="subtle-button meta-search-btn stop-btn is-loading"
                         onClick={stopSearch}
+                        aria-busy="true"
                       >
-                        <Icon name="stop" />
+                        <ButtonSpinner size={12} />
                         <span>{t('common.pause', '停止')}</span>
                       </button>
                     ) : (
@@ -1705,12 +1693,13 @@ function BookInfoEditModal({
                   />
                   <button
                     type="button"
-                    className="secondary-button upload-cover-btn"
+                    className={`secondary-button upload-cover-btn ${uploadingCover ? 'is-loading' : ''}`}
                     disabled={uploadingCover}
+                    aria-busy={uploadingCover}
                     onClick={() => fileInputRef.current?.click()}
                     title={t('shelf.coverFileLimitHint', '支持 JPG、PNG、WebP、GIF、BMP 格式，最大 5MB')}
                   >
-                    <Icon name="upload" />
+                    {uploadingCover ? <ButtonSpinner size={12} /> : <Icon name="upload" />}
                     <span>{uploadingCover ? t('shelf.uploadingCover', '正在上传封面...') : t('shelf.uploadCover', '上传本地封面')}</span>
                   </button>
                   <span className="upload-cover-hint">{t('shelf.coverFileLimitHint', '支持 JPG、PNG、WebP、GIF、BMP 格式，最大 5MB')}</span>
@@ -1828,7 +1817,8 @@ function BookInfoEditModal({
             <button type="button" className="subtle-button" onClick={onClose} disabled={saving}>
               {t('common.cancel', '取消')}
             </button>
-            <button type="submit" className="primary-button" disabled={saving}>
+            <button type="submit" className={`primary-button ${saving ? 'is-loading' : ''}`} disabled={saving} aria-busy={saving}>
+              {saving && <ButtonSpinner size={14} />}
               {saving ? t('common.saving', '保存中...') : t('common.saveChanges', '保存修改')}
             </button>
           </footer>
@@ -1992,8 +1982,9 @@ function BookManageModal({
           )}
 
           <button
-            className="manage-action-row"
+            className={`manage-action-row ${recleaning ? 'is-loading' : ''}`}
             disabled={recleaning}
+            aria-busy={recleaning}
             onClick={async () => {
               setRecleaning(true)
               try {
@@ -2015,15 +2006,16 @@ function BookManageModal({
               <strong>{recleaning ? t('shelf.recleaningDesc', '正在重新清洗正文...') : t('shelf.recleanRules', '重新应用净化规则')}</strong>
               <small>{t('shelf.recleanRulesDesc', '基于原文副本重新运行当前启用的替换规则')}</small>
             </div>
-            <Icon name="arrowRight" />
+            {recleaning ? <ButtonSpinner size={14} /> : <Icon name="arrowRight" />}
           </button>
 
           {/* 本地书专用：解析器缺陷修复之后，老书需要按留存的原文件重新解析才能拿到分段正文。
               线上书源的书走不到这里（它们的正文是即时抓取的，不涉及解析器版本）。 */}
           {isLocalBook(item) && (
             <button
-              className="manage-action-row"
+              className={`manage-action-row ${reparsing ? 'is-loading' : ''}`}
               disabled={reparsing}
+              aria-busy={reparsing}
               onClick={async () => {
                 setReparsing(true)
                 try {
@@ -2047,7 +2039,7 @@ function BookManageModal({
                 <strong>{reparsing ? t('shelf.reparsingDesc', '正在重新解析本地文件...') : t('shelf.reparseLocalRules', '重新解析本地文件')}</strong>
                 <small>{t('shelf.reparseLocalRulesDesc', '按留存的 TXT / EPUB 原文件重建目录与正文，阅读进度保留')}</small>
               </div>
-              <Icon name="arrowRight" />
+              {reparsing ? <ButtonSpinner size={14} /> : <Icon name="arrowRight" />}
             </button>
           )}
 
@@ -2112,12 +2104,14 @@ function ClearCacheScopeModal({
   item,
   theme,
   busy,
+  busyScope,
   onPick,
   onClose,
 }: {
   item: BookshelfItem
   theme: ReaderTheme
   busy: boolean
+  busyScope?: ClearCacheScope | null
   onPick: (scope: ClearCacheScope) => void
   onClose: () => void
 }) {
@@ -2155,31 +2149,31 @@ function ClearCacheScopeModal({
 
         <div className="manage-sheet-actions">
           {/* 三个选项一律 danger（红色与「移出书架」同源），互斥三选一 */}
-          <button type="button" className="manage-action-row danger" disabled={busy} onClick={() => onPick('server')}>
+          <button type="button" className="manage-action-row danger" disabled={busy} aria-busy={busyScope === 'server'} onClick={() => onPick('server')}>
             <div className="action-icon"><Icon name="cloudDownload" /></div>
             <div className="action-text">
               <strong>{t('shelf.clearCacheServer', '清除服务器缓存')}</strong>
               <small>{isLocalBook(item) ? t('shelf.clearCacheServerLocalDesc', '只清理可重建的图片缓存；本地书正文由原文件解析而来，清除缓存不会删除') : t('shelf.clearCacheServerDesc', '清掉服务端已下载的图片、音频与正文，下次阅读会重新下载')}</small>
             </div>
-            <Icon name="arrowRight" />
+            {busyScope === 'server' ? <ButtonSpinner size={14} /> : <Icon name="arrowRight" />}
           </button>
 
-          <button type="button" className="manage-action-row danger" disabled={busy} onClick={() => onPick('browser')}>
+          <button type="button" className="manage-action-row danger" disabled={busy} aria-busy={busyScope === 'browser'} onClick={() => onPick('browser')}>
             <div className="action-icon"><Icon name="download" /></div>
             <div className="action-text">
               <strong>{t('shelf.clearCacheBrowser', '清除浏览器缓存')}</strong>
               <small>{t('shelf.clearCacheBrowserDesc', '只清本机已下载的离线正文，不影响服务端')}</small>
             </div>
-            <Icon name="arrowRight" />
+            {busyScope === 'browser' ? <ButtonSpinner size={14} /> : <Icon name="arrowRight" />}
           </button>
 
-          <button type="button" className="manage-action-row danger" disabled={busy} onClick={() => onPick('both')}>
+          <button type="button" className="manage-action-row danger" disabled={busy} aria-busy={busyScope === 'both'} onClick={() => onPick('both')}>
             <div className="action-icon"><Icon name="trash" /></div>
             <div className="action-text">
               <strong>{t('shelf.clearCacheBoth', '清理服务器和浏览器缓存')}</strong>
               <small>{t('shelf.clearCacheBothDesc', '一次清干净：服务端与本机一起清')}</small>
             </div>
-            <Icon name="arrowRight" />
+            {busyScope === 'both' ? <ButtonSpinner size={14} /> : <Icon name="arrowRight" />}
           </button>
 
           {/* 取消：中性色（**不**加 danger），点了什么都不做，只关弹窗 */}
@@ -2486,6 +2480,7 @@ function ShelfPage({ onOpen, theme }: { onOpen: (item: BookshelfItem) => void; t
   const managingItem = shelfModal.layer === 'manage' ? shelfModal.item : null
   const clearingCacheItem = shelfModal.layer === 'clearCacheScope' ? shelfModal.item : null
   const [clearingCache, setClearingCache] = useState(false)
+  const [clearingScope, setClearingScope] = useState<ClearCacheScope | null>(null)
   const [uploading, setUploading] = useState(false)
   const [dragOver, setDragOver] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -2644,6 +2639,7 @@ function ShelfPage({ onOpen, theme }: { onOpen: (item: BookshelfItem) => void; t
    */
   const clearCache = async (item: BookshelfItem, scope: ClearCacheScope) => {
     setClearingCache(true)
+    setClearingScope(scope)
     const failedParts: string[] = []
     try {
       for (const step of stepsForScope(scope)) {
@@ -2669,6 +2665,7 @@ function ShelfPage({ onOpen, theme }: { onOpen: (item: BookshelfItem) => void; t
       }
     } finally {
       setClearingCache(false)
+      setClearingScope(null)
       // 清理执行完的落点：**退回一级「书籍管理」**（与取消 / ESC / 点遮罩同一个转移）。
       // 为什么不是回书架：清缓存是从这本书的管理弹窗里发起的，执行完立刻在**同一本书**上
       // 看到「0 章已缓存」比把人踢回书架更符合最小惊讶，也省掉"再点进去确认"的一步。
@@ -3191,6 +3188,7 @@ function ShelfPage({ onOpen, theme }: { onOpen: (item: BookshelfItem) => void; t
           item={clearingCacheItem}
           theme={theme}
           busy={clearingCache}
+          busyScope={clearingScope}
           onClose={() => dispatchShelfModal({ type: 'closeClearCacheScope' })}
           onPick={scope => void clearCache(clearingCacheItem, scope)}
         />

@@ -426,6 +426,11 @@ data class SourceLoginStateRecord(
      * 非 audio 的书一律为 `null`。
      */
     val positionMs: Long? = null,
+    /**
+     * 书籍类别（`novel` / `audio` / `comic` / `local` 等）。
+     * 区分 WebDAV 进度镜像文件：小说无后缀，有声带 `_audio`，漫画带 `_comic`，互不覆盖。
+     */
+    val bookKind: String? = null,
 )
 
 // ---------------------------------------------------------------------------
@@ -509,6 +514,8 @@ data class SourceLoginStateRecord(
     val bookUrl: String,
     /** 当前书源的章节列表，用于把进度文件里的标题对齐到本地章节。 */
     val chapters: List<Chapter> = emptyList(),
+    /** 书籍类别（`novel` / `audio` / `comic` / `local` 等），用于精准匹配 WebDAV 进度文件。 */
+    val bookKind: String? = null,
 )
 @Serializable data class ProgressMergeResponse(
     /** `file` = 采用了进度文件；`database` = 采用数据库（文件不存在/更旧）。 */

@@ -256,6 +256,8 @@ export function MangaReaderScreen({ openBook, startIndex, onClose, theme }: Mang
       target.index,
       position,
       target.title,
+      undefined,
+      activeBook.bookKind ?? 'comic',
     ).catch(() => undefined)
   }, [chapters, activeBook.bookUrl, activeBook.details.sourceId])
 

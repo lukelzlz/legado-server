@@ -15,7 +15,7 @@ export type ExploreSourceItem = { id: string; name: string; group?: string | nul
 export type ExploreCategory = { title: string; url?: string | null; subCategories: ExploreCategory[] }
 export type BookDetails = { sourceId: string; name: string; author?: string; intro?: string; coverUrl?: string; tocUrl: string; alternateSources?: SearchResult[]; variables?: Record<string, string> }
 export type Chapter = { index: number; title: string; url: string }
-export type ReadingProgress = { sourceId: string; bookUrl: string; chapterUrl: string; chapterIndex: number; scrollPosition: number; updatedAt: number; positionMs?: number | null }
+export type ReadingProgress = { sourceId: string; bookUrl: string; chapterUrl: string; chapterIndex: number; scrollPosition: number; updatedAt: number; positionMs?: number | null; bookKind?: string }
 /** 手机端进度文件（bookProgress/*.json）同步配置 */
 export type ProgressSyncSettings = { directoryName: string; directoryPath?: string; available: boolean; fileCount: number }
 
@@ -715,22 +715,23 @@ export const api = {
     }
   },
   progress: (sourceId: string, bookUrl: string, signal?: AbortSignal) => request<ReadingProgress | undefined>(`/api/reading-progress?sourceId=${encodeURIComponent(sourceId)}&bookUrl=${encodeURIComponent(bookUrl)}`, { signal }),
-  saveProgress: async (sourceId: string, bookUrl: string, chapterUrl: string, chapterIndex: number, scrollPosition: number, chapterTitle?: string, positionMs?: number) => {
-    const progressItem = { sourceId, bookUrl, chapterUrl, chapterIndex, scrollPosition, positionMs, updatedAt: Date.now() }
+  saveProgress: async (sourceId: string, bookUrl: string, chapterUrl: string, chapterIndex: number, scrollPosition: number, chapterTitle?: string, positionMs?: number, bookKind?: string) => {
+    const progressItem = { sourceId, bookUrl, chapterUrl, chapterIndex, scrollPosition, positionMs, bookKind, updatedAt: Date.now() }
     const queueKey = `${sourceId}\u0000${bookUrl}`
     const previous = progressSaveQueues.get(queueKey) ?? Promise.resolve()
     const operation = previous.catch(() => undefined).then(async () => {
       enqueueOfflineProgress(progressItem)
       try {
         // chapterTitle 一并提交，服务端写 bookProgress 进度文件时直接用，免去回查目录缓存；
-        // positionMs 只在有声书里带（服务端 `position_ms`，与手机端 durChapterPos 同语义）
-        const res = await request<ReadingProgress>('/api/reading-progress', { method: 'PUT', body: JSON.stringify({ sourceId, bookUrl, chapterUrl, chapterIndex, scrollPosition, chapterTitle, positionMs }) })
+        // positionMs 只在有声书里带（服务端 `position_ms`，与手机端 durChapterPos 同语义）；
+        // bookKind 用于区分小说/听书/漫画进度文件，避免同名书籍互相覆盖
+        const res = await request<ReadingProgress>('/api/reading-progress', { method: 'PUT', body: JSON.stringify({ sourceId, bookUrl, chapterUrl, chapterIndex, scrollPosition, chapterTitle, positionMs, bookKind }) })
         void flushOfflineProgress(async (item) => {
           await request<ReadingProgress>('/api/reading-progress', { method: 'PUT', body: JSON.stringify(item) })
         })
         return res
       } catch {
-        return { sourceId, bookUrl, chapterUrl, chapterIndex, scrollPosition, positionMs, updatedAt: progressItem.updatedAt }
+        return { sourceId, bookUrl, chapterUrl, chapterIndex, scrollPosition, positionMs, bookKind, updatedAt: progressItem.updatedAt }
       }
     })
     const marker = operation.then(() => undefined, () => undefined)
@@ -831,7 +832,7 @@ export const api = {
   progressSyncSettings: () => request<ProgressSyncSettings>('/api/progress-sync/settings'),
   saveProgressSyncSettings: (directoryName: string) =>
     request<ProgressSyncSettings>('/api/progress-sync/settings', { method: 'PUT', body: JSON.stringify({ directoryName }) }),
-  mergeProgress: (data: { sourceId: string; bookUrl: string; chapters: Chapter[] }) =>
+  mergeProgress: (data: { sourceId: string; bookUrl: string; chapters: Chapter[]; bookKind?: string }) =>
     request<ProgressMergeResponse>('/api/progress-sync/merge', { method: 'POST', body: JSON.stringify(data) }),
   webDavInfo: (path = '') => request<WebDavInfo>(`/api/webdav/info${path ? `?path=${encodeURIComponent(path)}` : ''}`),
   webDavUpload: (path: string, file: File) => webDavWrite(path, { method: 'PUT', body: file }),

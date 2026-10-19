@@ -457,6 +457,7 @@ AI 与人类协作时必须明确当前达到的完成度阶梯，严禁混淆�
 | 2026-10-18 | Feat | **统一按钮加载微动画与防连击保护 (Issue #67) ＋ 搜索界面 UI 优化 (Issue #73)**：① 抽取通用 `<ButtonSpinner />` 并规范 `.btn-spinner` / `is-loading` / `aria-busy` 样式规范（边框继承 `currentColor`，适配全部主题与危险红，减弱动效守卫）；② 全面覆盖关键异步场景：清除缓存弹窗选中项转圈加锁、换源弹窗切源转圈与互斥禁用、书籍编辑保存/联网搜索/封面上传、本地书重新解析/正文重洗、书源登录动作按钮与保存登录、网络导入拉取/确认、书源订阅同步、阅读器目录离线范围缓存；③ 搜索框独立组件 `SearchBox.tsx`（高 48px、圆角 10px、聚焦环主题色、右侧清空回焦、胶囊搜索按钮、空文本禁用、搜索中复用 Spinner 切换停止搜索）；④ 搜索结果点击立即打开详情弹窗并显示加载反馈，网络失败可关闭重试。前端 375 项通过、服务端测试通过 | [`docs/sessions/SESSION-052-loading-spinner-and-search-ui.md`](docs/sessions/SESSION-052-loading-spinner-and-search-ui.md) · [`docs/acceptance/ACCEPT-034-ui-loading-spinners-and-search-box.md`](docs/acceptance/ACCEPT-034-ui-loading-spinners-and-search-box.md) | Accepted & Pushed |
 
 | 2026-10-18 | Fix | 修复书库搜索结果二次筛选输入框缩成原生小框：补齐输入框 flex/宽度并移除内层原生边框；同步更新本地 :8080 服务，前端 376 项及服务端测试通过 | - | Accepted & Pushed |
+| 2026-10-19 | Fix | 修复 WebDAV progress 阅读进度同步跨媒介覆盖：按 bookKind 分流隔离，小说保持无后缀与手机开源阅读无缝互通，有声带 _audio，漫画带 _comic，杜绝同名书互踩覆盖 | - | Tested |
 
 ---
 
@@ -503,3 +504,4 @@ This repository is dedicated to the standalone Legado Server ecosystem: the stan
 
 - **[沙箱/致命] 给桥接对象加成员时「声明 ≠ 可见」：漏挂载会让书源规则**静默回退**，日志里什么都没有**：实现书籍变量时，`book.variableMap` 的对象建好、键值也写进去了，**却忘了 `ScriptableObject.putProperty(book, "variableMap", ...)`**。宿主侧完全合法（不报错），JS 侧只是一个 `undefined`：书源里 `book.variableMap["custom"]` 抛 TypeError，`<js>` 求值失败后正文规则**自动回退到抓页面正文**分支 ⇒ 用户看到"规则没生效"，而**日志一片安静**。**唯一可靠的兜底是"从 JS 侧真的读一次"的用例**（断言 `typeof book.variableMap`、`book.getVariable(...)` 的真实返回值），因为漏挂载在宿主语言里是合法的。同类风险点：任何 `putProperty` 的"新增成员"改动。
 - **[Legado 兼容] 书籍变量（`book.getVariable`）的语义要照抄开源阅读，别自己发明**：`legado-with-MD3` 的 `BaseBook.variable` 是 **JSON 字符串**（`GSON.toJson(variableMap)`），`RuleDataInterface.getVariable(key)` 取不到时返回**空串**（不是 `"null"`），`custom` 是一等公民（`putCustomVariable/getCustomVariable`）且编辑 UI 只编辑它。本仓库此前 `getVariable` 返回 `"null"` —— 那是**巧合可用**（书源恰好写了 `if (x == "null")` 兼容），不是契约。**参照实现在工作区 `legado-with-MD3/` 里，先读再用。**
+- **[进度同步/类型隔离] WebDAV 进度镜像（bookProgress）必须按 `bookKind` 分流，严禁同名跨媒介互踩**：Legado 手机端默认只同步小说（使用无后缀的 `<书名>_<作者>.json`），若同名同作者同时存在小说、漫画和听书，服务端此前盲目写入同一无后缀文件，导致手机端同步时小说进度被漫画或听书冲掉。修法：小说（novel/local/默认）严格保持原名，有声加上 `_audio`（`<书名>_<作者>_audio.json`），漫画加上 `_comic`（`<书名>_<作者>_comic.json`）；读取时严格按预期类别过滤，严禁降级借用或跨媒介误读。

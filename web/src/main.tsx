@@ -3366,6 +3366,7 @@ function App() {
           sourceId: safeDetails.sourceId,
           bookUrl: item.bookUrl,
           chapters,
+          bookKind: item.bookKind,
         })
         if (merged?.progress) mergedProgress = merged.progress
       } catch {

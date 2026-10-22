@@ -170,6 +170,9 @@ fun Route.apiRoutes(
             // 用户明确要求：**手机倒退 → 同步也倒退**。
             // 手机自己回翻时也会把 idx 写小（实测 云游异世界 326 → 329 → 328 → 323），
             // 因此这里保持同样语义，不做任何"只增不减"的额外保护。
+            // 另外按 bookKind 进行类型隔离（有声加 _audio，漫画加 _comic，小说保持无后缀），
+            // 避免同名书籍互相覆盖，手机端开源阅读只同步小说。
+            val kind = saved.bookKind?.takeIf { it.isNotBlank() } ?: shelf.bookKind
             progressSync.write(
                 bookName = shelf.name,
                 author = shelf.author,
@@ -178,6 +181,7 @@ fun Route.apiRoutes(
                 // 有声书：把我们负责的毫秒位置镜像成 `durChapterPos`（同语义直传）；
                 // 其它类型为 null ⇒ 沿用文件里手机端写的值（我们无权改写字符偏移量）
                 positionMs = saved.positionMs,
+                bookKind = kind,
             )
         }
     }
@@ -2499,10 +2503,11 @@ fun Route.apiRoutes(
             val request = call.receive<ProgressMergeRequest>()
             val shelf = database.getShelfBookByUrl(request.bookUrl)
             val dbProgress = database.getProgress(request.sourceId, request.bookUrl)
+            val kind = request.bookKind?.takeIf { it.isNotBlank() } ?: shelf?.bookKind
 
             // 没有章节列表就无法做标题对齐；此时直接返回数据库进度
             val chapters = request.chapters
-            val fileProgress = if (shelf != null) progressSync.read(shelf.name, shelf.author) else null
+            val fileProgress = if (shelf != null) progressSync.read(shelf.name, shelf.author, kind) else null
 
             if (fileProgress == null || chapters.isEmpty()) {
                 call.respond(ProgressMergeResponse(source = "database", progress = dbProgress, fileFound = fileProgress != null))
@@ -2551,6 +2556,9 @@ fun Route.apiRoutes(
                         chapterUrl = aligned.url,
                         chapterIndex = fileIndex,
                         scrollPosition = dbProgress?.scrollPosition ?: 0.0,
+                        positionMs = if (kind == "audio") fileProgress.chapterPos.toLong().takeIf { it > 0 } ?: dbProgress?.positionMs else null,
+                        chapterTitle = aligned.title,
+                        bookKind = kind,
                     )
                 )
                 call.respond(ProgressMergeResponse(source = "file", progress = merged, fileFound = true, alignedIndex = fileIndex))

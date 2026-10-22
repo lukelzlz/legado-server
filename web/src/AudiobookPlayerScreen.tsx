@@ -247,6 +247,7 @@ export function AudiobookPlayerScreen({ openBook, startIndex, onClose, theme }: 
       0,
       target.title,
       Math.max(0, Math.round(positionMs)),
+      activeBook.bookKind ?? 'audio',
     ).catch(() => undefined)
   }, [chapters, activeBook.bookUrl, activeBook.details.sourceId])
 

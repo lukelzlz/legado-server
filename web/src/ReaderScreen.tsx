@@ -695,6 +695,8 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
       current.chapter.index,
       clampScrollPosition(current.position),
       current.chapter.title,
+      undefined,
+      currentBook.bookKind,
     ).catch(() => undefined)
   }, [currentBook.bookUrl, currentBook.details.sourceId])
 

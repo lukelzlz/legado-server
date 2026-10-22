@@ -89,8 +89,8 @@ class BookProgressSync(
     // ------------------------------------------------------------------
 
     /** 读取某本书的进度文件；不存在或格式非法返回 null（**绝不抛异常打断阅读**）。 */
-    fun read(bookName: String, author: String?): FileProgress? = runCatching {
-        val file = findFile(bookName, author) ?: return@runCatching null
+    fun read(bookName: String, author: String?, bookKind: String? = null): FileProgress? = runCatching {
+        val file = findFile(bookName, author, bookKind) ?: return@runCatching null
         val text = file.readText()
         val obj = Json.parseToJsonElement(text) as? JsonObject ?: return@runCatching null
         FileProgress(
@@ -105,12 +105,17 @@ class BookProgressSync(
     /**
      * 找到某本书的进度文件。
      *
-     * 先按「书名_作者.json」精确查找；找不到再做**归一化匹配**——
+     * 先按类型特定候选文件名精确查找；找不到再做**归一化匹配**——
      * 手机端会把书名里的换行/斜杠等字符去掉，直接按原名拼文件名会找不到。
+     *
+     * ⚠️ 强类型隔离：
+     * - 小说（novel / local / null）：严格匹配无后缀文件，排除 `_audio.json` 和 `_comic.json`；
+     * - 有声书（audio）：只匹配带有 `_audio` 的文件，绝不匹配小说或漫画；
+     * - 漫画（comic）：只匹配带有 `_comic` 的文件，绝不匹配小说或有声。
      */
-    private fun findFile(bookName: String, author: String?): Path? {
+    private fun findFile(bookName: String, author: String?, bookKind: String? = null): Path? {
         val dir = directory() ?: return null
-        val candidates = fileNameCandidates(bookName, author)
+        val candidates = fileNameCandidates(bookName, author, bookKind)
         for (name in candidates) {
             // 必须 try/catch：书名含换行等字符时，`resolve` 会抛 InvalidPathException
             // 而不是返回不存在的路径。若不拦，**第一个未清洗的候选就会中断整个查找**，
@@ -121,12 +126,15 @@ class BookProgressSync(
         // 兜底：归一化后逐文件比对（书名可能含被清洗掉的字符）
         val targetKey = normalizeForMatch(bookName)
         if (targetKey.isBlank()) return null
+        val expectedSuffix = kindSuffix(bookKind)
         return runCatching {
             Files.list(dir).use { stream ->
                 stream.filter { it.fileName.toString().endsWith(".json") }
                     .filter { path ->
-                        val stem = path.fileName.toString().removeSuffix(".json")
-                        val fileBookName = stem.substringBeforeLast('_', stem)
+                        val fileName = path.fileName.toString()
+                        if (fileKindSuffix(fileName) != expectedSuffix) return@filter false
+                        val stemWithoutSuffix = stripKindSuffix(fileName.removeSuffix(".json"))
+                        val fileBookName = stemWithoutSuffix.substringBeforeLast('_', stemWithoutSuffix)
                         normalizeForMatch(fileBookName) == targetKey
                     }
                     .findFirst().orElse(null)
@@ -134,15 +142,73 @@ class BookProgressSync(
         }.getOrNull()
     }
 
-    /** 生成可能的文件名（手机端命名规则：`<书名>_<作者>.json`，并去掉换行等非法字符）。 */
-    internal fun fileNameCandidates(bookName: String, author: String?): List<String> {
+    /**
+     * 根据类别判断文件后缀名标识（`audio` / `comic` / `null`）。
+     * 小说（novel / local / null）保持无后缀，与手机端开源阅读默认格式完全对齐。
+     */
+    internal fun kindSuffix(bookKind: String?): String? = when (bookKind?.lowercase()?.trim()) {
+        "audio" -> "audio"
+        "comic" -> "comic"
+        else -> null
+    }
+
+    /**
+     * 判断已有文件的类别后缀标识。
+     */
+    internal fun fileKindSuffix(fileName: String): String? {
+        val stem = fileName.removeSuffix(".json")
+        val lower = stem.lowercase()
+        return when {
+            lower.endsWith("_audio") -> "audio"
+            lower.endsWith("_comic") -> "comic"
+            else -> null
+        }
+    }
+
+    /**
+     * 剥离类别后缀，还原 `<书名>_<作者>` 或 `<书名>` 基础词干。
+     */
+    internal fun stripKindSuffix(stem: String): String {
+        val lower = stem.lowercase()
+        return when {
+            lower.endsWith("_audio") -> stem.substring(0, stem.length - 6)
+            lower.endsWith("_comic") -> stem.substring(0, stem.length - 6)
+            else -> stem
+        }
+    }
+
+    /**
+     * 生成可能的文件名（手机端命名规则：`<书名>_<作者>.json`，有声带 `_audio`，漫画带 `_comic`）。
+     */
+    internal fun fileNameCandidates(bookName: String, author: String?, bookKind: String? = null): List<String> {
+        val suffix = kindSuffix(bookKind)
         val names = linkedSetOf<String>()
-        for (n in listOf(bookName, sanitizeFileComponent(bookName))) {
-            if (n.isBlank()) continue
-            for (a in listOfNotNull(author?.takeIf { it.isNotBlank() }, sanitizeFileComponent(author))) {
-                names.add("${n}_$a.json")
+        val bookNames = listOfNotNull(
+            bookName.takeIf { it.isNotBlank() },
+            sanitizeFileComponent(bookName).takeIf { it.isNotBlank() },
+        ).distinct()
+        val authors = listOfNotNull(
+            author?.takeIf { it.isNotBlank() },
+            sanitizeFileComponent(author).takeIf { it.isNotBlank() },
+        ).distinct()
+
+        for (n in bookNames) {
+            if (suffix != null) {
+                // 有声书 / 漫画：严格带有 `_$suffix`
+                for (a in authors) {
+                    names.add("${n}_${a}_$suffix.json")
+                }
+                names.add("${n}_$suffix.json")
+                for (a in authors) {
+                    names.add("${n}_${suffix}_$a.json")
+                }
+            } else {
+                // 小说（文本）：严格不带 `_audio` / `_comic`
+                for (a in authors) {
+                    names.add("${n}_$a.json")
+                }
+                names.add("$n.json")
             }
-            names.add("$n.json")
         }
         return names.toList()
     }
@@ -183,12 +249,19 @@ class BookProgressSync(
          * 为空时保持既有行为：沿用文件里手机端写的值（文本/漫画的字符偏移量我们无权改写）。
          */
         positionMs: Long? = null,
+        /** 书籍类别：`audio` 写带 `_audio` 文件，`comic` 写带 `_comic` 文件，小说保持原格式。 */
+        bookKind: String? = null,
     ): Boolean = runCatching {
         val dir = ensureDirectory() ?: return@runCatching false
-        val existing = findFile(bookName, author)
-        val target = existing ?: dir.resolve(
-            "${sanitizeFileComponent(bookName).ifBlank { "untitled" }}_${sanitizeFileComponent(author).ifBlank { "unknown" }}.json"
-        )
+        val existing = findFile(bookName, author, bookKind)
+        val target = existing ?: run {
+            val suffix = kindSuffix(bookKind)
+            val cleanName = sanitizeFileComponent(bookName).ifBlank { "untitled" }
+            val cleanAuthor = sanitizeFileComponent(author)
+            val baseStem = if (cleanAuthor.isNotBlank()) "${cleanName}_$cleanAuthor" else cleanName
+            val fileName = if (suffix != null) "${baseStem}_$suffix.json" else "$baseStem.json"
+            dir.resolve(fileName)
+        }
         // 保留原有字段（name/author 等由手机端写入，不要覆盖成我们这边的形态）
         val previous = if (existing != null) {
             runCatching { Json.parseToJsonElement(existing.readText()) as? JsonObject }.getOrNull()

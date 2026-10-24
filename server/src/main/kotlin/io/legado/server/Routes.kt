@@ -2974,6 +2974,7 @@ internal fun fetchBookDetails(database: Database, runner: RuleRunner, sourceId: 
             coverUrl = shelf.coverKey?.let { "/api/covers/$it" },
             tocUrl = shelf.tocUrl,
             variables = database.getBookVariables(sourceId, bookUrl),
+            bookKind = BookKind.LOCAL.wire,
         )
     }
     val source = database.getSource(sourceId) ?: return null

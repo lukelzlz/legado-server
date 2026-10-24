@@ -148,6 +148,7 @@ export const loadSourceBook = async (result: SearchResult, alternateSources?: Se
     details.author?.trim() ||
     result.author?.trim()
   const safeAuthor = cleanAuthor(rawAuthor) || rawAuthor
+  const bookKind = details.bookKind || result.bookKind
 
   const safeDetails: BookDetails = {
     ...details,
@@ -155,13 +156,14 @@ export const loadSourceBook = async (result: SearchResult, alternateSources?: Se
     author: safeAuthor,
     coverUrl: bestCover || undefined,
     intro: bestIntro || undefined,
+    bookKind: bookKind || undefined,
     alternateSources: alternateSources?.filter(s => s.sourceId !== result.sourceId || s.bookUrl !== result.bookUrl),
   }
   const [chapters, progress] = await Promise.all([
     api.chapters(safeDetails.sourceId, safeDetails.tocUrl),
     api.progress(safeDetails.sourceId, result.bookUrl),
   ])
-  return { details: safeDetails, bookUrl: result.bookUrl, chapters, progress }
+  return { details: safeDetails, bookUrl: result.bookUrl, chapters, progress, bookKind }
 }
 
 const initialSearchState: SearchStoreState = {
@@ -363,9 +365,11 @@ export class SearchStore {
         author: group.author,
         intro: first.intro,
         coverUrl: group.sources.find(source => source.coverUrl)?.coverUrl,
+        bookKind: first.bookKind,
       },
       bookUrl: first.bookUrl,
       chapters: [],
+      bookKind: first.bookKind,
     }
     const initialChoices: SourceChoice[] = group.sources.map(result => ({ result, status: 'idle' }))
     this.setState({ detailLoading: true, detailError: '', message: '', openBook: placeholder, choices: initialChoices })

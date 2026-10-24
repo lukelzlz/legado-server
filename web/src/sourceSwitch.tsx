@@ -454,6 +454,7 @@ export async function switchBookSource(
     author: cleanAuthor(details.author?.trim() || current.details.author) || current.details.author,
     coverUrl: fallbackCover || undefined,
     intro: details.intro || current.details.intro,
+    bookKind: details.bookKind || chosen.result.bookKind || current.bookKind,
     alternateSources: current.details.alternateSources,
   }
 
@@ -476,7 +477,7 @@ export async function switchBookSource(
       details: safeDetails,
       bookUrl: chosen.result.bookUrl,
       chapters: chosen.chapters,
-      bookKind: current.bookKind,
+      bookKind: safeDetails.bookKind,
     },
     targetChapterIndex: chosen.targetChapterIndex,
     previous,

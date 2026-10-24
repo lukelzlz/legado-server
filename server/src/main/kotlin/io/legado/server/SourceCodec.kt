@@ -148,14 +148,17 @@ object SourceCodec {
         return items.map { json.encodeToString(JsonElement.serializer(), it) }
     }
 
-    /** 对外复用：把书源标识（可带 `#` / `##` 注解）归一化为服务端使用的 sourceId（备份导入时对齐书架 origin）。 */
+    /** 对外复用：把书源标识归一化为服务端 sourceId；媒体变体（漫画版/听书版）必须保留。 */
     fun normalizeSourceId(raw: String): String = normalizeSourceUrl(raw)
 
-    private fun normalizeSourceUrl(rawUrl: String): String = rawUrl
-        .substringBefore("##")
-        .substringBefore("#")
-        .trim()
-        .ifBlank { rawUrl }
+    private fun normalizeSourceUrl(rawUrl: String): String {
+        val trimmed = rawUrl.trim()
+        val annotation = trimmed.substringAfter("##", "").trim().lowercase()
+        // Legado 的漫画/听书变体共用同一站点 URL，但它们是两个独立书源，
+        // 必须保留变体标记作为 sourceId，不能像普通分组注解一样剥掉。
+        if (annotation == "漫画版" || annotation == "听书版") return trimmed
+        return trimmed.substringBefore("##").substringBefore("#").trim().ifBlank { trimmed }
+    }
 
     private fun JsonObject.string(key: String): String? {
         val primitive = get(key) as? JsonPrimitive ?: return null

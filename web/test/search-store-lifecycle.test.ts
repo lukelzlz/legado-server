@@ -23,6 +23,7 @@ test('searchStore - bookKey and loadSourceBook helper', async () => {
       name: '凡人修仙传',
       author: '忘语',
       tocUrl: '/toc',
+      bookKind: 'audio',
     })
     api.chapters = async () => [{ index: 0, title: '第一章', url: '/c1' }]
     api.progress = async () => ({
@@ -41,6 +42,8 @@ test('searchStore - bookKey and loadSourceBook helper', async () => {
     })
 
     assert.equal(book.details.name, '凡人修仙传')
+    assert.equal(book.details.bookKind, 'audio')
+    assert.equal(book.bookKind, 'audio')
     assert.equal(book.chapters.length, 1)
     assert.equal(book.progress?.chapterIndex, 0)
 
@@ -55,8 +58,10 @@ test('searchStore - bookKey and loadSourceBook helper', async () => {
       sourceId: 'https://src1.com',
       name: '诡秘之主',
       bookUrl: '/book/2',
+      bookKind: 'comic',
     })
     assert.equal(bookWithFallback.details.name, '诡秘之主', 'Should fallback to search result title when details.name is 未命名书籍')
+    assert.equal(bookWithFallback.bookKind, 'comic', 'Should fallback to search result bookKind when details omits it')
   } finally {
     api.details = originalDetails
     api.chapters = originalChapters
@@ -258,4 +263,3 @@ test('searchStore - stopSearch lifecycle and status flag', () => {
     searchStore.reset()
   }
 })
-

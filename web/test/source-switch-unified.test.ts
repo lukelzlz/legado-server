@@ -181,7 +181,7 @@ test('换源编排 - 详情/落库两次请求 + 封面回退顺序 + 书名作�
         bookKind: 'comic',
       },
       {
-        result: { sourceId: 'https://new.example.com', bookUrl: 'https://new.example.com/b/1', name: '测试小说' },
+        result: { sourceId: 'https://new.example.com', bookUrl: 'https://new.example.com/b/1', name: '测试小说', bookKind: 'audio' },
         chapters: [ch(0, '第一章'), ch(1, '第二章')],
         targetChapterIndex: 1,
       },
@@ -203,7 +203,7 @@ test('换源编排 - 详情/落库两次请求 + 封面回退顺序 + 书名作�
     assert.equal(write.alternateSources?.length, 1, '已收录候选源必须原样保留')
 
     assert.equal(result.targetChapterIndex, 1)
-    assert.equal(result.book.bookKind, 'comic', 'bookKind 必须原样透传（漫画/有声分派靠它）')
+    assert.equal(result.book.bookKind, 'audio', '详情缺失时必须回退到候选源 bookKind（漫画/有声分派靠它）')
     assert.deepEqual(result.previous, { sourceId: 'https://old.example.com', bookUrl: 'https://old.example.com/b/1' }, '必须回传旧源标识供调用方清缓存')
     assert.equal(result.book.details.alternateSources?.length, 1, '新详情必须继承旧详情的已收录候选')
   } finally {

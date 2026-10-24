@@ -95,6 +95,17 @@ internal fun Database.persistBookVariables(book: BookContext) {
 }
 
 /**
+ * 解析搜索/详情响应需要暴露给前端的书籍类型。
+ *
+ * 已在书架上的记录优先复用数据库里的类型；未入架的书则按书自身 URL 载荷，
+ * 最后回退到书源声明。这样搜索页直接开书与书架开书使用同一套判定语义。
+ */
+internal fun resolveBookKind(source: JsonObject, bookUrl: String, book: BookContext? = null): String? {
+    val explicit = book?.kind?.trim()?.lowercase()?.takeIf { it == "novel" || it == "comic" || it == "audio" }
+    return BookKind.resolveOrNull(explicit, bookUrl, source.toString())
+}
+
+/**
  * A deliberately small, server-safe subset of Legado's declarative source protocol.
  * It keeps execution away from Android APIs and rejects private-network targets.
  */
@@ -105,13 +116,17 @@ class RuleRunner(private val responseFetcher: ((String) -> String)? = null, inte
     private val json = Json { ignoreUnknownKeys = true }
     internal val jsSandbox = JsSandbox(this)
 
+    private fun sourceId(source: JsonObject): String = source.string("bookSourceUrl") ?: throw RuleExecutionException("书源缺少 bookSourceUrl")
+    private fun sourceBaseUrl(source: JsonObject): String = sourceId(source).substringBefore("##").substringBefore("#")
+
     fun search(sourceJson: String, keyword: String): List<SearchResult> {
         val source = sourceJson.objectValue()
         source.string("mainJs")?.takeIf { it.isNotBlank() }?.let { return JsSourceRunner(this, source).search(keyword) }
         val rawSearchUrl = source.string("searchUrl") ?: throw RuleExecutionException("该书源未配置 searchUrl")
-        val sourceUrl = source.string("bookSourceUrl") ?: throw RuleExecutionException("书源缺少 bookSourceUrl")
-        // 整个搜索流程都在书源上下文内执行：规则里的 <js> 依赖 source.getVariable() 与 jsLib 工具函数
-        val execContext = sourceContext(source, sourceUrl)
+        val sourceKey = sourceId(source)
+        val sourceUrl = sourceBaseUrl(source)
+        // 网络请求使用去掉变体注解的站点地址，JS/登录态仍使用带变体的稳定 sourceId。
+        val execContext = sourceContext(source, sourceKey)
         return jsSandbox.withSourceContext(execContext) {
             val searchUrl = if (rawSearchUrl.trimStart().startsWith("@js:") || rawSearchUrl.trimStart().startsWith("js:") || rawSearchUrl.contains("<js>")) {
                 val jsCode = if (rawSearchUrl.contains("<js>")) rawSearchUrl.substringAfter("<js>").substringBefore("</js>") else rawSearchUrl.removePrefix("@js:").removePrefix("js:")
@@ -125,16 +140,18 @@ class RuleRunner(private val responseFetcher: ((String) -> String)? = null, inte
             val rendered = renderUrl(urlTemplate, keyword, sourceUrl).absolute(sourceUrl)
             val body = fetchUrl(rendered, mergedOptions, keyword, sourceUrl, database)
             val rule = source.objectValue("ruleSearch") ?: throw RuleExecutionException("该书源未配置 ruleSearch")
-            val items = nodes(body, rule.string("bookList") ?: throw RuleExecutionException("缺少 ruleSearch.bookList"))
+            val listRule = rule.string("bookList") ?: throw RuleExecutionException("缺少 ruleSearch.bookList")
+            val items = if (isJsRule(listRule)) jsListNodes(NodeValue.document(body), listRule, body, sourceUrl) else nodes(body, listRule)
             items.mapNotNull { item ->
                 val url = item.value(rule.string("bookUrl"), jsSandbox, body, sourceUrl)?.absolute(sourceUrl) ?: return@mapNotNull null
                 SearchResult(
-                    sourceId = sourceUrl,
+                    sourceId = sourceKey,
                     name = item.value(rule.string("name"), jsSandbox, body, sourceUrl) ?: return@mapNotNull null,
                     author = item.value(rule.string("author"), jsSandbox, body, sourceUrl),
                     bookUrl = url,
                     coverUrl = item.value(rule.string("coverUrl"), jsSandbox, body, sourceUrl)?.absolute(sourceUrl),
                     intro = item.value(rule.string("intro"), jsSandbox, body, sourceUrl),
+                    bookKind = resolveBookKind(source, url),
                 )
             }
         }
@@ -271,8 +288,9 @@ class RuleRunner(private val responseFetcher: ((String) -> String)? = null, inte
      */
     fun exploreBooks(sourceJson: String, exploreUrl: String, page: Int = 1): List<SearchResult> {
         val source = sourceJson.objectValue()
-        val sourceUrl = source.string("bookSourceUrl") ?: throw RuleExecutionException("书源缺少 bookSourceUrl")
-        val execContext = sourceContext(source, sourceUrl)
+        val sourceKey = sourceId(source)
+        val sourceUrl = sourceBaseUrl(source)
+        val execContext = sourceContext(source, sourceKey)
 
         return jsSandbox.withSourceContext(execContext) {
             val evaluatedUrl = if (exploreUrl.trimStart().startsWith("@js:") || exploreUrl.trimStart().startsWith("js:") || exploreUrl.contains("<js>")) {
@@ -309,17 +327,18 @@ class RuleRunner(private val responseFetcher: ((String) -> String)? = null, inte
             }
 
             val listRule = rule.string("bookList") ?: throw RuleExecutionException("缺少 bookList 规则")
-            val items = nodes(body, listRule)
+            val items = if (isJsRule(listRule)) jsListNodes(NodeValue.document(body), listRule, body, sourceUrl) else nodes(body, listRule)
             items.mapNotNull { item ->
                 val url = item.value(rule.string("bookUrl"), jsSandbox, body, sourceUrl)?.absolute(sourceUrl) ?: return@mapNotNull null
                 val name = item.value(rule.string("name"), jsSandbox, body, sourceUrl) ?: return@mapNotNull null
                 SearchResult(
-                    sourceId = sourceUrl,
+                    sourceId = sourceKey,
                     name = name,
                     author = item.value(rule.string("author"), jsSandbox, body, sourceUrl),
                     bookUrl = url,
                     coverUrl = item.value(rule.string("coverUrl"), jsSandbox, body, sourceUrl)?.absolute(sourceUrl),
                     intro = item.value(rule.string("intro"), jsSandbox, body, sourceUrl),
+                    bookKind = resolveBookKind(source, url),
                 )
             }
         }
@@ -359,8 +378,10 @@ class RuleRunner(private val responseFetcher: ((String) -> String)? = null, inte
     fun details(sourceJson: String, bookUrl: String, book: BookContext? = null): BookDetails {
         val source = sourceJson.objectValue()
         source.string("mainJs")?.takeIf { it.isNotBlank() }?.let { return JsSourceRunner(this, source).details(bookUrl, book) }
-        return jsSandbox.withSourceContext(sourceContext(source, source.string("bookSourceUrl"), book)) {
-            declarativeDetails(source, bookUrl)
+        val sourceKey = sourceId(source)
+        val sourceUrl = sourceBaseUrl(source)
+        return jsSandbox.withSourceContext(sourceContext(source, sourceKey, book)) {
+            declarativeDetails(source, bookUrl, book)
         }
     }
 
@@ -389,8 +410,9 @@ class RuleRunner(private val responseFetcher: ((String) -> String)? = null, inte
         }
     }
 
-    private fun declarativeDetails(source: JsonObject, bookUrl: String): BookDetails {
-        val sourceUrl = source.string("bookSourceUrl")
+    private fun declarativeDetails(source: JsonObject, bookUrl: String, book: BookContext? = null): BookDetails {
+        val sourceKey = sourceId(source)
+        val sourceUrl = sourceBaseUrl(source)
         val rule = source.objectValue("ruleBookInfo") ?: throw RuleExecutionException("该书源未配置 ruleBookInfo")
         val initRule = rule.string("init")
 
@@ -421,19 +443,21 @@ class RuleRunner(private val responseFetcher: ((String) -> String)? = null, inte
         fun value(key: String): String? = runCatching { root.value(rule.string(key), jsSandbox, body, bookUrl) }.getOrNull()
         val name = sanitizeBookName(value("name"))
         return BookDetails(
-            sourceId = source.string("bookSourceUrl")!!,
+            sourceId = sourceKey,
             name = name.ifBlank { "未命名书籍" },
             author = value("author"), intro = value("intro"),
             coverUrl = value("coverUrl")?.absolute(bookUrl),
             tocUrl = value("tocUrl")?.absolute(bookUrl) ?: bookUrl,
+            bookKind = resolveBookKind(source, bookUrl, book),
         )
     }
 
     fun chapters(sourceJson: String, tocUrl: String, book: BookContext? = null): List<Chapter> {
         val source = sourceJson.objectValue()
         source.string("mainJs")?.takeIf { it.isNotBlank() }?.let { return JsSourceRunner(this, source).chapters(tocUrl, book) }
-        val sourceUrl = source.string("bookSourceUrl")
-        return jsSandbox.withSourceContext(sourceContext(source, sourceUrl, book)) {
+        val sourceKey = sourceId(source)
+        val sourceUrl = sourceBaseUrl(source)
+        return jsSandbox.withSourceContext(sourceContext(source, sourceKey, book)) {
             val rule = source.objectValue("ruleToc") ?: throw RuleExecutionException("该书源未配置 ruleToc")
             val listRule = rule.string("chapterList") ?: throw RuleExecutionException("缺少 ruleToc.chapterList")
             val dataPayload = dataUrlPayload(tocUrl)
@@ -1356,12 +1380,28 @@ private class JsSourceRunner(private val runner: RuleRunner, private val source:
     fun search(keyword: String): List<SearchResult> = call("search", arrayOf(keyword, 1)).jsonArray().mapNotNull { value ->
         val book = Json.parseToJsonElement(value).jsonObject
         val url = book.string("bookUrl") ?: return@mapNotNull null
-        SearchResult(source.string("bookSourceUrl")!!, book.string("name") ?: return@mapNotNull null, book.string("author"), url, book.string("coverUrl"), book.string("intro"))
+        SearchResult(
+            sourceId = source.string("bookSourceUrl")!!,
+            name = book.string("name") ?: return@mapNotNull null,
+            author = book.string("author"),
+            bookUrl = url,
+            coverUrl = book.string("coverUrl"),
+            intro = book.string("intro"),
+            bookKind = resolveBookKind(source, url),
+        )
     }
     fun details(bookUrl: String, book: BookContext? = null): BookDetails {
         val value = callOptional("getBookInfo", arrayOf(bookObject(bookUrl, book)))?.jsonObjectOrEmpty() ?: JsonObject(emptyMap())
         val name = sanitizeBookName(value.string("name"))
-        return BookDetails(source.string("bookSourceUrl")!!, name.ifBlank { "未命名书籍" }, value.string("author"), value.string("intro"), value.string("coverUrl"), value.string("tocUrl") ?: bookUrl)
+        return BookDetails(
+            sourceId = source.string("bookSourceUrl")!!,
+            name = name.ifBlank { "未命名书籍" },
+            author = value.string("author"),
+            intro = value.string("intro"),
+            coverUrl = value.string("coverUrl"),
+            tocUrl = value.string("tocUrl") ?: bookUrl,
+            bookKind = resolveBookKind(source, bookUrl, book),
+        )
     }
     fun chapters(tocUrl: String, book: BookContext? = null): List<Chapter> = call("getChapters", arrayOf(bookObject(tocUrl, book))).jsonArray().mapIndexedNotNull { index, value ->
         val chapter = Json.parseToJsonElement(value).jsonObject; val url = chapter.string("url") ?: return@mapIndexedNotNull null; Chapter(index, chapter.string("title") ?: "第 ${index + 1} 章", url)

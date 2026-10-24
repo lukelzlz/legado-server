@@ -10,12 +10,28 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.nio.file.Files
+import java.util.Base64
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 
 class SearchRoutesTest {
 
     // --- Tier 1: Core Feature Tests ---
+
+    @Test
+    fun `preserves same host comic and audio source variants as distinct ids`() {
+        val comic = SourceCodec.parse(
+            """{"bookSourceUrl":"https://fanqienovel.com##漫画版","bookSourceName":"番茄漫画","bookSourceType":2}""",
+        )
+        val audio = SourceCodec.parse(
+            """{"bookSourceUrl":"https://fanqienovel.com##听书版","bookSourceName":"番茄听书","bookSourceType":1}""",
+        )
+
+        assertEquals("https://fanqienovel.com##漫画版", comic.id)
+        assertEquals("https://fanqienovel.com##听书版", audio.id)
+        assertEquals("comic", BookKind.fromSourcePayload(comic.json).wire)
+        assertEquals("audio", BookKind.fromSourcePayload(audio.json).wire)
+    }
 
     @Test
     fun `search returns candidates immediately without deep 3-tier validation`() = runBlocking {
@@ -55,6 +71,72 @@ class SearchRoutesTest {
             assertEquals(1, requestedUrls.size)
             assertTrue(requestedUrls.first().contains("/search"))
         } finally { Files.deleteIfExists(java.nio.file.Path.of(path)) }
+    }
+
+    @Test
+    fun `search and details expose resolved book kind for direct reader dispatch`() {
+        val sourceJson = """
+            {
+              "bookSourceUrl":"https://comic.example",
+              "bookSourceType":2,
+              "searchUrl":"/search?key={{key}}",
+              "ruleSearch":{"bookList":"$.data","name":"$.title","bookUrl":"/book/{{$.id}}"},
+              "ruleBookInfo":{"name":"$.title","tocUrl":"/toc/{{$.id}}"}
+            }
+        """.trimIndent()
+        val runner = RuleRunner { url ->
+            if (url.contains("/search")) {
+                """{"data":[{"id":"comic-1","title":"测试漫画"}]}"""
+            } else {
+                """{"id":"comic-1","title":"测试漫画"}"""
+            }
+        }
+
+        val result = runner.search(sourceJson, "测试").single()
+        assertEquals("comic", result.bookKind)
+
+        val details = runner.details(sourceJson, result.bookUrl)
+        assertEquals("comic", details.bookKind)
+    }
+
+    @Test
+    fun `aggregate book url tab overrides source fallback and audio source is exposed`() {
+        val payload = Base64.getEncoder().encodeToString(
+            """{"id":"comic-1","tab":"漫画","name":"聚合漫画"}""".toByteArray(Charsets.UTF_8),
+        )
+        val aggregateUrl = "data:;base64,$payload"
+        val aggregateSource = """
+            {
+              "bookSourceUrl":"aggregate-source",
+              "searchUrl":"/search?key={{key}}",
+              "ruleSearch":{"bookList":"$.data","name":"$.name","bookUrl":"$.url"},
+              "ruleBookInfo":{"name":"$.name","tocUrl":"$.toc"}
+            }
+        """.trimIndent()
+        val aggregateRunner = RuleRunner { url ->
+            if (url.contains("/search")) """{"data":[{"name":"聚合漫画","url":"$aggregateUrl"}]}"""
+            else error("Unexpected URL: $url")
+        }
+        val aggregateResult = aggregateRunner.search(aggregateSource, "聚合").single()
+        assertEquals("comic", aggregateResult.bookKind)
+        assertEquals("comic", aggregateRunner.details(aggregateSource, aggregateResult.bookUrl).bookKind)
+
+        val audioSource = """
+            {
+              "bookSourceUrl":"https://audio.example",
+              "bookSourceType":1,
+              "searchUrl":"/search?key={{key}}",
+              "ruleSearch":{"bookList":"$.data","name":"$.name","bookUrl":"$.url"},
+              "ruleBookInfo":{"name":"$.name","tocUrl":"$.toc"}
+            }
+        """.trimIndent()
+        val audioRunner = RuleRunner { url ->
+            if (url.contains("/search")) """{"data":[{"name":"测试有声书","url":"/audio/1"}]}"""
+            else """{"name":"测试有声书","toc":"/audio/1/toc"}"""
+        }
+        val audioResult = audioRunner.search(audioSource, "有声").single()
+        assertEquals("audio", audioResult.bookKind)
+        assertEquals("audio", audioRunner.details(audioSource, audioResult.bookUrl).bookKind)
     }
 
     @Test

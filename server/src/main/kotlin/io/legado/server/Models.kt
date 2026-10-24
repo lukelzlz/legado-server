@@ -302,6 +302,8 @@ data class SourceLoginStateRecord(
     val bookUrl: String,
     val coverUrl: String? = null,
     val intro: String? = null,
+    /** `novel` / `comic` / `audio`；搜索结果直接进入阅读器时用于选择正确屏幕。 */
+    val bookKind: String? = null,
 )
 @Serializable data class BookRequest(val sourceId: String, val bookUrl: String)
 @Serializable data class BookDetails(
@@ -318,6 +320,8 @@ data class SourceLoginStateRecord(
      * 而书源规则侧读的是同一份数据（见 `RuleRunner.BookContext`）。
      */
     val variables: Map<String, String> = emptyMap(),
+    /** `novel` / `comic` / `audio`；前端从搜索页直接开书时用于选择阅读器。 */
+    val bookKind: String? = null,
 )
 @Serializable data class Chapter(val index: Int, val title: String, val url: String)
 @Serializable data class ContentRequest(val sourceId: String, val chapterUrl: String = "", val bookUrl: String? = null)
@@ -1575,6 +1579,5 @@ data class AudioDurationRequest(
      */
     val positionMs: Long = 0,
 )
-
 
 

@@ -10,10 +10,10 @@ import i18n, { getCurrentLocale } from './i18n'
 
 export type SourceSummary = { id: string; name: string; url: string; group?: string; enabled: boolean; isJsSource: boolean; hasLogin: boolean; updatedAt: number; version: number }
 export type SourceRecord = { id: string; json: string; version: number; updatedAt: number }
-export type SearchResult = { sourceId: string; name: string; author?: string; bookUrl: string; coverUrl?: string; intro?: string }
+export type SearchResult = { sourceId: string; name: string; author?: string; bookUrl: string; coverUrl?: string; intro?: string; bookKind?: string }
 export type ExploreSourceItem = { id: string; name: string; group?: string | null; enabled: boolean }
 export type ExploreCategory = { title: string; url?: string | null; subCategories: ExploreCategory[] }
-export type BookDetails = { sourceId: string; name: string; author?: string; intro?: string; coverUrl?: string; tocUrl: string; alternateSources?: SearchResult[]; variables?: Record<string, string> }
+export type BookDetails = { sourceId: string; name: string; author?: string; intro?: string; coverUrl?: string; tocUrl: string; bookKind?: string; alternateSources?: SearchResult[]; variables?: Record<string, string> }
 export type Chapter = { index: number; title: string; url: string }
 export type ReadingProgress = { sourceId: string; bookUrl: string; chapterUrl: string; chapterIndex: number; scrollPosition: number; updatedAt: number; positionMs?: number | null; bookKind?: string }
 /** 手机端进度文件（bookProgress/*.json）同步配置 */

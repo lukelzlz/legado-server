@@ -319,6 +319,7 @@ export async function inspectSingleSource(
       bookUrl: result.bookUrl,
       chapters,
       progress,
+      bookKind: details.bookKind || result.bookKind,
     }
 
     let status: SourceHealthStatus = 'valid'

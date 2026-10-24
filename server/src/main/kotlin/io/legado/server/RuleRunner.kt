@@ -140,7 +140,8 @@ class RuleRunner(private val responseFetcher: ((String) -> String)? = null, inte
             val rendered = renderUrl(urlTemplate, keyword, sourceUrl).absolute(sourceUrl)
             val body = fetchUrl(rendered, mergedOptions, keyword, sourceUrl, database)
             val rule = source.objectValue("ruleSearch") ?: throw RuleExecutionException("该书源未配置 ruleSearch")
-            val items = nodes(body, rule.string("bookList") ?: throw RuleExecutionException("缺少 ruleSearch.bookList"))
+            val listRule = rule.string("bookList") ?: throw RuleExecutionException("缺少 ruleSearch.bookList")
+            val items = if (isJsRule(listRule)) jsListNodes(NodeValue.document(body), listRule, body, sourceUrl) else nodes(body, listRule)
             items.mapNotNull { item ->
                 val url = item.value(rule.string("bookUrl"), jsSandbox, body, sourceUrl)?.absolute(sourceUrl) ?: return@mapNotNull null
                 SearchResult(
@@ -326,7 +327,7 @@ class RuleRunner(private val responseFetcher: ((String) -> String)? = null, inte
             }
 
             val listRule = rule.string("bookList") ?: throw RuleExecutionException("缺少 bookList 规则")
-            val items = nodes(body, listRule)
+            val items = if (isJsRule(listRule)) jsListNodes(NodeValue.document(body), listRule, body, sourceUrl) else nodes(body, listRule)
             items.mapNotNull { item ->
                 val url = item.value(rule.string("bookUrl"), jsSandbox, body, sourceUrl)?.absolute(sourceUrl) ?: return@mapNotNull null
                 val name = item.value(rule.string("name"), jsSandbox, body, sourceUrl) ?: return@mapNotNull null

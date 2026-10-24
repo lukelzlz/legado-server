@@ -19,6 +19,21 @@ class SearchRoutesTest {
     // --- Tier 1: Core Feature Tests ---
 
     @Test
+    fun `preserves same host comic and audio source variants as distinct ids`() {
+        val comic = SourceCodec.parse(
+            """{"bookSourceUrl":"https://fanqienovel.com##漫画版","bookSourceName":"番茄漫画","bookSourceType":2}""",
+        )
+        val audio = SourceCodec.parse(
+            """{"bookSourceUrl":"https://fanqienovel.com##听书版","bookSourceName":"番茄听书","bookSourceType":1}""",
+        )
+
+        assertEquals("https://fanqienovel.com##漫画版", comic.id)
+        assertEquals("https://fanqienovel.com##听书版", audio.id)
+        assertEquals("comic", BookKind.fromSourcePayload(comic.json).wire)
+        assertEquals("audio", BookKind.fromSourcePayload(audio.json).wire)
+    }
+
+    @Test
     fun `search returns candidates immediately without deep 3-tier validation`() = runBlocking {
         val path = temporaryDatabase()
         try {

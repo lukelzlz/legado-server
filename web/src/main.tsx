@@ -3349,6 +3349,7 @@ function App() {
       coverUrl: fallbackCover,
       intro: undefined,
       tocUrl: item.tocUrl,
+      bookKind: item.bookKind,
       alternateSources: item.alternateSources,
     }
 
@@ -3406,6 +3407,7 @@ function App() {
           scrollPosition: item.scrollPosition ?? 0,
           updatedAt: item.lastReadAt,
         },
+        bookKind: item.bookKind,
       }, resumeIdx, 'shelf')
       toast.warning(t('reader.slowSourceOfflineFallback', '书源网络较慢，已为您进入离线阅读模式'))
     }

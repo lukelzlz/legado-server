@@ -95,6 +95,17 @@ internal fun Database.persistBookVariables(book: BookContext) {
 }
 
 /**
+ * 解析搜索/详情响应需要暴露给前端的书籍类型。
+ *
+ * 已在书架上的记录优先复用数据库里的类型；未入架的书则按书自身 URL 载荷，
+ * 最后回退到书源声明。这样搜索页直接开书与书架开书使用同一套判定语义。
+ */
+internal fun resolveBookKind(source: JsonObject, bookUrl: String, book: BookContext? = null): String? {
+    val explicit = book?.kind?.trim()?.lowercase()?.takeIf { it == "novel" || it == "comic" || it == "audio" }
+    return BookKind.resolveOrNull(explicit, bookUrl, source.toString())
+}
+
+/**
  * A deliberately small, server-safe subset of Legado's declarative source protocol.
  * It keeps execution away from Android APIs and rejects private-network targets.
  */
@@ -135,6 +146,7 @@ class RuleRunner(private val responseFetcher: ((String) -> String)? = null, inte
                     bookUrl = url,
                     coverUrl = item.value(rule.string("coverUrl"), jsSandbox, body, sourceUrl)?.absolute(sourceUrl),
                     intro = item.value(rule.string("intro"), jsSandbox, body, sourceUrl),
+                    bookKind = resolveBookKind(source, url),
                 )
             }
         }
@@ -320,6 +332,7 @@ class RuleRunner(private val responseFetcher: ((String) -> String)? = null, inte
                     bookUrl = url,
                     coverUrl = item.value(rule.string("coverUrl"), jsSandbox, body, sourceUrl)?.absolute(sourceUrl),
                     intro = item.value(rule.string("intro"), jsSandbox, body, sourceUrl),
+                    bookKind = resolveBookKind(source, url),
                 )
             }
         }
@@ -360,7 +373,7 @@ class RuleRunner(private val responseFetcher: ((String) -> String)? = null, inte
         val source = sourceJson.objectValue()
         source.string("mainJs")?.takeIf { it.isNotBlank() }?.let { return JsSourceRunner(this, source).details(bookUrl, book) }
         return jsSandbox.withSourceContext(sourceContext(source, source.string("bookSourceUrl"), book)) {
-            declarativeDetails(source, bookUrl)
+            declarativeDetails(source, bookUrl, book)
         }
     }
 
@@ -389,7 +402,7 @@ class RuleRunner(private val responseFetcher: ((String) -> String)? = null, inte
         }
     }
 
-    private fun declarativeDetails(source: JsonObject, bookUrl: String): BookDetails {
+    private fun declarativeDetails(source: JsonObject, bookUrl: String, book: BookContext? = null): BookDetails {
         val sourceUrl = source.string("bookSourceUrl")
         val rule = source.objectValue("ruleBookInfo") ?: throw RuleExecutionException("该书源未配置 ruleBookInfo")
         val initRule = rule.string("init")
@@ -426,6 +439,7 @@ class RuleRunner(private val responseFetcher: ((String) -> String)? = null, inte
             author = value("author"), intro = value("intro"),
             coverUrl = value("coverUrl")?.absolute(bookUrl),
             tocUrl = value("tocUrl")?.absolute(bookUrl) ?: bookUrl,
+            bookKind = resolveBookKind(source, bookUrl, book),
         )
     }
 
@@ -1356,12 +1370,28 @@ private class JsSourceRunner(private val runner: RuleRunner, private val source:
     fun search(keyword: String): List<SearchResult> = call("search", arrayOf(keyword, 1)).jsonArray().mapNotNull { value ->
         val book = Json.parseToJsonElement(value).jsonObject
         val url = book.string("bookUrl") ?: return@mapNotNull null
-        SearchResult(source.string("bookSourceUrl")!!, book.string("name") ?: return@mapNotNull null, book.string("author"), url, book.string("coverUrl"), book.string("intro"))
+        SearchResult(
+            sourceId = source.string("bookSourceUrl")!!,
+            name = book.string("name") ?: return@mapNotNull null,
+            author = book.string("author"),
+            bookUrl = url,
+            coverUrl = book.string("coverUrl"),
+            intro = book.string("intro"),
+            bookKind = resolveBookKind(source, url),
+        )
     }
     fun details(bookUrl: String, book: BookContext? = null): BookDetails {
         val value = callOptional("getBookInfo", arrayOf(bookObject(bookUrl, book)))?.jsonObjectOrEmpty() ?: JsonObject(emptyMap())
         val name = sanitizeBookName(value.string("name"))
-        return BookDetails(source.string("bookSourceUrl")!!, name.ifBlank { "未命名书籍" }, value.string("author"), value.string("intro"), value.string("coverUrl"), value.string("tocUrl") ?: bookUrl)
+        return BookDetails(
+            sourceId = source.string("bookSourceUrl")!!,
+            name = name.ifBlank { "未命名书籍" },
+            author = value.string("author"),
+            intro = value.string("intro"),
+            coverUrl = value.string("coverUrl"),
+            tocUrl = value.string("tocUrl") ?: bookUrl,
+            bookKind = resolveBookKind(source, bookUrl, book),
+        )
     }
     fun chapters(tocUrl: String, book: BookContext? = null): List<Chapter> = call("getChapters", arrayOf(bookObject(tocUrl, book))).jsonArray().mapIndexedNotNull { index, value ->
         val chapter = Json.parseToJsonElement(value).jsonObject; val url = chapter.string("url") ?: return@mapIndexedNotNull null; Chapter(index, chapter.string("title") ?: "第 ${index + 1} 章", url)

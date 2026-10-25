@@ -148,17 +148,23 @@ cd web && npm install && npm run dev
 
 | Capability | Highlights & Engineering Principles |
 |---|---|
-| **🚀 Headless Architecture** | Pure Kotlin JVM + Ktor asynchronous non-blocking stack; sub-second cold starts; sandboxed **Rhino JS + Jsoup + JsonPath** rule engine with full Legado JSON & `@js:` compatibility; SQLite WAL mode. |
-| **📖 Immersive Reader** | Proprietary `VirtualChapterList` virtualization (5,000+ chapters load instantly with 60 FPS scrolling); single-source immediate open eliminating cascade spikes; dual scroll/paginated layout; dark/parchment themes. |
-| **🌐 Fullstack i18n** | Native support for **Simplified Chinese (`zh-CN`), Traditional Chinese (`zh-TW`), English (`en-US`), and Japanese (`ja-JP`)**; 2×2 header switcher; RFC 4647 `Accept-Language` API error localization; cloud roaming preferences. |
-| **🔄 Mobile Progress Sync** | Native compatibility with the Legado Android WebDAV `legado/bookProgress/` format; automatically compares and adopts larger chapter indices; reciprocal writeback for **bidirectional phone ↔ web continuity**. |
-| **🗂️ Groups & Scoped Search** | Dedicated Source Group Manager (stats overview, renaming, unbinding delete, bulk assignment); dedicated search scope tabs (All / Group / Ungrouped) to accelerate searches and minimize bandwidth. |
-| **📚 Local E-Books & Typography** | Drag and drop `.txt` and `.epub` files onto your shelf; auto charset detection (UTF-8/GBK) and intelligent regex chapter splitting; dynamic vector SVG typography cover generation. |
-| **📦 Backup Restore & Cleanse** | One-click import for Android `backup-*.zip` archives (sources, groups, bookmarks, replace rules, shelf books & progress); **auto-filters mobile-only local paths and audio sources** to keep cloud storage clean. |
-| **🎧 Edge-TTS Audiobooks** | 13+ Microsoft neural voices with continuous streaming MP3 output; smart viewport alignment; sentence-relative clock anchoring and trailing silence watchdogs prevent stalls; system MediaSession lock-screen controls. |
-| **📱 PWA & Offline Reading** | Installable as a standalone app on desktop and mobile; selective chapter range caching into **IndexedDB**; offline reading with queued progress sync upon reconnect; safe-area notch layout adaptations. |
-| **🧹 Purification & Dual Cache** | First-class Replace Rules dashboard (`@js:` Rhino scripts & regex); novel content cache uses a **dual-column architecture** (`raw_content` and `content`), enabling idempotent, lossless batch recleaning. |
-| **📁 In-Process WebDAV** | Native RFC 4918 Class 1/2 WebDAV endpoint (`/webdav`); direct mounting from Windows Explorer, macOS Finder, rclone, and mobile backup sync; integrated web file manager. |
+| **🚀 Headless Server & Rule Engine** | Pure Kotlin JVM + Ktor asynchronous stack; sandboxed **Rhino JS + Jsoup + JsonPath** engine compatible with Legado JSON, `@js:`, JS list rules, aggregate sources, and common selector extensions; SQLite WAL persistence. |
+| **📖 Immersive Text Reader** | `VirtualChapterList` virtualization for 5,000+ chapters; continuous waterfall reading with measured placeholders and bidirectional preloading; iOS Safari scroll-stability fixes; paginated/continuous layouts, dual-column reading, themes, TTS, and illustration lightbox. |
+| **📚 Multi-Media Bookshelf & Routing** | Books are explicitly classified as **novel / manga / audiobook / local**; search, discovery, details, and source switching preserve `bookKind`, route to the correct reader, and show type badges. |
+| **🖼️ Manga Reader** | Deep Legado image-source compatibility: lazy-load HTML, `<js>`/JSON image arrays, per-image request options, `nextContentUrl` multi-page chapters, and `replaceRegex`; server-side anti-hotlink proxy, URL-addressed image cache with content fingerprints, manifests, sliding-window GC, offline chapters, and image-level progress. |
+| **🎧 Audiobook Player** | Parses plain URLs, JSON multi-segment tracks, `url,{...}` per-track headers, and HTML `<audio>/<source>`; streaming disk cache, Range serving, independent 20 GiB quota, 70% prefetch, millisecond resume, speed/sleep controls, MediaSession lock-screen controls, and offline playback. |
+| **🖼️ Inline Illustrations** | Novel `<img>` markup is safely rebuilt and routed through the server with source cookies/headers and chapter Referer; illustrations use a separate `images/` cache, lazy loading, failure placeholders, lightbox zoom, and offline warm-up. Browsers never connect directly to image hosts. |
+| **💾 Browsable Media Cache** | Manga, audio, illustrations, and covers use separate roots; readable book/chapter directories are paired with hash-based lookup so renames do not break reads; per-book/range clearing, magic-validated custom cover uploads, prefetch cancellation, and DB/disk media cleanup are supported. |
+| **🌐 Fullstack i18n** | Native support for **Simplified Chinese (`zh-CN`), Traditional Chinese (`zh-TW`), English (`en-US`), and Japanese (`ja-JP`)**; 2×2 header switcher; RFC 4647 `Accept-Language` API error localization; cloud-roaming preferences. |
+| **🔄 Mobile Progress Sync** | Compatible with the Legado Android WebDAV `legado/bookProgress/` format; merges by chapter index/position and writes back continuously. Novels keep the original filename, while manga and audiobooks use `_comic` / `_audio` suffixes to prevent same-name cross-media collisions. |
+| **🗂️ Source Groups, Discovery & Search** | Dedicated Source Group Manager (stats, rename, unbind-delete, bulk assignment); All/Group/Ungrouped scope tabs; discovery categories, pagination, one-click shelf add, JS list rules, and immediate loading feedback for book details. |
+| **📚 Local E-Books & Typography** | Drag and drop `.txt` and `.epub` files onto your shelf; auto charset detection (UTF-8/GB18030), intelligent chapter splitting, vector SVG cover generation, local-book cache immunity, and idempotent reparsing from the retained original file. |
+| **📦 Backup Restore & Cover Recovery** | One-click import for Android `backup-*.zip` archives (sources, groups, bookmarks, replace rules, HTTP TTS, book variables, shelf books, and progress); only mobile-only local paths are filtered, while manga and audio books are imported normally. Covers support asynchronous backfill, deep source refresh, and background self-healing. |
+| **🗣️ TTS & Custom HTTP Voices** | Edge-TTS continuous streaming, viewport alignment, sentence-relative clock anchoring, trailing-silence watchdogs, and MediaSession; also compatible with Legado `httpTTS.json` for managing, importing/exporting, and testing custom HTTP voices. |
+| **🎛️ Book Variables & Narrator Switching** | Edit the per-book `custom` variable from book information; rule scripts can read `book.getVariable()` / `book.variableMap`; audiobook sources can switch narrator/voice IDs, and variables round-trip through backups. |
+| **📱 PWA & Offline Media** | Installable as a standalone desktop/mobile app; selectively cache text chapters, manga chapters, or audio chapters into browser storage; offline reading/listening with queued progress sync after reconnect; safe-area notch adaptations. |
+| **🧹 Purification & Dual Cache** | First-class Replace Rules dashboard with regex, `@js:`, batch enable/disable, groups, and import/export; novel content uses a **dual-column cache** (`raw_content` and `content`) for idempotent, lossless batch recleaning. |
+| **📁 In-Process WebDAV** | Native RFC 4918 Class 1/2 WebDAV endpoint (`/webdav`); direct mounting from Windows Explorer, macOS Finder, rclone, and mobile backup sync; integrated web file manager and progress-directory configuration. |
 
 ---
 
@@ -167,9 +173,16 @@ cd web && npm install && npm run dev
 | Variable | Default | Description |
 |---|---|---|
 | `LEGADO_PORT` | `8080` | Server listening port (HTTP / WebSocket / WebDAV) |
-| `LEGADO_DATA_DIR` | `/data` | Root directory for persistence (database, covers, WebDAV volume, and local books) |
+| `LEGADO_DATA_DIR` | `/data` | Root directory for persistence (database, covers, manga/audio/illustration media, WebDAV volume, and local books) |
 | `ADMIN_PASSWORD` | None | Initial admin password (required on first launch, at least 12 characters) |
 | `LEGADO_SECURE_COOKIES` | `true` | Cookie `Secure` flag. Keep `true` behind HTTPS; set to `false` for local plaintext HTTP. |
+| `LEGADO_MANGA_CACHE_MAX_GB` | `10` | Manga image cache quota in GiB; sliding-window GC protects forward-reading chapters |
+| `LEGADO_AUDIO_CACHE_MAX_GB` | `20` | Audiobook cache quota in GiB, maintained independently from manga cache |
+| `LEGADO_MAX_GLOBAL_IMAGE_FETCHES` | `6` | Global concurrency limit for manga/illustration fetches |
+| `LEGADO_MAX_GLOBAL_AUDIO_FETCHES` | `3` | Global concurrency limit for audio fetches |
+| `LEGADO_MANGA_PREFETCH` / `LEGADO_AUDIO_PREFETCH` | `true` | Enable or disable background manga/audio prefetching |
+| `LEGADO_MANGA_GC` / `LEGADO_AUDIO_GC` | `true` | Enable or disable automatic manga/audio cache collection |
+| `LEGADO_COVER_SELFHEAL` | `true` | Enable background detection, retry, and backoff for missing covers |
 
 ---
 
@@ -187,12 +200,14 @@ flowchart TD
 
     subgraph WebClient ["Web Client (React 19 + TypeScript + Vite)"]
         Nav["AppHeader Navigation (2x2 Locale Grid / Theme Switching)"]
-        Reader["ReaderScreen Immersive Reader (Virtual Scrolling)"]
-        Shelf["Bookshelf & Local E-Book Uploader (TXT / EPUB)"]
+        Reader["ReaderScreen Text Reader (Virtual TOC + Continuous Stream + TTS)"]
+        Manga["MangaReaderScreen (Image Stream + Offline Chapters)"]
+        Audio["AudiobookPlayerScreen (Range + MediaSession)"]
+        Shelf["Multi-Media Bookshelf & Local E-Book Uploader (TXT / EPUB)"]
+        Explore["Explore Discovery & Source Search"]
         ScopeBar["SearchScopeBar Scope Tabs (Targeted Scopes)"]
         SourceMgr["SourceGroupManagerModal (Source Group Manager)"]
         WebDavUI["File Manager & Backup Restore Panel"]
-        TtsUI["TtsPlayerBar Floating Controller"]
         PwaMgr["PwaManager & IndexedDB Local Storage"]
         WSClient["WebSocket Streaming Search Client"]
     end
@@ -204,13 +219,14 @@ flowchart TD
         I18nSvc["I18nMessages Error Localization"]
         
         subgraph CoreServices ["Core Services"]
-            LocalParser["LocalBookParser (Regex Splitting & SVG Covers)"]
-            BackupSvc["BackupImporter (Archive Extraction & Cleanse)"]
-            ProgressSync["BookProgressSync (Bidirectional Progress Alignment)"]
-            TtsSvc["TtsSessionService & EdgeTtsService (Streaming MP3)"]
-            RuleRunner["RuleRunner Engine (Rhino JS + Jsoup + JsonPath)"]
+            LocalParser["LocalBookParser (Charset Detection / Splitting / SVG Covers)"]
+            BackupSvc["BackupImporter + CoverBackfill (Restore / Cover Self-Healing)"]
+            ProgressSync["BookProgressSync (Book-Kind-Isolated Bidirectional Sync)"]
+            TtsSvc["TtsSessionService / EdgeTts / HttpTTS"]
+            RuleRunner["RuleRunner (Text / Manga / Audio Rule Execution)"]
+            MediaCache["ImageCache + AudioCache + IllustrationCache (Range / GC / Prefetch)"]
             Purify["ContentProcessor Dual Content Purification"]
-            CacheSvc["BookCacheService Offline Cache Scheduler"]
+            CacheSvc["BookCacheService (Text & Illustration Offline Cache)"]
         end
         
         DB[("SQLite Database (WAL Mode + app_setting Roaming)")]
@@ -222,12 +238,16 @@ flowchart TD
     WebDavClients --> WebDavEngine
     LegadoApp --> WebDavEngine
 
-    Nav --> ScopeBar & Reader & Shelf & SourceMgr & WebDavUI & TtsUI & PwaMgr & WSClient
+    Nav --> ScopeBar & Reader & Manga & Audio & Shelf & Explore & SourceMgr & WebDavUI & PwaMgr & WSClient
     WebClient -->|REST API / WebSocket / SSE| Router
     Router --> Auth & I18nSvc
     Auth --> CoreServices
     WebDavEngine --> ProgressSync & DiskStorage
     CoreServices --> DB & DiskStorage
+    Manga --> MediaCache
+    Audio --> MediaCache
+    Reader --> CacheSvc
+    MediaCache --> RuleRunner
 
     RuleRunner -->|HTTP/HTTPS Scrape| WebSources["Internet Book Sources"]
     TtsSvc -->|WSS Voice Synthesis| EdgeCloud["Microsoft Edge TTS Cluster"]
@@ -294,7 +314,7 @@ server {
 ## 🧪 Verification & Testing
 
 ```bash
-# Frontend static typechecking and automated test suite (170+ test cases)
+# Frontend static typechecking and automated test suite (377 test cases covering text/manga/audio readers, TTS, offline storage, and i18n)
 npm --prefix web run check && npx tsx web/test/run-all.ts
 
 # Server JVM scenario and unit tests

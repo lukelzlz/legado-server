@@ -148,17 +148,23 @@ cd web && npm install && npm run dev
 
 | 模块 | 核心能力与技术亮点 |
 |---|---|
-| **🚀 无头服务端** | 纯 Kotlin JVM + Ktor 非阻塞架构，毫秒级冷启动；内置 **Rhino JS 沙箱 + Jsoup + JsonPath**，深度兼容 Legado JSON 规则与 `@js:` 脚本；SQLite WAL 高性能持久化。 |
-| **📖 沉浸式阅读器** | 自研 `VirtualChapterList` 虚拟滚动（5,000+ 章节毫秒秒开、60FPS 流畅滚动）；单书源秒开避免级联风暴；滚动/分栏双排版、深色/羊皮纸主题、多字体微调。 |
+| **🚀 无头服务端与规则引擎** | 纯 Kotlin JVM + Ktor 非阻塞架构；内置 **Rhino JS 沙箱 + Jsoup + JsonPath**，兼容 Legado JSON、`@js:`、JS 列表规则、聚合源与常见伪选择器；SQLite WAL 高性能持久化。 |
+| **📖 沉浸式文本阅读器** | `VirtualChapterList` 支持 5,000+ 章节虚拟化；连续流瀑布阅读采用等高占位与双向预载，修复 iOS Safari 章界跳动；支持分页/滚动、双栏排版、深色/羊皮纸主题、TTS 与插图灯箱。 |
+| **📚 多媒体书架与类型分流** | 书籍统一标记为**小说 / 漫画 / 听书 / 本地**；搜索、发现、详情、换源全链路传递 `bookKind`，自动进入对应阅读器，并在书架显示类型角标。 |
+| **🖼️ 漫画阅读器** | 深度兼容 Legado 图片书源：懒加载 HTML、`<js>`/JSON 图片数组、URL 专属请求头、`nextContentUrl` 多页拼接与 `replaceRegex`；服务端代理防盗链，URL 寻址图片缓存与内容指纹、章节清单、滑窗 GC、整章离线与图片级进度恢复。 |
+| **🎧 有声书播放器** | 支持纯文本 URL、JSON 多分段、`url,{...}` 专属请求头及 HTML `<audio>/<source>`；音频流式落盘、Range 直出、20 GiB 独立配额、70% 预取、毫秒级断点、倍速/睡眠定时、MediaSession 锁屏控制与离线收听。 |
+| **🖼️ 正文插图** | 正文 `<img>` 经安全重建后统一走服务端代理，自动携带书源 Cookie/Header 与章节 Referer；插图独立落盘到 `images/`，支持懒加载、失败占位、灯箱放大及离线缓存预热，浏览器永不直连图床。 |
+| **💾 可浏览媒体缓存** | 漫画、音频、插图、封面分根存储；书名/章节名目录配合哈希定位，避免重命名影响读取；支持按书及按范围清理、编辑弹窗本地封面上传（魔数校验），移出书架时同步取消预取并回收 DB/磁盘媒体。 |
 | **🌐 全栈多语言** | 原生支持 **简中 (`zh-CN`) / 繁中 (`zh-TW`) / 英文 (`en-US`) / 日文 (`ja-JP`)**；顶栏 2×2 网格切换；服务端 `Accept-Language` 契约国际化，语言偏好云端漫游落库。 |
-| **🔄 跨端进度同步** | 深度适配手机端 WebDAV `legado/bookProgress/` 协议；开书时比较章节下标智能对齐，翻页实时回写，实现**手机端 ↔ 网页端双向无缝衔接**。 |
-| **🗂️ 书源分组与检索** | 独立分组管理面板（分组统计、重命名、解绑删除、批量加入/移出）；书库页提供专属**范围选项卡**（全部/各分组/未分组），单组定向搜索提速降耗。 |
-| **📚 本地书与智能排版** | 书架拖拽上传 `.txt` / `.epub`；自动识别 UTF-8/GBK 编码，秒级智能正则分章；自动动态生成矢量艺术字 SVG 封面；阅读享同等目录虚拟化与 TTS 朗读。 |
-| **📦 备份一键还原** | 一键上传手机端 `backup-*.zip`，全量恢复书源、分组、书签、净化规则与阅读进度；**智能识别过滤手机本地路径与听书源**，保持云端纯净。 |
-| **🎧 Edge-TTS 听书** | 微软 13+ 款优质神经语音，长音频流直出；开播自动对齐视口顶部段落；单句相对时钟锚定与章末尾部静音看门狗消除漂移卡死；系统 MediaSession 锁屏控制。 |
-| **📱 PWA 与脱机阅读** | 支持安装为桌面或手机独立应用；支持自选分段离线缓存到 **IndexedDB**；断网离线阅读，进度排队待网络恢复静默同步；全面屏安全区适配。 |
-| **🧹 净化规则与双副本** | 独立「替换规则」中心，支持正则与 `@js:` Rhino 脚本；正文缓存采用 `raw_content`（原文）与 `content`（清洗）**双副本架构**，规则更新一键无损重洗。 |
-| **📁 内置 WebDAV** | 进程原生集成 RFC 4918 Class 1/2 WebDAV 端点（`/webdav`），支持 Windows / macOS / rclone / 手机备份直接挂载；Web 端可视化文件管理器。 |
+| **🔄 跨端进度同步** | 深度适配手机端 WebDAV `legado/bookProgress/` 协议；按章节下标/位置合并并实时回写，小说保持原文件名，漫画与听书使用 `_comic` / `_audio` 隔离文件，避免同名跨媒介互相覆盖。 |
+| **🗂️ 书源分组、发现与检索** | 独立分组管理面板（统计、重命名、解绑删除、批量加入/移出）；书库页支持全部/分组/未分组范围搜索；发现页支持分类浏览、分页加载、一键加架与类型识别。 |
+| **📚 本地书与智能排版** | 书架上传 `.txt` / `.epub`；自动探测 UTF-8/GB18030 编码、智能分章与矢量 SVG 封面；本地书独立免缓存，修复后的 EPUB 可从原始文件幂等重新解析，且与网络书共享阅读/TTS 体验。 |
+| **📦 备份一键还原** | 一键导入手机端 `backup-*.zip`，恢复书源、分组、书签、替换规则、HTTP TTS、书籍变量、书架与阅读进度；仅过滤服务端无法读取的手机本地路径，漫画与听书正常入架，封面支持异步补抓、深度回源与常驻自愈。 |
+| **🗣️ TTS 与自定义 HTTP 朗读** | Edge-TTS 支持长音频流、视口段落对齐、相对时钟锚定、尾部静音看门狗与 MediaSession；同时兼容 Legado `httpTTS.json`，可管理、导入导出并测试自定义 HTTP 音源。 |
+| **🎛️ 书籍变量与朗读者切换** | 编辑书籍信息时可设置 `custom` 变量，规则侧兼容 `book.getVariable()` / `book.variableMap`；有声书可按书源提示切换朗读者/音色，变量随备份导入导出。 |
+| **📱 PWA 与脱机阅读** | 支持安装为桌面或手机独立应用；正文、漫画章节、音频章节可按范围离线缓存到浏览器；断网时阅读/听书仍可用，进度排队待网络恢复静默同步，全面适配安全区。 |
+| **🧹 净化规则与双副本** | 独立「替换规则」中心，支持正则、`@js:`、批量启停、分组与导入导出；正文缓存采用 `raw_content`（原文）与 `content`（清洗）**双副本架构**，规则更新可一键无损重洗。 |
+| **📁 内置 WebDAV** | 进程原生集成 RFC 4918 Class 1/2 WebDAV 端点（`/webdav`），支持 Windows / macOS / rclone / 手机备份直接挂载；Web 端提供文件管理、备份导入与进度同步目录配置。 |
 
 ---
 
@@ -167,9 +173,16 @@ cd web && npm install && npm run dev
 | 环境变量 | 默认值 | 说明 |
 |---|---|---|
 | `LEGADO_PORT` | `8080` | 服务端监听端口（HTTP / WebSocket / WebDAV 通用） |
-| `LEGADO_DATA_DIR` | `/data` | 持久化根目录（存储数据库、封面、WebDAV 数据卷及本地书籍） |
+| `LEGADO_DATA_DIR` | `/data` | 持久化根目录（存储数据库、封面、漫画/音频/插图媒体、WebDAV 数据卷及本地书籍） |
 | `ADMIN_PASSWORD` | 无 | 管理员初始密码（首次启动必填，至少 12 位） |
 | `LEGADO_SECURE_COOKIES` | `true` | Cookie `Secure` 标记。**公网 HTTPS 设为 `true`；内网明文 HTTP 联调需设为 `false`**（否则浏览器不回传 Cookie 会导致登录掉线） |
+| `LEGADO_MANGA_CACHE_MAX_GB` | `10` | 漫画图片缓存配额（GiB），滑窗 GC 优先淘汰已读历史并保护前瞻章节 |
+| `LEGADO_AUDIO_CACHE_MAX_GB` | `20` | 有声书音频缓存配额（GiB），与漫画缓存独立计算 |
+| `LEGADO_MAX_GLOBAL_IMAGE_FETCHES` | `6` | 漫画/插图抓取全局并发上限 |
+| `LEGADO_MAX_GLOBAL_AUDIO_FETCHES` | `3` | 音频抓取全局并发上限 |
+| `LEGADO_MANGA_PREFETCH` / `LEGADO_AUDIO_PREFETCH` | `true` | 分别控制漫画/音频后台预取 |
+| `LEGADO_MANGA_GC` / `LEGADO_AUDIO_GC` | `true` | 分别控制漫画/音频缓存 GC；关闭后仅停止自动回收 |
+| `LEGADO_COVER_SELFHEAL` | `true` | 启用封面导入补抓后的常驻缺失检测与退避自愈 |
 
 ---
 
@@ -187,12 +200,14 @@ flowchart TD
 
     subgraph WebClient ["Web 客户端 (React 19 + TypeScript + Vite)"]
         Nav["AppHeader 响应式导航 (多语言 2x2 网格 / 主题切换)"]
-        Reader["ReaderScreen 沉浸式阅读器 (虚拟滚动 + 段落对齐)"]
-        Shelf["书架与本地书导入 (TXT / EPUB)"]
+        Reader["ReaderScreen 文本阅读器 (虚拟目录 + 连续流 + TTS)"]
+        Manga["MangaReaderScreen 漫画阅读器 (图片流 + 离线章节)"]
+        Audio["AudiobookPlayerScreen 有声播放器 (Range + MediaSession)"]
+        Shelf["多媒体书架与本地书导入 (TXT / EPUB)"]
+        Explore["Explore 发现页与书源搜索"]
         ScopeBar["SearchScopeBar 搜索范围选项卡 (分组定向检索)"]
         SourceMgr["SourceGroupManagerModal (书源分组管理面板)"]
         WebDavUI["文件管理器 & 备份还原面板"]
-        TtsUI["TtsPlayerBar 悬浮控制器"]
         PwaMgr["PwaManager & IndexedDB 本地离线分片"]
         WSClient["WebSocket 流式搜索客户端"]
     end
@@ -205,12 +220,13 @@ flowchart TD
         
         subgraph CoreServices ["核心服务群"]
             LocalParser["LocalBookParser (编码探测 / 分章 / SVG 封面)"]
-            BackupSvc["BackupImporter (备份解析与本地/音频清洗)"]
-            ProgressSync["BookProgressSync (手机端进度双向同步与对齐)"]
-            TtsSvc["TtsSessionService & EdgeTtsService (流式音频 / 看门狗)"]
-            RuleRunner["RuleRunner 解析引擎 (Rhino JS + Jsoup + JsonPath)"]
+            BackupSvc["BackupImporter + CoverBackfill (备份恢复 / 封面自愈)"]
+            ProgressSync["BookProgressSync (按书型隔离的双向进度同步)"]
+            TtsSvc["TtsSessionService / EdgeTts / HttpTTS"]
+            RuleRunner["RuleRunner (文本 / 漫画 / 有声规则执行)"]
+            MediaCache["ImageCache + AudioCache + IllustrationCache (Range / GC / 预取)"]
             Purify["ContentProcessor 双副本替换净化管道"]
-            CacheSvc["BookCacheService 离线缓存调度"]
+            CacheSvc["BookCacheService (正文与插图离线缓存)"]
         end
         
         DB[("SQLite 数据库 (WAL 模式 + app_setting 偏好漫游)")]
@@ -222,12 +238,16 @@ flowchart TD
     WebDavClients --> WebDavEngine
     LegadoApp --> WebDavEngine
 
-    Nav --> ScopeBar & Reader & Shelf & SourceMgr & WebDavUI & TtsUI & PwaMgr & WSClient
+    Nav --> ScopeBar & Reader & Manga & Audio & Shelf & Explore & SourceMgr & WebDavUI & PwaMgr & WSClient
     WebClient -->|REST API / WebSocket / SSE| Router
     Router --> Auth & I18nSvc
     Auth --> CoreServices
     WebDavEngine --> ProgressSync & DiskStorage
     CoreServices --> DB & DiskStorage
+    Manga --> MediaCache
+    Audio --> MediaCache
+    Reader --> CacheSvc
+    MediaCache --> RuleRunner
 
     RuleRunner -->|HTTP/HTTPS 抓取| WebSources["互联网各网络书源"]
     TtsSvc -->|WSS 语音合成| EdgeCloud["Microsoft Edge TTS 语音集群"]
@@ -294,7 +314,7 @@ server {
 ## 🧪 自动化测试套件
 
 ```bash
-# 前端静态检查与自动化测试（虚拟滚动/TTS/离线队列/多语言等 170+ 用例）
+# 前端静态检查与自动化测试（虚拟滚动/漫画/有声/插图/TTS/离线队列/多语言等 377 用例）
 npm --prefix web run check && npx tsx web/test/run-all.ts
 
 # 服务端 JVM 场景与单元测试

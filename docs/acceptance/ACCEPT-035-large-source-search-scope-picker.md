@@ -37,7 +37,7 @@ npx tsx web/test/run-all.ts
 ./gradlew :server:test --tests io.legado.server.SourceGroupTest --tests io.legado.server.SourceGroupRoutesTest
 ```
 
-前端类型检查与 380 项前端测试通过；相关服务端范围解析、候选查询、HTTP/WS 路由测试通过。
+前端类型检查与 381 项前端测试通过；相关服务端范围解析、候选查询、HTTP/WS 路由测试通过。
 
 完整服务端测试中仅有外部漫画源实时测试 `RealMangaSourceLiveTest` 因要求至少 5 张外部图片而失败，复跑结果一致，与本次搜索范围改动无关。
 

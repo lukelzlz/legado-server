@@ -427,6 +427,62 @@ class Database(private val path: String) : Closeable, AutoCloseable {
         }
     }
 
+    /**
+     * 书库搜索范围选择器的候选书源查询。
+     *
+     * 只筛选已启用书源，按名称、地址或分组匹配。这里刻意不加 limit：用户要求
+     * 查询结果完整返回，前端通过关键词或分组缩小范围，而不是静默截断候选。
+     */
+    fun searchSourcePicker(query: String?, groups: List<String> = emptyList()): SourcePickerResponse = connect { db ->
+        val conditions = mutableListOf("enabled = 1")
+        val params = mutableListOf<String>()
+        val keyword = query?.trim()?.takeIf { it.isNotEmpty() }
+        if (keyword != null) {
+            conditions += "(name like ? collate nocase or source_url like ? collate nocase or coalesce(source_group, '') like ? collate nocase)"
+            val pattern = "%$keyword%"
+            params += pattern
+            params += pattern
+            params += pattern
+        }
+        val groupNames = groups.map { it.trim() }.filter { it.isNotEmpty() }.distinctBy { it.lowercase() }
+        if (groupNames.isNotEmpty()) {
+            val groupConditions = mutableListOf<String>()
+            groupNames.forEach { group ->
+                if (group == SourceGroupFilter.UNGROUPED) {
+                    groupConditions += "(source_group is null or trim(source_group) = '')"
+                } else {
+                    groupConditions += "source_group = ? collate nocase"
+                    params += group
+                }
+            }
+            conditions += "(${groupConditions.joinToString(" or ")})"
+        }
+        val sql = "select id, name, source_url, source_group, enabled, is_js, updated_at, version, has_login from source where ${conditions.joinToString(" and ")} order by name collate nocase"
+        val items = db.prepareStatement(sql).use { statement ->
+            params.forEachIndexed { index, value -> statement.setString(index + 1, value) }
+            statement.executeQuery().use { rs ->
+                buildList {
+                    while (rs.next()) {
+                        add(
+                            SourceSummary(
+                                id = rs.getString(1),
+                                name = rs.getString(2),
+                                url = rs.getString(3),
+                                group = rs.getString(4),
+                                enabled = rs.getInt(5) == 1,
+                                isJsSource = rs.getInt(6) == 1,
+                                hasLogin = rs.getInt(9) == 1,
+                                updatedAt = rs.getLong(7),
+                                version = rs.getLong(8),
+                            )
+                        )
+                    }
+                }
+            }
+        }
+        SourcePickerResponse(items = items, total = items.size)
+    }
+
     /** 列出所有配置了有效 exploreUrl 的书源 */
     fun listExploreSources(): List<ExploreSourceItem> = connect { db ->
         val sql = """
@@ -571,6 +627,69 @@ class Database(private val path: String) : Closeable, AutoCloseable {
             params.forEachIndexed { index, value -> statement.setString(index + 1, value) }
             statement.executeQuery().use { rs -> buildList { while (rs.next()) add(SourceRecord(rs.getString(1), rs.getString(2), rs.getLong(3), rs.getLong(4))) } }
         }
+    }
+
+    /**
+     * 解析新的搜索范围协议：分组与单个书源按并集搜索，结果按书源 id 去重。
+     *
+     * 旧版 [listSearchSourceRecords] 保留其「sourceIds 与 group 取交集」语义，供旧客户端
+     * 与既有调用方继续使用；新 HTTP/WS 搜索统一调用本方法。按 500 个 id 分块查询，避免
+     * SQLite 参数数量限制阻断大量单独书源的组合搜索。
+     */
+    fun listSearchSourceRecordsForScope(
+        sourceIds: List<String>?,
+        groups: List<String> = emptyList(),
+        legacyGroup: String? = null,
+    ): List<SourceRecord> = connect { db ->
+        val ids = sourceIds?.filter { it.isNotBlank() }?.distinct().orEmpty()
+        val groupNames = (groups + listOfNotNull(legacyGroup))
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+            .distinctBy { it.lowercase() }
+        val result = linkedMapOf<String, SourceRecord>()
+
+        fun read(sql: String, params: List<String>) {
+            db.prepareStatement(sql).use { statement ->
+                params.forEachIndexed { index, value -> statement.setString(index + 1, value) }
+                statement.executeQuery().use { rs ->
+                    while (rs.next()) {
+                        val id = rs.getString(1)
+                        result.putIfAbsent(id, SourceRecord(id, rs.getString(2), rs.getLong(3), rs.getLong(4)))
+                    }
+                }
+            }
+        }
+
+        if (groupNames.isNotEmpty()) {
+            val groupConditions = mutableListOf<String>()
+            val params = mutableListOf<String>()
+            groupNames.forEach { group ->
+                if (group == SourceGroupFilter.UNGROUPED) {
+                    groupConditions += "(source_group is null or trim(source_group) = '')"
+                } else {
+                    groupConditions += "source_group = ? collate nocase"
+                    params += group
+                }
+            }
+            read(
+                "select id, payload, version, updated_at from source where enabled = 1 and (${groupConditions.joinToString(" or ")}) order by name collate nocase",
+                params,
+            )
+        }
+        ids.chunked(500).forEach { chunk ->
+            val placeholders = chunk.joinToString(",") { "?" }
+            read(
+                "select id, payload, version, updated_at from source where enabled = 1 and id in ($placeholders) order by name collate nocase",
+                chunk,
+            )
+        }
+        if (groupNames.isEmpty() && ids.isEmpty()) {
+            read(
+                "select id, payload, version, updated_at from source where enabled = 1 order by name collate nocase",
+                emptyList(),
+            )
+        }
+        result.values.toList()
     }
 
     fun saveSource(parsed: ParsedSource, expectedVersion: Long?): SourceRecord = write { db ->
@@ -4046,4 +4165,3 @@ private fun ResultSet.toHttpTts(): HttpTts = HttpTts(
     enabledCookieJar = getInt("enabled_cookie_jar") == 1,
     lastUpdateTime = getLong("last_update_time"),
 )
-

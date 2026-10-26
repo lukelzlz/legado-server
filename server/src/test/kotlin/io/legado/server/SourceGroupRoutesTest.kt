@@ -89,6 +89,15 @@ class SourceGroupRoutesTest {
             assertEquals("选组B → 只搜组B的 1 个源", 1, searchScope(client, csrf, group = "组B"))
             assertEquals("选未分组 → 只搜没分组的源", 1, searchScope(client, csrf, group = SourceGroupFilter.UNGROUPED))
             assertEquals("不选范围 → 全部已启用书源", 4, searchScope(client, csrf, group = null))
+            assertEquals(
+                "多分组 + 单源按并集搜索且自动去重",
+                4,
+                searchScope(client, csrf, groups = listOf("组A", "组B"), sourceIds = listOf("https://n1.example")),
+            )
+
+            val picker = client.get("/api/sources/picker?q=A1").body<SourcePickerResponse>()
+            assertEquals("搜索范围选择器可以按名称返回候选", 1, picker.total)
+            assertEquals("https://a1.example", picker.items.single().id)
 
             // ---- 改名（组B 并入组A）----
             val renamed = client.put("/api/source-groups/rename") {
@@ -183,10 +192,16 @@ class SourceGroupRoutesTest {
      *
      * 不等待搜索结果：书源指向不存在的域名，等结果只会等到超时，而「范围是否收窄」在 `start` 就已确定。
      */
-    private suspend fun searchScope(client: HttpClient, csrf: String, group: String?): Int {
+    private suspend fun searchScope(
+        client: HttpClient,
+        csrf: String,
+        group: String? = null,
+        groups: List<String> = emptyList(),
+        sourceIds: List<String>? = null,
+    ): Int {
         var total = -1
         client.webSocket("/api/search/stream?csrf=${URLEncoder.encode(csrf, "UTF-8")}") {
-            send(Frame.Text(Json.encodeToString(SearchRequest(keyword = "范围测试", group = group))))
+            send(Frame.Text(Json.encodeToString(SearchRequest(keyword = "范围测试", sourceIds = sourceIds, groups = groups, group = group))))
             withTimeout(20_000) {
                 while (true) {
                     val frame = incoming.receive()

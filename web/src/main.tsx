@@ -25,6 +25,7 @@ import { SourceHealthModal } from './SourceHealthModal'
 import { SourceGroupManagerModal } from './SourceGroupManagerModal'
 import { SearchBox } from './SearchBox'
 import { SearchScopeBar } from './SearchScopeBar'
+import { SearchScopePickerModal } from './SearchScopePickerModal'
 import { ShelfKindTag } from './ShelfKindTag'
 import { isLocalBook } from './localBook'
 import { PwaManager } from './PwaManager'
@@ -1068,6 +1069,7 @@ function LibraryPage({ sources, onOpen }: { sources: SourceSummary[]; onOpen: (b
   const { t } = useTranslation()
   const search = useSearchStore()
   const [sourceGroups, setSourceGroups] = useState<SourceGroupSummary[]>([])
+  const [showScopePicker, setShowScopePicker] = useState(false)
   /**
    * 书源分组列表从服务端单独取。
    *
@@ -1103,25 +1105,31 @@ function LibraryPage({ sources, onOpen }: { sources: SourceSummary[]; onOpen: (b
           onSubmit={() => search.startSearch()}
           onStop={search.stopSearch}
         />
-        {/* 搜索范围：搜索栏**下面**的选项卡（分组的新建/改名/删除在「书源」页面里做） */}
+        {/* 搜索范围：快速分组选项卡 + 多分组/多书源选择器 */}
         <SearchScopeBar
           groups={sourceGroups}
-          sources={sources}
-          selectedGroup={search.selectedGroup}
-          selectedSourceId={search.selectedSourceId}
+          selectedGroups={search.selectedGroups}
+          selectedSourceIds={search.selectedSourceIds}
           onSelectAll={() => {
-            search.setSelectedSourceId('')
-            search.setSelectedGroup('')
+            search.setSearchScope([], [])
           }}
-          onSelectGroup={group => {
-            search.setSelectedSourceId('')
-            search.setSelectedGroup(group)
+          onToggleGroup={group => {
+            const next = search.selectedGroups.includes(group)
+              ? search.selectedGroups.filter(item => item !== group)
+              : [...search.selectedGroups, group]
+            search.setSelectedGroups(next)
           }}
-          onSelectSource={sourceId => {
-            search.setSelectedGroup('')
-            search.setSelectedSourceId(sourceId)
-          }}
+          onOpenPicker={() => setShowScopePicker(true)}
         />
+        {showScopePicker && (
+          <SearchScopePickerModal
+            groups={sourceGroups}
+            selectedGroups={search.selectedGroups}
+            selectedSourceIds={search.selectedSourceIds}
+            onApply={(groups, sourceIds) => search.setSearchScope(groups, sourceIds)}
+            onClose={() => setShowScopePicker(false)}
+          />
+        )}
         {(search.loading || search.stopped) && (
           <p className="library-search-status">
             {search.stopped

@@ -270,16 +270,16 @@ data class SourceLoginStateRecord(
     val keyword: String = "",
     val query: String = "",
     /**
-     * 只在这些**书源**里搜索（书源 id，即归一化后的 `bookSourceUrl`）。
-     *
-     * 与 [group] 互斥使用（同时给出时按 AND 取交集），前端「搜索范围」二选一。
+     * 限定单个书源范围（书源 id，即归一化后的 `bookSourceUrl`）。
+     * 多个 id 按 OR 处理；与 [groups] 合并后按并集搜索。
      */
     val sourceIds: List<String>? = null,
     /**
-     * 只在指定的**书源分组**里搜索；[SourceGroupFilter.UNGROUPED] 表示「未分组」。
-     *
-     * 空 / 空白表示不按分组过滤（搜索全部已启用书源）。
+     * 限定多个**书源分组**；[SourceGroupFilter.UNGROUPED] 表示「未分组」。
+     * 多个分组按 OR 处理，并与 [sourceIds] 按并集合并。
      */
+    val groups: List<String> = emptyList(),
+    /** 旧版单分组字段，保留用于已有客户端；新客户端使用 [groups]。 */
     val group: String? = null,
 ) {
     val effectiveKeyword: String get() = keyword.ifBlank { query }
@@ -875,6 +875,13 @@ data class SourceGroupSummary(
     val sourceCount: Int,
     /** 其中已启用的数量 —— 搜索实际会用到的条数。 */
     val enabledCount: Int,
+)
+
+/** 书库搜索范围选择器的书源查询结果。候选查询不设置固定条数上限。 */
+@Serializable
+data class SourcePickerResponse(
+    val items: List<SourceSummary>,
+    val total: Int,
 )
 
 /** 书源分组重命名（把 `from` 组整体改名为 `to`；`to` 已存在时等价于合并）。 */
@@ -1579,5 +1586,4 @@ data class AudioDurationRequest(
      */
     val positionMs: Long = 0,
 )
-
 

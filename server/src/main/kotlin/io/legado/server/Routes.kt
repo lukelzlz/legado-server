@@ -257,6 +257,11 @@ fun Route.apiRoutes(
             if (auth.requireSession(call) == null) return@get
             call.respond(database.listSources(call.request.queryParameters["q"]))
         }
+        get("/sources/picker") {
+            if (auth.requireSession(call) == null) return@get
+            val groups = call.request.queryParameters.getAll("group").orEmpty()
+            call.respond(database.searchSourcePicker(call.request.queryParameters["q"], groups))
+        }
         post("/sources/batch") {
             if (auth.requireSession(call, true) == null) return@post
             val req = call.receive<BatchSourceRequest>()
@@ -727,10 +732,11 @@ fun Route.apiRoutes(
             val request = call.receive<SearchRequest>()
             val kw = request.effectiveKeyword
             if (kw.isBlank()) { call.respond(HttpStatusCode.BadRequest, ApiError("invalid_keyword", "请输入搜索关键词")); return@post }
-            val sourceRecords = database.listSearchSourceRecords(request.sourceIds, request.group)
+            val sourceRecords = database.listSearchSourceRecordsForScope(request.sourceIds, request.groups, request.group)
             // 未显式指定范围的「全部书源」搜索才封顶，避免一次搜索打满所有书源。
-            // 用户一旦选了分组，就是明确的收窄意图，应当整组都跑（与按 id 指定书源同样的待遇）。
-            val searchRecords = if (request.sourceIds == null && request.group.isNullOrBlank() && sourceRecords.size > 20) sourceRecords.take(20) else sourceRecords
+            // 用户一旦选了分组或书源，就是明确的收窄意图，应当整组都跑。
+            val explicitScope = request.sourceIds.orEmpty().isNotEmpty() || request.groups.any { it.isNotBlank() } || !request.group.isNullOrBlank()
+            val searchRecords = if (!explicitScope && sourceRecords.size > 20) sourceRecords.take(20) else sourceRecords
             val results = boundedConcurrentMap(searchRecords, sourceSearchConcurrency()) { source -> readableSearchResults(runner, source.json, kw) }.flatten()
             call.respond(results)
         }
@@ -747,7 +753,7 @@ fun Route.apiRoutes(
                 close(CloseReason(CloseReason.Codes.CANNOT_ACCEPT, "搜索条件无效"))
                 return@webSocket
             }
-            val sourceRecords = database.listSearchSourceRecords(request.sourceIds, request.group)
+            val sourceRecords = database.listSearchSourceRecordsForScope(request.sourceIds, request.groups, request.group)
             send(Frame.Text(Json.encodeToString(SearchStreamEvent("start", totalSources = sourceRecords.size))))
             coroutineScope {
                 val events = Channel<SearchStreamEvent>(Channel.BUFFERED)
@@ -756,7 +762,7 @@ fun Route.apiRoutes(
                 val workers = sourceRecords.map { source -> async {
                     semaphore.withPermit {
                         if (!isActive) return@async
-                        val outcome = searchSourceOutcome(runner, source.json, request.keyword)
+                        val outcome = searchSourceOutcome(runner, source.json, kw)
                         if (!isActive) return@async
                         runCatching {
                             if (outcome.results.isNotEmpty()) events.send(SearchStreamEvent("results", results = outcome.results))

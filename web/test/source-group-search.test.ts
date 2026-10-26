@@ -89,6 +89,23 @@ test('source group - streamSearch only carries group when one is selected', asyn
   }
 })
 
+test('source scope - streamSearch carries multiple groups and sources as one union scope', async () => {
+  const mock = installMockWebSocket()
+  try {
+    setCsrfToken('mock-csrf-multi-scope')
+    streamSearch('凡人修仙传', ['https://src1.com', 'https://src2.com'], () => {}, () => {}, () => {}, ['出版', UNGROUPED_SOURCE_GROUP])
+    mock.flushOpen()
+    await flushMicrotasks()
+    assert.deepEqual(JSON.parse(mock.sentMessages[0]), {
+      keyword: '凡人修仙传',
+      sourceIds: ['https://src1.com', 'https://src2.com'],
+      groups: ['出版', UNGROUPED_SOURCE_GROUP],
+    })
+  } finally {
+    mock.restore()
+  }
+})
+
 test('source group - store keeps group and single source mutually exclusive', async () => {
   const mock = installMockWebSocket()
   try {
@@ -133,6 +150,31 @@ test('source group - single source narrows scope without group', async () => {
     mock.flushOpen()
     await flushMicrotasks()
     assert.deepEqual(JSON.parse(mock.sentMessages[0]), { keyword: '十日终焉', sourceIds: ['https://src1.com'] })
+    store.stopSearch()
+    store.reset()
+  } finally {
+    mock.restore()
+  }
+})
+
+test('source scope - store preserves multiple groups and sources together', async () => {
+  const mock = installMockWebSocket()
+  try {
+    setCsrfToken('mock-csrf-multi-store')
+    const store = new SearchStore()
+    store.setSearchScope(['出版', '漫画'], ['https://src1.com', 'https://src2.com'])
+    assert.deepEqual(store.getSnapshot().selectedGroups, ['出版', '漫画'])
+    assert.deepEqual(store.getSnapshot().selectedSourceIds, ['https://src1.com', 'https://src2.com'])
+    assert.equal(store.getSnapshot().selectedGroup, '')
+    assert.equal(store.getSnapshot().selectedSourceId, '')
+    store.startSearch('十日终焉')
+    mock.flushOpen()
+    await flushMicrotasks()
+    assert.deepEqual(JSON.parse(mock.sentMessages[0]), {
+      keyword: '十日终焉',
+      sourceIds: ['https://src1.com', 'https://src2.com'],
+      groups: ['出版', '漫画'],
+    })
     store.stopSearch()
     store.reset()
   } finally {

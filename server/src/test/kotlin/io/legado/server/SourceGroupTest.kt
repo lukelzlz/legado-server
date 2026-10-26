@@ -107,6 +107,58 @@ class SourceGroupTest {
     }
 
     @Test
+    fun `multi group and source scope uses a deduplicated union`() {
+        val path = temporaryDatabase()
+        val database = Database(path)
+        try {
+            database.initialize("password-for-test")
+            importGrouped(
+                database,
+                listOf(
+                    sourceJson("https://a1.example", "启用A1", "News"),
+                    sourceJson("https://b1.example", "启用B1", "漫画"),
+                    sourceJson("https://n1.example", "未分组N1", null),
+                    sourceJson("https://n2.example", "空串分组N2", ""),
+                ),
+            )
+
+            val records = database.listSearchSourceRecordsForScope(
+                sourceIds = listOf("https://a1.example", "https://b1.example"),
+                groups = listOf("News", SourceGroupFilter.UNGROUPED),
+            )
+            assertEquals(
+                listOf("https://a1.example", "https://b1.example", "https://n1.example", "https://n2.example"),
+                records.map { it.id }.sorted(),
+            )
+            assertEquals("同一书源被分组和单源同时命中时只能出现一次", 4, records.map { it.id }.distinct().size)
+        } finally {
+            database.close()
+            Files.deleteIfExists(java.nio.file.Path.of(path))
+        }
+    }
+
+    @Test
+    fun `source picker searches name url and group without truncating results`() {
+        val path = temporaryDatabase()
+        val database = Database(path)
+        try {
+            database.initialize("password-for-test")
+            importGrouped(
+                database,
+                (1..3).map { index -> sourceJson("https://picker-$index.example", "聚合源$index", "聚合") },
+            )
+            val result = database.searchSourcePicker("聚合")
+            assertEquals(3, result.total)
+            assertEquals(3, result.items.size)
+            assertEquals("地址也参与候选查询", 1, database.searchSourcePicker("picker-2").total)
+            assertEquals("分组过滤只留下对应启用源", 3, database.searchSourcePicker("", listOf("聚合")).total)
+        } finally {
+            database.close()
+            Files.deleteIfExists(java.nio.file.Path.of(path))
+        }
+    }
+
+    @Test
     fun `renaming a source group moves all its sources and merges into an existing group`() {
         val path = temporaryDatabase()
         val database = Database(path)

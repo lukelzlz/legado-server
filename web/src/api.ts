@@ -216,6 +216,11 @@ export type SourceGroupSummary = {
   enabledCount: number
 }
 
+export type SourcePickerResponse = {
+  items: SourceSummary[]
+  total: number
+}
+
 export type SourceGroupMutationResponse = {
   ok: boolean
   affected: number
@@ -552,6 +557,14 @@ export const api = {
   commitNetworkImport: (token: string, selected: number[], group?: string | null) => request<ImportResponse>('/api/sources/import-url/commit', { method: 'POST', body: JSON.stringify({ token, selected, group: group ?? null }) }),
   /** 书源分组列表（不含「未分组」，它由前端用 UNGROUPED_SOURCE_GROUP 单独提供） */
   sourceGroups: () => request<SourceGroupSummary[]>('/api/source-groups'),
+  /** 书库搜索范围选择器候选：按名称、地址或分组查询，服务端不截断匹配结果。 */
+  sourcePicker: (query = '', groups: string[] = [], signal?: AbortSignal) => {
+    const params = new URLSearchParams()
+    if (query.trim()) params.set('q', query.trim())
+    groups.filter(Boolean).forEach(group => params.append('group', group))
+    const suffix = params.toString() ? `?${params.toString()}` : ''
+    return request<SourcePickerResponse>(`/api/sources/picker${suffix}`, { signal })
+  },
   /** 书源分组改名；目标分组已存在时等价于合并 */
   renameSourceGroup: (from: string, to: string) =>
     request<SourceGroupMutationResponse>('/api/source-groups/rename', { method: 'PUT', body: JSON.stringify({ from, to }) }),
@@ -584,8 +597,8 @@ export const api = {
     request<SourceBrowserResult>(`/api/sources/${encodeURIComponent(sourceId)}/browser/result`, { method: 'POST', body: JSON.stringify({ token, settings, resultId }) }),
   sourceBrowserInlineUrl: (sourceId: string, token: string, key: string) =>
     `/api/sources/${encodeURIComponent(sourceId)}/browser/page?t=${encodeURIComponent(token)}&i=${encodeURIComponent(key)}`,
-  search: (keyword: string, sourceIds?: string[], signal?: AbortSignal, group?: string) =>
-    request<SearchResult[]>('/api/search', { method: 'POST', body: JSON.stringify({ keyword, sourceIds, group }), signal }),
+  search: (keyword: string, sourceIds?: string[], signal?: AbortSignal, groups?: string[]) =>
+    request<SearchResult[]>('/api/search', { method: 'POST', body: JSON.stringify({ keyword, sourceIds, groups }), signal }),
   details: (sourceId: string, bookUrl: string, signal?: AbortSignal) => request<BookDetails>('/api/books/details', { method: 'POST', body: JSON.stringify({ sourceId, bookUrl }), signal }),
   chapters: (sourceId: string, bookUrl: string, signal?: AbortSignal) => request<Chapter[]>('/api/books/chapters', { method: 'POST', body: JSON.stringify({ sourceId, bookUrl }), signal }),
   /**
@@ -943,18 +956,20 @@ export const api = {
 /**
  * 流式搜索（WebSocket）。
  *
- * @param group 只在这些书源分组里搜索（`UNGROUPED_SOURCE_GROUP` 表示未分组）；
- *   省略时按 `sourceIds` 决定范围，两者都不给即「全部已启用书源」。
- *   注意：payload 里**只在有值时**带上 `group`，避免把 `undefined` 序列化成 `null`
- *   （服务端把 null 与空白都当作「不过滤」，但保持报文最小更利于回归断言）。
+ * @param groups 书源分组列表（`UNGROUPED_SOURCE_GROUP` 表示未分组）；
+ *   分组与 sourceIds 按并集搜索，重复书源由服务端去重。
+ *   最后一个参数也接受旧版单个 group 字符串，便于已有换源流程平滑过渡。
  */
-export function streamSearch(keyword: string, sourceIds: string[] | undefined, onEvent: (event: SearchStreamEvent) => void, onError: (message: string) => void, onClose: () => void, group?: string): WebSocket {
+export function streamSearch(keyword: string, sourceIds: string[] | undefined, onEvent: (event: SearchStreamEvent) => void, onError: (message: string) => void, onClose: () => void, groups?: string[] | string): WebSocket {
   const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:'
   const socket = new WebSocket(`${protocol}//${location.host}/api/search/stream?csrf=${encodeURIComponent(csrfToken ?? '')}`)
   let reported = false
   socket.addEventListener('open', () => queueMicrotask(() => {
     if (socket.readyState === WebSocket.OPEN) {
-      socket.send(JSON.stringify(group ? { keyword, sourceIds, group } : { keyword, sourceIds }))
+       const payload = typeof groups === 'string'
+         ? (groups ? { keyword, sourceIds, group: groups } : { keyword, sourceIds })
+         : (groups?.length ? { keyword, sourceIds, groups } : { keyword, sourceIds })
+       socket.send(JSON.stringify(payload))
     }
   }))
   socket.addEventListener('message', event => {

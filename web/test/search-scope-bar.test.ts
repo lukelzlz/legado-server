@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import React from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { SearchScopeBar } from '../src/SearchScopeBar.tsx'
+import { SearchScopePickerModal } from '../src/SearchScopePickerModal.tsx'
 import { UNGROUPED_SOURCE_GROUP } from '../src/api.ts'
 
 /**
@@ -82,4 +83,33 @@ test('search scope bar - ungrouped and single source scopes', () => {
   assert.ok(single.includes('指定单个书源'), '仍要保留「指定单个书源」这条既有能力')
   assert.ok(single.includes('书源A'))
   assert.equal((single.match(/scope-tab active/g) || []).length, 0, '选了单源时分组选项卡都不应处于激活态')
+})
+
+test('search scope bar - mixed multi-scope selection exposes the picker summary', () => {
+  const html = render({
+    selectedGroups: ['大灰狼聚合', '出版'],
+    selectedSourceIds: ['https://a.example/', 'https://b.example/'],
+    onOpenPicker: () => {},
+    onToggleGroup: () => {},
+  })
+  assert.ok(html.includes('2 个分组 + 2 个书源'))
+  assert.ok(html.includes('scope-picker-trigger active'))
+  assert.ok(html.includes('aria-selected="true"'))
+})
+
+test('search scope picker - renders independent group and source multi-select areas', () => {
+  const html = renderToStaticMarkup(
+    React.createElement(SearchScopePickerModal, {
+      groups,
+      selectedGroups: ['出版'],
+      selectedSourceIds: ['https://a.example/'],
+      onApply: () => {},
+      onClose: () => {},
+    }),
+  )
+  assert.ok(html.includes('选择搜索范围'))
+  assert.ok(html.includes('选择分组'))
+  assert.ok(html.includes('选择单个书源'))
+  assert.ok(html.includes('已选 1 个分组 + 1 个书源'))
+  assert.ok(html.includes('输入书源名称、地址或分组名称'))
 })

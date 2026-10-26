@@ -15,14 +15,13 @@ export type SourceChoice = {
 
 export interface SearchStoreState {
   keyword: string
+  /** 当前搜索范围中的多个分组；与 selectedSourceIds 按并集执行。 */
+  selectedGroups: string[]
+  /** 当前搜索范围中的多个单独书源；与 selectedGroups 按并集执行。 */
+  selectedSourceIds: string[]
+  /** 旧版单值镜像；混合或多选范围时为空。 */
   selectedSourceId: string
-  /**
-   * 搜索范围里的**书源分组**（空串 = 不按分组过滤）。
-   *
-   * 与 [selectedSourceId] 互斥：两者都设时语义会打架（既是单源又是整组），
-   * 因此 setSelectedSourceId / setSelectedGroup 会互相清空对方。
-   * `UNGROUPED_SOURCE_GROUP`（`__ungrouped__`）表示只搜未分组书源。
-   */
+  /** 旧版单值镜像；混合或多选范围时为空。 */
   selectedGroup: string
   results: SearchResult[]
   choices: SourceChoice[]
@@ -168,6 +167,8 @@ export const loadSourceBook = async (result: SearchResult, alternateSources?: Se
 
 const initialSearchState: SearchStoreState = {
   keyword: '',
+  selectedGroups: [],
+  selectedSourceIds: [],
   selectedSourceId: '',
   selectedGroup: '',
   results: [],
@@ -213,13 +214,33 @@ export class SearchStore {
     this.setState({ keyword })
   }
 
+  setSearchScope = (selectedGroups: string[], selectedSourceIds: string[]) => {
+    const groups = Array.from(new Set(selectedGroups.filter(Boolean)))
+    const sourceIds = Array.from(new Set(selectedSourceIds.filter(Boolean)))
+    this.setState({
+      selectedGroups: groups,
+      selectedSourceIds: sourceIds,
+      selectedGroup: groups.length === 1 && sourceIds.length === 0 ? groups[0] : '',
+      selectedSourceId: sourceIds.length === 1 && groups.length === 0 ? sourceIds[0] : '',
+    })
+  }
+
+  setSelectedGroups = (selectedGroups: string[]) => {
+    this.setSearchScope(selectedGroups, this.state.selectedSourceIds)
+  }
+
+  setSelectedSourceIds = (selectedSourceIds: string[]) => {
+    this.setSearchScope(this.state.selectedGroups, selectedSourceIds)
+  }
+
   setSelectedSourceId = (selectedSourceId: string) => {
-    // 单源与整组互斥：选了具体书源就不再按分组过滤，否则会出现「既是单源又是整组」的矛盾范围。
-    this.setState({ selectedSourceId, selectedGroup: selectedSourceId ? '' : this.state.selectedGroup })
+    // 旧版单源入口保留互斥语义；新选择器使用 setSelectedSourceIds 支持混合范围。
+    this.setSearchScope([], selectedSourceId ? [selectedSourceId] : [])
   }
 
   setSelectedGroup = (selectedGroup: string) => {
-    this.setState({ selectedGroup, selectedSourceId: selectedGroup ? '' : this.state.selectedSourceId })
+    // 旧版单组入口保留互斥语义；新选择器使用 setSelectedGroups 支持多组范围。
+    this.setSearchScope(selectedGroup ? [selectedGroup] : [], [])
   }
 
   setFilters = (filters: SearchFilters | ((current: SearchFilters) => SearchFilters)) => {
@@ -241,9 +262,10 @@ export class SearchStore {
     const query = (keyword !== undefined ? keyword : this.state.keyword).trim()
     if (!query) return
 
-    const source = sourceId !== undefined ? sourceId : this.state.selectedSourceId
-    // 单源优先于分组（setter 已保证二者互斥，这里只是兜底）。
-    const group = source ? '' : this.state.selectedGroup
+    const sourceIds = sourceId !== undefined
+      ? (sourceId ? [sourceId] : [])
+      : this.state.selectedSourceIds
+    const groups = sourceId !== undefined ? [] : this.state.selectedGroups
 
     if (this.socket) {
       try {
@@ -264,7 +286,10 @@ export class SearchStore {
     this.detailRequestId++
     this.setState({
       keyword: query,
-      selectedSourceId: source,
+      selectedGroups: groups,
+      selectedSourceIds: sourceIds,
+      selectedGroup: groups.length === 1 && sourceIds.length === 0 ? groups[0] : '',
+      selectedSourceId: sourceIds.length === 1 && groups.length === 0 ? sourceIds[0] : '',
       loading: true,
       stopped: false,
       message: '',
@@ -279,7 +304,7 @@ export class SearchStore {
 
     const socket = streamSearch(
       query,
-      source ? [source] : undefined,
+      sourceIds.length ? sourceIds : undefined,
       packet => {
         if (this.socket !== socket) return
         if (packet.type === 'start' || packet.type === 'progress' || packet.type === 'done') {
@@ -324,7 +349,9 @@ export class SearchStore {
           this.socket = null
         }
       },
-      group || undefined
+      groups.length === 1 && sourceIds.length === 0
+        ? groups[0]
+        : (groups.length ? groups : undefined)
     )
 
     this.socket = socket
@@ -485,6 +512,9 @@ export class SearchStore {
 export const searchStore = new SearchStore()
 
 export function useSearchStore(): SearchStoreState & {
+  setSearchScope: (groups: string[], sourceIds: string[]) => void
+  setSelectedGroups: (groups: string[]) => void
+  setSelectedSourceIds: (sourceIds: string[]) => void
   setKeyword: (keyword: string) => void
   setSelectedSourceId: (sourceId: string) => void
   setSelectedGroup: (group: string) => void
@@ -499,6 +529,9 @@ export function useSearchStore(): SearchStoreState & {
   const state = useSyncExternalStore(searchStore.subscribe, searchStore.getSnapshot)
   return {
     ...state,
+    setSearchScope: searchStore.setSearchScope,
+    setSelectedGroups: searchStore.setSelectedGroups,
+    setSelectedSourceIds: searchStore.setSelectedSourceIds,
     setKeyword: searchStore.setKeyword,
     setSelectedSourceId: searchStore.setSelectedSourceId,
     setSelectedGroup: searchStore.setSelectedGroup,

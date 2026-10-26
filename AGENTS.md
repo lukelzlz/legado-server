@@ -312,6 +312,7 @@ AI 与人类协作时必须明确当前达到的完成度阶梯，严禁混淆�
 | PROPOSAL-032 | 「清除缓存」按书 + 范围三选弹窗（服务器 / 浏览器 / 两者，三个红色 + 中性取消） | [`docs/proposals/PROPOSAL-032-clear-cache-scope-dialog.md`](docs/proposals/PROPOSAL-032-clear-cache-scope-dialog.md) | Tested（待用户验收） |
 | PROPOSAL-033 | 阅读器目录统一底栏（漫画缓存栏 + 有声缓存栏）+ 书架类型角标（含小说角标）+ 底部按钮动态均分 | [`docs/proposals/PROPOSAL-033-unified-reader-toc-and-shelf-kind-badges.md`](docs/proposals/PROPOSAL-033-unified-reader-toc-and-shelf-kind-badges.md) | Tested（待用户验收） |
 | PROPOSAL-034 | 书籍正文插图（安全 `<img>` 保留 + 服务端代理取图与落盘缓存 `images/` + 阅读器灯箱 + 离线随章抓取） | [`docs/proposals/PROPOSAL-034-novel-inline-illustrations.md`](docs/proposals/PROPOSAL-034-novel-inline-illustrations.md) | Implemented（待用户验收） |
+| PROPOSAL-035 | 大规模书源搜索范围选择器（多分组与多书源） | [`docs/proposals/PROPOSAL-035-large-source-search-scope-picker.md`](docs/proposals/PROPOSAL-035-large-source-search-scope-picker.md) | Accepted |
 
 ### 架构决策记录 (ADR)
 | 编号 | 决策标题 | 关联文档 | 状态 |
@@ -349,6 +350,7 @@ AI 与人类协作时必须明确当前达到的完成度阶梯，严禁混淆�
 | ADR-031 | 缓存命名空间 `audio`/`comic`/`images`(插图预留)/`covers`，文件名 = 名称 + 20 位短哈希 + 真实扩展名（读取只按哈希），`cache_layout` v2 = 清掉重下、v3 = **只移动不清理** | [`docs/decisions/ADR-031-cache-namespace-comic-images-covers-and-move-only-migration.md`](docs/decisions/ADR-031-cache-namespace-comic-images-covers-and-move-only-migration.md) | Accepted |
 | ADR-032 | 源码里 `t('literal.key','中文默认值')` 的 key 必须在四语言都存在且非空，用 parity 断言守住（扫描器自检 + 反向 parity + 动态 key 边界） | [`docs/decisions/ADR-032-i18n-literal-keys-must-exist-in-all-locales.md`](docs/decisions/ADR-032-i18n-literal-keys-must-exist-in-all-locales.md) | Accepted |
 | ADR-033 | 正文插图必须走**服务端代理**（`GET /api/books/images/illustration`，浏览器永不直连上游）；落盘沿用 comic 的哈希命名但与 `comic/` **分根**、与 `manga_image_cache` **分表**（序号由「正文出现顺序」定死且永不改写） | [`docs/decisions/ADR-033-inline-illustration-proxy-and-cache-layout.md`](docs/decisions/ADR-033-inline-illustration-proxy-and-cache-layout.md) | Accepted |
+| ADR-034 | 采用服务端候选查询与并集范围模型支持大规模书源搜索选择 | [`docs/decisions/ADR-034-large-source-search-scope-selection.md`](docs/decisions/ADR-034-large-source-search-scope-selection.md) | Accepted |
 
 ### 工作记忆与历史推演归档 (Sessions Chronicle)
 | 日期 / ID | 类型 | 标题 / 议题 | 关联文档 | 状态 |

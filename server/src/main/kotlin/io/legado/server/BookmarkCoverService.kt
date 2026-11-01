@@ -88,7 +88,13 @@ class BookmarkCoverService(
     fun attach(bookName: String, bookAuthor: String?, coverKey: String?): BookCoverState {
         val name = bookName.trim()
         if (coverKey.isNullOrBlank()) {
-            purgeIfUnused(name, bookAuthor)
+            // 「移除封面」：登记表与书架行都要清（书在架上时封面权威在 book_shelf），
+            // 只有确认再没有任何书/登记引用这张图时才算孤儿文件、予以删除。
+            val row = database.getBookCover(name, bookAuthor)
+            database.clearBookCover(name, bookAuthor)
+            database.clearCoverOnShelfRows(name, bookAuthor)
+            val key = row?.coverKey
+            if (key != null && !database.isCoverKeyReferenced(key)) runCatching { coverCache.delete(key) }
             return stateOf(name, bookAuthor)
         }
         database.saveBookCover(name, bookAuthor, coverKey)

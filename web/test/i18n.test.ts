@@ -45,7 +45,7 @@ test('i18n - runtime translation and language switching', async () => {
   assert.equal(i18n.t('header.shelf'), '书架')
   assert.equal(i18n.t('header.library'), '书库')
   assert.equal(i18n.t('common.ok'), '确定')
-  assert.equal(i18n.t('common.selected', { count: 3 }), '已选 3 项')
+  assert.equal(i18n.t('common.selected'), '已选')   // 纯标签：批量栏后面紧跟 <strong>{数量}</strong>，不接受 {{count}} 占位符
 
   // 2. Switch to English
   await changeAppLanguage('en-US')
@@ -53,7 +53,7 @@ test('i18n - runtime translation and language switching', async () => {
   assert.equal(i18n.t('header.shelf'), 'Bookshelf')
   assert.equal(i18n.t('header.library'), 'Library')
   assert.equal(i18n.t('common.ok'), 'OK')
-  assert.equal(i18n.t('common.selected', { count: 3 }), '3 selected')
+  assert.equal(i18n.t('common.selected'), 'Selected')
 
   // 3. Switch to Traditional Chinese
   await changeAppLanguage('zh-TW')
@@ -61,7 +61,7 @@ test('i18n - runtime translation and language switching', async () => {
   assert.equal(i18n.t('header.shelf'), '書架')
   assert.equal(i18n.t('header.library'), '書庫')
   assert.equal(i18n.t('common.ok'), '確定')
-  assert.equal(i18n.t('common.selected', { count: 3 }), '已選 3 項')
+  assert.equal(i18n.t('common.selected'), '已選')
 
   // 4. Switch to Japanese
   await changeAppLanguage('ja-JP')
@@ -69,7 +69,7 @@ test('i18n - runtime translation and language switching', async () => {
   assert.equal(i18n.t('header.shelf'), '本棚')
   assert.equal(i18n.t('header.library'), 'ライブラリ')
   assert.equal(i18n.t('common.ok'), 'OK')
-  assert.equal(i18n.t('common.selected', { count: 3 }), '3 件選択中')
+  assert.equal(i18n.t('common.selected'), '選択中')
 
   // 5. Fallback to zh-CN
   await changeAppLanguage('zh-CN')

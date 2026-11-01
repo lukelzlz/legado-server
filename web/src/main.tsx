@@ -66,6 +66,8 @@ function resolveShelfCover(item: { coverKey?: string; coverUrl?: string }): stri
 // 与服务端 `BookKind.isLocalRef` 同源，角标、书籍管理弹窗、阅读器目录抽屉三处共用同一判据。
 
 type Page = 'sources' | 'subscriptions' | 'library' | 'shelf' | 'reader' | 'rules' | 'webdav' | 'explore' | 'bookmarks'
+/** 从「书签」页跳进阅读器时要落到的位置（章序号 + 章内字符偏移）。 */
+type BookmarkJumpTarget = { chapterIndex: number; chapterPos: number }
 const readerStorageKey = 'legado-open-book-v1'
 const pageFromHash = (): Page => location.hash === '#sources' ? 'sources' : location.hash === '#subscriptions' ? 'subscriptions' : location.hash === '#rules' ? 'rules' : location.hash === '#webdav' ? 'webdav' : location.hash === '#shelf' ? 'shelf' : location.hash === '#reader' ? 'reader' : location.hash === '#explore' ? 'explore' : location.hash === '#bookmarks' ? 'bookmarks' : 'library'
 
@@ -3333,7 +3335,7 @@ function App() {
     setPage(next)
   }
 
-  const openReader = (book: OpenBook, index: number, origin: Page = 'library', bookmark?: { chapterIndex: number; chapterPos: number }) => {
+  const openReader = (book: OpenBook, index: number, origin: Page = 'library', bookmark?: BookmarkJumpTarget) => {
     // 这里**刻意不再调 api.addToBookshelf**。
     //
     // 原实现每次开书都往书架写一行（借「加入书架」接口做 upsert），而它携带的封面地址
@@ -3349,7 +3351,7 @@ function App() {
     setPage('reader')
   }
 
-  const openShelfItem = async (item: BookshelfItem, bookmark?: { chapterIndex: number; chapterPos: number }) => {
+  const openShelfItem = async (item: BookshelfItem, bookmark?: BookmarkJumpTarget) => {
     // 阅读器里显示封面用的地址（不再回写书架）。三级回退：
     // 本地副本 → 兄弟书源的封面 → **本条自己的 coverUrl**。
     // 最后一级曾经漏掉：只靠外链、没有本地副本的书会传 undefined 上去，

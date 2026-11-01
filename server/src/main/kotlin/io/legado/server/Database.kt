@@ -3510,6 +3510,17 @@ class Database(private val path: String) : Closeable, AutoCloseable {
         }
     }
 
+    /** 移除某本书在书架行上的封面引用（书签页「移除封面」用）。 */
+    fun clearCoverOnShelfRows(bookName: String, bookAuthor: String?): Int = write { db ->
+        db.prepareStatement(
+            "update book_shelf set cover_key=null where name=? and coalesce(author,'')=?"
+        ).use { stmt ->
+            stmt.setString(1, bookName)
+            stmt.setString(2, normalizeBookAuthor(bookAuthor))
+            stmt.executeUpdate()
+        }
+    }
+
     private fun normalizeBookAuthor(author: String?): String = author?.trim().orEmpty()
 
 

@@ -82,6 +82,49 @@ e2e 里 `page.$('.reader-icon-button[aria-label*="书签"]').click()` 一直超�
 | 脚本 | `scripts/verify-bookmark.ps1` | 真机接口 + 备份归档核对（ASCII only，PS 5.1 友好） |
 | 测试 | `web/test/bookmark.test.ts`、`web/test/e2e-bookmark-browser.ts`、`BookmarkRoutesTest.kt` | 见上 |
 
+## 追加需求（同日）：书签变成**全量落库**，并单开「书签」页
+
+用户原话：
+
+> 「一股脑全存到表里，不论有没有这本书，不论是本地的还是什么的，在主页上边像规则一样单开一页叫书签，
+> 界面仿照规则的页面，左面的列表是书籍名字作者和封面，右边是选中的书的书签，
+> 如果某本书的书签在右边删完了，那就左边列表的书籍就消失，左右边都要批量管理」
+
+落地：
+- `BackupImporter` 不再按书架过滤书签（`bookmarksSkipped` 字段与前端「跳过 N 条」提示一起删掉）。
+- 新接口 `GET /api/bookmarks/overview`（`bookmark` LEFT JOIN `book_shelf` 取封面、按最新书签时间倒序）
+  与 `POST /api/bookmarks/delete-batch`（`ids` 删单条 / `books` 删整本）。
+- 新页面 `web/src/BookmarksPage.tsx`：复用替换规则页整套布局 class；左栏书列表（封面/书名/作者/条数）、
+  右栏该书书签（行内编辑、单条删除、删本书全部）；两侧各有批量工具栏。
+  「删完书就消失」靠**重拉聚合结果**实现，不在前端自己摘行。
+- 页内纯函数（`bookKeyOf` / `sortBookmarks` / `filterBookmark*`）单独放 `web/src/bookmarkGroups.ts` 以便单测。
+
+### 这一轮又踩了四个坑
+
+1. **`executeBatch()` 返回的是"每条语句影响的行数"，不是"执行了几条语句"**。
+   第一版批量删除写成 `executeBatch().count { it > 0 }`，于是「删一本书的 2 条书签」返回 **1**
+   （1 条语句、2 行）⇒ 前端提示与实际不符、断言也挂了。必须 `.sum()`。
+2. **`DELETE /api/bookshelf` 是 query 参数**（`?sourceId=&bookUrl=`），不是 JSON body。
+   e2e 的清理用 body 调它拿到 `400 缺少书籍标识`，且**没人看返回值** ⇒ 每跑一次留下一本垃圾书，
+   实测书架里堆了 4 本同名联调书才被发现。**清理代码也必须断言状态码。**
+3. **本地 TXT 的文件名解析会拆「书名-作者」**：`extractTitleAndAuthorFromFilename` 里有
+   `^(.+?)[_—\-\s]+(?:作者|著)?[:：\s]*(.+)$` ⇒ 文件名 `书签联调书-820981.txt` 变成
+   书名=`书签联调书`、作者=`820981`，**唯一性后缀没了**。想让书名唯一，后缀不能带 `-`/`_`/空格。
+4. **CSRF token 绑定会话**：拿 A 次登录的 cookie 配 B 次登录的 csrf 调写接口会 **403**。
+   e2e 里必须用「同一次登录」返回的 cookie + csrf 配对。
+5. 顺带修掉一个**断言假设错误**：e2e 原来断言「跳转后 `scrollY≈0`」，但本地书会记住上次阅读进度，
+   书签可能落在第 3 章 ⇒ 跳转后 scrollY 本来就 >0。改成「滚动量必须减少 / 换唯一书名从章首跑」。
+
+### 追加验证
+
+- 前端：`bookmark-page.test.ts` 13/13；`run-all.ts` **409/409**。
+- 服务端：`BookmarkRoutesTest`（4 条，新增概览 + 批量删除）通过；
+  受"全量落库"影响的 `BackupGroupAndBookmarkTest`（3 条书签全进）、
+  `RealBackupGroupAndBookmarkTest`（47 条全进，且能查到"书不在书架"的书签）均已改为新口径并通过。
+- 真浏览器 13/13：阅读器 9 步 + 「书签」页 4 步（左栏同时显示在架/不在架书；右栏全选删除后
+  **该书从左栏消失**；左栏批量删除后库里不再有联调书签；顺带确认右侧在手机宽度仍可见）。
+- 截图：`_artifacts/bookmarks-page.png`（左书右签）、`bookmarks-page-after-batch.png`（批量删除后的 toast 与列表）。
+
 ## 留给后续
 
 - 手机端在「章名对不上 + 原序号越界」时会弹「仍要跳转？」确认框，本实现直接跳到最后一章

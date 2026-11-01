@@ -696,6 +696,44 @@ data class BookmarkUpdateRequest(
     val content: String? = null,
 )
 
+/**
+ * 「书签」页左栏的一本书（按书名 + 作者聚合）。
+ *
+ * 刻意**不要求书在书架上**（用户要求「一股脑全存到表里，不论有没有这本书」）：
+ * 书不在书架时 [coverKey]/[coverUrl] 为 null，前端显示文字占位。
+ */
+@Serializable
+data class BookmarkBook(
+    val bookName: String,
+    val bookAuthor: String? = null,
+    val count: Int,
+    /** 该书最新一条书签的时间（毫秒），列表按它倒序。 */
+    val lastCreatedAt: Long = 0L,
+    /** 书架上有这本书时的本地封面 key（`/api/covers/<key>`），没有则 null。 */
+    val coverKey: String? = null,
+    /** 书架上有这本书时的原始外链封面，本地副本缺失时前端回退用它。 */
+    val coverUrl: String? = null,
+)
+
+/** 「书签」页左栏的书列表。 */
+@Serializable
+data class BookmarkOverviewResponse(val items: List<BookmarkBook>)
+
+/** 批量删除书签：按书签 id，或按整本书（书名 + 作者）。至少给一个。 */
+@Serializable
+data class BookmarkBatchDeleteRequest(
+    val ids: List<Long> = emptyList(),
+    val books: List<BookmarkBookKey> = emptyList(),
+)
+
+/** 批量删除时用来指代「某本书的全部书签」。 */
+@Serializable
+data class BookmarkBookKey(val bookName: String, val bookAuthor: String? = null)
+
+/** 批量删除的结果（删除行数）。 */
+@Serializable
+data class BookmarkDeleteResult(val deleted: Int)
+
 @Serializable
 data class BookGroupCreateRequest(val name: String)
 
@@ -1044,8 +1082,6 @@ data class BackupImportSummary(
     val coversQueued: Int = 0,
     /** 新增的书签数。 */
     val bookmarks: Int = 0,
-    /** 因所属书籍未导入（**仅本地图书**）而跳过的书签数。 */
-    val bookmarksSkipped: Int = 0,
     /**
      * 随书源一起导入的**不同书源分组**个数。
      *

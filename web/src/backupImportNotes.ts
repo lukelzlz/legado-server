@@ -15,7 +15,7 @@ export type BackupImportNotes = {
    * （那时它恒为 0），所以只能用 `coversQueued` 告知用户"已受理"。
    */
   queuedNote: string
-  /** 书签提示（含跳过条数）。 */
+  /** 书签提示（导入条数）。 */
   markNote: string
 }
 
@@ -54,17 +54,11 @@ export function backupImportNotes(summary: BackupImportSummary, t: Translate): B
     : ''
 
   const bookmarks = summary.bookmarks ?? 0
-  const bookmarksSkipped = summary.bookmarksSkipped ?? 0
-  const markNote = bookmarksSkipped > 0
-    ? t('webdav.backupBookmarksSkippedNote', {
-        count: bookmarks,
-        skipped: bookmarksSkipped,
-        defaultValue: `；书签 ${bookmarks} 条（跳过 ${bookmarksSkipped} 条，其所属书籍是手机本地图书、未导入）`,
-      })
-    : t('webdav.backupBookmarksNote', {
-        count: bookmarks,
-        defaultValue: `；书签 ${bookmarks} 条`,
-      })
+  // 书签现在是**全量落库**（书不在书架上也会导入，见「书签」页），所以只剩"导入了多少条"这一种说法。
+  const markNote = t('webdav.backupBookmarksNote', {
+    count: bookmarks,
+    defaultValue: `；书签 ${bookmarks} 条`,
+  })
 
   // 封面补抓已改成**后台异步**：接口返回时 `coversFetched/coversFailed` 还来不及有结果
   // （如实为 0），"到底有没有在补"只能靠 `coversQueued` 告知用户"已受理"。

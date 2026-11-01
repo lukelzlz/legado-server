@@ -76,13 +76,15 @@ class RealBackupGroupAndBookmarkTest {
                 assertTrue("内置空分组「$builtIn」不应被导入", builtIn !in names)
             }
 
-            // ---- 书签：只导入书仍在书架上的 ----
-            assertEquals(
-                "本备份应导入 18 条书签",
-                18,
-                summary.bookmarks,
+            // ---- 书签：**全量导入**，不再按书架过滤（47 条里有 29 条挂在被过滤的书上）----
+            val allMarks = db.listAllBookmarks()
+            assertEquals("本备份应导入全部 47 条书签", 47, allMarks.size)
+            // 必须真的存在「书不在书架、书签仍在」的条目 —— 否则"全量落库"等于没测到
+            val shelfNames = db.listBookshelf().map { it.name }.toSet()
+            assertTrue(
+                "应至少有一条书签挂在不在书架上的书上",
+                allMarks.any { it.bookName !in shelfNames },
             )
-            assertEquals("应报告跳过 29 条书签（书已被过滤）", 29, summary.bookmarksSkipped)
 
             // 抽查一条真实书签确实入库了
             val known = db.listBookmarks("被废修为后，我能否逃离她的魔爪", "小白在放鸽子")

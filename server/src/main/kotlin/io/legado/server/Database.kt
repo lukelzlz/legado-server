@@ -3185,6 +3185,79 @@ class Database(private val path: String) : Closeable, AutoCloseable {
         }
     }
 
+    /**
+     * 「书签」页左栏：按（书名 + 作者）聚合出**所有有书签的书**。
+     *
+     * 刻意**不要求书在书架上**——用户要求「一股脑全存到表里，不论有没有这本书，不论是本地的还是什么的」。
+     * 封面只是**锦上添花**：用 LEFT JOIN 从书架取（同一本书可能有多个书源的记录，任取一张），
+     * 书不在书架时 `cover_key`/`cover_url` 为 null，前端显示文字占位。
+     *
+     * 排序按「最新一条书签的时间」倒序：刚加过书签的书排在最前面，符合"继续看"的直觉。
+     */
+    fun listBookmarkBooks(): List<BookmarkBook> = connect { db ->
+        db.prepareStatement(
+            """
+            select b.book_name, b.book_author, count(*) as cnt, max(b.created_at) as last_at,
+                   max(s.cover_key) as cover_key, max(s.cover_url) as cover_url
+            from bookmark b
+            left join book_shelf s
+              on s.name = b.book_name and coalesce(s.author,'') = coalesce(b.book_author,'')
+            group by b.book_name, coalesce(b.book_author,'')
+            order by last_at desc, b.book_name asc
+            """.trimIndent()
+        ).use { stmt ->
+            stmt.executeQuery().use { rs ->
+                buildList {
+                    while (rs.next()) add(
+                        BookmarkBook(
+                            bookName = rs.getString(1),
+                            bookAuthor = rs.getString(2),
+                            count = rs.getInt(3),
+                            lastCreatedAt = rs.getLong(4),
+                            coverKey = rs.getString(5),
+                            coverUrl = rs.getString(6),
+                        )
+                    )
+                }
+            }
+        }
+    }
+
+    /** 批量删除书签（按 id）。返回**真实删除行数**（`executeBatch` 每次返回该语句影响的行数，必须求和）。 */
+    fun deleteBookmarks(ids: List<Long>): Int {
+        if (ids.isEmpty()) return 0
+        return write { db ->
+            db.prepareStatement("delete from bookmark where id=?").use { stmt ->
+                ids.forEach { id ->
+                    stmt.setLong(1, id)
+                    stmt.addBatch()
+                }
+                stmt.executeBatch().sum()
+            }
+        }
+    }
+
+    /**
+     * 批量删除「整本书的书签」。返回**真实删除行数**。
+     *
+     * 用 `coalesce(book_author,'')` 比较，NULL 与空串都能命中（书签表里无作者的书占多数）。
+     */
+    fun deleteBookmarksByBooks(books: List<BookmarkBookKey>): Int {
+        if (books.isEmpty()) return 0
+        return write { db ->
+            db.prepareStatement(
+                "delete from bookmark where book_name=? and coalesce(book_author,'')=coalesce(?,'')"
+            ).use { stmt ->
+                books.forEach { book ->
+                    stmt.setString(1, book.bookName)
+                    stmt.setString(2, book.bookAuthor)
+                    stmt.addBatch()
+                }
+                stmt.executeBatch().sum()
+            }
+        }
+    }
+
     private fun ResultSet.toBookmark() = Bookmark(
         id = getLong(1),
         bookName = getString(2),

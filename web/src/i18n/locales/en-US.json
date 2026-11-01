@@ -57,6 +57,7 @@
   },
   "header": {
     "shelf": "Bookshelf",
+    "bookmarks": "Bookmarks",
     "library": "Library",
     "explore": "Explore",
     "sources": "Sources",
@@ -1421,5 +1422,28 @@
     "lastErrorPrefix": "Last error: {{error}}",
     "lastSyncPrefix": "Last sync: {{time}}, processed {{count}} sources",
     "notSyncedYet": "Not synced yet"
+  },
+  "bookmarks": {
+    "title": "Bookmarks",
+    "loadFailed": "Failed to load bookmarks",
+    "searchBookPlaceholder": "Search title / author",
+    "searchMarkPlaceholder": "Search chapter / text / note",
+    "emptyBooks": "No bookmarks yet",
+    "noMatchingBooks": "No matching books",
+    "noMatchingMarks": "No matching bookmarks",
+    "countBadge": "{{count}}",
+    "selectBookFirst": "Pick a book on the left to see its bookmarks",
+    "batchManage": "Batch",
+    "batchBooksHint": "Delete all bookmarks of the selected books",
+    "batchBooksAria": "Bookmark batch toolbar (books)",
+    "batchMarksAria": "Bookmark batch toolbar (bookmarks)",
+    "deleteBookMarks": "Delete all bookmarks of this book",
+    "deleteSelected": "Delete selected",
+    "batchDeleteBooks": "Delete bookmarks of selected books",
+    "deleteMarkConfirm": "Delete this bookmark?\nThis cannot be undone!",
+    "batchDeleteMarkConfirm": "Delete the {{count}} selected bookmarks?\nThis cannot be undone!",
+    "deleteBookConfirm": "Delete all bookmarks of \"{{name}}\"?\nThis cannot be undone!",
+    "batchDeleteBookConfirm": "Delete all bookmarks of the {{count}} selected books?\n({{names}})\nThis cannot be undone!",
+    "marksDeleted": "Deleted {{count}} bookmarks"
   }
 }

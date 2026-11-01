@@ -2590,6 +2590,26 @@ fun Route.apiRoutes(
             val bookAuthor = call.request.queryParameters["bookAuthor"]
             call.respond(BookmarkListResponse(database.listBookmarks(bookName, bookAuthor)))
         }
+        /** 「书签」页左栏：所有有书签的书（不要求书在书架上）。 */
+        get("/bookmarks/overview") {
+            if (auth.requireSession(call) == null) return@get
+            call.respond(BookmarkOverviewResponse(database.listBookmarkBooks()))
+        }
+        /**
+         * 批量删除：`ids` 删单条、`books` 删整本（书签删光后该书自然从左栏消失）。
+         *
+         * 两个条件同时给时按并集删，返回真实删除行数（不是"收到多少条"）。
+         */
+        post("/bookmarks/delete-batch") {
+            if (auth.requireSession(call, true) == null) return@post
+            val request = call.receive<BookmarkBatchDeleteRequest>()
+            if (request.ids.isEmpty() && request.books.isEmpty()) {
+                call.respond(HttpStatusCode.BadRequest, ApiError("invalid_bookmark", "未指定要删除的书签"))
+                return@post
+            }
+            val deleted = database.deleteBookmarks(request.ids) + database.deleteBookmarksByBooks(request.books)
+            call.respond(BookmarkDeleteResult(deleted))
+        }
         post("/bookmarks") {
             if (auth.requireSession(call, true) == null) return@post
             val request = call.receive<BookmarkSaveRequest>()

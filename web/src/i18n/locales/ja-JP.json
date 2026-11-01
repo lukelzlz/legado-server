@@ -57,6 +57,7 @@
   },
   "header": {
     "shelf": "本棚",
+    "bookmarks": "しおり",
     "library": "ライブラリ",
     "explore": "見つける",
     "sources": "ブックソース",
@@ -1421,5 +1422,28 @@
     "lastErrorPrefix": "最新エラー：{{error}}",
     "lastSyncPrefix": "最新同期：{{time}}、{{count}} 件の書源を処理",
     "notSyncedYet": "未同期"
+  },
+  "bookmarks": {
+    "title": "しおり",
+    "loadFailed": "しおりの読み込みに失敗しました",
+    "searchBookPlaceholder": "書名 / 著者で検索",
+    "searchMarkPlaceholder": "章 / 原文 / メモで検索",
+    "emptyBooks": "しおりはまだありません",
+    "noMatchingBooks": "一致する書籍はありません",
+    "noMatchingMarks": "一致するしおりはありません",
+    "countBadge": "{{count}} 件",
+    "selectBookFirst": "左側でしおりのある書籍を選んでください",
+    "batchManage": "一括管理",
+    "batchBooksHint": "選んだ書籍のしおりをすべて削除",
+    "batchBooksAria": "しおり一括操作ツールバー（書籍）",
+    "batchMarksAria": "しおり一括操作ツールバー（しおり）",
+    "deleteBookMarks": "この本のしおりをすべて削除",
+    "deleteSelected": "選択を削除",
+    "batchDeleteBooks": "選択した書籍のしおりを削除",
+    "deleteMarkConfirm": "このしおりを削除しますか？\n削除すると元に戻せません！",
+    "batchDeleteMarkConfirm": "選択した {{count}} 件のしおりを削除しますか？\n削除すると元に戻せません！",
+    "deleteBookConfirm": "「{{name}}」のしおりをすべて削除しますか？\n削除すると元に戻せません！",
+    "batchDeleteBookConfirm": "選択した {{count}} 冊のしおりをすべて削除しますか？\n（{{names}}）\n削除すると元に戻せません！",
+    "marksDeleted": "{{count}} 件のしおりを削除しました"
   }
 }

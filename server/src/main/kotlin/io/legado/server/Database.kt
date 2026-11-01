@@ -3094,6 +3094,109 @@ class Database(private val path: String) : Closeable, AutoCloseable {
         }
     }
 
+    /**
+     * 新增 / 就地更新一条书签（阅读器里点「添加书签」）。
+     *
+     * 同一位置重复点击**不产生重复行**：先按 `(书名, coalesce(作者), 章序号, 章内偏移)` 更新，
+     * 没更新到行才插入。`created_at` 只在首次插入时写入（书签的时间是"什么时候加的"）。
+     *
+     * ⚠️ 为什么不用 `insert ... on conflict(book_name, book_author, ...) do update` 一把梭：
+     * SQLite 的 UNIQUE 索引把 **NULL 视为互不相等**，而本地书/无名作者的书签 `book_author` 是 NULL
+     * ⇒ upsert 在「重复点同一位置」时**不会命中冲突**，会一路插出重复行（实测：连点 7 次得到 7 条）。
+     * 先查再写用 `coalesce(book_author,'')` 归一化，NULL 与空串都能命中。
+     *
+     * 返回值一定是**库里那一行**（带 id），前端据此直接更新列表，无需再查一次。
+     */
+    fun saveBookmark(request: BookmarkSaveRequest): Bookmark = write { db ->
+        val updated = db.prepareStatement(
+            """
+            update bookmark set chapter_name=coalesce(?,chapter_name), book_text=coalesce(?,book_text),
+              content=coalesce(?,content)
+            where book_name=? and coalesce(book_author,'')=coalesce(?,'') and chapter_index=? and chapter_pos=?
+            """.trimIndent()
+        ).use { stmt ->
+            stmt.setString(1, request.chapterName)
+            stmt.setString(2, request.bookText)
+            stmt.setString(3, request.content)
+            stmt.setString(4, request.bookName)
+            stmt.setString(5, request.bookAuthor)
+            stmt.setInt(6, request.chapterIndex)
+            stmt.setInt(7, request.chapterPos)
+            stmt.executeUpdate()
+        }
+        if (updated == 0) {
+            db.prepareStatement(
+                "insert into bookmark(book_name,book_author,chapter_index,chapter_name,chapter_pos,book_text,content,created_at) values(?,?,?,?,?,?,?,?)"
+            ).use { stmt ->
+                stmt.setString(1, request.bookName)
+                stmt.setString(2, request.bookAuthor)
+                stmt.setInt(3, request.chapterIndex)
+                stmt.setString(4, request.chapterName)
+                stmt.setInt(5, request.chapterPos)
+                stmt.setString(6, request.bookText)
+                stmt.setString(7, request.content)
+                stmt.setLong(8, System.currentTimeMillis())
+                stmt.executeUpdate()
+            }
+        }
+        selectBookmark(db, request.bookName, request.bookAuthor, request.chapterIndex, request.chapterPos)
+            ?: error("书签写入后读不回来：${request.bookName} / ${request.chapterIndex} / ${request.chapterPos}")
+    }
+
+    private fun selectBookmark(db: Connection, bookName: String, bookAuthor: String?, chapterIndex: Int, chapterPos: Int): Bookmark? =
+        db.prepareStatement(
+            "select id,book_name,book_author,chapter_index,chapter_name,chapter_pos,book_text,content,created_at " +
+                "from bookmark where book_name=? and coalesce(book_author,'')=coalesce(?,'') and chapter_index=? and chapter_pos=?"
+        ).use { stmt ->
+            stmt.setString(1, bookName)
+            stmt.setString(2, bookAuthor)
+            stmt.setInt(3, chapterIndex)
+            stmt.setInt(4, chapterPos)
+            stmt.executeQuery().use { rs -> if (rs.next()) rs.toBookmark() else null }
+        }
+
+    /**
+     * 编辑书签（只改原文摘要与备注，位置锚点不动）。
+     *
+     * `null` 表示「这一项不改」，因此备注可以被显式清空成空串、但不会被"没传"误清。
+     */
+    fun updateBookmark(id: Long, request: BookmarkUpdateRequest): Bookmark? = write { db ->
+        db.prepareStatement(
+            "update bookmark set book_text=coalesce(?,book_text), content=coalesce(?,content) where id=?"
+        ).use { stmt ->
+            stmt.setString(1, request.bookText)
+            stmt.setString(2, request.content)
+            stmt.setLong(3, id)
+            stmt.executeUpdate()
+        }
+        db.prepareStatement(
+            "select id,book_name,book_author,chapter_index,chapter_name,chapter_pos,book_text,content,created_at from bookmark where id=?"
+        ).use { stmt ->
+            stmt.setLong(1, id)
+            stmt.executeQuery().use { rs -> if (rs.next()) rs.toBookmark() else null }
+        }
+    }
+
+    /** 删除一条书签。返回是否真的删掉了（前端据此提示"已被删除"）。 */
+    fun deleteBookmark(id: Long): Boolean = write { db ->
+        db.prepareStatement("delete from bookmark where id=?").use { stmt ->
+            stmt.setLong(1, id)
+            stmt.executeUpdate() > 0
+        }
+    }
+
+    private fun ResultSet.toBookmark() = Bookmark(
+        id = getLong(1),
+        bookName = getString(2),
+        bookAuthor = getString(3),
+        chapterIndex = getInt(4),
+        chapterName = getString(5),
+        chapterPos = getInt(6),
+        bookText = getString(7),
+        content = getString(8),
+        createdAt = getLong(9),
+    )
+
     fun listSubscriptions(enabledOnly: Boolean = false): List<SourceSubscription> = connect { db ->        val sql = "select * from source_subscription" + (if (enabledOnly) " where enabled=1" else "") + " order by id"
         db.prepareStatement(sql).use { statement -> statement.executeQuery().use { rs -> buildList { while (rs.next()) add(rs.toSubscription()) } } }
     }

@@ -16,6 +16,35 @@ export type ExploreCategory = { title: string; url?: string | null; subCategorie
 export type BookDetails = { sourceId: string; name: string; author?: string; intro?: string; coverUrl?: string; tocUrl: string; bookKind?: string; alternateSources?: SearchResult[]; variables?: Record<string, string> }
 export type Chapter = { index: number; title: string; url: string }
 export type ReadingProgress = { sourceId: string; bookUrl: string; chapterUrl: string; chapterIndex: number; scrollPosition: number; updatedAt: number; positionMs?: number | null; bookKind?: string }
+/**
+ * 一条书签（与备份包 `bookmark.json` 同构）。
+ *
+ * `chapterPos` 是**章内字符偏移**（不是比例），`bookText` 是书签处的一小段原文、
+ * `content` 是用户备注；`createdAt` 与备份里的 `time` 同义（毫秒时间戳）。
+ */
+export type BookmarkRecord = {
+  id: number
+  bookName: string
+  bookAuthor?: string | null
+  chapterIndex: number
+  chapterName?: string | null
+  chapterPos: number
+  bookText?: string | null
+  content?: string | null
+  createdAt: number
+}
+
+/** 新增书签的请求体（唯一键 = 书名+作者+章序号+章内偏移 ⇒ 重复添加只原地更新）。 */
+export type BookmarkSaveRequest = {
+  bookName: string
+  bookAuthor?: string | null
+  chapterIndex: number
+  chapterName?: string | null
+  chapterPos: number
+  bookText?: string | null
+  content?: string | null
+}
+
 /** 手机端进度文件（bookProgress/*.json）同步配置 */
 export type ProgressSyncSettings = { directoryName: string; directoryPath?: string; available: boolean; fileCount: number }
 
@@ -755,6 +784,18 @@ export const api = {
       if (progressSaveQueues.get(queueKey) === marker) progressSaveQueues.delete(queueKey)
     }
   },
+  /** 某本书的书签（书签按「书名 + 作者」关联，换源后仍能看到）。 */
+  bookmarks: (bookName: string, bookAuthor?: string | null) =>
+    request<{ items: BookmarkRecord[] }>(
+      `/api/bookmarks?bookName=${encodeURIComponent(bookName)}${bookAuthor ? `&bookAuthor=${encodeURIComponent(bookAuthor)}` : ''}`,
+    ),
+  /** 新增书签：同一位置重复添加只原地更新（服务端唯一键去重）。 */
+  saveBookmark: (payload: BookmarkSaveRequest) =>
+    request<BookmarkRecord>('/api/bookmarks', { method: 'POST', body: JSON.stringify(payload) }),
+  /** 编辑书签（只改原文摘要与备注，位置不动）。 */
+  updateBookmark: (id: number, payload: { bookText?: string | null; content?: string | null }) =>
+    request<BookmarkRecord>(`/api/bookmarks/${id}`, { method: 'PUT', body: JSON.stringify(payload) }),
+  deleteBookmark: (id: number) => request<void>(`/api/bookmarks/${id}`, { method: 'DELETE' }),
   bookshelf: async () => {
     try {
       const list = await request<BookshelfItem[]>('/api/bookshelf')

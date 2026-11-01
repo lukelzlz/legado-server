@@ -1112,6 +1112,142 @@ mark.search-highlight { background: var(--accent-soft); color: var(--accent); fo
 .reader-icon-button:hover { background: var(--surface-muted); }
 .reader-icon-button svg { width: 18px; }
 
+/* ------------------------------------------------------------------
+   小说阅读器书签（顶栏「书签」按钮打开列表；底部悬浮栏「添加书签」）
+   ------------------------------------------------------------------ */
+.bookmark-dialog {
+  width: min(520px, 100%);
+  max-height: min(82vh, 700px);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.25);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  animation: scaleUp .2s cubic-bezier(0.25, 1, 0.5, 1);
+}
+.bookmark-dialog-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px 18px 12px;
+  border-bottom: 1px solid var(--line);
+}
+.bookmark-dialog-title { min-width: 0; }
+.bookmark-dialog-title h2 {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 700;
+  font-family: Georgia, "Noto Serif SC", serif;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.bookmark-dialog-title small { display: block; margin-top: 2px; color: var(--muted); font-size: 12px; }
+.bookmark-dialog-kicker {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--accent);
+}
+.bookmark-dialog-kicker svg { width: 14px; height: 14px; }
+.bookmark-dialog-actions { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
+.bookmark-add-button { display: inline-flex; align-items: center; gap: 6px; }
+.bookmark-add-button svg { width: 14px; height: 14px; }
+.bookmark-dialog .close-btn { width: 32px; height: 32px; padding: 0; display: grid; place-items: center; color: var(--muted); }
+.bookmark-list { flex: 1 1 auto; overflow-y: auto; padding: 10px 12px 14px; display: grid; gap: 8px; align-content: start; }
+.bookmark-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface-muted);
+}
+.bookmark-item.current { border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); background: var(--accent-soft); }
+.bookmark-item.editing { grid-template-columns: minmax(0, 1fr); }
+.bookmark-jump {
+  display: grid;
+  gap: 3px;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  text-align: left;
+  cursor: pointer;
+}
+.bookmark-jump:hover .bookmark-chapter { color: var(--accent); }
+.bookmark-chapter {
+  font-size: 13px;
+  font-weight: 650;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  transition: color .15s ease;
+}
+.bookmark-text {
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--muted);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.bookmark-note {
+  font-size: 12px;
+  font-style: normal;
+  color: var(--accent-ink);
+  border-left: 2px solid color-mix(in srgb, var(--accent) 40%, transparent);
+  padding-left: 8px;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.bookmark-time { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.bookmark-item-actions { display: flex; align-items: center; gap: 2px; }
+.bookmark-item-actions .subtle-button { width: 30px; height: 30px; padding: 0; display: grid; place-items: center; }
+.bookmark-item-actions svg { width: 15px; height: 15px; }
+.bookmark-item-actions .shelf-remove { color: var(--danger); }
+.bookmark-confirm {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  padding-top: 8px;
+  margin-top: 6px;
+  border-top: 1px dashed var(--line);
+  font-size: 12px;
+  color: var(--muted);
+}
+.bookmark-confirm span { margin-right: auto; }
+.bookmark-edit { display: grid; gap: 8px; }
+.bookmark-field { display: grid; gap: 4px; font-size: 12px; color: var(--muted); }
+.bookmark-field textarea {
+  width: 100%;
+  box-sizing: border-box;
+  resize: vertical;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.5;
+}
+.bookmark-edit-actions { display: flex; justify-content: flex-end; gap: 8px; }
+
 /* Reader Floating Bottom Footer & Chapter Control Bar */
 .reader-floating-footer {
   position: fixed;
@@ -1721,7 +1857,7 @@ mark.search-highlight { background: var(--accent-soft); color: var(--accent); fo
 
   .mobile-reader-nav {
     display: grid;
-    grid-template-columns: repeat(4, 1fr);
+    grid-template-columns: repeat(5, 1fr);
     height: calc(52px + var(--safe-bottom));
     padding-bottom: var(--safe-bottom);
     padding-left: max(0px, var(--safe-left));
@@ -6400,4 +6536,14 @@ mark.search-highlight { background: var(--accent-soft); color: var(--accent); fo
   .audiobook-body { flex-direction: row; align-items: center; justify-content: center; gap: clamp(32px, 6vw, 72px); }
   .audiobook-content { width: min(420px, 46vw); }
   .audiobook-cover-wrapper { width: min(280px, 30vw); }
+}
+
+/* 手机端：顶栏多了一颗「书签」按钮 ⇒ 操作区按内容自适应，标题继续靠 ellipsis 收缩。
+   原来的固定 80px/76px 只能塞下 2 颗按钮，第 3 颗会被挤出屏幕。 */
+@media (max-width: 720px) {
+  .reader-header { grid-template-columns: 80px minmax(0, 1fr) auto; }
+}
+@media (max-width: 420px) {
+  .reader-header { grid-template-columns: 40px minmax(0, 1fr) auto; }
+  .bookmark-dialog-actions .bookmark-add-button span { display: none; }
 }

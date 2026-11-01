@@ -645,7 +645,16 @@ data class BookGroup(
     val bookCount: Int = 0,
 )
 
-/** 一条书签 / 阅读记录（来自备份包 `bookmark.json`）。 */
+/**
+ * 一条书签 / 阅读记录（与备份包 `bookmark.json` 同构）。
+ *
+ * 字段语义逐条对齐开源阅读的 `Bookmark` 实体：
+ * - `bookName` + `bookAuthor` 是**关联键**（书签跟着书走，换源/换 url 不影响）；
+ * - `chapterIndex` 是 0 起的章序号、`chapterName` 是当时的章名（目录重排后靠它再定位）；
+ * - `chapterPos` 是**章内字符偏移**（不是比例！），与 `bookmark.json` 的 `chapterPos` 同语义；
+ * - `bookText` 是书签处的一小段原文、`content` 是用户写的备注；
+ * - `createdAt` 与备份里的 `time` 是同一个东西（毫秒时间戳）。
+ */
 @Serializable
 data class Bookmark(
     val id: Long,
@@ -657,6 +666,34 @@ data class Bookmark(
     val bookText: String? = null,
     val content: String? = null,
     val createdAt: Long = 0L,
+)
+
+/** 某本书的书签列表（书签是「按书」用的，因此按书返回）。 */
+@Serializable
+data class BookmarkListResponse(val items: List<Bookmark>)
+
+/**
+ * 新增书签的请求体。
+ *
+ * `(bookName, bookAuthor, chapterIndex, chapterPos)` 在表上有唯一键 ⇒
+ * 同一位置重复添加只会原地更新（沿用已存在那条的 id），不会越点越多。
+ */
+@Serializable
+data class BookmarkSaveRequest(
+    val bookName: String,
+    val bookAuthor: String? = null,
+    val chapterIndex: Int,
+    val chapterName: String? = null,
+    val chapterPos: Int = 0,
+    val bookText: String? = null,
+    val content: String? = null,
+)
+
+/** 编辑书签：只允许改「原文摘要」与「备注」，位置锚点保持不动。 */
+@Serializable
+data class BookmarkUpdateRequest(
+    val bookText: String? = null,
+    val content: String? = null,
 )
 
 @Serializable

@@ -2572,6 +2572,60 @@ fun Route.apiRoutes(
                 call.respond(ProgressMergeResponse(source = "database", progress = dbProgress, fileFound = true, alignedIndex = fileIndex))
             }
         }
+        // ------------------------------------------------------------------
+        // 书签（阅读器顶部「书签」与底部悬浮栏「添加书签」）
+        //
+        // 数据落在独立的 `bookmark` 表，字段与备份包 `bookmark.json` 同构 ⇒
+        // WebDAV/备份的导入导出**不需要另开路径**（`BackupExporter` / `BackupImporter` 已在读写它）。
+        // 书签按「书名 + 作者」关联（与开源阅读一致），不挂 sourceId/bookUrl：
+        // 换源、换 url 之后书签必须还在。
+        // ------------------------------------------------------------------
+        get("/bookmarks") {
+            if (auth.requireSession(call) == null) return@get
+            val bookName = call.request.queryParameters["bookName"]
+            if (bookName.isNullOrBlank()) {
+                call.respond(HttpStatusCode.BadRequest, ApiError("invalid_bookmark_query", "缺少 bookName"))
+                return@get
+            }
+            val bookAuthor = call.request.queryParameters["bookAuthor"]
+            call.respond(BookmarkListResponse(database.listBookmarks(bookName, bookAuthor)))
+        }
+        post("/bookmarks") {
+            if (auth.requireSession(call, true) == null) return@post
+            val request = call.receive<BookmarkSaveRequest>()
+            if (request.bookName.isBlank() || request.chapterIndex < 0 || request.chapterPos < 0) {
+                call.respond(HttpStatusCode.BadRequest, ApiError("invalid_bookmark", "书签参数无效"))
+                return@post
+            }
+            call.respond(database.saveBookmark(request))
+        }
+        put("/bookmarks/{id}") {
+            if (auth.requireSession(call, true) == null) return@put
+            val id = call.parameters["id"]?.toLongOrNull()
+            if (id == null) {
+                call.respond(HttpStatusCode.BadRequest, ApiError("invalid_bookmark", "书签 id 无效"))
+                return@put
+            }
+            val saved = database.updateBookmark(id, call.receive<BookmarkUpdateRequest>())
+            if (saved == null) {
+                call.respond(HttpStatusCode.NotFound, ApiError("bookmark_not_found", "书签不存在"))
+            } else {
+                call.respond(saved)
+            }
+        }
+        delete("/bookmarks/{id}") {
+            if (auth.requireSession(call, true) == null) return@delete
+            val id = call.parameters["id"]?.toLongOrNull()
+            if (id == null) {
+                call.respond(HttpStatusCode.BadRequest, ApiError("invalid_bookmark", "书签 id 无效"))
+                return@delete
+            }
+            if (database.deleteBookmark(id)) {
+                call.respond(HttpStatusCode.NoContent)
+            } else {
+                call.respond(HttpStatusCode.NotFound, ApiError("bookmark_not_found", "书签不存在"))
+            }
+        }
         route("/tts") {
             get("/voices") {
                 if (auth.requireSession(call) == null) return@get

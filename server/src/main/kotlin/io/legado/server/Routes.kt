@@ -93,6 +93,9 @@ fun Route.apiRoutes(
 ) {
     val webView = WebViewProxy(database)
 
+    /** 书签页的封面链路（按书名+作者抓取 / 挂载上传的封面 / 回收孤儿封面）。 */
+    val bookmarkCovers = BookmarkCoverService(database, coverCache, runner)
+
     /** 网络书源导入：服务端代抓 + 内存票据两步式（见 [ADR-023]）。 */
     val networkImport = NetworkSourceImport(database, log = { message -> application.log.info(message) })
 
@@ -2607,7 +2610,14 @@ fun Route.apiRoutes(
                 call.respond(HttpStatusCode.BadRequest, ApiError("invalid_bookmark", "未指定要删除的书签"))
                 return@post
             }
+            // 先记下这些书签属于哪本书：删完之后要判断「这本书是不是彻底没书签了」⇒ 封面文件要不要一起删
+            val affectedBooks = buildList {
+                addAll(request.books)
+                addAll(database.bookKeysOfBookmarks(request.ids))
+            }.distinctBy { "${it.bookName}\u0000${it.bookAuthor.orEmpty()}" }
             val deleted = database.deleteBookmarks(request.ids) + database.deleteBookmarksByBooks(request.books)
+            // 封面回收：书架里也没有这本书、书签也删光了 ⇒ 连同本地封面副本一起删
+            affectedBooks.forEach { book -> bookmarkCovers.purgeIfUnused(book.bookName, book.bookAuthor) }
             call.respond(BookmarkDeleteResult(deleted))
         }
         post("/bookmarks") {
@@ -2640,11 +2650,86 @@ fun Route.apiRoutes(
                 call.respond(HttpStatusCode.BadRequest, ApiError("invalid_bookmark", "书签 id 无效"))
                 return@delete
             }
+            val owner = database.bookKeyOfBookmark(id)
             if (database.deleteBookmark(id)) {
+                owner?.let { bookmarkCovers.purgeIfUnused(it.bookName, it.bookAuthor) }
                 call.respond(HttpStatusCode.NoContent)
             } else {
                 call.respond(HttpStatusCode.NotFound, ApiError("bookmark_not_found", "书签不存在"))
             }
+        }
+        /**
+         * 批量请求封面（书签页「请求封面」按钮 / 单本「再试一次」）。
+         *
+         * 每本按「书名 + 作者」解析：书在书架上就用它自己的书源，否则去已启用书源里搜一次。
+         * 失败会累加 `missing_attempts`，满 5 次即标记放弃（之后的批量请求默认跳过它）。
+         */
+        post("/covers/refresh") {
+            if (auth.requireSession(call, true) == null) return@post
+            val request = call.receive<BookCoverRefreshRequest>()
+            val targets = if (request.books.isEmpty()) {
+                database.listBookmarkBooks().filter { it.coverKey.isNullOrBlank() }
+                    .map { BookmarkBookKey(it.bookName, it.bookAuthor) }
+            } else {
+                request.books
+            }
+            var fetched = 0
+            var failed = 0
+            var skipped = 0
+            var marked = 0
+            for (book in targets) {
+                val outcome = withContext(Dispatchers.IO) {
+                    BookmarkCoverService.BATCH_SEMAPHORE.acquire()
+                    try {
+                        bookmarkCovers.resolve(book.bookName, book.bookAuthor, force = request.force)
+                    } finally {
+                        BookmarkCoverService.BATCH_SEMAPHORE.release()
+                    }
+                }
+                when (outcome) {
+                    is BookmarkCoverService.Outcome.Fetched -> fetched++
+                    is BookmarkCoverService.Outcome.Failed -> {
+                        failed++
+                        if (outcome.marked) marked++
+                    }
+                    BookmarkCoverService.Outcome.Skipped -> skipped++
+                }
+            }
+            call.respond(
+                BookCoverRefreshResult(fetched = fetched, failed = failed, skipped = skipped, marked = marked),
+            )
+        }
+        /** 把已上传的封面 / 书源候选封面挂到某本书上（与书架换封面同一套效果）。 */
+        put("/covers/book") {
+            if (auth.requireSession(call, true) == null) return@put
+            val request = call.receive<BookCoverAttachRequest>()
+            if (request.bookName.isBlank()) {
+                call.respond(HttpStatusCode.BadRequest, ApiError("invalid_cover", "缺少书名"))
+                return@put
+            }
+            val state = when {
+                request.remove -> bookmarkCovers.attach(request.bookName, request.bookAuthor, null)
+                !request.coverKey.isNullOrBlank() -> bookmarkCovers.attach(request.bookName, request.bookAuthor, request.coverKey)
+                !request.coverUrl.isNullOrBlank() -> bookmarkCovers.attachFromUrl(
+                    request.bookName, request.bookAuthor, request.coverUrl, request.sourceId,
+                )
+                else -> {
+                    call.respond(HttpStatusCode.BadRequest, ApiError("invalid_cover", "缺少封面来源"))
+                    return@put
+                }
+            }
+            call.respond(state)
+        }
+        /** 手动设置封面用：按书名+作者去书源搜出带封面的候选（只列不写）。 */
+        get("/covers/candidates") {
+            if (auth.requireSession(call) == null) return@get
+            val bookName = call.request.queryParameters["bookName"]
+            if (bookName.isNullOrBlank()) {
+                call.respond(HttpStatusCode.BadRequest, ApiError("invalid_cover", "缺少书名"))
+                return@get
+            }
+            val bookAuthor = call.request.queryParameters["bookAuthor"]
+            call.respond(BookCoverCandidateResponse(bookmarkCovers.candidates(bookName, bookAuthor)))
         }
         route("/tts") {
             get("/voices") {

@@ -154,6 +154,27 @@ class Database(private val path: String) : Closeable, AutoCloseable {
                   unique(book_name, book_author, chapter_index, chapter_pos)
                 );
                 create index if not exists idx_bookmark_book on bookmark(book_name, book_author);
+                /*
+                 * 书籍封面登记（按「书名 + 作者」，与书架/书签同一套身份）：
+                 *
+                 * - 书在书架上时封面仍以 `book_shelf.cover_key` 为准，本表只是**兜底**
+                 *   （书签里有、书架里没有的书 —— 用户要求「一股脑全存」后这种书是常态）；
+                 * - 书签页上传/抓到的封面写在这里，书架行不存在也能显示；
+                 * - `missing_attempts` 记录"连续抓了几次都没抓到"，到阈值就不再自动重试
+                 *   （用户要求「超过五次没找到就标记」）。
+                 *
+                 * ⚠️ `book_author` 必须 `not null default ''`：SQLite 的 UNIQUE/PK 把 NULL 视为互不相等，
+                 * 可空列做主键列会让同一本书插出多行（书签表踩过这个坑，见 AGENTS.md）。
+                 */
+                create table if not exists book_cover (
+                  book_name text not null,
+                  book_author text not null default '',
+                  cover_key text,
+                  missing_attempts integer not null default 0,
+                  last_attempt_at integer not null default 0,
+                  updated_at integer not null default 0,
+                  primary key (book_name, book_author)
+                );
                 create table if not exists book_shelf (
                   source_id text not null, book_url text not null, name text not null,
                   author text, toc_url text not null, cover_url text, cover_key text,
@@ -1993,13 +2014,45 @@ class Database(private val path: String) : Closeable, AutoCloseable {
     fun removeBookshelf(sourceId: String, bookUrl: String): String? = write { db ->
         db.autoCommit = false
         try {
-            val key = db.prepareStatement("select cover_key from book_shelf where source_id=? and book_url=?").use { it.setString(1, sourceId); it.setString(2, bookUrl); it.executeQuery().use { rs -> if (rs.next()) rs.getString(1) else null } }
+            var name: String? = null
+            var author: String? = null
+            val key = db.prepareStatement("select cover_key, name, author from book_shelf where source_id=? and book_url=?").use {
+                it.setString(1, sourceId); it.setString(2, bookUrl)
+                it.executeQuery().use { rs ->
+                    if (rs.next()) {
+                        name = rs.getString(2)
+                        author = rs.getString(3)
+                        rs.getString(1)
+                    } else null
+                }
+            }
             db.prepareStatement("delete from book_shelf where source_id=? and book_url=?").use { it.setString(1, sourceId); it.setString(2, bookUrl); it.executeUpdate() }
             db.prepareStatement("delete from reading_progress where source_id=? and book_url=?").use { it.setString(1, sourceId); it.setString(2, bookUrl); it.executeUpdate() }
             db.prepareStatement("delete from book_content_cache where source_id=? and book_url=?").use { it.setString(1, sourceId); it.setString(2, bookUrl); it.executeUpdate() }
             db.prepareStatement("delete from book_cache_status where source_id=? and book_url=?").use { it.setString(1, sourceId); it.setString(2, bookUrl); it.executeUpdate() }
             db.prepareStatement("delete from book_toc_cache where source_id=? and (toc_url=? or toc_url like ?)").use { it.setString(1, sourceId); it.setString(2, bookUrl); it.setString(3, "%$bookUrl%"); it.executeUpdate() }
-            val orphan = key?.takeIf { value -> db.prepareStatement("select 1 from book_shelf where cover_key=?").use { it.setString(1, value); !it.executeQuery().next() } }
+            /*
+             * 封面文件的回收判定（用户要求：「只要书架或者书签任何一个或两者存在，那书籍的封面文件就保留」）。
+             *
+             * 只有同时满足下面三条才算孤儿、才允许删文件：
+             * ① 没有别的书架行还在用这个 key；② 这本书已经没有任何书签；③ 封面登记表里也没人引用这个 key。
+             *
+             * ⚠️ 书签**不跟着移出书架一起删**（removeBookshelf 不碰 bookmark 表）：用户要求
+             * 「在书架删除书时不删除书签」——书签是独立的阅读记录，靠「书签」页继续管理。
+             */
+            val orphan = key?.takeIf { value ->
+                val usedByShelf = db.prepareStatement("select 1 from book_shelf where cover_key=?").use { it.setString(1, value); it.executeQuery().next() }
+                if (usedByShelf) return@takeIf false
+                val bookName = name
+                if (bookName != null) {
+                    val hasMarks = db.prepareStatement(
+                        "select 1 from bookmark where book_name=? and coalesce(book_author,'')=? limit 1"
+                    ).use { it.setString(1, bookName); it.setString(2, author?.trim().orEmpty()); it.executeQuery().next() }
+                    if (hasMarks) return@takeIf false
+                }
+                val usedByRegister = db.prepareStatement("select 1 from book_cover where cover_key=?").use { it.setString(1, value); it.executeQuery().next() }
+                !usedByRegister
+            }
             orphan?.let { value -> db.prepareStatement("delete from cover_cache where cache_key=?").use { it.setString(1, value); it.executeUpdate() } }
             db.commit(); orphan
         } catch (error: Throwable) { db.rollback(); throw error } finally { db.autoCommit = true }
@@ -3198,34 +3251,44 @@ class Database(private val path: String) : Closeable, AutoCloseable {
         db.prepareStatement(
             """
             select b.book_name, b.book_author, count(*) as cnt, max(b.created_at) as last_at,
-                   max(s.cover_key) as cover_key, max(s.cover_url) as cover_url
+                   max(s.cover_key) as cover_key, max(s.cover_url) as cover_url,
+                   max(c.cover_key) as local_cover_key,
+                   max(coalesce(c.missing_attempts, 0)) as cover_attempts
             from bookmark b
             left join book_shelf s
               on s.name = b.book_name and coalesce(s.author,'') = coalesce(b.book_author,'')
+            left join book_cover c
+              on c.book_name = b.book_name and c.book_author = coalesce(b.book_author,'')
             group by b.book_name, coalesce(b.book_author,'')
             order by last_at desc, b.book_name asc
             """.trimIndent()
         ).use { stmt ->
             stmt.executeQuery().use { rs ->
                 buildList {
-                    while (rs.next()) add(
-                        BookmarkBook(
-                            bookName = rs.getString(1),
-                            bookAuthor = rs.getString(2),
-                            count = rs.getInt(3),
-                            lastCreatedAt = rs.getLong(4),
-                            coverKey = rs.getString(5),
-                            coverUrl = rs.getString(6),
+                    while (rs.next()) {
+                        // 封面优先取书架那份（书在架上时它就是权威），没有才用 book_cover 兜底
+                        val shelfCover = rs.getString(5)
+                        val attempts = rs.getInt(8)
+                        add(
+                            BookmarkBook(
+                                bookName = rs.getString(1),
+                                bookAuthor = rs.getString(2),
+                                count = rs.getInt(3),
+                                lastCreatedAt = rs.getLong(4),
+                                coverKey = shelfCover ?: rs.getString(7),
+                                coverUrl = rs.getString(6),
+                                coverMissing = shelfCover == null && attempts >= COVER_MISSING_LIMIT,
+                                coverAttempts = attempts,
+                            )
                         )
-                    )
+                    }
                 }
             }
         }
     }
 
     /** 批量删除书签（按 id）。返回**真实删除行数**（`executeBatch` 每次返回该语句影响的行数，必须求和）。 */
-    fun deleteBookmarks(ids: List<Long>): Int {
-        if (ids.isEmpty()) return 0
+    fun deleteBookmarks(ids: List<Long>): Int {        if (ids.isEmpty()) return 0
         return write { db ->
             db.prepareStatement("delete from bookmark where id=?").use { stmt ->
                 ids.forEach { id ->
@@ -3269,6 +3332,186 @@ class Database(private val path: String) : Closeable, AutoCloseable {
         content = getString(8),
         createdAt = getLong(9),
     )
+
+    // ------------------------------------------------------------------
+    // 书籍封面登记（book_cover）：书签里有、书架里没有的书也要能显示 / 管理封面
+    // ------------------------------------------------------------------
+
+    /** 封面登记的一行；[exhausted] = 已抓满 [COVER_MISSING_LIMIT] 次仍没找到 ⇒ 停止自动重试。 */
+    data class BookCoverRow(
+        val bookName: String,
+        val bookAuthor: String,
+        val coverKey: String? = null,
+        val missingAttempts: Int = 0,
+        val lastAttemptAt: Long = 0L,
+    ) {
+        val exhausted: Boolean get() = coverKey == null && missingAttempts >= COVER_MISSING_LIMIT
+    }
+
+    fun getBookCover(bookName: String, bookAuthor: String?): BookCoverRow? = connect { db ->
+        val author = normalizeBookAuthor(bookAuthor)
+        db.prepareStatement(
+            "select cover_key, missing_attempts, last_attempt_at from book_cover where book_name=? and book_author=?"
+        ).use { stmt ->
+            stmt.setString(1, bookName)
+            stmt.setString(2, author)
+            stmt.executeQuery().use { rs ->
+                if (!rs.next()) null
+                else BookCoverRow(bookName, author, rs.getString(1), rs.getInt(2), rs.getLong(3))
+            }
+        }
+    }
+
+    /** 写入/替换封面（上传或抓取成功），并把"失败次数"清零。 */
+    fun saveBookCover(bookName: String, bookAuthor: String?, coverKey: String): BookCoverRow = write { db ->
+        val author = normalizeBookAuthor(bookAuthor)
+        val now = System.currentTimeMillis()
+        db.prepareStatement(
+            """
+            insert into book_cover(book_name,book_author,cover_key,missing_attempts,last_attempt_at,updated_at)
+            values(?,?,?,0,?,?)
+            on conflict(book_name,book_author) do update set
+              cover_key=excluded.cover_key, missing_attempts=0,
+              last_attempt_at=excluded.last_attempt_at, updated_at=excluded.updated_at
+            """.trimIndent()
+        ).use { stmt ->
+            stmt.setString(1, bookName)
+            stmt.setString(2, author)
+            stmt.setString(3, coverKey)
+            stmt.setLong(4, now)
+            stmt.setLong(5, now)
+            stmt.executeUpdate()
+        }
+        BookCoverRow(bookName, author, coverKey, 0, now)
+    }
+
+    /**
+     * 记一次「没抓到封面」，返回累计次数。
+     *
+     * 已有本地封面的行**不加计数**（封面还在就不算"没找到"）。
+     */
+    fun recordCoverMiss(bookName: String, bookAuthor: String?): Int = write { db ->
+        val author = normalizeBookAuthor(bookAuthor)
+        val now = System.currentTimeMillis()
+        db.prepareStatement(
+            """
+            insert into book_cover(book_name,book_author,cover_key,missing_attempts,last_attempt_at,updated_at)
+            values(?,?,null,1,?,?)
+            on conflict(book_name,book_author) do update set
+              missing_attempts = case when book_cover.cover_key is null
+                                      then book_cover.missing_attempts + 1
+                                      else book_cover.missing_attempts end,
+              last_attempt_at = excluded.last_attempt_at, updated_at = excluded.updated_at
+            """.trimIndent()
+        ).use { stmt ->
+            stmt.setString(1, bookName)
+            stmt.setString(2, author)
+            stmt.setLong(3, now)
+            stmt.setLong(4, now)
+            stmt.executeUpdate()
+        }
+        db.prepareStatement("select missing_attempts from book_cover where book_name=? and book_author=?").use { stmt ->
+            stmt.setString(1, bookName)
+            stmt.setString(2, author)
+            stmt.executeQuery().use { rs -> if (rs.next()) rs.getInt(1) else 0 }
+        }
+    }
+
+    /** 清空某本书的封面登记（删除封面时用）。 */
+    fun clearBookCover(bookName: String, bookAuthor: String?): Boolean = write { db ->
+        db.prepareStatement("delete from book_cover where book_name=? and book_author=?").use { stmt ->
+            stmt.setString(1, bookName)
+            stmt.setString(2, normalizeBookAuthor(bookAuthor))
+            stmt.executeUpdate() > 0
+        }
+    }
+
+    /**
+     * 这些书签 id 各属于哪本书（删书签后据此判断封面要不要顺手删掉）。
+     *
+     * 返回去重后的 (书名, 作者) 列表。
+     */
+    fun bookKeysOfBookmarks(ids: List<Long>): List<BookmarkBookKey> {
+        if (ids.isEmpty()) return emptyList()
+        return connect { db ->
+            db.prepareStatement(
+                "select distinct book_name, coalesce(book_author,'') from bookmark where id=?"
+            ).use { stmt ->
+                val seen = LinkedHashMap<String, BookmarkBookKey>()
+                ids.forEach { id ->
+                    stmt.setLong(1, id)
+                    stmt.executeQuery().use { rs ->
+                        while (rs.next()) {
+                            val name = rs.getString(1)
+                            val author = rs.getString(2)
+                            seen["$name\u0000$author"] = BookmarkBookKey(name, author.ifBlank { null })
+                        }
+                    }
+                }
+                seen.values.toList()
+            }
+        }
+    }
+
+    /** 单个书签所在的 (书名, 作者)；不存在返回 null。 */
+    fun bookKeyOfBookmark(id: Long): BookmarkBookKey? = connect { db ->
+        db.prepareStatement("select book_name, coalesce(book_author,'') from bookmark where id=?").use { stmt ->
+            stmt.setLong(1, id)
+            stmt.executeQuery().use { rs ->
+                if (rs.next()) BookmarkBookKey(rs.getString(1), rs.getString(2).ifBlank { null }) else null
+            }
+        }
+    }
+
+    /** 这本书还有没有书签（决定封面文件能否删）。 */
+    fun hasBookmarksFor(bookName: String, bookAuthor: String?): Boolean = connect { db ->
+        db.prepareStatement(
+            "select 1 from bookmark where book_name=? and coalesce(book_author,'')=? limit 1"
+        ).use { stmt ->
+            stmt.setString(1, bookName)
+            stmt.setString(2, normalizeBookAuthor(bookAuthor))
+            stmt.executeQuery().use { rs -> rs.next() }
+        }
+    }
+
+    /** 这本书还在不在书架（同一次清理里判断封面要不要保留）。 */
+    fun hasShelfBookFor(bookName: String, bookAuthor: String?): Boolean = connect { db ->
+        db.prepareStatement(
+            "select 1 from book_shelf where name=? and coalesce(author,'')=? limit 1"
+        ).use { stmt ->
+            stmt.setString(1, bookName)
+            stmt.setString(2, normalizeBookAuthor(bookAuthor))
+            stmt.executeQuery().use { rs -> rs.next() }
+        }
+    }
+
+    /** 同一个封面 key 还有没有别的书在用（书架行或封面登记）。 */
+    fun isCoverKeyReferenced(coverKey: String): Boolean = connect { db ->
+        db.prepareStatement("select 1 from book_shelf where cover_key=? limit 1").use { stmt ->
+            stmt.setString(1, coverKey)
+            if (stmt.executeQuery().use { it.next() }) return@connect true
+        }
+        db.prepareStatement("select 1 from book_cover where cover_key=? limit 1").use { stmt ->
+            stmt.setString(1, coverKey)
+            if (stmt.executeQuery().use { it.next() }) return@connect true
+        }
+        false
+    }
+
+    /** 把一本书的本地封面副本同步到它所有书架行（书签页上传后书架也要显示）。 */
+    fun attachCoverToShelfRows(bookName: String, bookAuthor: String?, coverKey: String): Int = write { db ->
+        db.prepareStatement(
+            "update book_shelf set cover_key=? where name=? and coalesce(author,'')=?"
+        ).use { stmt ->
+            stmt.setString(1, coverKey)
+            stmt.setString(2, bookName)
+            stmt.setString(3, normalizeBookAuthor(bookAuthor))
+            stmt.executeUpdate()
+        }
+    }
+
+    private fun normalizeBookAuthor(author: String?): String = author?.trim().orEmpty()
+
 
     fun listSubscriptions(enabledOnly: Boolean = false): List<SourceSubscription> = connect { db ->        val sql = "select * from source_subscription" + (if (enabledOnly) " where enabled=1" else "") + " order by id"
         db.prepareStatement(sql).use { statement -> statement.executeQuery().use { rs -> buildList { while (rs.next()) add(rs.toSubscription()) } } }

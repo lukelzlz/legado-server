@@ -3248,7 +3248,12 @@ function App() {
   const [readerReturnPage, setReaderReturnPage] = useState<Page>('shelf')
   const [sources, setSources] = useState<SourceSummary[]>([])
   const [selected, setSelected] = useState<SourceSummary | null>(null)
-  const [reader, setReader] = useState<{ book: OpenBook; index: number } | null>(() => {
+  const [reader, setReader] = useState<{
+    book: OpenBook
+    index: number
+    /** 从「书签」页点进来时，告诉阅读器开屏后跳到这条书签的位置。 */
+    bookmark?: { chapterIndex: number; chapterPos: number }
+  } | null>(() => {
     try {
       return JSON.parse(sessionStorage.getItem(readerStorageKey) ?? 'null')
     } catch {
@@ -3327,7 +3332,7 @@ function App() {
     setPage(next)
   }
 
-  const openReader = (book: OpenBook, index: number, origin: Page = 'library') => {
+  const openReader = (book: OpenBook, index: number, origin: Page = 'library', bookmark?: { chapterIndex: number; chapterPos: number }) => {
     // 这里**刻意不再调 api.addToBookshelf**。
     //
     // 原实现每次开书都往书架写一行（借「加入书架」接口做 upsert），而它携带的封面地址
@@ -3335,7 +3340,7 @@ function App() {
     // ⇒ 返回书架后该书的封面永久消失（实测 2026-10-03 已因此丢掉 2 本书的封面）。
     // 开书 ≠ 加入书架；封面只在「导入 / 加入书架 / 手动修改」三种时机获取，
     // 读者想加书架请用阅读器里的「加书架」按钮或书库/搜索页的加入动作。
-    const value = { book, index }
+    const value = bookmark ? { book, index, bookmark } : { book, index }
     setReader(value)
     setReaderReturnPage(origin)
     sessionStorage.setItem(readerStorageKey, JSON.stringify(value))
@@ -3343,7 +3348,7 @@ function App() {
     setPage('reader')
   }
 
-  const openShelfItem = async (item: BookshelfItem) => {
+  const openShelfItem = async (item: BookshelfItem, bookmark?: { chapterIndex: number; chapterPos: number }) => {
     // 阅读器里显示封面用的地址（不再回写书架）。三级回退：
     // 本地副本 → 兄弟书源的封面 → **本条自己的 coverUrl**。
     // 最后一级曾经漏掉：只靠外链、没有本地副本的书会传 undefined 上去，
@@ -3384,6 +3389,8 @@ function App() {
       }
 
       const resumeIdx = mergedProgress?.chapterIndex ?? item.chapterIndex ?? 0
+      // 从「书签」页点进来时，直接开到那条书签所在的章节（位置由 ReaderScreen 按 chapterPos 换算）
+      const targetIdx = bookmark ? Math.min(bookmark.chapterIndex, Math.max(0, chapters.length - 1)) : resumeIdx
       openReader({
         details: safeDetails,
         bookUrl: item.bookUrl,
@@ -3397,7 +3404,7 @@ function App() {
           scrollPosition: item.scrollPosition ?? 0,
           updatedAt: item.lastReadAt,
         } : undefined),
-      }, resumeIdx, 'shelf')
+      }, targetIdx, 'shelf', bookmark)
     } catch {
       // Offline / network fallback: allow entering reader so user can read local cached chapters
       const resumeIdx = item.chapterIndex ?? 0
@@ -3417,8 +3424,40 @@ function App() {
           updatedAt: item.lastReadAt,
         },
         bookKind: item.bookKind,
-      }, resumeIdx, 'shelf')
+      }, 0, 'shelf', bookmark)
       toast.warning(t('reader.slowSourceOfflineFallback', '书源网络较慢，已为您进入离线阅读模式'))
+    }
+  }
+
+  /**
+   * 「书签」页点一条书签 → 打开阅读器并跳过去。
+   *
+   * 书签只按「书名 + 作者」关联（不带 sourceId/bookUrl），所以这里要到书架里找回
+   * **同一本书**的条目，才能进阅读器；书不在书架时就只能提示（书签本身仍保留，可在
+   * 「书签」页继续管理）。
+   */
+  const openBookmarkTarget = async (target: {
+    bookName: string
+    bookAuthor?: string | null
+    chapterIndex: number
+    chapterPos: number
+  }) => {
+    const normalize = (value?: string | null) => (value ?? '').replace(/\s+/g, '').trim()
+    try {
+      const shelf = await api.bookshelf()
+      const author = normalize(target.bookAuthor)
+      const name = normalize(target.bookName)
+      const item = shelf.find(entry =>
+        normalize(entry.name) === name
+        && (author === '' ? normalize(entry.author) === '' : normalize(entry.author) === author))
+        ?? shelf.find(entry => normalize(entry.name) === name)
+      if (!item) {
+        toast.error(t('bookmarks.notInShelf', '这本书不在书架里，无法跳转（书签仍保留）'))
+        return
+      }
+      await openShelfItem(item, { chapterIndex: target.chapterIndex, chapterPos: target.chapterPos })
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : t('common.failed', '操作失败'))
     }
   }
 
@@ -3482,6 +3521,7 @@ function App() {
         <ReaderScreen
           openBook={reader.book}
           startIndex={reader.index}
+          startBookmark={reader.bookmark}
           settings={settings}
           onSettingsChange={setSettings}
           onClose={closeReader}
@@ -3522,7 +3562,7 @@ function App() {
         ) : page === 'shelf' ? (
           <ShelfPage theme={settings.theme} onOpen={item => void openShelfItem(item)} />
         ) : page === 'bookmarks' ? (
-          <BookmarksPage />
+          <BookmarksPage onOpenBookmark={target => void openBookmarkTarget(target)} />
         ) : (
           <LibraryPage sources={sources} onOpen={(book, index) => openReader(book, index, 'library')} />
         )}

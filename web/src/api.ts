@@ -57,6 +57,35 @@ export type BookmarkBook = {
   lastCreatedAt: number
   coverKey?: string | null
   coverUrl?: string | null
+  /** 已抓满 5 次仍没找到封面 ⇒ 停止自动重试（界面打标记）。 */
+  coverMissing?: boolean
+  coverAttempts?: number
+}
+
+/** 某本书的封面状态（上传/抓取后回显）。 */
+export type BookCoverState = {
+  bookName: string
+  bookAuthor?: string | null
+  coverKey?: string | null
+  coverMissing?: boolean
+  coverAttempts?: number
+}
+
+/** 书源搜出来的封面候选（手动设置封面时列出来给用户挑）。 */
+export type BookCoverCandidate = {
+  sourceId: string
+  bookUrl: string
+  name: string
+  author?: string | null
+  coverUrl?: string | null
+}
+
+/** 批量请求封面的结果。 */
+export type BookCoverRefreshResult = {
+  fetched: number
+  failed: number
+  skipped: number
+  marked: number
 }
 
 /** 手机端进度文件（bookProgress/*.json）同步配置 */
@@ -813,6 +842,23 @@ export const api = {
   /** 批量删除书签：按 id 删单条、按书删整本，返回真实删除行数。 */
   deleteBookmarksBatch: (payload: { ids?: number[]; books?: Array<{ bookName: string; bookAuthor?: string | null }> }) =>
     request<{ deleted: number }>('/api/bookmarks/delete-batch', { method: 'POST', body: JSON.stringify(payload) }),
+  /** 批量请求封面（书签页「请求封面」）：`force` 时连"已标记放弃"的也再试一次。 */
+  refreshBookCovers: (payload: { books?: Array<{ bookName: string; bookAuthor?: string | null }>; force?: boolean }) =>
+    request<BookCoverRefreshResult>('/api/covers/refresh', { method: 'POST', body: JSON.stringify(payload) }),
+  /** 把上传的图片 / 书源候选封面挂到某本书上（`remove` 表示移除）。 */
+  attachBookCover: (payload: {
+    bookName: string
+    bookAuthor?: string | null
+    coverKey?: string | null
+    coverUrl?: string | null
+    sourceId?: string | null
+    remove?: boolean
+  }) => request<BookCoverState>('/api/covers/book', { method: 'PUT', body: JSON.stringify(payload) }),
+  /** 手动设置封面用：书源搜出来的候选封面（只列不写）。 */
+  bookCoverCandidates: (bookName: string, bookAuthor?: string | null) =>
+    request<{ items: BookCoverCandidate[] }>(
+      `/api/covers/candidates?bookName=${encodeURIComponent(bookName)}${bookAuthor ? `&bookAuthor=${encodeURIComponent(bookAuthor)}` : ''}`,
+    ),
   bookshelf: async () => {
     try {
       const list = await request<BookshelfItem[]>('/api/bookshelf')

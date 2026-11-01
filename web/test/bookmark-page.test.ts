@@ -15,6 +15,9 @@ const here = path.dirname(fileURLToPath(import.meta.url))
 const src = (name: string) => fs.readFileSync(path.resolve(here, '../src', name), 'utf-8')
 
 const page = src('BookmarksPage.tsx')
+const bookmarksPage = page
+const rulesPage = src('ReplaceRulesPage.tsx')
+const readerScreen = src('ReaderScreen.tsx')
 const header = src('AppHeader.tsx')
 const mainTsx = src('main.tsx')
 const apiTs = src('api.ts')
@@ -135,7 +138,7 @@ test('导航 - 顶栏新增「书签」一级入口，且页面可路由', () =>
   assert.match(header, /page === 'bookmarks' \? 'active' : ''/)
   assert.match(header, /onNavigate\('bookmarks'\)/)
   assert.match(mainTsx, /location\.hash === '#bookmarks' \? 'bookmarks'/)
-  assert.match(mainTsx, /page === 'bookmarks' \? \(\s*<BookmarksPage \/>/)
+  assert.match(mainTsx, /page === 'bookmarks' \? \(\s*<BookmarksPage onOpenBookmark=\{/)
   assert.ok(
     header.indexOf("onNavigate('shelf')") < header.indexOf("onNavigate('bookmarks')"),
     '书签入口应排在书架之后',
@@ -189,6 +192,18 @@ test('i18n - 书签页的 key 在四个语言里都齐全且非空', () => {
     'deleteBookConfirm',
     'batchDeleteBookConfirm',
     'marksDeleted',
+    // 封面链路（请求封面 / 手动设置 / 无封面标记）与「点书签跳转」
+    'requestCovers',
+    'requestCoversHint',
+    'coverTitle',
+    'coverUpload',
+    'coverRefetch',
+    'coverFromSources',
+    'coverRemove',
+    'coverMissing',
+    'coverUpdated',
+    'openMark',
+    'notInShelf',
   ]
   for (const locale of LOCALES) {
     const data = JSON.parse(fs.readFileSync(path.resolve(here, `../src/i18n/locales/${locale}.json`), 'utf-8')) as
@@ -201,3 +216,87 @@ test('i18n - 书签页的 key 在四个语言里都齐全且非空', () => {
     assert.ok((data.header.bookmarks ?? '').trim().length > 0, `${locale} 缺少 header.bookmarks`)
   }
 })
+
+// ---------------------------------------------------------------------------
+// 5. 批量栏三个真实缺陷（用户实测报障）
+// ---------------------------------------------------------------------------
+
+/**
+ * 「已选 {{count}} 项 0 / 24」：`common.selected` 里带 `{{count}}` 但调用处只把它当**标签**用
+ * （后面紧跟 `<strong>{已选数量}</strong> / 总数`），于是模板占位符原样漏到界面上。
+ * 该 key 被规则页 / 书签页 / 书源页三处共用 ⇒ 值必须是不带占位符的纯标签。
+ */
+test('批量栏 - common.selected 不得含 {{count}} 占位符（否则界面漏出模板原文）', () => {
+  for (const locale of LOCALES) {
+    const data = JSON.parse(fs.readFileSync(path.resolve(here, `../src/i18n/locales/${locale}.json`), 'utf-8')) as
+      { common: Record<string, string> }
+    const value = data.common.selected
+    assert.equal(typeof value, 'string', `${locale} 缺少 common.selected`)
+    assert.equal(/\{\{/.test(value ?? ''), false, `${locale} 的 common.selected 不能含占位符：${value}`)
+  }
+  // 三处调用后面都紧跟真实计数，不再传 count
+  for (const source of [rulesPage, bookmarksPage, mainTsx]) {
+    assert.match(source, /t\('common\.selected', '已选'\)\} <strong>\{/)
+  }
+})
+
+/**
+ * 书签页有**两个**批量管理（左=书，右=书签）。同时打开会出现两条悬浮栏压屏 ⇒ 必须互斥：
+ * 打开任一侧都要把另一侧收起并清空其选择。
+ */
+test('书签批量 - 两个批量管理互斥：开一侧立刻收起另一侧', () => {
+  const left = bookmarksPage.slice(bookmarksPage.indexOf('const openLeftBatch'), bookmarksPage.indexOf('const openRightBatch'))
+  assert.match(left, /setLeftBatch\(true\)/)
+  assert.match(left, /setRightBatch\(false\)/, '打开左栏批量时必须收起右栏批量')
+  assert.match(left, /setRightSelected\(new Set\(\)\)/, '打开左栏批量时必须清空右栏选择')
+
+  const right = bookmarksPage.slice(bookmarksPage.indexOf('const openRightBatch'), bookmarksPage.indexOf('const exitBatch'))
+  assert.match(right, /setRightBatch\(true\)/)
+  assert.match(right, /setLeftBatch\(false\)/, '打开右栏批量时必须收起左栏批量')
+  assert.match(right, /setLeftSelected\(new Set\(\)\)/, '打开右栏批量时必须清空左栏选择')
+})
+
+/** 批量栏必须有「取消」按钮（用户要求：书签与规则两处都要）。 */
+test('批量栏 - 书签页与规则页都提供「取消」按钮', () => {
+  for (const [name, source] of [['书签页', bookmarksPage], ['规则页', rulesPage]] as const) {
+    assert.match(source, /\{t\('common\.cancel', '取消'\)\}/, `${name}的批量栏缺少取消按钮`)
+  }
+})
+
+/** 点书签 → 打开阅读器并跳到那条书签的章节/位置。 */
+test('书签跳转 - 点书签回传 chapterIndex/chapterPos，阅读器开屏即定位', () => {
+  assert.match(bookmarksPage, /onOpenBookmark\?\.\(\{/)
+  assert.match(bookmarksPage, /chapterIndex:\s*item\.chapterIndex/)
+  assert.match(bookmarksPage, /chapterPos:\s*item\.chapterPos/)
+  assert.match(mainTsx, /const openBookmarkTarget = async/)
+  assert.match(mainTsx, /startBookmark=\{reader\.bookmark\}/)
+  assert.match(readerScreen, /startBookmark\?: \{ chapterIndex: number; chapterPos: number \}/)
+  assert.match(
+    readerScreen,
+    /pendingBookmarkJumpRef = useRef<\{ chapterIndex: number; chapterPos: number \} \| null>\(startBookmark \?\? null\)/,
+    '开屏必须把书签落点交给既有的「待落点」通道',
+  )
+})
+
+// ---------------------------------------------------------------------------
+// 6. 封面链路（请求封面 / 手动设置 / 5 次标记）
+// ---------------------------------------------------------------------------
+test('封面 - 书签页可请求封面、点封面手动设置（书源候选或上传本地图片）', () => {
+  assert.match(bookmarksPage, /api\.refreshBookCovers\(/)
+  assert.match(bookmarksPage, /api\.bookCoverCandidates\(/)
+  assert.match(bookmarksPage, /api\.attachBookCover\(/)
+  assert.match(bookmarksPage, /api\.uploadCover\(/)
+  // 手动设置弹层：书源候选 + 上传本地图片 + 移除
+  assert.match(bookmarksPage, /coverFromSources/)
+  assert.match(bookmarksPage, /type="file"/)
+  assert.match(bookmarksPage, /remove: true/)
+  // 「无封面·已停止自动补抓」要有可见标记
+  assert.match(bookmarksPage, /book\.coverMissing && !book\.coverKey/)
+})
+
+test('封面 - 接口契约：批量补抓 / 候选列表 / 挂载封面', () => {
+  assert.match(apiTs, /refreshBookCovers: \(payload: \{[\s\S]{0,200}?\) =>\s*request<BookCoverRefreshResult>\('\/api\/covers\/refresh'/)
+  assert.match(apiTs, /attachBookCover: \(payload: \{[\s\S]{0,400}?'\/api\/covers\/book'/)
+  assert.match(apiTs, /bookCoverCandidates: \(bookName: string, bookAuthor\?: string \| null\) =>[\s\S]{0,300}?\/api\/covers\/candidates\?bookName=/)
+})
+

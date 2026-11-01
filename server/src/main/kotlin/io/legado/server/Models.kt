@@ -713,11 +713,74 @@ data class BookmarkBook(
     val coverKey: String? = null,
     /** 书架上有这本书时的原始外链封面，本地副本缺失时前端回退用它。 */
     val coverUrl: String? = null,
+    /** 已抓满 5 次仍没找到封面 ⇒ 停止自动重试（界面上给个标记）。 */
+    val coverMissing: Boolean = false,
+    /** 已连续抓取失败的次数（抓到后归零）。 */
+    val coverAttempts: Int = 0,
 )
 
 /** 「书签」页左栏的书列表。 */
 @Serializable
 data class BookmarkOverviewResponse(val items: List<BookmarkBook>)
+
+/** 「书签」页批量请求封面：`force = true` 时连"已标记放弃"的书也再试一次。 */
+@Serializable
+data class BookCoverRefreshRequest(
+    val books: List<BookmarkBookKey> = emptyList(),
+    val force: Boolean = false,
+)
+
+/** 批量请求封面的结果。 */
+@Serializable
+data class BookCoverRefreshResult(
+    /** 本次真的抓到并落盘的张数。 */
+    val fetched: Int = 0,
+    /** 尝试过但没抓到的本数。 */
+    val failed: Int = 0,
+    /** 因为"已标记放弃"而跳过的本数（`force = true` 时为 0）。 */
+    val skipped: Int = 0,
+    /** 本次因失败而达到上限、被标记为"放弃自动补抓"的本数。 */
+    val marked: Int = 0,
+)
+
+/** 把一张封面挂到某本书上：`coverKey` = 已上传的本地副本，`coverUrl` = 书源给的直链（服务端代下）。 */
+@Serializable
+data class BookCoverAttachRequest(
+    val bookName: String,
+    val bookAuthor: String? = null,
+    /** 已上传图片的 key（先走 `/api/covers/upload` 拿）。 */
+    val coverKey: String? = null,
+    /** 书源搜索出来的候选封面直链（服务端代下并落盘，避免浏览器跨域/防盗链）。 */
+    val coverUrl: String? = null,
+    /** 候选封面来自哪个书源（下载时要带该源 header）。 */
+    val sourceId: String? = null,
+    /** `true` = 移除封面（连同孤儿文件回收）。 */
+    val remove: Boolean = false,
+)
+
+/** 书源搜索出来的一个封面候选（供书签页"手动设置封面"选择）。 */
+@Serializable
+data class BookCoverCandidate(
+    val sourceId: String,
+    val bookUrl: String,
+    val name: String,
+    val author: String? = null,
+    val coverUrl: String? = null,
+)
+
+/** 某本书的封面候选列表（来自书源搜索）。 */
+@Serializable
+data class BookCoverCandidateResponse(val items: List<BookCoverCandidate>)
+
+/** 单本书的封面状态（操作后回显）。 */
+@Serializable
+data class BookCoverState(
+    val bookName: String,
+    val bookAuthor: String? = null,
+    val coverKey: String? = null,
+    val coverMissing: Boolean = false,
+    val coverAttempts: Int = 0,
+)
 
 /** 批量删除书签：按书签 id，或按整本书（书名 + 作者）。至少给一个。 */
 @Serializable

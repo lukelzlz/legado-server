@@ -65,6 +65,13 @@ type ReaderScreenProps = {
   settings: ReaderSettings
   onSettingsChange: (next: ReaderSettings) => void
   onClose: () => void
+  /**
+   * 从「书签」页点进来时要跳到的位置（章内字符偏移）。
+   *
+   * 复用阅读器内部的「待落点」通道：`applyContent` 拿到正文长度后换算成滚动比例，
+   * 再交给既有的恢复/对齐 effect（与 `jumpToBookmark` 同一条路径）。
+   */
+  startBookmark?: { chapterIndex: number; chapterPos: number }
 }
 
 function IconButton({ label, icon, onClick, className = '' }: { label: string; icon: Parameters<typeof Icon>[0]['name']; onClick: () => void; className?: string }) {
@@ -294,7 +301,7 @@ export function VirtualChapterList({
   )
 }
 
-export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange, onClose }: ReaderScreenProps) {
+export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange, onClose, startBookmark }: ReaderScreenProps) {
   const { t } = useTranslation()
   const [currentBook, setCurrentBook] = useState<OpenBook>(openBook)
   const [chapterIndex, setChapterIndex] = useState(startIndex)
@@ -347,8 +354,10 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
    * 而跳转要的是**滚动比例**；本章正文长度只有正文到手那一刻才知道 ⇒
    * 目标章不是当前章时先把偏移挂在这里，由 `applyContent` 换算成比例后再走
    * 既有的「恢复进度」对齐通道（不另写一套定位逻辑）。
+   *
+   * 初值来自 `startBookmark`：从「书签」页点进来时，开屏就要落在那一屏（首章正文到手时换算）。
    */
-  const pendingBookmarkJumpRef = useRef<{ chapterIndex: number; chapterPos: number } | null>(null)
+  const pendingBookmarkJumpRef = useRef<{ chapterIndex: number; chapterPos: number } | null>(startBookmark ?? null)
   /** 同一章内跳书签时用来把定位 effect 重新跑一遍（内容没变，靠 tick 触发）。 */
   const [bookmarkJumpTick, setBookmarkJumpTick] = useState(0)
 

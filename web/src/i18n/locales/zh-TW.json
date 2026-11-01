@@ -57,6 +57,7 @@
   },
   "header": {
     "shelf": "書架",
+    "bookmarks": "書籤",
     "library": "書庫",
     "explore": "發現",
     "sources": "書源",
@@ -1421,5 +1422,28 @@
     "lastErrorPrefix": "最近失敗：{{error}}",
     "lastSyncPrefix": "最近同步：{{time}}，處理 {{count}} 個書源",
     "notSyncedYet": "尚未同步"
+  },
+  "bookmarks": {
+    "title": "書籤",
+    "loadFailed": "書籤載入失敗",
+    "searchBookPlaceholder": "搜尋書名 / 作者",
+    "searchMarkPlaceholder": "搜尋章節 / 原文 / 備註",
+    "emptyBooks": "還沒有任何書籤",
+    "noMatchingBooks": "沒有符合的書",
+    "noMatchingMarks": "沒有符合的書籤",
+    "countBadge": "{{count}} 條",
+    "selectBookFirst": "先在左側選擇一本有書籤的書",
+    "batchManage": "批量管理",
+    "batchBooksHint": "批量刪除整本書的書籤",
+    "batchBooksAria": "書籤批量操作工具列（書籍）",
+    "batchMarksAria": "書籤批量操作工具列（書籤）",
+    "deleteBookMarks": "刪除本書全部書籤",
+    "deleteSelected": "刪除選取",
+    "batchDeleteBooks": "刪除所選書籍的書籤",
+    "deleteMarkConfirm": "刪除這條書籤？\n刪除後不可復原！",
+    "batchDeleteMarkConfirm": "刪除選取的 {{count}} 條書籤？\n刪除後不可復原！",
+    "deleteBookConfirm": "刪除《{{name}}》的全部書籤？\n刪除後不可復原！",
+    "batchDeleteBookConfirm": "刪除選取的 {{count}} 本書的全部書籤？\n（{{names}}）\n刪除後不可復原！",
+    "marksDeleted": "已刪除 {{count}} 條書籤"
   }
 }

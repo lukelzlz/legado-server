@@ -404,9 +404,9 @@ class BackupGroupAndBookmarkTest {
             val audioBook = db.listBookshelf().firstOrNull { it.name == "听书C" }
             assertNotNull("音频书必须真的入架", audioBook)
             assertEquals("音频书的 book_kind 必须是 audio", "audio", audioBook!!.bookKind)
-            // 音频入架后它那条书签也就有了归属：只有挂在**本地书**上的那条被跳过
-            assertEquals("应导入 2 条书签（另一条挂在被过滤的本地书上）", 2, summary.bookmarks)
-            assertEquals("应报告跳过 1 条书签", 1, summary.bookmarksSkipped)
+            // 书签**全量落库**：连挂在被过滤掉的本地书上的那条也要进来
+            // （用户要求「一股脑全存到表里，不论有没有这本书，不论是本地的还是什么的」）
+            assertEquals("应导入全部 3 条书签", 3, summary.bookmarks)
 
             // 分组：只导入有书的 FQ / 完结，不导入空的内置分组
             val groups = db.listBookGroups()

@@ -41,7 +41,22 @@ curl.exe -s -o NUL -w "%{http_code}`n" http://127.0.0.1:8080/healthz    # 期望
 
 ✅ 判据：跳转落点与加书签时是同一屏；备注保存后立刻可见；删除有二次确认。
 
-## 4. 备份导入导出带书签
+## 4. 「书签」一级页面（左书右签 + 两边批量）
+
+1. 顶栏（书库 / 发现 / **书架 / 书签** / 书源 / 订阅 / 规则 / 文件）点「书签」→ 进入 `#bookmarks`。
+2. 左栏：每本**有书签的书**一行，显示封面（不在书架的书显示首字占位）、书名、作者、`N 条`；
+   顶部有搜索与「批量管理」。左栏**不要求书在书架上**（导入备份里那些"书不在架"的书签也在）。
+3. 点左边任意一本 → 右栏显示它的书签（章名 / 原文摘要 / 备注 / 日期），行内可编辑（原文+备注）与删除；
+   右栏顶部还有「删除本书全部书签」。
+4. **右栏批量**：点右栏「批量管理」→ 勾选（或全选）→「删除选中」→ 确认 →
+   书签删光后**这本书会立刻从左栏消失**。
+5. **左栏批量**：点左栏「批量管理」→ 勾选若干本书 →「删除所选书籍的书签」→ 确认 →
+   这些书连同它们的全部书签一起消失，其它书不受影响。
+
+✅ 判据：左栏只有"还有书签的书"；右栏只显示选中书的书签；任一侧删完，左栏对应书立即消失；
+浏览器窗口缩到手机宽度时**右栏依然可见**（规则页那条 `display:none` 不能把书签页的右栏吃掉）。
+
+## 5. 备份导入导出带书签
 
 页面「WebDAV」→「立即导出」后打开导出的 zip 看 `bookmark.json`；或者一条命令跑完接口 + 归档核对：
 
@@ -70,17 +85,19 @@ AUTH  read=401 (expect 401) write=401 (expect 401)
 同一位置重复添加 `sameId=True`（不产生重复行）；删除后列表为空；未登录 401。
 脚本跑完会自己删掉那条书签，不留垃圾。
 
-## 5. 自动化验证（可选，一分钟）
+## 6. 自动化验证（可选，一分钟）
 
 ```powershell
 cd E:\Desktop\legado\legado-server
-# 前端：纯函数 + 结构契约 + i18n（含新增的 15 条断言）
+# 前端：阅读器书签（15 条）+ 「书签」页（13 条）纯函数 / 结构契约 / i18n
 npx tsx web/test/bookmark.test.ts
+npx tsx web/test/bookmark-page.test.ts
 # 前端全量
 npx tsx web/test/run-all.ts
-# 服务端：书签 HTTP 契约 + 无作者去重 + 备份导出
+# 服务端：书签 HTTP 契约 + 无作者去重 + 概览/批量删除 + 备份导出
+# 另跑两条会被"书签改为全量落库"影响的备份用例：
 $env:JAVA_HOME="C:\Program Files\Amazon Corretto\jdk21.0.11_10"
-.\gradlew :server:test --tests "io.legado.server.BookmarkRoutesTest"
+.\gradlew :server:test --tests "io.legado.server.BookmarkRoutesTest" --tests "io.legado.server.BackupGroupAndBookmarkTest" --tests "io.legado.server.RealBackupGroupAndBookmarkTest"
 ```
 
 真浏览器端到端（需要服务在跑 + Edge/Chrome）：
@@ -93,7 +110,9 @@ $env:SHOT_DIR="E:\Desktop\legado\_artifacts"
 npx tsx web/test/e2e-bookmark-browser.ts
 ```
 
-期望结尾：`ALL BOOKMARK E2E CHECKS PASSED`（9 步，含「滚到 598 → 加书签 → 回顶 → 点书签 → 回到 598」）。
+期望结尾：`ALL BOOKMARK E2E CHECKS PASSED`（13 步：阅读器内加/改/删/跳 9 步 +
+「书签」页左书右签 4 步，含「书签删光后这本书从左栏消失」与「右栏在手机宽度仍可见」）。
+脚本自己会清掉它造的联调书与书签，不会污染真实数据。
 
 ## 回滚
 

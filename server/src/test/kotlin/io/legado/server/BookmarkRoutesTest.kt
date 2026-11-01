@@ -158,6 +158,96 @@ class BookmarkRoutesTest {
         }
     }
 
+    /**
+     * 「书签」页的两条接口：左栏聚合（含**不在书架上的书**）与批量删除。
+     *
+     * 这一层必须测，因为左栏是**服务端聚合**出来的：书签删光后那本书必须从聚合结果里消失，
+     * 否则界面会出现「书签全删了、书还在列表里」。
+     */
+    @Test
+    fun `overview groups bookmarks by book and batch delete removes whole books`() {
+        withApp { client, cookie, csrf ->
+            suspend fun addBookmark(bookName: String, author: String?, chapterPos: Int) {
+                val response = client.post("/api/bookmarks") {
+                    header(io.ktor.http.HttpHeaders.Cookie, cookie)
+                    header("X-CSRF-Token", csrf)
+                    contentType(ContentType.Application.Json)
+                    setBody(
+                        """{"bookName":"$bookName","bookAuthor":${if (author == null) "null" else "\"$author\""},
+                            "chapterIndex":0,"chapterName":"第一章","chapterPos":$chapterPos,"bookText":"片段"}""",
+                    )
+                }
+                assertEquals(HttpStatusCode.OK, response.status)
+            }
+
+            // 书架上一本，另一本**不在书架**（「一股脑全存」的核心场景）
+            client.post("/api/bookshelf") {
+                header(io.ktor.http.HttpHeaders.Cookie, cookie)
+                header("X-CSRF-Token", csrf)
+                contentType(ContentType.Application.Json)
+                setBody("""{"sourceId":"src-a","bookUrl":"https://a.example.com/1","name":"在架书","author":"作者A","tocUrl":"https://a.example.com/1"}""")
+            }
+            addBookmark("在架书", "作者A", 10)
+            addBookmark("在架书", "作者A", 20)
+            addBookmark("不在架书", null, 0)
+
+            val overview = Json { ignoreUnknownKeys = true; explicitNulls = false }
+                .decodeFromString<BookmarkOverviewResponse>(
+                    client.get("/api/bookmarks/overview") { header(io.ktor.http.HttpHeaders.Cookie, cookie) }.bodyAsText(),
+                ).items
+            assertEquals("两本书都要出现在左栏（不论是否在书架）", 2, overview.size)
+            val onShelf = overview.first { it.bookName == "在架书" }
+            assertEquals("在架书应有 2 条", 2, onShelf.count)
+            assertEquals("在架书应带作者", "作者A", onShelf.bookAuthor)
+            val offShelf = overview.first { it.bookName == "不在架书" }
+            assertEquals(1, offShelf.count)
+            assertEquals("不在书架的书没有封面", null, offShelf.coverKey)
+
+            // 批量按书删：删掉「在架书」→ 左栏不应再有它
+            val deleted = client.post("/api/bookmarks/delete-batch") {
+                header(io.ktor.http.HttpHeaders.Cookie, cookie)
+                header("X-CSRF-Token", csrf)
+                contentType(ContentType.Application.Json)
+                setBody("""{"books":[{"bookName":"在架书","bookAuthor":"作者A"}]}""")
+            }
+            assertEquals(HttpStatusCode.OK, deleted.status)
+            assertEquals(2, Json.decodeFromString<BookmarkDeleteResult>(deleted.bodyAsText()).deleted)
+            val afterBookDelete = Json { ignoreUnknownKeys = true; explicitNulls = false }
+                .decodeFromString<BookmarkOverviewResponse>(
+                    client.get("/api/bookmarks/overview") { header(io.ktor.http.HttpHeaders.Cookie, cookie) }.bodyAsText(),
+                ).items
+            assertEquals("书签删光后该书必须从左栏消失", listOf("不在架书"), afterBookDelete.map { it.bookName })
+
+            // 批量按 id 删：最后一条也删掉 → 左栏清空；无参调用 400
+            val remaining = client.get("/api/bookmarks?bookName=%E4%B8%8D%E5%9C%A8%E6%9E%B6%E4%B9%A6") {
+                header(io.ktor.http.HttpHeaders.Cookie, cookie)
+            }.bodyAsText()
+            val lastId = Json { ignoreUnknownKeys = true; explicitNulls = false }
+                .decodeFromString<BookmarkListResponse>(remaining).items.first().id
+            val deletedByIds = client.post("/api/bookmarks/delete-batch") {
+                header(io.ktor.http.HttpHeaders.Cookie, cookie)
+                header("X-CSRF-Token", csrf)
+                contentType(ContentType.Application.Json)
+                setBody("""{"ids":[$lastId]}""")
+            }
+            assertEquals(1, Json.decodeFromString<BookmarkDeleteResult>(deletedByIds.bodyAsText()).deleted)
+            val empty = Json { ignoreUnknownKeys = true; explicitNulls = false }
+                .decodeFromString<BookmarkOverviewResponse>(
+                    client.get("/api/bookmarks/overview") { header(io.ktor.http.HttpHeaders.Cookie, cookie) }.bodyAsText(),
+                ).items
+            assertTrue("全部删完左栏必须为空", empty.isEmpty())
+            assertEquals(
+                HttpStatusCode.BadRequest,
+                client.post("/api/bookmarks/delete-batch") {
+                    header(io.ktor.http.HttpHeaders.Cookie, cookie)
+                    header("X-CSRF-Token", csrf)
+                    contentType(ContentType.Application.Json)
+                    setBody("{}")
+                }.status,
+            )
+        }
+    }
+
     @Test
     fun `a bookmark saved by the reader shows up in the backup bookmark json`() {
         val dbPath = Files.createTempFile("legado-bookmark-backup", ".sqlite").toString()

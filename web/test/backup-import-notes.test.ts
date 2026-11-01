@@ -65,15 +65,17 @@ test('backup import notes - 封面补抓失败要如实报告张数，并说明�
   assert.match(notes.coverNote, /回源/, `必须说明已经回源重试过：${notes.coverNote}`)
 })
 
-test('backup import notes - 书签跳过要指向真正原因（本地图书）', () => {
-  const notes = backupImportNotes(summaryOf({ bookmarks: 2, bookmarksSkipped: 1 }), t)
-  assert.match(notes.markNote, /2/, `书签条数：${notes.markNote}`)
-  assert.match(notes.markNote, /1/, `跳过条数：${notes.markNote}`)
-  assert.match(notes.markNote, /本地图书/, `跳过原因必须写清：${notes.markNote}`)
+test('backup import notes - 书签只报条数（已全量落库，不再有"跳过"一说）', () => {
+  // 2026-11-01 起书签**全量落库**（书不在书架也导入，独立的「书签」页能管理它），
+  // 所以提示里只剩"导入了多少条"，绝不能再出现"跳过 N 条"。
+  const notes = backupImportNotes(summaryOf({ bookmarks: 47 }), t)
+  assert.match(notes.markNote, /47/, `书签条数：${notes.markNote}`)
+  assert.equal(notes.markNote.includes('跳过'), false, `不该出现"跳过"：${notes.markNote}`)
 
-  const noSkip = backupImportNotes(summaryOf({ bookmarks: 2, bookmarksSkipped: 0 }), t)
-  assert.match(noSkip.markNote, /2/, `没有跳过时只报条数：${noSkip.markNote}`)
-  assert.equal(noSkip.markNote.includes('跳过'), false, `不该出现空的"跳过 0"：${noSkip.markNote}`)
+  // 旧服务端混跑时可能还带 bookmarksSkipped：必须被彻底忽略
+  const legacy = backupImportNotes(summaryOf({ bookmarks: 47, bookmarksSkipped: 29 } as unknown as Partial<BackupImportSummary>), t)
+  assert.equal(legacy.markNote.includes('跳过'), false, `旧字段不得再影响提示：${legacy.markNote}`)
+  assert.equal(legacy.markNote.includes('29'), false, `旧字段的数值也不能出现：${legacy.markNote}`)
 })
 
 test('backup import notes - 后台受理封面补抓要如实报告「已受理 N 本」', () => {

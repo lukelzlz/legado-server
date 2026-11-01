@@ -45,6 +45,20 @@ export type BookmarkSaveRequest = {
   content?: string | null
 }
 
+/**
+ * 「书签」页左栏的一本书（服务端按书名+作者聚合）。
+ *
+ * 书**不要求**在书架上：不在书架时 `coverKey`/`coverUrl` 为 null，界面显示文字占位。
+ */
+export type BookmarkBook = {
+  bookName: string
+  bookAuthor?: string | null
+  count: number
+  lastCreatedAt: number
+  coverKey?: string | null
+  coverUrl?: string | null
+}
+
 /** 手机端进度文件（bookProgress/*.json）同步配置 */
 export type ProgressSyncSettings = { directoryName: string; directoryPath?: string; available: boolean; fileCount: number }
 
@@ -309,10 +323,8 @@ export type BackupImportSummary = {
    * （如实为 0），"到底有没有在补"只能由这个字段说明。
    */
   coversQueued?: number
-  /** 本次导入的书签数 */
+  /** 本次导入的书签数（书签**全量落库**，不再因书不在书架而跳过） */
   bookmarks?: number
-  /** 因所属书籍未导入（**仅手机本地图书**）而跳过的书签数 */
-  bookmarksSkipped?: number
   /** 随书源一起导入的书源分组数（书源分组是书源自带的 `bookSourceGroup`，无独立条目） */
   sourceGroups?: number
 }
@@ -796,6 +808,11 @@ export const api = {
   updateBookmark: (id: number, payload: { bookText?: string | null; content?: string | null }) =>
     request<BookmarkRecord>(`/api/bookmarks/${id}`, { method: 'PUT', body: JSON.stringify(payload) }),
   deleteBookmark: (id: number) => request<void>(`/api/bookmarks/${id}`, { method: 'DELETE' }),
+  /** 「书签」页左栏：所有有书签的书（不要求书在书架上）。 */
+  bookmarkOverview: () => request<{ items: BookmarkBook[] }>('/api/bookmarks/overview'),
+  /** 批量删除书签：按 id 删单条、按书删整本，返回真实删除行数。 */
+  deleteBookmarksBatch: (payload: { ids?: number[]; books?: Array<{ bookName: string; bookAuthor?: string | null }> }) =>
+    request<{ deleted: number }>('/api/bookmarks/delete-batch', { method: 'POST', body: JSON.stringify(payload) }),
   bookshelf: async () => {
     try {
       const list = await request<BookshelfItem[]>('/api/bookshelf')

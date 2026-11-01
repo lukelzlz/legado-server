@@ -18,6 +18,7 @@ import { SourceLoginModal } from './SourceLoginModal'
 import { NetworkImportModal } from './NetworkImportModal'
 import { ReplaceRulesModal } from './ReplaceRulesModal'
 import { ReplaceRulesPage } from './ReplaceRulesPage'
+import { BookmarksPage } from './BookmarksPage'
 import { WebDavSettingsPage } from './WebDavSettingsPage'
 import { ExplorePage } from './ExplorePage'
 import { OfflineCacheModal } from './OfflineCacheModal'
@@ -63,9 +64,9 @@ function resolveShelfCover(item: { coverKey?: string; coverUrl?: string }): stri
 // 「本地导入书」的判定（`loc_book` / `local://`）统一走 `./localBook` 的 `isLocalBook`：
 // 与服务端 `BookKind.isLocalRef` 同源，角标、书籍管理弹窗、阅读器目录抽屉三处共用同一判据。
 
-type Page = 'sources' | 'subscriptions' | 'library' | 'shelf' | 'reader' | 'rules' | 'webdav' | 'explore'
+type Page = 'sources' | 'subscriptions' | 'library' | 'shelf' | 'reader' | 'rules' | 'webdav' | 'explore' | 'bookmarks'
 const readerStorageKey = 'legado-open-book-v1'
-const pageFromHash = (): Page => location.hash === '#sources' ? 'sources' : location.hash === '#subscriptions' ? 'subscriptions' : location.hash === '#rules' ? 'rules' : location.hash === '#webdav' ? 'webdav' : location.hash === '#shelf' ? 'shelf' : location.hash === '#reader' ? 'reader' : location.hash === '#explore' ? 'explore' : 'library'
+const pageFromHash = (): Page => location.hash === '#sources' ? 'sources' : location.hash === '#subscriptions' ? 'subscriptions' : location.hash === '#rules' ? 'rules' : location.hash === '#webdav' ? 'webdav' : location.hash === '#shelf' ? 'shelf' : location.hash === '#reader' ? 'reader' : location.hash === '#explore' ? 'explore' : location.hash === '#bookmarks' ? 'bookmarks' : 'library'
 
 function SourceChoiceList({
   choices,
@@ -3520,6 +3521,8 @@ function App() {
           <ExplorePage onOpen={(book, index) => openReader(book, index, 'explore')} />
         ) : page === 'shelf' ? (
           <ShelfPage theme={settings.theme} onOpen={item => void openShelfItem(item)} />
+        ) : page === 'bookmarks' ? (
+          <BookmarksPage />
         ) : (
           <LibraryPage sources={sources} onOpen={(book, index) => openReader(book, index, 'library')} />
         )}

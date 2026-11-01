@@ -113,12 +113,12 @@ class BackupImporter(
         val usedGroupNames = shelf.mapNotNull { it.groupName?.takeIf { n -> n.isNotBlank() } }.toSet()
         val groups = parsedGroups.filter { it.groupName in usedGroupNames }
 
-        // 书签：只导入「书还在书架上」的。
-        // 自 G0/G 漫画放开后，只剩本地图书会被过滤（实测真实备份 47 条书签里 29 条曾挂在
-        // 被过滤的书上——音频/漫画那部分现在会正常导入）。
-        val shelfKeys = shelf.map { "${it.name}\u0000${it.author.orEmpty()}" }.toSet()
-        val bookmarks = parsedBookmarks.filter { "${it.bookName}\u0000${it.bookAuthor.orEmpty()}" in shelfKeys }
-        val bookmarksSkipped = parsedBookmarks.size - bookmarks.size
+        // 书签：**全量落库**，不再按书架过滤。
+        //
+        // 用户明确要求（2026-11-01）：「一股脑全存到表里，不论有没有这本书，不论是本地的还是什么的」——
+        // 独立的「书签」页以本表为唯一数据源，书不在书架上（本地书 / 已被移出书架）照样能看到并管理。
+        // 因此这里既不再算 `shelfKeys`，也不再报"跳过多少条"。
+        val bookmarks = parsedBookmarks
 
         // 备份导入是**唯一**会采用书源自带分组（`bookSourceGroup`）的入口：
         // 那是用户在手机端整理好的成果，必须原样带过来。
@@ -157,7 +157,6 @@ class BackupImporter(
             coversResourced = covers.resourced,
             coversQueued = covers.queued,
             bookmarks = bookmarksImported,
-            bookmarksSkipped = bookmarksSkipped,
             // 书源分组没有独立条目：它是书源自带的 `bookSourceGroup`，随书源一起落库，
             // 这里只回报「带进来几个分组」（见 Database.importSources）。
             sourceGroups = sourceResult.sourceGroups,

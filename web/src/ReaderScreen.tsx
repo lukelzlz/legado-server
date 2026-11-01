@@ -1,8 +1,11 @@
 import React, { CSSProperties, PointerEvent as ReactPointerEvent, useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { flushSync } from 'react-dom'
 import { useTranslation } from 'react-i18next'
-import { api, BookDetails, Chapter, ReadingProgress, SearchResult } from './api'
+import { api, BookDetails, BookmarkRecord, Chapter, ReadingProgress, SearchResult } from './api'
 import { Icon } from './icons'
+import { bookmarkOffsetFromPosition, bookmarkPositionFraction, bookmarkSnippet } from './bookmarkPos'
+import { BookmarkListModal } from './BookmarkListModal'
+import { matchBestChapter } from './sourceSwitchRemap'
 import { calculatePaginationLayout, chapterTurnClassName, findFirstFullyVisibleParagraphIndex, isAtBottomBoundary, isAtTopBoundary, isInteractiveReaderTarget, isTapGesture, paginateTapZone, scrollTapZone, splitParagraphs, swipeDirection, ViewportBounds } from './readerInteractions'
 import type { ChapterTurnDirection, ChapterTurnPhase } from './readerInteractions'
 import {
@@ -62,6 +65,13 @@ type ReaderScreenProps = {
   settings: ReaderSettings
   onSettingsChange: (next: ReaderSettings) => void
   onClose: () => void
+  /**
+   * 从「书签」页点进来时要跳到的位置（章内字符偏移）。
+   *
+   * 复用阅读器内部的「待落点」通道：`applyContent` 拿到正文长度后换算成滚动比例，
+   * 再交给既有的恢复/对齐 effect（与 `jumpToBookmark` 同一条路径）。
+   */
+  startBookmark?: { chapterIndex: number; chapterPos: number }
 }
 
 function IconButton({ label, icon, onClick, className = '' }: { label: string; icon: Parameters<typeof Icon>[0]['name']; onClick: () => void; className?: string }) {
@@ -291,7 +301,7 @@ export function VirtualChapterList({
   )
 }
 
-export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange, onClose }: ReaderScreenProps) {
+export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange, onClose, startBookmark }: ReaderScreenProps) {
   const { t } = useTranslation()
   const [currentBook, setCurrentBook] = useState<OpenBook>(openBook)
   const [chapterIndex, setChapterIndex] = useState(startIndex)
@@ -335,6 +345,21 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
   const [customRangeEnd, setCustomRangeEnd] = useState(50)
   const [requestingRange, setRequestingRange] = useState<string | null>(null)
   const [offlineTtsConfirmOpen, setOfflineTtsConfirmOpen] = useState(false)
+  /** 书签列表弹窗（顶栏「书签」按钮打开）。 */
+  const [showBookmarks, setShowBookmarks] = useState(false)
+  /**
+   * 书签跳转的「待落点」。
+   *
+   * 书签存的是**章内字符偏移**（与备份 `bookmark.json` 的 `chapterPos` 同语义），
+   * 而跳转要的是**滚动比例**；本章正文长度只有正文到手那一刻才知道 ⇒
+   * 目标章不是当前章时先把偏移挂在这里，由 `applyContent` 换算成比例后再走
+   * 既有的「恢复进度」对齐通道（不另写一套定位逻辑）。
+   *
+   * 初值来自 `startBookmark`：从「书签」页点进来时，开屏就要落在那一屏（首章正文到手时换算）。
+   */
+  const pendingBookmarkJumpRef = useRef<{ chapterIndex: number; chapterPos: number } | null>(startBookmark ?? null)
+  /** 同一章内跳书签时用来把定位 effect 重新跑一遍（内容没变，靠 tick 触发）。 */
+  const [bookmarkJumpTick, setBookmarkJumpTick] = useState(0)
 
   const [cacheStatus, setCacheStatus] = useState<{ state: string; cached: number; total: number; error?: string }>({
     state: 'idle',
@@ -1507,6 +1532,71 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
     setActiveDrawer(null)
   }, [chapterIndex, currentBook.chapters.length, persist, settings.ttsEngine, showBoundaryNotice, stopTts, stopAllEngines, t])
 
+  /**
+   * 在**当前阅读位置**加一条书签。
+   *
+   * 落点用「当前章内比例 × 本章正文字符数」换算成**章内字符偏移**（开源阅读的 `chapterPos` 语义），
+   * 这样同一条书签既能被手机端的 `bookmark.json` 认，也能在别的端按比例跳回来；
+   * 摘要取书签位置起的一小段原文（对应备份里的 `bookText`）。
+   */
+  const addBookmarkHere = useCallback(async (): Promise<BookmarkRecord | null> => {
+    if (!chapter || loading || !content) {
+      toast.warning(t('reader.bookmarkNeedsContent', '正文还没加载完，稍后再加书签'))
+      return null
+    }
+    const current = currentRef.current
+    // `current` 只在正文章节上可信；换章瞬间它可能还是上一章 ⇒ 章节下标以 `chapter` 为准
+    const position = current?.chapter.index === chapter.index ? clampScrollPosition(current.position) : 0
+    const offset = bookmarkOffsetFromPosition(position, content.length)
+    try {
+      const saved = await api.saveBookmark({
+        bookName,
+        bookAuthor: currentBook.details.author,
+        chapterIndex: chapter.index,
+        chapterName: chapter.title,
+        chapterPos: offset,
+        bookText: bookmarkSnippet(content, offset),
+        content: '',
+      })
+      toast.success(t('reader.bookmarkAdded', '已添加书签'))
+      return saved
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : t('common.failed', '操作失败'))
+      return null
+    }
+  }, [bookName, chapter, content, currentBook.details.author, loading, t])
+
+  /**
+   * 跳到某条书签。
+   *
+   * 目标章按「章名优先、下标兜底」解析——换源或目录重排之后书签里的序号会漂，
+   * 与换源用的是同一套匹配（`matchBestChapter`）。
+   *
+   * - 目标就是当前章：正文已在手里，直接按比例换算落点，再让对齐 effect 跑一遍；
+   * - 目标是别的章：把字符偏移挂到 `pendingBookmarkJumpRef`，
+   *   `applyContent` 拿到那一章正文后按真实长度换算，再交给既有的恢复/对齐通道。
+   */
+  const jumpToBookmark = useCallback((bookmark: BookmarkRecord) => {
+    if (currentBook.chapters.length === 0) return
+    const target = matchBestChapter(currentBook.chapters, bookmark.chapterName ?? undefined, bookmark.chapterIndex).index
+    if (target === chapterIndex) {
+      if (content) {
+        const fraction = bookmarkPositionFraction(bookmark.chapterPos, content.length)
+        const current = currentRef.current
+        if (current) current.position = fraction
+        targetInitialPageRef.current = null
+        initialPagePositionRef.current = fraction
+        setBookmarkJumpTick(tick => tick + 1)
+      } else {
+        // 本章正文还在路上：偏移交给 applyContent，等正文到手那一刻换算
+        pendingBookmarkJumpRef.current = { chapterIndex: target, chapterPos: bookmark.chapterPos }
+      }
+      return
+    }
+    pendingBookmarkJumpRef.current = { chapterIndex: target, chapterPos: bookmark.chapterPos }
+    changeChapter(target, 'auto')
+  }, [changeChapter, chapterIndex, content, currentBook.chapters])
+
   // 本地导入书（`loc_book` / `local://`）：正文就在服务端本地库里，没有"下载/缓存"这一步。
   // 用户要求（issue #66）：「本地书根本不要有清除缓存的按钮」「缓存按钮也不该有」——
   // 因此目录抽屉里的**整个缓存区**（后 50/100 章、全本、自定义范围、下载到本设备）对它不渲染。
@@ -1701,7 +1791,19 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
       if (cancelled) return
       setContent(nextContent)
       setLoadedChapterUrl(chapter.url)
-      const position = !restoredRef.current && chapter.index === startIndex ? currentBook.progress?.scrollPosition ?? 0 : 0
+      let position = !restoredRef.current && chapter.index === startIndex ? currentBook.progress?.scrollPosition ?? 0 : 0
+      /**
+       * 书签跳转：书签里的落点是**章内字符偏移**，换算成滚动比例需要本章正文的真实长度
+       * ⇒ 只能在这一刻算（`changeChapter` 时不掌握目标章的正文）。
+       */
+      const pendingJump = pendingBookmarkJumpRef.current
+      if (pendingJump && pendingJump.chapterIndex === chapter.index) {
+        position = bookmarkPositionFraction(pendingJump.chapterPos, nextContent.length)
+        pendingBookmarkJumpRef.current = null
+      } else if (pendingJump) {
+        // 等落点的章不是这一章（读者中途换了章）⇒ 放弃这次跳转，避免以后莫名跳走
+        pendingBookmarkJumpRef.current = null
+      }
       restoredRef.current = true
       currentRef.current = { chapter, position }
       // 平移时不设滚动目标：位置由窗口补偿与「当前章」判定接管，设了会被拉回章首
@@ -1882,7 +1984,8 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
       window.removeEventListener('pointerdown', cancelRetry)
     }
     // chapterIndex / scrollStream 入依赖：跳章或流铺开之后都要按**新章区块**重新定位
-  }, [chapterIndex, content, loading, scrollStream, settings.pageMode])
+    // bookmarkJumpTick 入依赖：同一章内跳书签时内容不变，靠这个 tick 把对齐重跑一遍
+  }, [bookmarkJumpTick, chapterIndex, content, loading, scrollStream, settings.pageMode])
 
   // Pagination measurement
   const measurePagination = useCallback(() => {
@@ -1961,6 +2064,7 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
     settings.sidebarPinned,
     settings.font,
     measurePagination,
+    bookmarkJumpTick,
   ])
 
   /**
@@ -2452,6 +2556,7 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
       <strong className="reader-header-title" title={bookName}>{bookName}</strong>
       <div className="reader-header-actions">
         <IconButton label={t('reader.switchSource', '切换书源')} icon="sliders" onClick={() => setShowSourceSwitch(true)} />
+        <IconButton label={t('reader.bookmarks', '书签')} icon="bookmark" onClick={() => setShowBookmarks(true)} />
         <IconButton label={t('reader.settings', '阅读设置')} icon="settings" onClick={() => setActiveDrawer(d => d === 'settings' ? null : 'settings')} />
         <IconButton
           label={!ttsActive ? t('reader.readChapter', '朗读本章') : ttsPlayState === 'playing' ? t('reader.pauseReading', '暂停朗读') : t('reader.resumeReading', '继续朗读')}
@@ -2900,6 +3005,7 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
         <button type="button" className="subtle-button mobile-nav-btn" onClick={() => setActiveDrawer('toc')}><Icon name="list" /><span>{t('reader.catalog', '目录')}</span></button>
         <button type="button" className="subtle-button mobile-nav-btn" onClick={() => setShowSourceSwitch(true)}><Icon name="sliders" /><span>{t('reader.switchSource', '换源')}</span></button>
         <button type="button" className="subtle-button mobile-nav-btn" onClick={toggleTts}><Icon name={ttsActive && ttsPlayState === 'playing' ? 'pause' : 'volume2'} /><span>{ttsActive ? (ttsPlayState === 'playing' ? t('common.pause', '暂停') : t('common.continue', '继续')) : t('reader.listen', '朗读')}</span></button>
+        <button type="button" className="subtle-button mobile-nav-btn" onClick={() => void addBookmarkHere()}><Icon name="bookmark" /><span>{t('reader.addBookmark', '添加书签')}</span></button>
         <button type="button" className="subtle-button mobile-nav-btn" onClick={() => setActiveDrawer('settings')}><span className="aa">Aa</span><span>{t('reader.settings', '设置')}</span></button>
       </nav>
     </footer>
@@ -2916,6 +3022,19 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
         knownAlternateSources={currentBook.details.alternateSources}
         onSwitch={handleSwitchSource}
         onClose={() => setShowSourceSwitch(false)}
+      />
+    )}
+
+    {/* Bookmark List Modal（顶栏「书签」按钮打开；添加/跳转/编辑/删除都在这里面） */}
+    {showBookmarks && (
+      <BookmarkListModal
+        bookName={bookName}
+        bookAuthor={currentBook.details.author}
+        chapters={currentBook.chapters}
+        currentChapterIndex={chapterIndex}
+        onAddHere={addBookmarkHere}
+        onJump={jumpToBookmark}
+        onClose={() => setShowBookmarks(false)}
       />
     )}
 

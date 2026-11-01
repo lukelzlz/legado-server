@@ -18,6 +18,8 @@ import { SourceLoginModal } from './SourceLoginModal'
 import { NetworkImportModal } from './NetworkImportModal'
 import { ReplaceRulesModal } from './ReplaceRulesModal'
 import { ReplaceRulesPage } from './ReplaceRulesPage'
+import { BookmarksPage } from './BookmarksPage'
+import { escapeHijackedSimpleEntry } from './simpleEntry'
 import { WebDavSettingsPage } from './WebDavSettingsPage'
 import { ExplorePage } from './ExplorePage'
 import { OfflineCacheModal } from './OfflineCacheModal'
@@ -63,9 +65,11 @@ function resolveShelfCover(item: { coverKey?: string; coverUrl?: string }): stri
 // 「本地导入书」的判定（`loc_book` / `local://`）统一走 `./localBook` 的 `isLocalBook`：
 // 与服务端 `BookKind.isLocalRef` 同源，角标、书籍管理弹窗、阅读器目录抽屉三处共用同一判据。
 
-type Page = 'sources' | 'subscriptions' | 'library' | 'shelf' | 'reader' | 'rules' | 'webdav' | 'explore'
+type Page = 'sources' | 'subscriptions' | 'library' | 'shelf' | 'reader' | 'rules' | 'webdav' | 'explore' | 'bookmarks'
+/** 从「书签」页跳进阅读器时要落到的位置（章序号 + 章内字符偏移）。 */
+type BookmarkJumpTarget = { chapterIndex: number; chapterPos: number }
 const readerStorageKey = 'legado-open-book-v1'
-const pageFromHash = (): Page => location.hash === '#sources' ? 'sources' : location.hash === '#subscriptions' ? 'subscriptions' : location.hash === '#rules' ? 'rules' : location.hash === '#webdav' ? 'webdav' : location.hash === '#shelf' ? 'shelf' : location.hash === '#reader' ? 'reader' : location.hash === '#explore' ? 'explore' : 'library'
+const pageFromHash = (): Page => location.hash === '#sources' ? 'sources' : location.hash === '#subscriptions' ? 'subscriptions' : location.hash === '#rules' ? 'rules' : location.hash === '#webdav' ? 'webdav' : location.hash === '#shelf' ? 'shelf' : location.hash === '#reader' ? 'reader' : location.hash === '#explore' ? 'explore' : location.hash === '#bookmarks' ? 'bookmarks' : 'library'
 
 function SourceChoiceList({
   choices,
@@ -3247,7 +3251,12 @@ function App() {
   const [readerReturnPage, setReaderReturnPage] = useState<Page>('shelf')
   const [sources, setSources] = useState<SourceSummary[]>([])
   const [selected, setSelected] = useState<SourceSummary | null>(null)
-  const [reader, setReader] = useState<{ book: OpenBook; index: number } | null>(() => {
+  const [reader, setReader] = useState<{
+    book: OpenBook
+    index: number
+    /** 从「书签」页点进来时，告诉阅读器开屏后跳到这条书签的位置。 */
+    bookmark?: { chapterIndex: number; chapterPos: number }
+  } | null>(() => {
     try {
       return JSON.parse(sessionStorage.getItem(readerStorageKey) ?? 'null')
     } catch {
@@ -3326,7 +3335,7 @@ function App() {
     setPage(next)
   }
 
-  const openReader = (book: OpenBook, index: number, origin: Page = 'library') => {
+  const openReader = (book: OpenBook, index: number, origin: Page = 'library', bookmark?: BookmarkJumpTarget) => {
     // 这里**刻意不再调 api.addToBookshelf**。
     //
     // 原实现每次开书都往书架写一行（借「加入书架」接口做 upsert），而它携带的封面地址
@@ -3334,7 +3343,7 @@ function App() {
     // ⇒ 返回书架后该书的封面永久消失（实测 2026-10-03 已因此丢掉 2 本书的封面）。
     // 开书 ≠ 加入书架；封面只在「导入 / 加入书架 / 手动修改」三种时机获取，
     // 读者想加书架请用阅读器里的「加书架」按钮或书库/搜索页的加入动作。
-    const value = { book, index }
+    const value = bookmark ? { book, index, bookmark } : { book, index }
     setReader(value)
     setReaderReturnPage(origin)
     sessionStorage.setItem(readerStorageKey, JSON.stringify(value))
@@ -3342,7 +3351,7 @@ function App() {
     setPage('reader')
   }
 
-  const openShelfItem = async (item: BookshelfItem) => {
+  const openShelfItem = async (item: BookshelfItem, bookmark?: BookmarkJumpTarget) => {
     // 阅读器里显示封面用的地址（不再回写书架）。三级回退：
     // 本地副本 → 兄弟书源的封面 → **本条自己的 coverUrl**。
     // 最后一级曾经漏掉：只靠外链、没有本地副本的书会传 undefined 上去，
@@ -3383,6 +3392,8 @@ function App() {
       }
 
       const resumeIdx = mergedProgress?.chapterIndex ?? item.chapterIndex ?? 0
+      // 从「书签」页点进来时，直接开到那条书签所在的章节（位置由 ReaderScreen 按 chapterPos 换算）
+      const targetIdx = bookmark ? Math.min(bookmark.chapterIndex, Math.max(0, chapters.length - 1)) : resumeIdx
       openReader({
         details: safeDetails,
         bookUrl: item.bookUrl,
@@ -3396,7 +3407,7 @@ function App() {
           scrollPosition: item.scrollPosition ?? 0,
           updatedAt: item.lastReadAt,
         } : undefined),
-      }, resumeIdx, 'shelf')
+      }, targetIdx, 'shelf', bookmark)
     } catch {
       // Offline / network fallback: allow entering reader so user can read local cached chapters
       const resumeIdx = item.chapterIndex ?? 0
@@ -3416,8 +3427,40 @@ function App() {
           updatedAt: item.lastReadAt,
         },
         bookKind: item.bookKind,
-      }, resumeIdx, 'shelf')
+      }, 0, 'shelf', bookmark)
       toast.warning(t('reader.slowSourceOfflineFallback', '书源网络较慢，已为您进入离线阅读模式'))
+    }
+  }
+
+  /**
+   * 「书签」页点一条书签 → 打开阅读器并跳过去。
+   *
+   * 书签只按「书名 + 作者」关联（不带 sourceId/bookUrl），所以这里要到书架里找回
+   * **同一本书**的条目，才能进阅读器；书不在书架时就只能提示（书签本身仍保留，可在
+   * 「书签」页继续管理）。
+   */
+  const openBookmarkTarget = async (target: {
+    bookName: string
+    bookAuthor?: string | null
+    chapterIndex: number
+    chapterPos: number
+  }) => {
+    const normalize = (value?: string | null) => (value ?? '').replace(/\s+/g, '').trim()
+    try {
+      const shelf = await api.bookshelf()
+      const author = normalize(target.bookAuthor)
+      const name = normalize(target.bookName)
+      const item = shelf.find(entry =>
+        normalize(entry.name) === name
+        && (author === '' ? normalize(entry.author) === '' : normalize(entry.author) === author))
+        ?? shelf.find(entry => normalize(entry.name) === name)
+      if (!item) {
+        toast.error(t('bookmarks.notInShelf', '这本书不在书架里，无法跳转（书签仍保留）'))
+        return
+      }
+      await openShelfItem(item, { chapterIndex: target.chapterIndex, chapterPos: target.chapterPos })
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : t('common.failed', '操作失败'))
     }
   }
 
@@ -3481,6 +3524,7 @@ function App() {
         <ReaderScreen
           openBook={reader.book}
           startIndex={reader.index}
+          startBookmark={reader.bookmark}
           settings={settings}
           onSettingsChange={setSettings}
           onClose={closeReader}
@@ -3520,6 +3564,8 @@ function App() {
           <ExplorePage onOpen={(book, index) => openReader(book, index, 'explore')} />
         ) : page === 'shelf' ? (
           <ShelfPage theme={settings.theme} onOpen={item => void openShelfItem(item)} />
+        ) : page === 'bookmarks' ? (
+          <BookmarksPage onOpenBookmark={target => void openBookmarkTarget(target)} />
         ) : (
           <LibraryPage sources={sources} onOpen={(book, index) => openReader(book, index, 'library')} />
         )}
@@ -3534,6 +3580,10 @@ function App() {
     </div>
   )
 }
+
+// ⚠️ 必须在渲染**之前**跑：墨水屏版（`/simple/`、`/kindle`）被旧 Service Worker 劫持成桌面版时，
+// 这里立刻注销 SW + 清缓存 + 重载一次，让用户拿到真正的墨水屏页面（详见 simpleEntry.ts）。
+void escapeHijackedSimpleEntry()
 
 createRoot(document.getElementById('root')!).render(
   <ErrorBoundary>

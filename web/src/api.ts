@@ -16,6 +16,78 @@ export type ExploreCategory = { title: string; url?: string | null; subCategorie
 export type BookDetails = { sourceId: string; name: string; author?: string; intro?: string; coverUrl?: string; tocUrl: string; bookKind?: string; alternateSources?: SearchResult[]; variables?: Record<string, string> }
 export type Chapter = { index: number; title: string; url: string }
 export type ReadingProgress = { sourceId: string; bookUrl: string; chapterUrl: string; chapterIndex: number; scrollPosition: number; updatedAt: number; positionMs?: number | null; bookKind?: string }
+/**
+ * 一条书签（与备份包 `bookmark.json` 同构）。
+ *
+ * `chapterPos` 是**章内字符偏移**（不是比例），`bookText` 是书签处的一小段原文、
+ * `content` 是用户备注；`createdAt` 与备份里的 `time` 同义（毫秒时间戳）。
+ */
+export type BookmarkRecord = {
+  id: number
+  bookName: string
+  bookAuthor?: string | null
+  chapterIndex: number
+  chapterName?: string | null
+  chapterPos: number
+  bookText?: string | null
+  content?: string | null
+  createdAt: number
+}
+
+/** 新增书签的请求体（唯一键 = 书名+作者+章序号+章内偏移 ⇒ 重复添加只原地更新）。 */
+export type BookmarkSaveRequest = {
+  bookName: string
+  bookAuthor?: string | null
+  chapterIndex: number
+  chapterName?: string | null
+  chapterPos: number
+  bookText?: string | null
+  content?: string | null
+}
+
+/**
+ * 「书签」页左栏的一本书（服务端按书名+作者聚合）。
+ *
+ * 书**不要求**在书架上：不在书架时 `coverKey`/`coverUrl` 为 null，界面显示文字占位。
+ */
+export type BookmarkBook = {
+  bookName: string
+  bookAuthor?: string | null
+  count: number
+  lastCreatedAt: number
+  coverKey?: string | null
+  coverUrl?: string | null
+  /** 已抓满 5 次仍没找到封面 ⇒ 停止自动重试（界面打标记）。 */
+  coverMissing?: boolean
+  coverAttempts?: number
+}
+
+/** 某本书的封面状态（上传/抓取后回显）。 */
+export type BookCoverState = {
+  bookName: string
+  bookAuthor?: string | null
+  coverKey?: string | null
+  coverMissing?: boolean
+  coverAttempts?: number
+}
+
+/** 书源搜出来的封面候选（手动设置封面时列出来给用户挑）。 */
+export type BookCoverCandidate = {
+  sourceId: string
+  bookUrl: string
+  name: string
+  author?: string | null
+  coverUrl?: string | null
+}
+
+/** 批量请求封面的结果。 */
+export type BookCoverRefreshResult = {
+  fetched: number
+  failed: number
+  skipped: number
+  marked: number
+}
+
 /** 手机端进度文件（bookProgress/*.json）同步配置 */
 export type ProgressSyncSettings = { directoryName: string; directoryPath?: string; available: boolean; fileCount: number }
 
@@ -280,10 +352,8 @@ export type BackupImportSummary = {
    * （如实为 0），"到底有没有在补"只能由这个字段说明。
    */
   coversQueued?: number
-  /** 本次导入的书签数 */
+  /** 本次导入的书签数（书签**全量落库**，不再因书不在书架而跳过） */
   bookmarks?: number
-  /** 因所属书籍未导入（**仅手机本地图书**）而跳过的书签数 */
-  bookmarksSkipped?: number
   /** 随书源一起导入的书源分组数（书源分组是书源自带的 `bookSourceGroup`，无独立条目） */
   sourceGroups?: number
 }
@@ -755,6 +825,40 @@ export const api = {
       if (progressSaveQueues.get(queueKey) === marker) progressSaveQueues.delete(queueKey)
     }
   },
+  /** 某本书的书签（书签按「书名 + 作者」关联，换源后仍能看到）。 */
+  bookmarks: (bookName: string, bookAuthor?: string | null) =>
+    request<{ items: BookmarkRecord[] }>(
+      `/api/bookmarks?bookName=${encodeURIComponent(bookName)}${bookAuthor ? `&bookAuthor=${encodeURIComponent(bookAuthor)}` : ''}`,
+    ),
+  /** 新增书签：同一位置重复添加只原地更新（服务端唯一键去重）。 */
+  saveBookmark: (payload: BookmarkSaveRequest) =>
+    request<BookmarkRecord>('/api/bookmarks', { method: 'POST', body: JSON.stringify(payload) }),
+  /** 编辑书签（只改原文摘要与备注，位置不动）。 */
+  updateBookmark: (id: number, payload: { bookText?: string | null; content?: string | null }) =>
+    request<BookmarkRecord>(`/api/bookmarks/${id}`, { method: 'PUT', body: JSON.stringify(payload) }),
+  deleteBookmark: (id: number) => request<void>(`/api/bookmarks/${id}`, { method: 'DELETE' }),
+  /** 「书签」页左栏：所有有书签的书（不要求书在书架上）。 */
+  bookmarkOverview: () => request<{ items: BookmarkBook[] }>('/api/bookmarks/overview'),
+  /** 批量删除书签：按 id 删单条、按书删整本，返回真实删除行数。 */
+  deleteBookmarksBatch: (payload: { ids?: number[]; books?: Array<{ bookName: string; bookAuthor?: string | null }> }) =>
+    request<{ deleted: number }>('/api/bookmarks/delete-batch', { method: 'POST', body: JSON.stringify(payload) }),
+  /** 批量请求封面（书签页「请求封面」）：`force` 时连"已标记放弃"的也再试一次。 */
+  refreshBookCovers: (payload: { books?: Array<{ bookName: string; bookAuthor?: string | null }>; force?: boolean }) =>
+    request<BookCoverRefreshResult>('/api/covers/refresh', { method: 'POST', body: JSON.stringify(payload) }),
+  /** 把上传的图片 / 书源候选封面挂到某本书上（`remove` 表示移除）。 */
+  attachBookCover: (payload: {
+    bookName: string
+    bookAuthor?: string | null
+    coverKey?: string | null
+    coverUrl?: string | null
+    sourceId?: string | null
+    remove?: boolean
+  }) => request<BookCoverState>('/api/covers/book', { method: 'PUT', body: JSON.stringify(payload) }),
+  /** 手动设置封面用：书源搜出来的候选封面（只列不写）。 */
+  bookCoverCandidates: (bookName: string, bookAuthor?: string | null) =>
+    request<{ items: BookCoverCandidate[] }>(
+      `/api/covers/candidates?bookName=${encodeURIComponent(bookName)}${bookAuthor ? `&bookAuthor=${encodeURIComponent(bookAuthor)}` : ''}`,
+    ),
   bookshelf: async () => {
     try {
       const list = await request<BookshelfItem[]>('/api/bookshelf')

@@ -1031,6 +1031,17 @@ export function ReplaceRulesPage() {
             >
               {t('common.ok', '完成')}
             </button>
+            <button
+              type="button"
+              className="secondary-button"
+              title={t('common.cancel', '取消')}
+              onClick={() => {
+                setIsBatchMode(false)
+                setSelectedIds(new Set())
+              }}
+            >
+              {t('common.cancel', '取消')}
+            </button>
           </div>
         </aside>
       )}

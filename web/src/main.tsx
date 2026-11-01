@@ -19,6 +19,7 @@ import { NetworkImportModal } from './NetworkImportModal'
 import { ReplaceRulesModal } from './ReplaceRulesModal'
 import { ReplaceRulesPage } from './ReplaceRulesPage'
 import { BookmarksPage } from './BookmarksPage'
+import { escapeHijackedSimpleEntry } from './simpleEntry'
 import { WebDavSettingsPage } from './WebDavSettingsPage'
 import { ExplorePage } from './ExplorePage'
 import { OfflineCacheModal } from './OfflineCacheModal'
@@ -3577,6 +3578,10 @@ function App() {
     </div>
   )
 }
+
+// ⚠️ 必须在渲染**之前**跑：墨水屏版（`/simple/`、`/kindle`）被旧 Service Worker 劫持成桌面版时，
+// 这里立刻注销 SW + 清缓存 + 重载一次，让用户拿到真正的墨水屏页面（详见 simpleEntry.ts）。
+void escapeHijackedSimpleEntry()
 
 createRoot(document.getElementById('root')!).render(
   <ErrorBoundary>

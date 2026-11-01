@@ -74,7 +74,15 @@ export default defineConfig({
       workbox: {
         globPatterns: ['**/*.{js,css,html,svg,png,ico,woff,woff2,ttf}'],
         navigateFallback: '/index.html',
-        navigateFallbackDenylist: [/^\/api\//],
+        // ⚠️ `/simple/`（墨水屏版）与 `/kindle` 是**独立的静态多页应用**，绝不能被 SPA 的 navigateFallback 接管：
+        // 否则这台浏览器只要访问过一次桌面版（SW 装好并控制页面），带 `simple` 的地址就会被回退成
+        // 缓存里的桌面 index.html —— 用户看到的就是「URL 是 simple、界面却是电脑版」（实测复现）。
+        // 运行期还有一层自救守卫（针对已被旧 SW 劫持的浏览器）：`web/src/simpleEntry.ts`。
+        navigateFallbackDenylist: [
+          /^\/api\//,
+          /^\/simple(\/|$)/,
+          /^\/kindle(\/|$)/,
+        ],
         runtimeCaching: [
           {
             // ⚠️ 必须用**函数**匹配 `url.pathname`，不能用 `/^\/api\//` 这种 RegExp：

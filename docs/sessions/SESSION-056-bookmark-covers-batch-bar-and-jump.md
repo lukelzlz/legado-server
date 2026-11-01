@@ -94,6 +94,17 @@ create table book_cover (
 | 真 Edge：`e2e-bookmark-browser.ts` | ALL BOOKMARK E2E CHECKS PASSED |
 | 真 Edge：`e2e-simple-eink-browser.ts` | 4/4（SW 接管后 `/simple/#shelf` 仍是墨水屏版） |
 | 真实服务封面联调（`_artifacts/verify-covers.mjs`） | 8/8：refresh 抓 1 张、上传→挂载→回读→取图 976KB→移除→回读为空 |
+| 真 Edge：`e2e-bookmark-cover-ui.ts` | 6/6：批量栏文案 `已选 0 / 42`（无 `{{count}}`）、两批量互斥只剩 1 条工具栏、取消生效、封面弹层四件套、可关闭 |
+| 真 Edge：`e2e-bookmark-sidebar-buttons.ts` | 3/3：左栏两按钮均分且占满（148.5 + 148.5 + 6 = 303px = 容器宽） |
+| 服务端全量 `:server:test` | 696 用例 / 58 失败 = **57 × Windows「SQLite 被占用」既有环境失败 + 1 × 外部网络超时** ⇒ 与历史基线同型，书签/封面相关用例**零失败** |
+
+### 左栏按钮均分（用户后续要求）
+
+> 「书签页的按钮优化一下，左边栏的宽度两个按钮均分，宽度占满」
+
+`.source-sidebar-top-actions` 是书源页的通用样式（`repeat(3, minmax(0,1fr))`），书签页只有 2 个按钮
+⇒ 各占 1/3、右边留空。修法：在 `.bookmarks-page` 作用域内改成 2 等分 + 按钮 `width:100%`，
+文字溢出用 ellipsis 兜底。用真浏览器量 `getBoundingClientRect()` 断言，而不是靠肉眼。
 
 > ⚠️ 联调脚本的副作用教训：`verify-covers.mjs` 会把「概览第一本」的封面换掉再移除（清 `cover_key`）。
 > 收尾必须用记下的原 key 重新 `PUT /api/covers/book` 恢复，并断言 `/api/covers/<原key>` 仍返回图片。

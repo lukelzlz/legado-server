@@ -8,6 +8,12 @@ import { SourceGroupSummary, SourceSummary, UNGROUPED_SOURCE_GROUP } from './api
  * 书源分组按钮保留为快速入口，但不再与单个书源互斥；完整的多选范围通过
  * `onOpenPicker` 打开的选择器维护。旧版单值 props 仍可用于静态渲染与兼容调用方。
  */
+/** 外层重新选中分组时，收回该组成员此前因“排除单源”留下的独立勾选。 */
+export function removeGroupSourceOverrides(selectedSourceIds: string[], groupMemberIds: string[]) {
+  const members = new Set(groupMemberIds)
+  return selectedSourceIds.filter(id => !members.has(id))
+}
+
 export interface SearchScopeBarProps {
   groups: SourceGroupSummary[]
   /** 旧版单源下拉所需；新选择器模式不传。 */
@@ -47,7 +53,9 @@ export function SearchScopeBar({
   const pickerLabel = effectiveGroups.length > 0 && effectiveSourceIds.length > 0
     ? t('search.scopeMixed', '{{groups}} 个分组 + {{sources}} 个书源', { groups: effectiveGroups.length, sources: effectiveSourceIds.length })
     : effectiveGroups.length > 0
-      ? t('search.scopeSelectedGroups', '已选 {{count}} 个分组', { count: effectiveGroups.length })
+      ? t('search.scopeSelectedGroupNames', '已选分组：{{groups}}', {
+          groups: effectiveGroups.map(group => group === UNGROUPED_SOURCE_GROUP ? t('search.scopeUngrouped', '未分组') : group).join('、'),
+        })
       : effectiveSourceIds.length > 0
         ? t('search.scopeSelectedSources', '已选 {{count}} 个书源', { count: effectiveSourceIds.length })
         : t('search.scopePickSources', '选择书源')
@@ -57,6 +65,17 @@ export function SearchScopeBar({
   return (
     <div className="library-scope-bar" role="tablist" aria-label={t('search.scopeLabel')}>
       <span className="library-scope-label">{t('search.scopeLabel')}</span>
+      {onOpenPicker && (
+        <button
+          type="button"
+          className={`scope-picker-trigger ${hasCustomScope ? 'active' : ''}`}
+          onClick={onOpenPicker}
+          aria-label={t('search.scopePickerAria', '打开搜索范围选择器')}
+          title={pickerLabel}
+        >
+          {pickerLabel}
+        </button>
+      )}
       <button
         type="button"
         role="tab"
@@ -91,17 +110,7 @@ export function SearchScopeBar({
       >
         {t('search.scopeUngrouped')}
       </button>
-      {onOpenPicker ? (
-        <button
-          type="button"
-          className={`scope-picker-trigger ${hasCustomScope ? 'active' : ''}`}
-          onClick={onOpenPicker}
-          aria-label={t('search.scopePickerAria', '打开搜索范围选择器')}
-          title={t('search.scopePickerTitle', '选择多个分组或书源')}
-        >
-          {pickerLabel}
-        </button>
-      ) : sources && onSelectSource ? (
+      {!onOpenPicker && sources && onSelectSource ? (
         <label className="library-scope-single">
           {t('search.scopeSingle')}
           <select

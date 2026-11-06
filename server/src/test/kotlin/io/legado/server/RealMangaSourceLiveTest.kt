@@ -6,6 +6,7 @@ import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
+import org.junit.Assume.assumeTrue
 import org.junit.Test
 import java.nio.file.Files
 import kotlin.math.max
@@ -19,11 +20,15 @@ import kotlin.math.max
  * 3. L1 散列落盘：ImageCache 内容寻址与 AtomicFileStore 原子转正；
  * 4. 内存管理审计：大批量图片并发抓取期间 JVM 堆内存峰值可控，GC 后平稳回落，无内存泄露；
  * 5. 滑窗 GC 验证：高水位触发清理时保护滑窗前瞻章节与置顶漫画。
+ *
+ * 该测试依赖第三方站点的实时内容与可用性，默认跳过；需要联网实测时显式设置
+ * `LEGADO_LIVE_TESTS=1`，避免上游故障阻塞确定性测试与 CI。
  */
 class RealMangaSourceLiveTest {
 
     @Test
     fun `test real manga source fetch with memory audit and sliding window gc`() = runBlocking {
+        assumeTrue("真实联网测试需显式设置 LEGADO_LIVE_TESTS=1", System.getenv("LEGADO_LIVE_TESTS") == "1")
         val baoziSourceJson = """
         {
           "bookSourceUrl": "https://cn.webmota.com",

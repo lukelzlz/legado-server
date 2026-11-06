@@ -206,7 +206,7 @@ AI 与人类协作时必须明确当前达到的完成度阶梯，严禁混淆�
 - **[测试/方法论] 期望值必须来自「当前正在验证的那份数据」**：实测工作区里有两份不同的书架数据（`te/bookshelf.json` 434 条 / 本地备份 220 条，本地图书 14 vs 5、音频 31 vs 0），照抄另一份的数字会让真实备份测试**假失败**（也会掩盖真问题）。但**分组数据两份完全一致**（FQ=27/完结=74/15=2）—— 可作为交叉验证的锚点。详见 [`SESSION-031`](docs/sessions/SESSION-031-backup-import-groups-and-bookmarks.md)。
 - **[接口/死字段] 「字段存在」≠「能力存在」：`SearchRequest.group` 曾是全项目无人读取的死字段**：`grep` 只在 `Models.kt` 找到定义处，两条搜索路由（`POST /api/search`、WS `/api/search/stream`）都只读 `sourceIds`。这类字段比「缺字段」更危险——前端/后来者读代码会认为「传了就会生效」。**加/用任何请求字段前，先 `grep` 全项目的读取点，而不是搜索定义点**。（本次已接线并补 WS 契约测试。）
 - **[书源分组/语义] 分组是「源上的字符串」，删组必须解绑而非删源；范围过滤必须与列表口径一致**：① `source_group` 只有一列，没有分组表（见 [ADR-021](docs/decisions/ADR-021-book-source-groups-string-column-and-search-scope.md)），因此分组列表用 `group by trim(source_group) collate nocase`、过滤用 `where source_group = ? collate nocase` —— **两处口径必须同源**，否则会出现「列表显示两组、点任一组命中两组」；② 「未分组」是哨兵（`SourceGroupFilter.UNGROUPED = "__ungrouped__"`）而非伪分组，翻译为 `source_group is null or trim(source_group)=''`（真实数据两种形态都有），且由前端单独提供选项卡；③ 删组只 `set source_group = null`，与书架分组删除同源，**严禁级联删源**。
-- **[搜索/范围] 范围上限只作用于「未显式指定范围」的搜索，且范围选项卡必须留住「全部书源」**：`POST /api/search` 原有「`sourceIds == null` 且源数 > 20 就只取前 20」的封顶；用户**显式选了分组**就是明确收窄，应与按 id 指定书源同等对待（否则选 30 个源的分组只跑 20 个且**无任何提示**，属静默少搜）。前端范围做成选项卡时，「全部书源」**必须恒为第一项且是默认项**，分组卡片显示 `enabledCount`（停用源不参与搜索，显示总数会误导）。
+- **[搜索/范围] 范围上限只作用于「未显式指定范围」的搜索，且范围选项卡必须留住「全部书源」**：`POST /api/search` 原有「`sourceIds == null` 且源数 > 20 就只取前 20」的封顶；用户**显式选了分组**就是明确收窄，应与按 id 指定书源同等对待（否则选 30 个源的分组只跑 20 个且**无任何提示**，属静默少搜）。前端范围做成选项卡时，「全部书源」**必须是默认项且排在分组选项之前**；书源选择入口置于其前，弹窗只负责书源多选（空关键词显示全部书源），不再重复提供分组选择。分组卡片显示 `enabledCount`（停用源不参与搜索，显示总数会误导）。
 - **[书源分组/导入语义] 导入书源**不**自动分组，导入备份**才**带分组；且默认值/语义变更必须 `grep` 断言点**：`Database.importSources(rawSources, applyGroups)` 默认 `false`（书源文件 / 订阅更新 → 新源落入「未分组」），只有 `BackupImporter` 显式传 `true`。两条不可省的守卫：① `applyGroups = false` 时 **DO UPDATE 子句里绝不能出现 `source_group`**（否则再导入一次就把用户手工分好的组全部清空，新行才写 null）；② `SourceCodec.parse(keepGroup = false)` 必须**同时**清掉记录字段**和 payload 里的 `bookSourceGroup`**（只清列会让编辑弹窗显示库里不存在的分组，用户一保存又写回列里）。
   > 🚨 **改语义比改实现更危险**：本次把默认值从「采用分组」翻成「不采用」后，两条既有断言直接失效 —— `DatabaseTest`（`summary.group == "精品"`）当场失败、`ApiRoutesHttpTest`（`batch2.group == "旧分组"`）**被 Windows teardown 的 `FileSystemException` 掩盖**（Java 的 finally 抛异常会顶替原异常，本机 54 个失败正好盖住它）。教训：**语义/默认值变更要 `grep` 断言点而不只是调用点；「本机失败数没变」不等于没回归。**
 - **[弹窗/e2e] 遮罩会吃掉后续点击**：Puppeteer 里不先关掉模态框就去点底下的按钮，点击落在 backdrop 上被当作「关闭面板」，表现为「点了按钮没反应 / 等不到下一层 UI」。先 `waitForFunction(() => document.querySelector('.modal') === null)` 再点。
@@ -460,6 +460,7 @@ AI 与人类协作时必须明确当前达到的完成度阶梯，严禁混淆�
 
 | 2026-10-18 | Fix | 修复书库搜索结果二次筛选输入框缩成原生小框：补齐输入框 flex/宽度并移除内层原生边框；同步更新本地 :8080 服务，前端 376 项及服务端测试通过 | - | Accepted & Pushed |
 | 2026-10-19 | Fix | 修复 WebDAV progress 阅读进度同步跨媒介覆盖：按 bookKind 分流隔离，小说保持无后缀与手机开源阅读无缝互通，有声带 _audio，漫画带 _comic，杜绝同名书互踩覆盖 | - | Tested |
+| 2026-11-06 | UI | 搜索范围弹窗空关键词展示全部书源并移除重复分组栏；分组覆盖的书源自动勾选并标注分组，排除单源保留同组其他成员，外层重选分组会收回组内独立勾选以恢复整组控制；入口前移并显示具体分组名；真实漫画联网测试改为 `LEGADO_LIVE_TESTS=1` 显式启用，避免上游故障阻塞 CI | - | Pushed |
 
 ---
 

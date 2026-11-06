@@ -12,7 +12,7 @@ import { AudiobookPlayerScreen } from './AudiobookPlayerScreen'
 import { loadReaderSettings, ReaderSettings, ReaderTheme, saveReaderSettings } from './readerSettings'
 import { AppHeader } from './AppHeader'
 import { cleanAuthor, cleanTitle, defaultSearchFilters, filterSearchGroups, isExactMatch, isPopularMatch, SearchFilters, SearchGroup, SortMode } from './searchFilters'
-import { groupSearchResults, SourceChoice, SourceChoiceStatus, useSearchStore } from './searchStore'
+import { groupSearchResults, searchStore, SourceChoice, SourceChoiceStatus, useSearchStore } from './searchStore'
 import { SourceSwitchModal } from './SourceSwitchModal'
 import { SourceLoginModal } from './SourceLoginModal'
 import { NetworkImportModal } from './NetworkImportModal'
@@ -24,7 +24,7 @@ import { OfflineCacheModal } from './OfflineCacheModal'
 import { SourceHealthModal } from './SourceHealthModal'
 import { SourceGroupManagerModal } from './SourceGroupManagerModal'
 import { SearchBox } from './SearchBox'
-import { SearchScopeBar } from './SearchScopeBar'
+import { removeGroupSourceOverrides, SearchScopeBar } from './SearchScopeBar'
 import { SearchScopePickerModal } from './SearchScopePickerModal'
 import { ShelfKindTag } from './ShelfKindTag'
 import { isLocalBook } from './localBook'
@@ -1114,16 +1114,26 @@ function LibraryPage({ sources, onOpen }: { sources: SourceSummary[]; onOpen: (b
             search.setSearchScope([], [])
           }}
           onToggleGroup={group => {
-            const next = search.selectedGroups.includes(group)
+            const selected = search.selectedGroups.includes(group)
+            const next = selected
               ? search.selectedGroups.filter(item => item !== group)
               : [...search.selectedGroups, group]
             search.setSelectedGroups(next)
+            if (!selected && search.selectedSourceIds.length > 0) {
+              // 重新选中整组时收回组内独立勾选；之后取消整组才能一并取消这些书源。
+              void api.sourcePicker('', [group]).then(result => {
+                const sourceIds = removeGroupSourceOverrides(
+                  searchStore.getSnapshot().selectedSourceIds,
+                  result.items.map(item => item.id),
+                )
+                searchStore.setSelectedSourceIds(sourceIds)
+              }).catch(() => undefined)
+            }
           }}
           onOpenPicker={() => setShowScopePicker(true)}
         />
         {showScopePicker && (
           <SearchScopePickerModal
-            groups={sourceGroups}
             selectedGroups={search.selectedGroups}
             selectedSourceIds={search.selectedSourceIds}
             onApply={(groups, sourceIds) => search.setSearchScope(groups, sourceIds)}

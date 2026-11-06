@@ -1,23 +1,42 @@
 import React, { useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { api, SourceGroupSummary, SourceSummary, UNGROUPED_SOURCE_GROUP } from './api'
+import { api, SourceSummary, UNGROUPED_SOURCE_GROUP } from './api'
 
 export interface SearchScopePickerModalProps {
-  groups: SourceGroupSummary[]
   selectedGroups: string[]
   selectedSourceIds: string[]
   onApply: (groups: string[], sourceIds: string[]) => void
   onClose: () => void
 }
 
+export function selectedGroupForSource(item: Pick<SourceSummary, 'group'>, selectedGroups: string[]) {
+  const group = item.group?.trim() || UNGROUPED_SOURCE_GROUP
+  return selectedGroups.find(selected => selected.toLowerCase() === group.toLowerCase())
+}
+
+export function expandGroupWithoutSource(
+  selectedGroups: string[],
+  selectedSourceIds: string[],
+  group: string,
+  excludedSourceId: string,
+  groupMemberIds: string[],
+) {
+  return {
+    groups: selectedGroups.filter(item => item !== group),
+    sourceIds: [...new Set([
+      ...selectedSourceIds.filter(id => id !== excludedSourceId),
+      ...groupMemberIds.filter(id => id !== excludedSourceId),
+    ])],
+  }
+}
+
 /**
- * 搜索范围多选弹窗。
+ * 搜索范围的书源多选弹窗。
  *
- * 分组与单个书源是两个独立的集合：书源候选只按输入关键词查询，不会被已选分组
- * 限制，这样用户才能选择“分组 + 分组外的额外书源”。服务端不截断匹配结果。
+ * 分组由弹窗外的快捷选项维护；这里只选择额外书源。空关键词也查询并展示全部
+ * 候选，输入关键词后按名称、地址或分组过滤，服务端不截断匹配结果。
  */
 export function SearchScopePickerModal({
-  groups,
   selectedGroups,
   selectedSourceIds,
   onApply,
@@ -31,16 +50,10 @@ export function SearchScopePickerModal({
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [retry, setRetry] = useState(0)
+  const [pendingSourceId, setPendingSourceId] = useState<string | null>(null)
 
   useEffect(() => {
     const trimmed = query.trim()
-    if (!trimmed) {
-      setItems([])
-      setLoading(false)
-      setError('')
-      return
-    }
-
     const controller = new AbortController()
     setLoading(true)
     setError('')
@@ -66,21 +79,35 @@ export function SearchScopePickerModal({
   }, [onClose])
 
   const selectedSet = useMemo(() => new Set(draftSourceIds), [draftSourceIds])
-  const groupOptions = useMemo(() => [
-    ...groups,
-    { name: UNGROUPED_SOURCE_GROUP, sourceCount: 0, enabledCount: 0 },
-  ], [groups])
 
-  const toggleGroup = (name: string) => {
-    setDraftGroups(previous => previous.includes(name)
-      ? previous.filter(item => item !== name)
-      : [...previous, name])
-  }
+  const toggleSource = async (item: SourceSummary) => {
+    const selectedGroup = selectedGroupForSource(item, draftGroups)
+    if (!selectedGroup) {
+      setDraftSourceIds(previous => previous.includes(item.id)
+        ? previous.filter(id => id !== item.id)
+        : [...previous, item.id])
+      return
+    }
 
-  const toggleSource = (id: string) => {
-    setDraftSourceIds(previous => previous.includes(id)
-      ? previous.filter(item => item !== id)
-      : [...previous, id])
+    // 排除组内单源时，将整组展开成其余成员的显式选择，避免误伤同组其他书源。
+    setPendingSourceId(item.id)
+    setError('')
+    try {
+      const result = await api.sourcePicker('', [selectedGroup])
+      const next = expandGroupWithoutSource(
+        draftGroups,
+        draftSourceIds,
+        selectedGroup,
+        item.id,
+        result.items.map(source => source.id),
+      )
+      setDraftGroups(next.groups)
+      setDraftSourceIds(next.sourceIds)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : t('search.scopePickerLoadFailed', '书源查询失败'))
+    } finally {
+      setPendingSourceId(null)
+    }
   }
 
   const clear = () => {
@@ -101,36 +128,16 @@ export function SearchScopePickerModal({
           <div>
             <span className="section-kicker">{t('search.scopeLabel', '搜索范围')}</span>
             <h2>{t('search.scopePickerTitle', '选择搜索范围')}</h2>
-            <p>{t('search.scopePickerDesc', '可同时选择多个分组和单个书源，搜索范围按并集计算')}</p>
+            <p>{t('search.scopePickerDesc', '可选择一个或多个书源，并与外部分组组合搜索')}</p>
           </div>
           <button type="button" className="subtle-button close-btn" onClick={onClose} aria-label={t('common.close', '关闭')}>×</button>
         </header>
 
         <div className="search-scope-picker-body">
-          <section className="search-scope-picker-section">
-            <div className="search-scope-picker-section-title">
-              <strong>{t('search.scopePickerGroups', '选择分组')}</strong>
-              <small>{t('search.scopePickerGroupsHint', '分组内的已启用书源都会参与搜索')}</small>
-            </div>
-            <div className="search-scope-picker-groups">
-              {groupOptions.map(group => {
-                const selected = draftGroups.includes(group.name)
-                const isUngrouped = group.name === UNGROUPED_SOURCE_GROUP
-                return (
-                  <label key={group.name} className={`search-scope-picker-group ${selected ? 'checked' : ''}`}>
-                    <input type="checkbox" checked={selected} onChange={() => toggleGroup(group.name)} />
-                    <span>{isUngrouped ? t('search.scopeUngrouped', '未分组') : group.name}</span>
-                    {!isUngrouped && <small>{group.enabledCount}</small>}
-                  </label>
-                )
-              })}
-            </div>
-          </section>
-
           <section className="search-scope-picker-section search-scope-picker-sources">
             <div className="search-scope-picker-section-title">
               <strong>{t('search.scopePickerSources', '选择单个书源')}</strong>
-              <small>{t('search.scopePickerSourcesHint', '可与分组混合选择')}</small>
+              <small>{t('search.scopePickerSourcesHint', '不输入关键词时显示全部书源')}</small>
             </div>
             <label className="search-scope-picker-search">
               <span aria-hidden="true">⌕</span>
@@ -151,21 +158,21 @@ export function SearchScopePickerModal({
                   <button type="button" className="subtle-button compact" onClick={() => setRetry(value => value + 1)}>{t('common.retry', '重试')}</button>
                 </div>
               )}
-              {!loading && !error && !query.trim() && (
-                <p className="search-scope-picker-empty">{t('search.scopePickerSearchHint', '输入关键词后显示匹配的全部书源')}</p>
-              )}
-              {!loading && !error && query.trim() && items.length === 0 && (
+              {!loading && !error && items.length === 0 && (
                 <p className="search-scope-picker-empty">{t('search.scopePickerNoSources', '没有匹配的书源')}</p>
               )}
-              {!loading && !error && items.map(item => (
-                <label key={item.id} className={`search-scope-picker-source ${selectedSet.has(item.id) ? 'checked' : ''}`}>
-                  <input type="checkbox" checked={selectedSet.has(item.id)} onChange={() => toggleSource(item.id)} />
-                  <span className="search-scope-picker-source-info">
-                    <strong>{item.name}</strong>
-                    <small>{item.group || t('search.scopeUngrouped', '未分组')} · {item.url}</small>
-                  </span>
-                </label>
-              ))}
+              {!loading && !error && items.map(item => {
+                const checked = selectedSet.has(item.id) || selectedGroupForSource(item, draftGroups) !== undefined
+                return (
+                  <label key={item.id} className={`search-scope-picker-source ${checked ? 'checked' : ''}`} aria-busy={pendingSourceId === item.id}>
+                    <input type="checkbox" checked={checked} disabled={pendingSourceId !== null} onChange={() => void toggleSource(item)} />
+                    <span className="search-scope-picker-source-info">
+                      <strong>{item.name}</strong>
+                      <small><span className="search-scope-picker-source-group">{item.group || t('search.scopeUngrouped', '未分组')}</span><span className="search-scope-picker-source-url">{item.url}</span></small>
+                    </span>
+                  </label>
+                )
+              })}
             </div>
           </section>
         </div>
@@ -175,9 +182,9 @@ export function SearchScopePickerModal({
             {t('search.scopePickerSelected', '已选 {{groups}} 个分组 + {{sources}} 个书源', { groups: draftGroups.length, sources: draftSourceIds.length })}
           </span>
           <div>
-            <button type="button" className="subtle-button" onClick={clear}>{t('common.clear', '清空')}</button>
+            <button type="button" className="subtle-button" disabled={pendingSourceId !== null} onClick={clear}>{t('common.clear', '清空')}</button>
             <button type="button" className="subtle-button" onClick={onClose}>{t('common.cancel', '取消')}</button>
-            <button type="button" className="primary-button" onClick={() => { onApply(draftGroups, draftSourceIds); onClose() }}>{t('common.apply', '应用范围')}</button>
+            <button type="button" className="primary-button" disabled={pendingSourceId !== null} onClick={() => { onApply(draftGroups, draftSourceIds); onClose() }}>{t('common.apply', '应用范围')}</button>
           </div>
         </footer>
       </div>

@@ -1,9 +1,10 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import React from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
-import { SearchScopeBar } from '../src/SearchScopeBar.tsx'
-import { SearchScopePickerModal } from '../src/SearchScopePickerModal.tsx'
+import { removeGroupSourceOverrides, SearchScopeBar } from '../src/SearchScopeBar.tsx'
+import { expandGroupWithoutSource, SearchScopePickerModal, selectedGroupForSource } from '../src/SearchScopePickerModal.tsx'
 import { UNGROUPED_SOURCE_GROUP } from '../src/api.ts'
 
 /**
@@ -85,6 +86,25 @@ test('search scope bar - ungrouped and single source scopes', () => {
   assert.equal((single.match(/scope-tab active/g) || []).length, 0, '选了单源时分组选项卡都不应处于激活态')
 })
 
+test('search scope bar - source picker entry comes before all-sources and group tabs', () => {
+  const html = render({ onOpenPicker: () => {} })
+  const pickerIndex = html.indexOf('选择书源')
+  const allIndex = html.indexOf('全部书源')
+  const groupIndex = html.indexOf('大灰狼聚合')
+  assert.ok(pickerIndex >= 0, '必须保留书源选择入口')
+  assert.ok(pickerIndex < allIndex, '书源选择入口应排在全部书源之前')
+  assert.ok(allIndex < groupIndex, '全部书源仍应排在分组选项之前')
+})
+
+test('search scope bar - selected group name is visible on the picker entry', () => {
+  const html = render({
+    selectedGroups: [UNGROUPED_SOURCE_GROUP],
+    selectedSourceIds: [],
+    onOpenPicker: () => {},
+  })
+  assert.ok(html.includes('已选分组：未分组'), '入口必须显示具体分组名称，而不是只显示数量')
+})
+
 test('search scope bar - mixed multi-scope selection exposes the picker summary', () => {
   const html = render({
     selectedGroups: ['大灰狼聚合', '出版'],
@@ -97,10 +117,9 @@ test('search scope bar - mixed multi-scope selection exposes the picker summary'
   assert.ok(html.includes('aria-selected="true"'))
 })
 
-test('search scope picker - renders independent group and source multi-select areas', () => {
+test('search scope picker - only renders source selection because groups stay outside', () => {
   const html = renderToStaticMarkup(
     React.createElement(SearchScopePickerModal, {
-      groups,
       selectedGroups: ['出版'],
       selectedSourceIds: ['https://a.example/'],
       onApply: () => {},
@@ -108,8 +127,52 @@ test('search scope picker - renders independent group and source multi-select ar
     }),
   )
   assert.ok(html.includes('选择搜索范围'))
-  assert.ok(html.includes('选择分组'))
+  assert.equal(html.includes('选择分组'), false, '弹窗不再重复提供外层的分组选择')
   assert.ok(html.includes('选择单个书源'))
   assert.ok(html.includes('已选 1 个分组 + 1 个书源'))
+  assert.equal(html.includes('search-scope-picker-selected-groups'), false, '分组不再显示在弹窗顶部')
   assert.ok(html.includes('输入书源名称、地址或分组名称'))
+})
+
+test('search scope picker - selected groups check their sources including ungrouped', () => {
+  assert.equal(selectedGroupForSource(sources[1], ['出版']), '出版')
+  assert.equal(selectedGroupForSource(sources[1], ['其他']), undefined)
+  assert.equal(selectedGroupForSource(sources[0], [UNGROUPED_SOURCE_GROUP]), UNGROUPED_SOURCE_GROUP)
+})
+
+test('search scope picker - excluding one group member preserves every other member', () => {
+  const next = expandGroupWithoutSource(
+    ['出版', '其他'],
+    ['https://outside.example/', 'https://a.example/'],
+    '出版',
+    'https://a.example/',
+    ['https://a.example/', 'https://b.example/', 'https://c.example/'],
+  )
+  assert.deepEqual(next.groups, ['其他'], '只取消当前书源对应的分组')
+  assert.deepEqual(
+    next.sourceIds,
+    ['https://outside.example/', 'https://b.example/', 'https://c.example/'],
+    '保留额外书源及同组其他成员，只排除当前书源',
+  )
+})
+
+test('search scope bar - reselecting a group reclaims its remaining source overrides', () => {
+  const sourceIds = removeGroupSourceOverrides(
+    ['https://outside.example/', 'https://b.example/', 'https://c.example/'],
+    ['https://a.example/', 'https://b.example/', 'https://c.example/'],
+  )
+  assert.deepEqual(sourceIds, ['https://outside.example/'], '组内遗留独立勾选被收回，组外单源不受影响')
+
+  const main = readFileSync(new URL('../src/main.tsx', import.meta.url), 'utf8')
+  assert.ok(main.includes("void api.sourcePicker('', [group])"), '外层选组必须查询该组成员')
+  assert.ok(main.includes('removeGroupSourceOverrides('), '外层选组必须实际清理组内独立勾选')
+  assert.ok(main.includes('searchStore.setSelectedSourceIds(sourceIds)'), '清理必须作用于最新搜索范围')
+})
+
+test('search scope picker - blank query loads and displays all sources', () => {
+  const source = readFileSync(new URL('../src/SearchScopePickerModal.tsx', import.meta.url), 'utf8')
+  assert.ok(source.includes('void api.sourcePicker(trimmed, [], controller.signal)'), '空关键词也必须调用候选接口')
+  assert.equal(source.includes('if (!trimmed)'), false, '不得再对空关键词提前返回空列表')
+  assert.equal(source.includes('!query.trim()'), false, '空关键词不得显示提示或隐藏候选列表')
+  assert.ok(source.includes('!loading && !error && items.map'), '接口返回的全部候选必须直接进入渲染列表')
 })

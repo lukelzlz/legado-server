@@ -313,6 +313,7 @@ AI 与人类协作时必须明确当前达到的完成度阶梯，严禁混淆�
 | PROPOSAL-033 | 阅读器目录统一底栏（漫画缓存栏 + 有声缓存栏）+ 书架类型角标（含小说角标）+ 底部按钮动态均分 | [`docs/proposals/PROPOSAL-033-unified-reader-toc-and-shelf-kind-badges.md`](docs/proposals/PROPOSAL-033-unified-reader-toc-and-shelf-kind-badges.md) | Tested（待用户验收） |
 | PROPOSAL-034 | 书籍正文插图（安全 `<img>` 保留 + 服务端代理取图与落盘缓存 `images/` + 阅读器灯箱 + 离线随章抓取） | [`docs/proposals/PROPOSAL-034-novel-inline-illustrations.md`](docs/proposals/PROPOSAL-034-novel-inline-illustrations.md) | Implemented（待用户验收） |
 | PROPOSAL-035 | 大规模书源搜索范围选择器（多分组与多书源） | [`docs/proposals/PROPOSAL-035-large-source-search-scope-picker.md`](docs/proposals/PROPOSAL-035-large-source-search-scope-picker.md) | Accepted |
+| PROPOSAL-036 | 订阅源入库与打开、规则订阅、一键导入协议（对齐开源阅读「订阅」页，Issue #88） | [`docs/proposals/PROPOSAL-036-rss-sources-rule-subscriptions-and-online-import.md`](docs/proposals/PROPOSAL-036-rss-sources-rule-subscriptions-and-online-import.md) | Implemented（待用户验收） |
 
 ### 架构决策记录 (ADR)
 | 编号 | 决策标题 | 关联文档 | 状态 |
@@ -351,6 +352,7 @@ AI 与人类协作时必须明确当前达到的完成度阶梯，严禁混淆�
 | ADR-032 | 源码里 `t('literal.key','中文默认值')` 的 key 必须在四语言都存在且非空，用 parity 断言守住（扫描器自检 + 反向 parity + 动态 key 边界） | [`docs/decisions/ADR-032-i18n-literal-keys-must-exist-in-all-locales.md`](docs/decisions/ADR-032-i18n-literal-keys-must-exist-in-all-locales.md) | Accepted |
 | ADR-033 | 正文插图必须走**服务端代理**（`GET /api/books/images/illustration`，浏览器永不直连上游）；落盘沿用 comic 的哈希命名但与 `comic/` **分根**、与 `manga_image_cache` **分表**（序号由「正文出现顺序」定死且永不改写） | [`docs/decisions/ADR-033-inline-illustration-proxy-and-cache-layout.md`](docs/decisions/ADR-033-inline-illustration-proxy-and-cache-layout.md) | Accepted |
 | ADR-034 | 采用服务端候选查询与并集范围模型支持大规模书源搜索选择 | [`docs/decisions/ADR-034-large-source-search-scope-selection.md`](docs/decisions/ADR-034-large-source-search-scope-selection.md) | Accepted |
+| ADR-035 | 订阅源作为独立实体入库（`rss_source` + `rss::` 浏览器会话），一键导入按类型分发，不自动跟随页面链接；类型判别照抄上游 | [`docs/decisions/ADR-035-rss-source-as-first-class-entity-and-online-import-dispatch.md`](docs/decisions/ADR-035-rss-source-as-first-class-entity-and-online-import-dispatch.md) | Accepted |
 
 ### 工作记忆与历史推演归档 (Sessions Chronicle)
 | 日期 / ID | 类型 | 标题 / 议题 | 关联文档 | 状态 |
@@ -461,6 +463,7 @@ AI 与人类协作时必须明确当前达到的完成度阶梯，严禁混淆�
 | 2026-10-18 | Fix | 修复书库搜索结果二次筛选输入框缩成原生小框：补齐输入框 flex/宽度并移除内层原生边框；同步更新本地 :8080 服务，前端 376 项及服务端测试通过 | - | Accepted & Pushed |
 | 2026-10-19 | Fix | 修复 WebDAV progress 阅读进度同步跨媒介覆盖：按 bookKind 分流隔离，小说保持无后缀与手机开源阅读无缝互通，有声带 _audio，漫画带 _comic，杜绝同名书互踩覆盖 | - | Tested |
 | 2026-11-06 | UI | 搜索范围弹窗空关键词展示全部书源并移除重复分组栏；分组覆盖的书源自动勾选并标注分组，排除单源保留同组其他成员，外层重选分组会收回组内独立勾选以恢复整组控制；入口前移并显示具体分组名；真实漫画联网测试改为 `LEGADO_LIVE_TESTS=1` 显式启用，避免上游故障阻塞 CI | - | Pushed |
+| 2026-11-10 | Feat | **订阅源、规则订阅与一键导入，对齐开源阅读「订阅」页（Issue #88）**：订阅地址是订阅源（`RssSource`）时曾被当成空书源静默落库。① `SourceCodec` 不再把 `sourceUrl` 当书源别名；② 新增 `rss_source` 表与订阅源宫格，点开即在内置浏览器（`rss::` 会话）打开入口页；③ 代理层拦截 `legado://import/*` 与 `yuedu://*/importonline` 全部形态，按类型导入书源 / 订阅源 / 替换规则 / 朗读引擎；④ 订阅条目加名称、类型、自动更新与间隔，「导入」先预览再确认；⑤ 备份导入导出补 `rssSources.json`。服务端 698 例仅 1 失败（沙箱无 DNS，main 同样失败），前端 393 全过，真实 Chromium 端到端 18/18。**未验证**：沙箱不通外网，真实站点 `gx.html` 的链接形态与真实地址拉取未实测 | [`docs/proposals/PROPOSAL-036-rss-sources-rule-subscriptions-and-online-import.md`](docs/proposals/PROPOSAL-036-rss-sources-rule-subscriptions-and-online-import.md) · [`docs/decisions/ADR-035-rss-source-as-first-class-entity-and-online-import-dispatch.md`](docs/decisions/ADR-035-rss-source-as-first-class-entity-and-online-import-dispatch.md) · [`docs/acceptance/ACCEPT-036-rss-sources-rule-subscriptions-and-online-import.md`](docs/acceptance/ACCEPT-036-rss-sources-rule-subscriptions-and-online-import.md) · [`docs/sessions/SESSION-054-rss-sources-rule-subscriptions-and-online-import.md`](docs/sessions/SESSION-054-rss-sources-rule-subscriptions-and-online-import.md) | Tested（待用户验收） |
 
 ---
 
@@ -507,4 +510,6 @@ This repository is dedicated to the standalone Legado Server ecosystem: the stan
 
 - **[沙箱/致命] 给桥接对象加成员时「声明 ≠ 可见」：漏挂载会让书源规则**静默回退**，日志里什么都没有**：实现书籍变量时，`book.variableMap` 的对象建好、键值也写进去了，**却忘了 `ScriptableObject.putProperty(book, "variableMap", ...)`**。宿主侧完全合法（不报错），JS 侧只是一个 `undefined`：书源里 `book.variableMap["custom"]` 抛 TypeError，`<js>` 求值失败后正文规则**自动回退到抓页面正文**分支 ⇒ 用户看到"规则没生效"，而**日志一片安静**。**唯一可靠的兜底是"从 JS 侧真的读一次"的用例**（断言 `typeof book.variableMap`、`book.getVariable(...)` 的真实返回值），因为漏挂载在宿主语言里是合法的。同类风险点：任何 `putProperty` 的"新增成员"改动。
 - **[Legado 兼容] 书籍变量（`book.getVariable`）的语义要照抄开源阅读，别自己发明**：`legado-with-MD3` 的 `BaseBook.variable` 是 **JSON 字符串**（`GSON.toJson(variableMap)`），`RuleDataInterface.getVariable(key)` 取不到时返回**空串**（不是 `"null"`），`custom` 是一等公民（`putCustomVariable/getCustomVariable`）且编辑 UI 只编辑它。本仓库此前 `getVariable` 返回 `"null"` —— 那是**巧合可用**（书源恰好写了 `if (x == "null")` 兼容），不是契约。**参照实现在工作区 `legado-with-MD3/` 里，先读再用。**
+- **[订阅源/类型判别] 订阅源（`RssSource`）≠ 书源；判别照抄上游 `jsonImportType`，严禁字段启发式（Issue #88）**：有 `bookSourceUrl` ⇒ 书源，否则有 `sourceUrl` ⇒ 订阅源。`SourceCodec.parse` 曾把 `sourceUrl`/`sourceName` 当书源别名 ⇒ 订阅源被当成「没有任何规则的书源」静默落库（界面报「新增 1」，真正的书源一条没进）。**不要**靠「书源专有字段」清单区分：上游 `RssSource` 自己就有 `searchUrl`、`ruleContent`（第一版修复正是栽在这里）。订阅源多数（`singleUrl=true`）只是**网页入口**，流程是「入库 → 内置浏览器打开 → 用户点 `legado://import/…` / `yuedu://…/importonline` → 按类型导入」；**服务端不自动爬入口页跟链接**（上游没有这个行为，用户也无从挑选）。内置浏览器会话 id 用 `rss::<sourceUrl>` 与书源分开命名空间（Cookie / 票据不串号）。订阅类型与内容不符必须**报失败并说明实际类型**，不得记成「成功 0 条」。回归：`RssSourceTest`、`subscription-page.test.ts`；见 [ADR-035](docs/decisions/ADR-035-rss-source-as-first-class-entity-and-online-import-dispatch.md)。
+- **[Kotlin/注释] 块注释可嵌套：KDoc 里出现 `/*` 会吞掉后面的代码**：在注释里写 `/sources/import-url/*` 这类路径，`/*` 会开启一层新的嵌套注释，直到文件后面某个字符串里碰巧出现 `*/` 才闭合——报错是几千行外的一串 `Unresolved reference`，与真正原因毫不相干。注释里的通配路径改用文字描述。
 - **[进度同步/类型隔离] WebDAV 进度镜像（bookProgress）必须按 `bookKind` 分流，严禁同名跨媒介互踩**：Legado 手机端默认只同步小说（使用无后缀的 `<书名>_<作者>.json`），若同名同作者同时存在小说、漫画和听书，服务端此前盲目写入同一无后缀文件，导致手机端同步时小说进度被漫画或听书冲掉。修法：小说（novel/local/默认）严格保持原名，有声加上 `_audio`（`<书名>_<作者>_audio.json`），漫画加上 `_comic`（`<书名>_<作者>_comic.json`）；读取时严格按预期类别过滤，严禁降级借用或跨媒介误读。

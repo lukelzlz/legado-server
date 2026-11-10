@@ -95,6 +95,7 @@ fun Route.apiRoutes(
 
     /** 网络书源导入：服务端代抓 + 内存票据两步式（见 [ADR-023]）。 */
     val networkImport = NetworkSourceImport(database, log = { message -> application.log.info(message) })
+    val onlineImport = OnlineImport(database, networkImport::fetchText)
 
     /**
      * 把一本书的字节导入为本地书籍（**两个入口共用**）。
@@ -589,7 +590,23 @@ fun Route.apiRoutes(
             route("/browser") {
                 post("/session") {
                     if (auth.requireSession(call, true) == null) return@post
-                    val source = database.getSource(call.parameters["id"]!!) ?: run { call.respond(HttpStatusCode.NotFound, ApiError("not_found", "书源不存在")); return@post }
+                    val rawId = call.parameters["id"]!!
+                    // 订阅源与书源共用同一套内置浏览器；会话 id 加 `rss::` 前缀，Cookie 与票据互不串号。
+                    if (rawId.startsWith(RSS_BROWSER_PREFIX)) {
+                        val rssId = rawId.removePrefix(RSS_BROWSER_PREFIX)
+                        val payload = database.getRssSourcePayload(rssId)
+                            ?: run { call.respond(HttpStatusCode.NotFound, ApiError("not_found", "订阅源不存在")); return@post }
+                        val sortUrl = (runCatching { Json.parseToJsonElement(payload).jsonObject }.getOrNull()?.get("sortUrl") as? JsonPrimitive)?.contentOrNull
+                        val requested = runCatching { call.receive<SourceBrowserSessionRequest>() }.getOrNull()?.url?.trim()
+                            ?.takeIf { it.startsWith("http://") || it.startsWith("https://") }
+                        val start = requested ?: RssSourceCodec.openUrl(rssId, sortUrl)
+                            ?: run { call.respond(HttpStatusCode.BadRequest, ApiError("unsupported_url", "该订阅源没有可打开的 HTTP(S) 地址")); return@post }
+                        val token = webView.issueTicket(rawId, payload, start)
+                        call.application.log.info("webview session opened for rss source: {}, start: {}", rssId, start)
+                        call.respond(SourceBrowserSessionResponse(token = token, startUrl = start, expiresInSeconds = 1800, inlineOnly = false))
+                        return@post
+                    }
+                    val source = database.getSource(rawId) ?: run { call.respond(HttpStatusCode.NotFound, ApiError("not_found", "书源不存在")); return@post }
                     val sourceObj = runCatching { Json.parseToJsonElement(source.json).jsonObject }.getOrNull()
                     val loginUrl = (sourceObj?.get("loginUrl") as? JsonPrimitive)?.contentOrNull?.trim()?.takeIf { it.startsWith("http") }
                     val sourceUrl = (sourceObj?.get("bookSourceUrl") as? JsonPrimitive)?.contentOrNull?.trim()
@@ -814,10 +831,64 @@ fun Route.apiRoutes(
             val request = call.receive<SubscriptionWriteRequest>()
             try {
                 validateSubscriptionUrl(request.url)
+                require(request.type in 0..2) { "订阅类型无效" }
+                require(!request.autoUpdate || request.updateInterval > 0) { "开启自动更新时，更新间隔必须大于 0 小时" }
+                require(request.updateInterval in 0..24 * 365) { "更新间隔无效" }
                 call.respond(database.saveSubscription(request))
             } catch (error: IllegalArgumentException) {
                 call.respond(HttpStatusCode.BadRequest, ApiError("invalid_subscription", error.message ?: "订阅地址无效"))
             }
+        }
+        // 界面走完「预览 / 确认」导入后回报结果，让列表上的「最近更新」如实反映手动导入。
+        post("/subscriptions/{id}/synced") {
+            if (auth.requireSession(call, true) == null) return@post
+            val id = call.parameters["id"]?.toLongOrNull() ?: return@post call.respond(HttpStatusCode.BadRequest, ApiError("invalid_subscription", "订阅标识无效"))
+            if (database.getSubscription(id) == null) return@post call.respond(HttpStatusCode.NotFound, ApiError("not_found", "订阅不存在"))
+            val request = runCatching { call.receive<SubscriptionSyncedRequest>() }.getOrNull() ?: SubscriptionSyncedRequest()
+            database.recordSubscriptionSuccess(id, ImportResponse(request.imported.coerceAtLeast(0), 0, 0, emptyList()), "")
+            call.respond(HttpStatusCode.NoContent)
+        }
+        /**
+         * 一键导入（`legado://import/…` / `yuedu://…/importonline`，对齐开源阅读 `OnLineImportActivity`）。
+         * `dryRun` 只回报类型与条数供界面确认；书源的落库走 `import-url` 预览票据。
+         */
+        post("/online-import") {
+            if (auth.requireSession(call, true) == null) return@post
+            val request = runCatching { call.receive<OnlineImportRequest>() }.getOrNull()
+                ?: return@post call.respondApiError(HttpStatusCode.BadRequest, "invalid_request", "请求格式无效")
+            try {
+                call.respond(onlineImport.run(request.url, request.kind, request.dryRun))
+            } catch (error: NetworkImportException) {
+                call.respondApiError(HttpStatusCode.BadRequest, error.code, error.message)
+            } catch (error: IllegalArgumentException) {
+                call.respondApiError(HttpStatusCode.BadRequest, "import_content_invalid", error.message ?: "内容无效")
+            }
+        }
+        // ---- 订阅源（RssSource）：导入 / 列表 / 启停 / 删除。打开走内置浏览器，会话 id 为 `rss::<sourceUrl>`
+        get("/rss-sources") {
+            if (auth.requireSession(call) == null) return@get
+            call.respond(database.listRssSources())
+        }
+        post("/rss-sources/import") {
+            if (auth.requireSession(call, true) == null) return@post
+            val request = runCatching { call.receive<RssSourceImportRequest>() }.getOrNull()
+                ?: return@post call.respondApiError(HttpStatusCode.BadRequest, "invalid_request", "请求格式无效")
+            val items = runCatching { SourceCodec.parseSourceList(request.content) }.getOrNull()
+                ?: return@post call.respondApiError(HttpStatusCode.BadRequest, "import_content_invalid", "内容不是有效的订阅源 JSON")
+            call.respond(database.importRssSources(items))
+        }
+        put("/rss-sources") {
+            if (auth.requireSession(call, true) == null) return@put
+            val request = runCatching { call.receive<RssSourceWriteRequest>() }.getOrNull()
+                ?: return@put call.respondApiError(HttpStatusCode.BadRequest, "invalid_request", "请求格式无效")
+            if (database.setRssSourceEnabled(request.id, request.enabled)) call.respond(HttpStatusCode.NoContent)
+            else call.respond(HttpStatusCode.NotFound, ApiError("not_found", "订阅源不存在"))
+        }
+        delete("/rss-sources") {
+            if (auth.requireSession(call, true) == null) return@delete
+            val id = call.request.queryParameters["id"].orEmpty()
+            if (database.deleteRssSource(id)) call.respond(HttpStatusCode.NoContent)
+            else call.respond(HttpStatusCode.NotFound, ApiError("not_found", "订阅源不存在"))
         }
         delete("/subscriptions/{id}") {
             if (auth.requireSession(call, true) == null) return@delete
@@ -2800,6 +2871,9 @@ private fun validateSubscriptionUrl(value: String) {
     require(uri?.scheme in setOf("http", "https") && !uri?.host.isNullOrBlank()) { "仅允许 HTTP(S) 订阅地址" }
 }
 
+/** 订阅源在内置浏览器里的会话 id 前缀（与书源 id 分开命名空间）。 */
+internal const val RSS_BROWSER_PREFIX = "rss::"
+
 private const val SEARCH_TIMEOUT_MS = 30_000L
 
 private suspend fun readableSearchResults(runner: RuleRunner, sourceJson: String, keyword: String): List<SearchResult> =
@@ -3073,7 +3147,7 @@ private fun webViewErrorPage(message: String): String {
     """.trimIndent()
 }
 
-private suspend fun parseImportedReplaceRules(bodyText: String): List<ReplaceRule> {
+internal suspend fun parseImportedReplaceRules(bodyText: String): List<ReplaceRule> {
     val cleanText = bodyText.trim().removePrefix("\uFEFF")
     if (cleanText.isBlank()) return emptyList()
 

@@ -47,8 +47,11 @@ object SourceCodec {
         require(cleanText.toByteArray().size <= MAX_SOURCE_BYTES) { "书源不能超过 1 MiB" }
         val objectValue = try { json.parseToJsonElement(cleanText) as? JsonObject } catch (_: Exception) { null }
             ?: throw IllegalArgumentException("书源必须是 JSON 对象")
+        // `sourceUrl` 是**订阅源**（RssSource）的主键，不是书源字段：开源阅读按
+        // 「有 bookSourceUrl ⇒ 书源，否则有 sourceUrl ⇒ 订阅源」判别类型。
+        // 曾把它当作书源别名 ⇒ 订阅源被当成一条没有任何规则的书源静默落库（Issue #88）。
+        require("bookSourceUrl" in objectValue || "sourceUrl" !in objectValue) { "这是订阅源而不是书源，请在「订阅」页导入" }
         val rawUrl = (objectValue.string("bookSourceUrl")
-            ?: objectValue.string("sourceUrl")
             ?: objectValue.string("url"))?.trim()
             ?: throw IllegalArgumentException("缺少 bookSourceUrl")
         require(rawUrl.isNotBlank()) { "bookSourceUrl 不能为空" }
@@ -60,7 +63,6 @@ object SourceCodec {
         // The server only needs the reachable origin; annotations are metadata used by the Android client.
         val url = normalizeSourceUrl(fixedUrl)
         val name = (objectValue.string("bookSourceName")
-            ?: objectValue.string("sourceName")
             ?: objectValue.string("name"))
             ?.takeIf { it.isNotBlank() } ?: url
         val group = objectValue.string("bookSourceGroup")
@@ -176,7 +178,7 @@ object SourceCodec {
         }
     }
 
-    private const val MAX_SOURCE_BYTES = 1024 * 1024
+    internal const val MAX_SOURCE_BYTES = 1024 * 1024
 
     /**
      * 将给定的书源 JSON 中的分组字段同步为指定的分组名。

@@ -19,11 +19,12 @@ interface SourceWebViewModalProps {
   /** 书源设置结果已落库：调用方据此刷新源变量显示，并取消「重跑触发动作」 */
   onSettingsSaved?: () => void
   /**
-   * 被代理页面里点了书源的「更新书源」线路链接
-   * （`yuedu://booksource/importonline?src=…`，由代理层在捕获阶段拦下并换算成真实 http(s) 地址）。
-   * 调用方据此打开「网络导入」弹窗。见 [ADR-023]。
+   * 被代理页面里点了「一键导入」链接（`legado://import/…` / `yuedu://…/importonline`，
+   * 由代理层在捕获阶段拦下并换算成真实 http(s) 地址与类型）。
+   * `kind` 为 bookSource / rssSource / replaceRule / httpTts / auto，或本服务不支持的其它类型名。
+   * 调用方交给 `useOnlineImport` 按类型导入。见 [ADR-023]。
    */
-  onImportOnline?: (url: string) => void
+  onImportOnline?: (url: string, kind: string) => void
 }
 
 type NavState = { list: string[]; index: number }
@@ -67,7 +68,7 @@ export const SourceWebViewModal: React.FC<SourceWebViewModalProps> = ({
   const savedRef = useRef(false)
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   /** 用 ref 持有回调，避免父组件每次渲染都重建消息监听（与 flushRef 同一手法）。 */
-  const onImportOnlineRef = useRef<((url: string) => void) | undefined>(onImportOnline)
+  const onImportOnlineRef = useRef<((url: string, kind: string) => void) | undefined>(onImportOnline)
   onImportOnlineRef.current = onImportOnline
 
   /**
@@ -151,7 +152,7 @@ export const SourceWebViewModal: React.FC<SourceWebViewModalProps> = ({
   // 监听被代理页面回报的地址变化与设置结果
   useEffect(() => {
     const onMessage = (event: MessageEvent) => {
-      const data = event.data as { source?: string; type?: string; url?: string } | null
+      const data = event.data as { source?: string; type?: string; url?: string; kind?: string } | null
       if (!data || data.source !== 'legado-webview') return
       if (data.type === 'settings-result') {
         // iframe 是不透明源（sandbox 无 allow-same-origin），必须靠 event.source 认定来源
@@ -169,7 +170,7 @@ export const SourceWebViewModal: React.FC<SourceWebViewModalProps> = ({
         if (!iframeRef.current || event.source !== iframeRef.current.contentWindow) return
         const target = typeof data.url === 'string' ? data.url.trim() : ''
         if (!target) return
-        onImportOnlineRef.current?.(target)
+        onImportOnlineRef.current?.(target, typeof data.kind === 'string' && data.kind ? data.kind : 'bookSource')
         return
       }
       if (data.type !== 'navigated') return

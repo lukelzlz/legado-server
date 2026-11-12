@@ -99,7 +99,10 @@ class WebViewProxy(private val database: Database) {
             tickets.remove(token)
             throw WebViewException("登录会话已过期，请重新打开内置浏览器")
         }
-        if (ticket.sourceId != sourceId) throw WebViewException("登录会话与书源不匹配")
+        if (ticket.sourceId != sourceId) {
+            val kindName = if (sourceId.startsWith("rss::")) "订阅源" else "书源"
+            throw WebViewException("浏览器会话与${kindName}不匹配")
+        }
         return ticket
     }
 
@@ -330,7 +333,8 @@ class WebViewProxy(private val database: Database) {
         if (enforceDomain && ticket.domains.isNotEmpty()) {
             val domain = registrableDomain(host)
             if (ticket.domains.none { it == domain }) {
-                throw WebViewException("该地址不属于此书源的站点域名（$domain），已拒绝代理")
+                val kindName = if (ticket.sourceId.startsWith("rss::")) "订阅源" else "书源"
+                throw WebViewException("该地址不属于此${kindName}的站点域名（$domain），已拒绝代理")
             }
         }
         return uri
@@ -679,6 +683,14 @@ class WebViewProxy(private val database: Database) {
                   try{Object.defineProperty(window,'top',{get:function(){return window},configurable:true})}catch(e){}
                   try{Object.defineProperty(window,'parent',{get:function(){return window},configurable:true})}catch(e){}
                   try{Object.defineProperty(window,'frameElement',{get:function(){return null},configurable:true})}catch(e){}
+                  try{
+                    var _ck='';
+                    Object.defineProperty(document,'cookie',{
+                      get:function(){return _ck},
+                      set:function(v){_ck=String(v||'')},
+                      configurable:true
+                    });
+                  }catch(e){}
                   var BASE=${jsString(base.toString())};
                   var PREFIX=${jsString(proxyPrefix(sourceId))};
                   var TOKEN=${jsString(token)};
@@ -707,33 +719,36 @@ class WebViewProxy(private val database: Database) {
                     return nativeOpen.apply(this,arguments)
                   };
                   window.open=function(url){ if(url){ window.location.href=toPage(url) } return window };
-                  // 书源「更新书源」页的线路按钮用的是客户端私有协议
-                  //   yuedu://booksource/importonline?src=<urlencoded 书源地址>
-                  // 浏览器 iframe 不认识该协议（点了完全没反应），而代理层既无法把 href 改写成
+                  // 页面上的「一键导入」按钮用的是客户端私有协议（对齐开源阅读 OnLineImportActivity）：
+                  //   legado://import/{bookSource|rssSource|replaceRule|httpTTS|auto}?src=<地址>
+                  //   yuedu://{booksource|rsssource|replace}/importonline?src=<地址>
+                  // 浏览器 iframe 不认识这些协议（点了完全没反应），而代理层既无法把 href 改写成
                   // 代理地址（它没有对应的网络请求），也改写不了 JS 对 location 的赋值。
-                  // 因此在**捕获阶段**拦下点击，把 src 抽出来 postMessage 交回宿主，
-                  // 由宿主走「网络书源导入」弹窗（服务端代抓 + 票据预览）。
+                  // 因此在**捕获阶段**拦下点击，把类型与 src 抽出来 postMessage 交回宿主，由宿主按类型导入。
+                  var KINDS={booksource:'bookSource',rsssource:'rssSource',replace:'replaceRule',replacerule:'replaceRule',httptts:'httpTts',auto:'auto'};
                   document.addEventListener('click', function(event){
                     var node=event.target;
                     while(node&&node.nodeType===1&&node.tagName!=='A'){ node=node.parentElement }
                     if(!node||node.tagName!=='A') return;
                     var href=node.getAttribute('href')||'';
-                    if(href.indexOf('yuedu://booksource/importonline')!==0) return;
+                    var m=href.match(/^(?:yuedu|legado):\/\/([^\/?#]+)\/?([^?#]*)/i);
+                    if(!m) return;
+                    var host=m[1].toLowerCase(), path=m[2].replace(/\/+$/,'').toLowerCase();
+                    var name=path==='importonline'?host:(host==='import'?path:'auto');
+                    // 本服务不支持的类型（主题、字典规则…）原样回报，由宿主提示「暂不支持」
+                    var kind=KINDS[name]||(path==='importonline'?'auto':name);
                     var raw=null;
-                    try{ raw=new URL(href).searchParams.get('src') }catch(e){}
-                    if(!raw){
-                      var q=href.indexOf('?');
-                      if(q>=0){
-                        var m=href.substring(q+1).match(/(?:^|&)src=([^&]*)/);
-                        if(m){ try{ raw=decodeURIComponent(m[1]) }catch(e){ raw=m[1] } }
-                      }
+                    var q=href.indexOf('?');
+                    if(q>=0){
+                      var s=href.substring(q+1).match(/(?:^|&)src=([^&#]*)/);
+                      if(s){ try{ raw=decodeURIComponent(s[1]) }catch(e){ raw=s[1] } }
                     }
                     if(!raw) return;
                     event.preventDefault();
                     event.stopPropagation();
                     try{
                       if(window.__legadoHost&&window.__legadoHost!==window){
-                        window.__legadoHost.postMessage({source:'legado-webview',type:'import-online',url:String(raw)},'*')
+                        window.__legadoHost.postMessage({source:'legado-webview',type:'import-online',url:String(raw),kind:kind},'*')
                       }
                     }catch(e){}
                   }, true);

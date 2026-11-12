@@ -192,7 +192,15 @@ export type LocalBookImportResponse = { total: number; imported: number; failed:
 /** 单本本地书的重新解析结果。`status` 取 `reparsed` / `skipped` / `failed`。 */
 export type LocalReparseItem = { bookUrl: string; name: string; chapters: number; status: 'reparsed' | 'skipped' | 'failed'; error?: string | null }
 export type LocalReparseResponse = { total: number; reparsed: number; skipped: number; failed: number; chapters: number; items: LocalReparseItem[] }
-export type SourceSubscription = { id: number; url: string; enabled: boolean; createdAt: number; updatedAt: number; lastSuccessAt?: number; lastAttemptAt?: number; lastError?: string; lastImported: number; contentHash?: string }
+/** 订阅条目（对齐开源阅读 RuleSub）。type：0 书源 / 1 订阅源 / 2 替换规则；updateInterval 单位小时。 */
+export type SourceSubscription = { id: number; url: string; enabled: boolean; createdAt: number; updatedAt: number; lastSuccessAt?: number; lastAttemptAt?: number; lastError?: string; lastImported: number; contentHash?: string; name?: string; type?: number; autoUpdate?: boolean; updateInterval?: number }
+export type SubscriptionWrite = { url: string; enabled?: boolean; name?: string; type?: number; autoUpdate?: boolean; updateInterval?: number }
+/** 订阅源（开源阅读 RssSource）。openUrl 为内置浏览器入口，缺失表示没有可打开的 http(s) 地址。 */
+export type RssSourceSummary = { id: string; name: string; icon?: string | null; group?: string | null; enabled?: boolean; singleUrl?: boolean; openUrl?: string | null; customOrder?: number; updatedAt?: number }
+export type OnlineImportKind = 'bookSource' | 'rssSource' | 'replaceRule' | 'httpTts'
+export type OnlineImportResult = { kind: OnlineImportKind; total: number; names?: string[]; imported?: number; updated?: number; skipped?: number; errors?: string[] }
+/** 订阅源在内置浏览器里的会话 id（与书源 id 分开命名空间，须与服务端 RSS_BROWSER_PREFIX 一致）。 */
+export const rssBrowserId = (id: string) => `rss::${id}`
 export type SearchStreamEvent = { type: 'start' | 'results' | 'progress' | 'done' | 'error'; totalSources: number; completedSources: number; matchedSources: number; emptySources: number; failedSources: number; resultCount: number; results: SearchResult[]; message?: string }
 
 export type BatchSourceAction = 'enable' | 'disable' | 'delete' | 'set_group'
@@ -572,7 +580,14 @@ export const api = {
   clearSourceGroup: (name: string) =>
     request<SourceGroupMutationResponse>(`/api/source-groups?name=${encodeURIComponent(name)}`, { method: 'DELETE' }),
   subscriptions: () => request<SourceSubscription[]>('/api/subscriptions'),
-  saveSubscription: (url: string, enabled = true) => request<SourceSubscription>('/api/subscriptions', { method: 'POST', body: JSON.stringify({ url, enabled }) }),
+  saveSubscription: (subscription: SubscriptionWrite) => request<SourceSubscription>('/api/subscriptions', { method: 'POST', body: JSON.stringify(subscription) }),
+  markSubscriptionSynced: (id: number, imported: number) => request<void>(`/api/subscriptions/${id}/synced`, { method: 'POST', body: JSON.stringify({ imported }) }),
+  onlineImport: (url: string, kind: string | undefined, dryRun: boolean) =>
+    request<OnlineImportResult>('/api/online-import', { method: 'POST', body: JSON.stringify({ url, kind, dryRun }) }),
+  rssSources: () => request<RssSourceSummary[]>('/api/rss-sources'),
+  importRssSources: (content: string) => request<ImportResponse>('/api/rss-sources/import', { method: 'POST', body: JSON.stringify({ content }) }),
+  setRssSourceEnabled: (id: string, enabled: boolean) => request<void>('/api/rss-sources', { method: 'PUT', body: JSON.stringify({ id, enabled }) }),
+  removeRssSource: (id: string) => request<void>(`/api/rss-sources?id=${encodeURIComponent(id)}`, { method: 'DELETE' }),
   removeSubscription: (id: number) => request<void>(`/api/subscriptions/${id}`, { method: 'DELETE' }),
   updateSubscription: (id: number) => request<ImportResponse>(`/api/subscriptions/${id}/update`, { method: 'POST' }),
   updateSubscriptions: () => request<{ updated: number; failed: number }>('/api/subscriptions/update', { method: 'POST' }),

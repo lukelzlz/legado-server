@@ -581,6 +581,32 @@ button[aria-busy="true"] {
 .subscription-list strong { max-width: 540px; font-size: 13px; font-weight: 500; }
 .subscription-list small { margin-top: 5px; color: var(--muted); font-size: 11px; }
 .subscription-actions { display: flex; align-items: center; gap: 7px; flex-shrink: 0; }
+/* ---- 订阅页：订阅源宫格 / 规则订阅表单 / 一键导入确认 ---- */
+.rss-source-section > form { flex-wrap: wrap; }
+.rss-source-empty { padding: 14px 0 2px; }
+.rss-source-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: 10px; margin-top: 16px; }
+.rss-source-card { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.rss-source-card.is-disabled .rss-source-open { opacity: .45; }
+.rss-source-open { display: flex; flex-direction: column; align-items: center; gap: 8px; width: 100%; min-width: 0; padding: 12px 6px 10px; border: 1px solid transparent; border-radius: 8px; background: var(--surface-muted); color: var(--ink); cursor: pointer; transition: border-color .15s ease, transform .15s ease; }
+.rss-source-open:hover { border-color: var(--line); transform: translateY(-1px); }
+.rss-source-icon { width: 44px; height: 44px; border-radius: 10px; object-fit: cover; flex-shrink: 0; }
+.rss-source-icon.is-letter { display: grid; place-items: center; background: var(--line); color: var(--muted); font-size: 18px; font-weight: 600; }
+.rss-source-name { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+.rss-source-manage { display: flex; align-items: center; justify-content: center; gap: 4px; }
+.rule-sub-form { flex-wrap: wrap; align-items: center; }
+.rule-sub-form select { border: 1px solid var(--line); border-radius: 5px; padding: 9px 8px; background: var(--surface-muted); color: var(--ink); }
+.subscription-panel form .rule-sub-name { flex: 0 1 150px; }
+.rule-sub-auto, .rule-sub-interval { display: inline-flex; align-items: center; gap: 5px; color: var(--muted); font-size: 13px; white-space: nowrap; }
+.subscription-panel form .rule-sub-auto input { flex: none; padding: 0; }
+.subscription-panel form .rule-sub-interval input { flex: none; width: 68px; }
+.rule-sub-type { display: inline-block; margin-right: 7px; padding: 1px 6px; border: 1px solid var(--line); border-radius: 4px; color: var(--muted); font-size: 11px; font-weight: 400; vertical-align: 1px; }
+.online-import-modal { width: min(420px, 94vw); padding: 20px 22px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); color: var(--ink); box-shadow: 0 24px 64px rgba(0, 0, 0, .32); }
+.online-import-modal h3 { font-size: 17px; font-weight: 600; }
+.online-import-modal p { margin-top: 8px; color: var(--muted); font-size: 13px; }
+.online-import-url { overflow-wrap: anywhere; }
+.online-import-names { max-height: 180px; margin: 10px 0 0; padding: 8px 10px 8px 26px; overflow: auto; border-radius: 6px; background: var(--surface-muted); font-size: 13px; }
+.online-import-names .more { list-style: none; color: var(--muted); }
+.online-import-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
 .source-editor { min-height: 420px; display: grid; grid-template-rows: auto minmax(270px, 1fr) auto; }
 .source-editor > header { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 20px 22px; border-bottom: 1px solid var(--line); }
 .source-editor h2, .reading-desk h2 { font-family: Georgia, "Noto Serif SC", serif; font-size: 21px; font-weight: 600; }
@@ -2907,6 +2933,21 @@ mark.search-highlight { background: var(--accent-soft); color: var(--accent); fo
 }
 
 .source-webview-nav-group { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
+
+.source-webview-title {
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--ink);
+  white-space: nowrap;
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex-shrink: 0;
+  padding: 4px 10px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
 
 .source-webview-icon-btn {
   width: 32px;

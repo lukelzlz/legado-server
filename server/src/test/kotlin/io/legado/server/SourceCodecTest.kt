@@ -60,8 +60,8 @@ class SourceCodecTest {
     }
 
     @Test
-    fun `supports alternative field names like sourceUrl and enable`() {
-        val source = SourceCodec.parse("""{"sourceUrl":"https://legacy.example.com","sourceName":"旧版书源","sourceGroup":"旧版","enable":"0"}""")
+    fun `supports alternative field names like url and enable`() {
+        val source = SourceCodec.parse("""{"url":"https://legacy.example.com","name":"旧版书源","sourceGroup":"旧版","enable":"0"}""")
         assertEquals("https://legacy.example.com", source.id)
         assertEquals("旧版书源", source.name)
         assertEquals("旧版", source.group)
@@ -88,7 +88,7 @@ class SourceCodecTest {
 
         // 历史别名（sourceGroup / group）同样要删净
         val legacy = SourceCodec.parse(
-            """{"sourceUrl":"https://legacy.example.com","sourceName":"旧版","sourceGroup":"旧版"}""",
+            """{"url":"https://legacy.example.com","name":"旧版","sourceGroup":"旧版"}""",
             keepGroup = false,
         )
         assertEquals(null, legacy.group)
@@ -190,5 +190,14 @@ class SourceCodecTest {
             SourceCodec.parseSourceList("这不是 JSON\n也不是\n随便一段文本")
         }
         assertTrue(error.message!!.contains("不是有效 JSON"))
+    }
+
+    /** Issue #88：`sourceUrl` 是订阅源的主键，带它而没有 `bookSourceUrl` 的对象不是书源。 */
+    @Test
+    fun `rss source is rejected instead of being stored as an empty book source`() {
+        val error = org.junit.Assert.assertThrows(IllegalArgumentException::class.java) {
+            SourceCodec.parse("""{"sourceUrl":"http://feed.example.com/gx.html","sourceName":"某某书源管理","singleUrl":true}""")
+        }
+        assertTrue(error.message!!.contains("订阅源"))
     }
 }

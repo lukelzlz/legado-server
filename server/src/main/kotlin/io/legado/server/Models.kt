@@ -251,7 +251,54 @@ data class SourceLoginStateRecord(
     val label: String = "",
 )
 
-@Serializable data class SubscriptionWriteRequest(val url: String, val enabled: Boolean = true)
+/**
+ * 订阅条目（对齐开源阅读 `RuleSub`）。
+ *
+ * @param type 0 书源 / 1 订阅源 / 2 替换规则
+ * @param autoUpdate 是否由服务端定时更新。无头服务端没有界面可弹预览，定时更新一律直接落库。
+ * @param updateInterval 自动更新间隔（小时）；`autoUpdate` 为真时必须 > 0
+ */
+@Serializable data class SubscriptionWriteRequest(
+    val url: String,
+    val enabled: Boolean = true,
+    val name: String = "",
+    val type: Int = 0,
+    val autoUpdate: Boolean = false,
+    val updateInterval: Int = 0,
+)
+@Serializable data class SubscriptionSyncedRequest(val imported: Int = 0)
+
+/** 订阅源列表项。`openUrl` 为内置浏览器入口；为 null 表示没有可打开的 http(s) 地址。 */
+@Serializable data class RssSourceSummary(
+    val id: String,
+    val name: String,
+    val icon: String? = null,
+    val group: String? = null,
+    val enabled: Boolean = true,
+    val singleUrl: Boolean = false,
+    val openUrl: String? = null,
+    val customOrder: Int = 0,
+    val updatedAt: Long = 0,
+)
+@Serializable data class RssSourceImportRequest(val content: String)
+@Serializable data class RssSourceWriteRequest(val id: String, val enabled: Boolean)
+
+/**
+ * 一键导入（`legado://import/…` / `yuedu://…/importonline` / 订阅条目）。
+ *
+ * @param kind `bookSource` / `rssSource` / `replaceRule` / `httpTts`；缺省或 `auto` 时按内容判别
+ * @param dryRun 只拉取并回报「是什么、有几条」，不落库（供界面确认）
+ */
+@Serializable data class OnlineImportRequest(val url: String, val kind: String? = null, val dryRun: Boolean = false)
+@Serializable data class OnlineImportResponse(
+    val kind: String,
+    val total: Int,
+    val names: List<String> = emptyList(),
+    val imported: Int = 0,
+    val updated: Int = 0,
+    val skipped: Int = 0,
+    val errors: List<String> = emptyList(),
+)
 @Serializable data class SourceSubscription(
     val id: Long,
     val url: String,
@@ -263,6 +310,10 @@ data class SourceLoginStateRecord(
     val lastError: String? = null,
     val lastImported: Int = 0,
     val contentHash: String? = null,
+    val name: String = "",
+    val type: Int = 0,
+    val autoUpdate: Boolean = false,
+    val updateInterval: Int = 0,
 )
 @Serializable data class ValidateResponse(val valid: Boolean, val errors: List<String>, val warnings: List<String>)
 @Serializable data class DebugRequest(val keyword: String = "测试")

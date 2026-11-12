@@ -62,3 +62,11 @@ test('内置浏览器 - 代理层拦截 legado:// 与 yuedu:// 全部一键导�
   const modal = read('../src/SourceWebViewModal.tsx')
   assert.ok(modal.includes('data.kind'), '宿主必须读取类型并下传')
 })
+
+test('内置浏览器 - 订阅源模式下隐藏登录按钮和Cookie徽标，并展示源名称', () => {
+  const modal = read('../src/SourceWebViewModal.tsx')
+  assert.ok(modal.includes('isBrowserMode'), '必须具备普通网页/订阅源浏览器模式判据')
+  assert.ok(modal.includes('source-webview-title'), '工具栏必须渲染标题标签')
+  assert.ok(modal.includes('!isBrowserMode && cookieCount !== null'), '普通浏览器模式下不展示Cookie徽标')
+  assert.ok(modal.includes('!isBrowserMode && ('), '普通浏览器模式下不展示登录完成按钮')
+})

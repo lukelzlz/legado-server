@@ -2934,6 +2934,21 @@ mark.search-highlight { background: var(--accent-soft); color: var(--accent); fo
 
 .source-webview-nav-group { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
 
+.source-webview-title {
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--ink);
+  white-space: nowrap;
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex-shrink: 0;
+  padding: 4px 10px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+
 .source-webview-icon-btn {
   width: 32px;
   height: 32px;

@@ -13,6 +13,8 @@ interface SourceWebViewModalProps {
   sourceName: string
   /** 书源 JS 通过 java.startBrowserAwait(url) 指定的入口地址，优先于书源配置的 loginUrl */
   startUrl?: string
+  /** 模式：'login' 为书源登录（默认），'browser' 为普通网页浏览（如订阅源打开） */
+  mode?: 'login' | 'browser'
   onClose: () => void
   onToast: (message: string, type?: 'info' | 'success' | 'error') => void
   onLoggedIn?: () => void
@@ -41,6 +43,7 @@ export const SourceWebViewModal: React.FC<SourceWebViewModalProps> = ({
   sourceId,
   sourceName,
   startUrl: startUrlOverride,
+  mode,
   onClose,
   onToast,
   onLoggedIn,
@@ -48,6 +51,7 @@ export const SourceWebViewModal: React.FC<SourceWebViewModalProps> = ({
   onImportOnline,
 }) => {
   const { t } = useTranslation()
+  const isBrowserMode = mode === 'browser' || sourceId.startsWith('rss::') || !onLoggedIn
   const [token, setToken] = useState('')
   const [startUrl, setStartUrl] = useState('')
   const [navTarget, setNavTarget] = useState('')
@@ -189,6 +193,7 @@ export const SourceWebViewModal: React.FC<SourceWebViewModalProps> = ({
   }, [scheduleFlush])
 
   const refreshCookies = useCallback(async () => {
+    if (isBrowserMode) return null
     try {
       const result = await api.sourceBrowserCookies(sourceId)
       setCookieCount(result.count)
@@ -196,12 +201,12 @@ export const SourceWebViewModal: React.FC<SourceWebViewModalProps> = ({
     } catch {
       return null
     }
-  }, [sourceId])
+  }, [sourceId, isBrowserMode])
 
   useEffect(() => {
-    if (!token) return
+    if (!token || isBrowserMode) return
     void refreshCookies()
-  }, [token, nav.index, refreshCookies])
+  }, [token, nav.index, refreshCookies, isBrowserMode])
 
   const pageSrc = useMemo(() => {
     if (!token) return ''
@@ -292,7 +297,7 @@ export const SourceWebViewModal: React.FC<SourceWebViewModalProps> = ({
             <button
               type="button"
               className="source-webview-icon-btn"
-              title={t('source.browserHome', '回到登录页')}
+              title={isBrowserMode ? t('rss.browserHome', '回到主页') : t('source.browserHome', '回到登录页')}
               disabled={!startUrl}
               onClick={() => navigate(startUrl)}
             >
@@ -300,18 +305,24 @@ export const SourceWebViewModal: React.FC<SourceWebViewModalProps> = ({
             </button>
           </div>
 
+          {isBrowserMode && (
+            <span className="source-webview-title" title={sourceName}>
+              {sourceName}
+            </span>
+          )}
+
           <form className="source-webview-address-form" onSubmit={submitAddress}>
             <input
               className="source-webview-address"
               value={addressDraft}
               spellCheck={false}
               onChange={e => setAddressDraft(e.target.value)}
-              placeholder={t('source.browserUrlPlaceholder', '输入该书源站点内的网址')}
+              placeholder={isBrowserMode ? t('rss.browserUrlPlaceholder', '输入网址') : t('source.browserUrlPlaceholder', '输入该书源站点内的网址')}
             />
           </form>
 
           <div className="source-webview-actions">
-            {cookieCount !== null && (
+            {!isBrowserMode && cookieCount !== null && (
               <span className="source-webview-cookie-badge" title={t('source.capturedCookieCount', '已捕获的 Cookie 域名数')}>
                 🍪 {cookieCount}
               </span>
@@ -325,14 +336,16 @@ export const SourceWebViewModal: React.FC<SourceWebViewModalProps> = ({
             >
               ⧉
             </button>
-            <button
-              type="button"
-              className="primary-button source-webview-login-btn"
-              disabled={busy || !token}
-              onClick={handleCheckLogin}
-            >
-              {busy ? t('source.loginChecking', '检测中...') : `✓ ${t('source.loginCompleted', '登录完成')}`}
-            </button>
+            {!isBrowserMode && (
+              <button
+                type="button"
+                className="primary-button source-webview-login-btn"
+                disabled={busy || !token}
+                onClick={handleCheckLogin}
+              >
+                {busy ? t('source.loginChecking', '检测中...') : `✓ ${t('source.loginCompleted', '登录完成')}`}
+              </button>
+            )}
             <button type="button" className="source-webview-icon-btn" title={t('common.close', '关闭')} onClick={onClose}>
               ✕
             </button>
@@ -345,7 +358,9 @@ export const SourceWebViewModal: React.FC<SourceWebViewModalProps> = ({
               <div className="source-webview-placeholder-title">{t('source.cannotOpenBrowser', '无法打开内置浏览器')}</div>
               <div className="source-webview-placeholder-text">{error}</div>
               <div className="source-webview-placeholder-text">
-                {t('source.cannotOpenBrowserHint', '可在书源中补全 loginUrl 后重试，或改用「快捷填入 Cookie / 一键同步书签」方式。')}
+                {isBrowserMode
+                  ? t('rss.cannotOpenBrowserHint', '可在订阅源中检查 sourceUrl / sortUrl 后重试。')
+                  : t('source.cannotOpenBrowserHint', '可在书源中补全 loginUrl 后重试，或改用「快捷填入 Cookie / 一键同步书签」方式。')}
               </div>
             </div>
           ) : (
@@ -356,7 +371,7 @@ export const SourceWebViewModal: React.FC<SourceWebViewModalProps> = ({
                   key={navSeq}
                   ref={iframeRef}
                   className="source-webview-frame"
-                  title={t('source.sourceSiteLoginTitle', { name: sourceName, defaultValue: `${sourceName} 登录` })}
+                  title={isBrowserMode ? sourceName : t('source.sourceSiteLoginTitle', { name: sourceName, defaultValue: `${sourceName} 登录` })}
                   src={pageSrc}
                   sandbox="allow-forms allow-scripts allow-popups allow-modals allow-downloads"
                   referrerPolicy="no-referrer"
@@ -368,7 +383,9 @@ export const SourceWebViewModal: React.FC<SourceWebViewModalProps> = ({
         </div>
 
         <div className="source-webview-footnote">
-          {t('source.browserFootnote', '页面由服务端代理渲染（站点 JS 在隔离沙箱中运行，无法访问本应用数据）。登录成功后 Cookie 会自动保存到该书源，无需手动复制。')}
+          {isBrowserMode
+            ? t('rss.browserFootnote', '页面由服务端代理渲染（站点 JS 在隔离沙箱中运行，无法访问本应用数据）。点击页面内的一键导入链接可直接导入规则。')
+            : t('source.browserFootnote', '页面由服务端代理渲染（站点 JS 在隔离沙箱中运行，无法访问本应用数据）。登录成功后 Cookie 会自动保存到该书源，无需手动复制。')}
         </div>
       </div>
     </div>

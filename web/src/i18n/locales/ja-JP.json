@@ -1438,7 +1438,11 @@
     "importFailed": "購読ソースのインポートに失敗しました",
     "noOpenUrl": "この購読ソースには開けるページがありません",
     "deleteConfirm": "購読ソース「{{name}}」を削除しますか？",
-    "delete": "購読ソースを削除"
+    "delete": "購読ソースを削除",
+    "browserHome": "ホームに戻る",
+    "browserUrlPlaceholder": "URLを入力",
+    "browserFootnote": "ページはサーバープロキシ経由でレンダリングされます（サイトのJSは分離サンドボックスで実行され、本アプリのデータにはアクセスできません）。ページ内の一括インポートリンクをクリックするとルールを直接インポートできます。",
+    "cannotOpenBrowserHint": "購読ソースの sourceUrl / sortUrl を確認して再試行してください。"
   },
   "onlineImport": {
     "kindBookSource": "書源",

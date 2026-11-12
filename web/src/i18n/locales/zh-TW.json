@@ -1438,7 +1438,11 @@
     "importFailed": "匯入訂閱源失敗",
     "noOpenUrl": "該訂閱源沒有可開啟的網頁網址",
     "deleteConfirm": "刪除訂閱源「{{name}}」？",
-    "delete": "刪除訂閱源"
+    "delete": "刪除訂閱源",
+    "browserHome": "回到首頁",
+    "browserUrlPlaceholder": "輸入網址",
+    "browserFootnote": "頁面由服務端代理渲染（站點 JS 在隔離沙箱中運行，無法訪問本應用數據）。點擊頁面內的一鍵匯入連結可直接匯入規則。",
+    "cannotOpenBrowserHint": "可在訂閱源中檢查 sourceUrl / sortUrl 後重試。"
   },
   "onlineImport": {
     "kindBookSource": "書源",

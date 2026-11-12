@@ -1438,7 +1438,11 @@
     "importFailed": "导入订阅源失败",
     "noOpenUrl": "该订阅源没有可打开的网页地址",
     "deleteConfirm": "删除订阅源“{{name}}”？",
-    "delete": "删除订阅源"
+    "delete": "删除订阅源",
+    "browserHome": "回到主页",
+    "browserUrlPlaceholder": "输入网址",
+    "browserFootnote": "页面由服务端代理渲染（站点 JS 在隔离沙箱中运行，无法访问本应用数据）。点击页面内的一键导入链接可直接导入规则。",
+    "cannotOpenBrowserHint": "可在订阅源中检查 sourceUrl / sortUrl 后重试。"
   },
   "onlineImport": {
     "kindBookSource": "书源",

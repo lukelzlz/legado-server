@@ -99,7 +99,10 @@ class WebViewProxy(private val database: Database) {
             tickets.remove(token)
             throw WebViewException("登录会话已过期，请重新打开内置浏览器")
         }
-        if (ticket.sourceId != sourceId) throw WebViewException("登录会话与书源不匹配")
+        if (ticket.sourceId != sourceId) {
+            val kindName = if (sourceId.startsWith("rss::")) "订阅源" else "书源"
+            throw WebViewException("浏览器会话与${kindName}不匹配")
+        }
         return ticket
     }
 
@@ -330,7 +333,8 @@ class WebViewProxy(private val database: Database) {
         if (enforceDomain && ticket.domains.isNotEmpty()) {
             val domain = registrableDomain(host)
             if (ticket.domains.none { it == domain }) {
-                throw WebViewException("该地址不属于此书源的站点域名（$domain），已拒绝代理")
+                val kindName = if (ticket.sourceId.startsWith("rss::")) "订阅源" else "书源"
+                throw WebViewException("该地址不属于此${kindName}的站点域名（$domain），已拒绝代理")
             }
         }
         return uri
@@ -679,6 +683,14 @@ class WebViewProxy(private val database: Database) {
                   try{Object.defineProperty(window,'top',{get:function(){return window},configurable:true})}catch(e){}
                   try{Object.defineProperty(window,'parent',{get:function(){return window},configurable:true})}catch(e){}
                   try{Object.defineProperty(window,'frameElement',{get:function(){return null},configurable:true})}catch(e){}
+                  try{
+                    var _ck='';
+                    Object.defineProperty(document,'cookie',{
+                      get:function(){return _ck},
+                      set:function(v){_ck=String(v||'')},
+                      configurable:true
+                    });
+                  }catch(e){}
                   var BASE=${jsString(base.toString())};
                   var PREFIX=${jsString(proxyPrefix(sourceId))};
                   var TOKEN=${jsString(token)};

@@ -141,6 +141,7 @@ function RssSourceSection({ onSourcesChange, reloadKey }: { onSourcesChange: () 
         <SourceWebViewModal
           sourceId={rssBrowserId(opened.id)}
           sourceName={opened.name}
+          mode="browser"
           onClose={() => setOpened(null)}
           onToast={notify}
           onImportOnline={(target, kind) => { void onlineImport.start(target, kind) }}

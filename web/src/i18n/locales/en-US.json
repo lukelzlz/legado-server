@@ -1438,7 +1438,11 @@
     "importFailed": "Failed to import RSS sources",
     "noOpenUrl": "This RSS source has no web page to open",
     "deleteConfirm": "Delete RSS source \"{{name}}\"?",
-    "delete": "Delete RSS source"
+    "delete": "Delete RSS source",
+    "browserHome": "Home",
+    "browserUrlPlaceholder": "Enter URL",
+    "browserFootnote": "Rendered via server proxy (site JS runs in an isolated sandbox and cannot access app data). Click one-click import links to import rules directly.",
+    "cannotOpenBrowserHint": "Check sourceUrl / sortUrl in the RSS source and try again."
   },
   "onlineImport": {
     "kindBookSource": "Book sources",

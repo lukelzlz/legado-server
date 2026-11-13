@@ -126,6 +126,10 @@ class BackupImporter(
         val ruleResult = database.importReplaceRules(rules)
         // HTTP TTS 复用既有导入实现（天然幂等：同 id 覆盖）
         val ttsResult = database.importHttpTts(parsedTts)
+        // 订阅源（`rssSources.json`）：原样按 sourceUrl 落库，逐条不合格的跳过
+        readSection(zip, entries, "rsssources.json")?.let { text ->
+            database.importRssSources(array(text, "rssSources.json").mapNotNull { (it as? JsonObject)?.toString() })
+        }
         val library = database.importLibrary(shelf)
         // 书源已经在库里了 ⇒ 立刻按**书源自身声明**回填类型（`bookSourceType == 2` ⇒ comic）。
         // 不这么做的话，导入完点开一本漫画会先落到文字阅读器（要等下次重启才被启动期回填修好）。

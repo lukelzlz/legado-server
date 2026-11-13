@@ -203,6 +203,12 @@ class Database(private val path: String) : Closeable, AutoCloseable {
                   last_imported integer not null default 0, content_hash text
                 );
                 create index if not exists source_subscription_enabled_idx on source_subscription(enabled);
+                create table if not exists rss_source (
+                  id text primary key, name text not null, icon text, source_group text,
+                  enabled integer not null default 1, single_url integer not null default 0,
+                  sort_url text, custom_order integer not null default 0,
+                  payload text not null, updated_at integer not null
+                );
                 create table if not exists book_toc_cache (
                   source_id text not null, toc_url text not null, chapters_json text not null, updated_at integer not null,
                   primary key (source_id, toc_url)
@@ -362,6 +368,7 @@ class Database(private val path: String) : Closeable, AutoCloseable {
         migrateReadingProgress(db)
         migrateBookshelf(db)
         migrateSourceTable(db)
+        migrateSubscriptionTable(db)
         migrateBookContentCache(db)
         migrateMangaImageCache(db)
         migrateCacheFilePaths(db)
@@ -3566,9 +3573,12 @@ class Database(private val path: String) : Closeable, AutoCloseable {
 
     fun saveSubscription(request: SubscriptionWriteRequest): SourceSubscription = write { db ->
         val now = System.currentTimeMillis()
-        db.prepareStatement("""insert into source_subscription(url,enabled,created_at,updated_at) values(?,?,?,?)
-            on conflict(url) do update set enabled=excluded.enabled,updated_at=excluded.updated_at""").use {
-            it.setString(1, request.url); it.setInt(2, if (request.enabled) 1 else 0); it.setLong(3, now); it.setLong(4, now); it.executeUpdate()
+        db.prepareStatement("""insert into source_subscription(url,enabled,name,type,auto_update,update_interval,created_at,updated_at) values(?,?,?,?,?,?,?,?)
+            on conflict(url) do update set enabled=excluded.enabled,name=excluded.name,type=excluded.type,
+            auto_update=excluded.auto_update,update_interval=excluded.update_interval,updated_at=excluded.updated_at""").use {
+            it.setString(1, request.url); it.setInt(2, if (request.enabled) 1 else 0); it.setString(3, request.name.trim())
+            it.setInt(4, request.type); it.setInt(5, if (request.autoUpdate) 1 else 0); it.setInt(6, request.updateInterval)
+            it.setLong(7, now); it.setLong(8, now); it.executeUpdate()
         }
         db.prepareStatement("select * from source_subscription where url=?").use { it.setString(1, request.url); it.executeQuery().use { rs -> rs.next(); rs.toSubscription() } }
     }
@@ -3911,7 +3921,94 @@ class Database(private val path: String) : Closeable, AutoCloseable {
         updatedAt = getLong(7),
         version = getLong(8),
     )
-    private fun java.sql.ResultSet.toSubscription() = SourceSubscription(getLong("id"), getString("url"), getInt("enabled") == 1, getLong("created_at"), getLong("updated_at"), getLong("last_success_at").takeIf { !wasNull() }, getLong("last_attempt_at").takeIf { !wasNull() }, getString("last_error"), getInt("last_imported"), getString("content_hash"))
+    private fun java.sql.ResultSet.toSubscription() = SourceSubscription(
+        getLong("id"), getString("url"), getInt("enabled") == 1, getLong("created_at"), getLong("updated_at"),
+        getLong("last_success_at").takeIf { !wasNull() }, getLong("last_attempt_at").takeIf { !wasNull() },
+        getString("last_error"), getInt("last_imported"), getString("content_hash"),
+        name = getString("name").orEmpty(), type = getInt("type"),
+        autoUpdate = getInt("auto_update") == 1, updateInterval = getInt("update_interval"),
+    )
+
+    // ------------------------------------------------------------------ 订阅源（RssSource）
+
+    /** 导入订阅源：按 `sourceUrl` upsert；逐条试解析，不合格的进 `errors`、不中断整批。 */
+    fun importRssSources(rawSources: List<String>): ImportResponse {
+        val errors = mutableListOf<String>()
+        val unique = linkedMapOf<String, ParsedRssSource>()
+        rawSources.forEachIndexed { index, raw ->
+            try {
+                val parsed = RssSourceCodec.parse(raw)
+                unique[parsed.id] = parsed
+            } catch (error: IllegalArgumentException) {
+                errors += "第 ${index + 1} 项：${error.message}"
+            }
+        }
+        var imported = 0
+        var updated = 0
+        write { db ->
+            db.autoCommit = false
+            try {
+                db.prepareStatement("select 1 from rss_source where id = ?").use { exists ->
+                    db.prepareStatement(
+                        "insert into rss_source(id,name,icon,source_group,enabled,single_url,sort_url,custom_order,payload,updated_at) " +
+                            "values(?,?,?,?,?,?,?,?,?,?) on conflict(id) do update set name=excluded.name,icon=excluded.icon," +
+                            "source_group=excluded.source_group,enabled=excluded.enabled,single_url=excluded.single_url," +
+                            "sort_url=excluded.sort_url,custom_order=excluded.custom_order,payload=excluded.payload,updated_at=excluded.updated_at",
+                    ).use { save ->
+                        unique.values.forEach { parsed ->
+                            exists.setString(1, parsed.id)
+                            if (exists.executeQuery().use { it.next() }) updated++ else imported++
+                            save.setString(1, parsed.id); save.setString(2, parsed.name); save.setString(3, parsed.icon); save.setString(4, parsed.group)
+                            save.setInt(5, if (parsed.enabled) 1 else 0); save.setInt(6, if (parsed.singleUrl) 1 else 0); save.setString(7, parsed.sortUrl)
+                            save.setInt(8, parsed.customOrder); save.setString(9, parsed.json); save.setLong(10, System.currentTimeMillis()); save.addBatch()
+                        }
+                        save.executeBatch()
+                    }
+                }
+                db.commit()
+            } catch (error: Throwable) { db.rollback(); throw error } finally { db.autoCommit = true }
+        }
+        return ImportResponse(imported, updated, rawSources.size - unique.size, errors)
+    }
+
+    fun listRssSources(): List<RssSourceSummary> = connect { db ->
+        db.prepareStatement("select id,name,icon,source_group,enabled,single_url,sort_url,custom_order,updated_at from rss_source order by custom_order, name").use { statement ->
+            statement.executeQuery().use { rs ->
+                buildList {
+                    while (rs.next()) {
+                        val id = rs.getString("id")
+                        add(
+                            RssSourceSummary(
+                                id = id, name = rs.getString("name"), icon = rs.getString("icon"), group = rs.getString("source_group"),
+                                enabled = rs.getInt("enabled") == 1, singleUrl = rs.getInt("single_url") == 1,
+                                openUrl = RssSourceCodec.openUrl(id, rs.getString("sort_url")),
+                                customOrder = rs.getInt("custom_order"), updatedAt = rs.getLong("updated_at"),
+                            ),
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    /** 订阅源原始 JSON；不存在返回 null。 */
+    fun getRssSourcePayload(id: String): String? = connect { db ->
+        db.prepareStatement("select payload from rss_source where id = ?").use { it.setString(1, id); it.executeQuery().use { rs -> if (rs.next()) rs.getString(1) else null } }
+    }
+
+    fun exportRssSources(): List<String> = connect { db ->
+        db.prepareStatement("select payload from rss_source order by custom_order, name").use { it.executeQuery().use { rs -> buildList { while (rs.next()) add(rs.getString(1)) } } }
+    }
+
+    fun setRssSourceEnabled(id: String, enabled: Boolean): Boolean = write { db ->
+        db.prepareStatement("update rss_source set enabled=?, updated_at=? where id=?").use {
+            it.setInt(1, if (enabled) 1 else 0); it.setLong(2, System.currentTimeMillis()); it.setString(3, id); it.executeUpdate() == 1
+        }
+    }
+
+    fun deleteRssSource(id: String): Boolean = write { db ->
+        db.prepareStatement("delete from rss_source where id=?").use { it.setString(1, id); it.executeUpdate() == 1 }
+    }
     private fun java.sql.ResultSet.toShelf(): BookshelfItem {
         val altJson = getString(15)
         val altSources = if (!altJson.isNullOrBlank()) {
@@ -4400,6 +4497,23 @@ class Database(private val path: String) : Closeable, AutoCloseable {
      * 因此导入流程结束时显式调一次（与启动期回填同一个实现，幂等）。
      */
     fun backfillBookKindFromSources() = write { db -> backfillBookKind(db) }
+    /**
+     * 订阅条目对齐开源阅读 `RuleSub`：名称 / 类型（0 书源、1 订阅源、2 替换规则）/ 自动更新 / 间隔小时。
+     * 列默认值取「每 6 小时自动更新的书源订阅」，即加列之前所有订阅的实际行为。
+     */
+    private fun migrateSubscriptionTable(db: Connection) {
+        val columns = db.createStatement().use { statement ->
+            statement.executeQuery("pragma table_info(source_subscription)").use { rs -> buildSet { while (rs.next()) add(rs.getString("name")) } }
+        }
+        fun add(name: String, ddl: String) {
+            if (name !in columns) db.createStatement().use { it.executeUpdate("alter table source_subscription add column $name $ddl") }
+        }
+        add("name", "text not null default ''")
+        add("type", "integer not null default 0")
+        add("auto_update", "integer not null default 1")
+        add("update_interval", "integer not null default 6")
+    }
+
     private fun migrateSourceTable(db: Connection) {
         val columns = db.createStatement().use { statement ->
             statement.executeQuery("pragma table_info(source)").use { rs ->

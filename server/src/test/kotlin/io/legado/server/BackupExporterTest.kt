@@ -90,7 +90,7 @@ class BackupExporterTest {
 
         // 4 个文件一个都不能少，且顺序按名称升序（与真实备份一致）
         assertEquals(
-            listOf("bookGroup.json", "bookmark.json", "bookshelf.json", "bookSource.json", "httpTTS.json", "replaceRule.json"),
+            listOf("bookGroup.json", "bookmark.json", "bookshelf.json", "bookSource.json", "httpTTS.json", "replaceRule.json", "rssSources.json"),
             entriesOf(result.bytes).keys.toList(),
         )
         assertEquals("backup2026-09-30-CD_Watch_A.zip", result.fileName)
@@ -105,7 +105,7 @@ class BackupExporterTest {
         val entries = entriesOf(BackupExporter(db).export("", LocalDate.of(2026, 9, 30)).bytes)
 
         assertEquals(
-            listOf("bookGroup.json", "bookmark.json", "bookshelf.json", "bookSource.json", "httpTTS.json", "replaceRule.json"),
+            listOf("bookGroup.json", "bookmark.json", "bookshelf.json", "bookSource.json", "httpTTS.json", "replaceRule.json", "rssSources.json"),
             entries.keys.toList(),
         )
         entries.forEach { (name, text) -> assertEquals("$name 应为空数组", "[]", text) }

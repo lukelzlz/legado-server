@@ -269,6 +269,9 @@ class NetworkSourceImport(
 
     // ------------------------------------------------------------------ 拉取
 
+    /** 拉取地址文本（SSRF 校验 + 逐跳重定向校验 + 体积上限）；一键导入共用。 */
+    internal fun fetchText(url: String): String = download(url)
+
     private fun download(url: String): String {
         fetcher?.let { return it(url) }
         var uri = parseTarget(url)

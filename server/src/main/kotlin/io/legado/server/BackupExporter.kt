@@ -120,6 +120,7 @@ class BackupExporter(private val database: Database) {
             // 保证与 Legado 手机端互相可读。
             "replaceRule.json" to JsonArray(database.listReplaceRules().map { replaceRuleEntry(it) }),
             "httpTTS.json" to JsonArray(database.listHttpTts().map { httpTtsEntry(it) }),
+            "rssSources.json" to JsonArray(database.exportRssSources().map { json.parseToJsonElement(it) }),
         )
 
         val bytes = ByteArrayOutputStream().use { buffer ->

@@ -2,7 +2,7 @@ import { FormEvent, useCallback, useEffect, useMemo, useReducer, useRef, useStat
 import { createPortal } from 'react-dom'
 import { createRoot } from 'react-dom/client'
 import { useTranslation } from 'react-i18next'
-import { api, BookDetails, BookGroup, BookshelfItem, Chapter, NetworkImportPreview, SearchResult, SearchStreamEvent, setCsrfToken, SourceGroupSummary, SourceRecord, SourceSubscription, SourceSummary, streamSearch, UNGROUPED_SOURCE_GROUP } from './api'
+import { api, BookDetails, BookGroup, BookshelfItem, Chapter, NetworkImportPreview, SearchResult, SearchStreamEvent, setCsrfToken, SourceGroupSummary, SourceRecord, SourceSummary, streamSearch, UNGROUPED_SOURCE_GROUP } from './api'
 import { Icon } from './icons'
 import { Logo } from './Logo'
 import { Login } from './Login'
@@ -12,11 +12,12 @@ import { AudiobookPlayerScreen } from './AudiobookPlayerScreen'
 import { loadReaderSettings, ReaderSettings, ReaderTheme, saveReaderSettings } from './readerSettings'
 import { AppHeader } from './AppHeader'
 import { cleanAuthor, cleanTitle, defaultSearchFilters, filterSearchGroups, isExactMatch, isPopularMatch, SearchFilters, SearchGroup, SortMode } from './searchFilters'
-import { groupSearchResults, SourceChoice, SourceChoiceStatus, useSearchStore } from './searchStore'
+import { groupSearchResults, searchStore, SourceChoice, SourceChoiceStatus, useSearchStore } from './searchStore'
 import { SourceSwitchModal } from './SourceSwitchModal'
 import { matchBestChapter } from './sourceSwitchRemap'
 import { SourceLoginModal } from './SourceLoginModal'
 import { NetworkImportModal } from './NetworkImportModal'
+import { SubscriptionPage } from './SubscriptionPage'
 import { ReplaceRulesModal } from './ReplaceRulesModal'
 import { ReplaceRulesPage } from './ReplaceRulesPage'
 import { BookmarksPage } from './BookmarksPage'
@@ -27,7 +28,7 @@ import { OfflineCacheModal } from './OfflineCacheModal'
 import { SourceHealthModal } from './SourceHealthModal'
 import { SourceGroupManagerModal } from './SourceGroupManagerModal'
 import { SearchBox } from './SearchBox'
-import { SearchScopeBar } from './SearchScopeBar'
+import { removeGroupSourceOverrides, SearchScopeBar } from './SearchScopeBar'
 import { SearchScopePickerModal } from './SearchScopePickerModal'
 import { ShelfKindTag } from './ShelfKindTag'
 import { isLocalBook } from './localBook'
@@ -545,23 +546,6 @@ function SourceEditor({
   )
 }
 
-function SubscriptionPanel({ onSourcesChange }: { onSourcesChange: () => void }) {
-  const { t } = useTranslation()
-  const [items, setItems] = useState<SourceSubscription[]>([]); const [url, setUrl] = useState(''); const [notice, setNotice] = useState(''); const [busy, setBusy] = useState<number | 'all' | null>(null)
-  const load = useCallback(async () => { try { setItems(await api.subscriptions()) } catch (error) { setNotice(error instanceof Error ? error.message : t('subscription.cannotLoad', '无法载入订阅')) } }, [t])
-  useEffect(() => { void load() }, [load])
-  const add = async (event: FormEvent) => { event.preventDefault(); if (!url.trim()) return; setBusy('all'); try { await api.saveSubscription(url.trim()); setUrl(''); setNotice(t('subscription.saved', '订阅已保存')); await load() } catch (error) { setNotice(error instanceof Error ? error.message : t('subscription.saveFailed', '保存订阅失败')) } finally { setBusy(null) } }
-  const update = async (id: number) => { setBusy(id); try { const result = await api.updateSubscription(id); setNotice(t('subscription.syncCompleteSummary', '同步完成：新增 {{imported}}，更新 {{updated}}，跳过 {{skipped}}', { imported: result.imported || 0, updated: result.updated || 0, skipped: result.skipped || 0 })); onSourcesChange(); await load() } catch (error) { setNotice(error instanceof Error ? error.message : t('subscription.syncFailed', '同步失败')) } finally { setBusy(null) } }
-  const updateAll = async () => { setBusy('all'); try { const result = await api.updateSubscriptions(); setNotice(t('subscription.syncAllSummary', '全部同步完成：成功 {{updated}}，失败 {{failed}}', { updated: result.updated, failed: result.failed })); onSourcesChange(); await load() } catch (error) { setNotice(error instanceof Error ? error.message : t('subscription.syncFailed', '同步失败')) } finally { setBusy(null) } }
-  const toggle = async (item: SourceSubscription) => { setBusy(item.id); try { await api.saveSubscription(item.url, !item.enabled); await load() } catch (error) { setNotice(error instanceof Error ? error.message : t('subscription.updateFailed', '更新失败')) } finally { setBusy(null) } }
-  const remove = async (item: SourceSubscription) => { if (!confirm(t('subscription.deleteConfirm', '删除订阅“{{url}}”？已导入的书源会保留。', { url: item.url }))) return; setBusy(item.id); try { await api.removeSubscription(item.id); await load() } catch (error) { setNotice(error instanceof Error ? error.message : t('subscription.deleteFailed', '删除失败')) } finally { setBusy(null) } }
-  return <section className="subscription-panel"><header><div><span className="section-kicker">{t('subscription.autoUpdateKicker', '自动更新')}</span><h2>{t('subscription.subscriptionTitle', '书源订阅')}</h2><p>{t('subscription.subscriptionDesc', '每 6 小时自动同步；同一地址的书源会统一覆盖更新。')}</p></div><button className={`subtle-button ${busy === 'all' ? 'is-loading' : ''}`} onClick={() => void updateAll()} disabled={busy !== null} aria-busy={busy === 'all'}>{busy === 'all' && <ButtonSpinner size={12} />}{busy === 'all' ? t('subscription.syncing', '同步中...') : t('subscription.syncAll', '全部同步')}</button></header><form onSubmit={add}><input value={url} onChange={event => setUrl(event.target.value)} placeholder="https://example.com/sources.json" inputMode="url" /><button className={`primary-button ${busy === 'all' ? 'is-loading' : ''}`} disabled={busy !== null}>{t('subscription.addSubscription', '添加订阅')}</button></form>{notice && <p className="sidebar-notice">{notice}</p>}<div className="subscription-list">{items.length === 0 ? <p>{t('subscription.emptySubscriptions', '还没有书源订阅。')}</p> : items.map(item => <article key={item.id}><div><strong>{item.url}</strong><small>{item.lastError ? t('subscription.lastErrorPrefix', '最近失败：{{error}}', { error: item.lastError }) : item.lastSuccessAt ? t('subscription.lastSyncPrefix', '最近同步：{{time}}，处理 {{count}} 个书源', { time: new Date(item.lastSuccessAt).toLocaleString(), count: item.lastImported }) : t('subscription.notSyncedYet', '尚未同步')}</small></div><div className="subscription-actions"><button className="subtle-button" onClick={() => void toggle(item)} disabled={busy !== null}>{item.enabled ? t('common.enabled', '已启用') : t('common.disabled', '已停用')}</button><button className={`subtle-button ${busy === item.id ? 'is-loading' : ''}`} onClick={() => void update(item.id)} disabled={busy !== null || !item.enabled} aria-busy={busy === item.id}>{busy === item.id && <ButtonSpinner size={12} />}{busy === item.id ? t('subscription.syncing', '同步中...') : t('subscription.syncNow', '立即同步')}</button><button className="shelf-remove" aria-label={t('subscription.deleteSubscription', '删除订阅')} onClick={() => void remove(item)} disabled={busy !== null}><Icon name="close" /></button></div></article>)}</div></section>
-}
-
-function SubscriptionPage({ onSourcesChange }: { onSourcesChange: () => void }) {
-  const { t } = useTranslation()
-  return <main className="subscription-page"><header className="page-title"><div><span className="section-kicker">{t('subscription.autoUpdateKicker', '自动更新')}</span><h1>{t('subscription.subscriptionTitle', '书源订阅')}</h1><p>{t('subscription.subscriptionPageDesc', '从远程 JSON 订阅书源，并定时保持最新。')}</p></div></header><SubscriptionPanel onSourcesChange={onSourcesChange} /></main>
-}
 
 function SourcesPage({ selected, onSelect, onSourcesChange }: { selected: SourceSummary | null; onSelect: (source: SourceSummary | null) => void; onSourcesChange: (sources: SourceSummary[]) => void }) {
   const { t } = useTranslation()
@@ -1119,16 +1103,26 @@ function LibraryPage({ sources, onOpen }: { sources: SourceSummary[]; onOpen: (b
             search.setSearchScope([], [])
           }}
           onToggleGroup={group => {
-            const next = search.selectedGroups.includes(group)
+            const selected = search.selectedGroups.includes(group)
+            const next = selected
               ? search.selectedGroups.filter(item => item !== group)
               : [...search.selectedGroups, group]
             search.setSelectedGroups(next)
+            if (!selected && search.selectedSourceIds.length > 0) {
+              // 重新选中整组时收回组内独立勾选；之后取消整组才能一并取消这些书源。
+              void api.sourcePicker('', [group]).then(result => {
+                const sourceIds = removeGroupSourceOverrides(
+                  searchStore.getSnapshot().selectedSourceIds,
+                  result.items.map(item => item.id),
+                )
+                searchStore.setSelectedSourceIds(sourceIds)
+              }).catch(() => undefined)
+            }
           }}
           onOpenPicker={() => setShowScopePicker(true)}
         />
         {showScopePicker && (
           <SearchScopePickerModal
-            groups={sourceGroups}
             selectedGroups={search.selectedGroups}
             selectedSourceIds={search.selectedSourceIds}
             onApply={(groups, sourceIds) => search.setSearchScope(groups, sourceIds)}

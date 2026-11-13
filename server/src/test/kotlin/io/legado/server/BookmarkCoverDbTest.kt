@@ -114,7 +114,32 @@ class BookmarkCoverDbTest {
         assertNull("还有书签引用这本书 ⇒ 不算孤儿，不能删封面", orphan)
         assertEquals(0, database.listBookshelf().size)
         assertTrue("书签不跟着移出书架一起删", database.hasBookmarksFor("保留封面的书", "作者丙"))
-        assertNotNull("封面登记/书架都快没了也要保住封面 key", database.getBookCover("保留封面的书", "作者丙") ?: "kept")
+        // 关键：key 必须**转存**进 book_cover —— 否则书签页看不到封面，且日后书签删光也回收不掉文件
+        // （审查实测复现：orphan=null && overviewCover=null && bookCoverRow=null）
+        assertEquals("shared-cover", database.getBookCover("保留封面的书", "作者丙")?.coverKey)
+        val overview = database.listBookmarkBooks().single()
+        assertEquals("shared-cover", overview.coverKey)
+        assertEquals(1, overview.count)
+    }
+
+    @Test
+    fun `同一本书挂多个书源时，书签条数不能被书架行放大`() {
+        addShelfBook("多源书", "作者庚", coverKey = null)
+        // 第二个书源上的同一本书（book_shelf 主键是 sourceId+bookUrl，所以这是合法的两行）
+        database.saveBookshelf(
+            BookshelfWriteRequest(
+                sourceId = "src-other",
+                bookUrl = "https://other.example.com/多源书",
+                name = "多源书",
+                author = "作者庚",
+                tocUrl = "https://other.example.com/多源书",
+            ),
+            cover = null,
+        )
+        addBookmark("多源书", "作者庚")
+
+        val overview = database.listBookmarkBooks().single()
+        assertEquals("JOIN 会把书签行按书架行数放大，必须 count(distinct b.id)", 1, overview.count)
     }
 
     @Test

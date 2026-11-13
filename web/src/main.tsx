@@ -14,6 +14,7 @@ import { AppHeader } from './AppHeader'
 import { cleanAuthor, cleanTitle, defaultSearchFilters, filterSearchGroups, isExactMatch, isPopularMatch, SearchFilters, SearchGroup, SortMode } from './searchFilters'
 import { groupSearchResults, SourceChoice, SourceChoiceStatus, useSearchStore } from './searchStore'
 import { SourceSwitchModal } from './SourceSwitchModal'
+import { matchBestChapter } from './sourceSwitchRemap'
 import { SourceLoginModal } from './SourceLoginModal'
 import { NetworkImportModal } from './NetworkImportModal'
 import { ReplaceRulesModal } from './ReplaceRulesModal'
@@ -66,8 +67,8 @@ function resolveShelfCover(item: { coverKey?: string; coverUrl?: string }): stri
 // 与服务端 `BookKind.isLocalRef` 同源，角标、书籍管理弹窗、阅读器目录抽屉三处共用同一判据。
 
 type Page = 'sources' | 'subscriptions' | 'library' | 'shelf' | 'reader' | 'rules' | 'webdav' | 'explore' | 'bookmarks'
-/** 从「书签」页跳进阅读器时要落到的位置（章序号 + 章内字符偏移）。 */
-type BookmarkJumpTarget = { chapterIndex: number; chapterPos: number }
+/** 从「书签」页跳进阅读器时要落到的位置（章序号 + 章内字符偏移；章名用于换源后重新定位）。 */
+type BookmarkJumpTarget = { chapterIndex: number; chapterPos: number; chapterName?: string | null }
 const readerStorageKey = 'legado-open-book-v1'
 const pageFromHash = (): Page => location.hash === '#sources' ? 'sources' : location.hash === '#subscriptions' ? 'subscriptions' : location.hash === '#rules' ? 'rules' : location.hash === '#webdav' ? 'webdav' : location.hash === '#shelf' ? 'shelf' : location.hash === '#reader' ? 'reader' : location.hash === '#explore' ? 'explore' : location.hash === '#bookmarks' ? 'bookmarks' : 'library'
 
@@ -3346,7 +3347,9 @@ function App() {
     const value = bookmark ? { book, index, bookmark } : { book, index }
     setReader(value)
     setReaderReturnPage(origin)
-    sessionStorage.setItem(readerStorageKey, JSON.stringify(value))
+    // 书签落点**不持久化**：否则在阅读器里刷新会又跳回书签位置，而不是最新阅读进度（审查指出）。
+    // 刷新时按 sessionStorage 里的 book+index 正常恢复。
+    sessionStorage.setItem(readerStorageKey, JSON.stringify({ book, index }))
     location.hash = '#reader'
     setPage('reader')
   }
@@ -3392,8 +3395,20 @@ function App() {
       }
 
       const resumeIdx = mergedProgress?.chapterIndex ?? item.chapterIndex ?? 0
-      // 从「书签」页点进来时，直接开到那条书签所在的章节（位置由 ReaderScreen 按 chapterPos 换算）
-      const targetIdx = bookmark ? Math.min(bookmark.chapterIndex, Math.max(0, chapters.length - 1)) : resumeIdx
+      /*
+       * 从「书签」页点进来时，直接开到那条书签所在的章节。
+       *
+       * 章定位必须与阅读器内部跳转**同一套规则**（`matchBestChapter`：章名优先、下标兜底）：
+       * 书签存的是旧书源的 chapterIndex，换源后目录会变，只按下标会落到别的章（审查指出）。
+       * 落点偏移由 ReaderScreen 按 `chapter.index` 匹配后换算。
+       */
+      const jump = bookmark
+        ? (() => {
+            const matched = matchBestChapter(chapters, bookmark.chapterName ?? undefined, bookmark.chapterIndex).index
+            const index = Math.max(0, Math.min(matched, chapters.length - 1))
+            return { index, bookmark: { chapterIndex: chapters[index]?.index ?? index, chapterPos: bookmark.chapterPos } }
+          })()
+        : null
       openReader({
         details: safeDetails,
         bookUrl: item.bookUrl,
@@ -3407,7 +3422,7 @@ function App() {
           scrollPosition: item.scrollPosition ?? 0,
           updatedAt: item.lastReadAt,
         } : undefined),
-      }, targetIdx, 'shelf', bookmark)
+      }, jump?.index ?? resumeIdx, 'shelf', jump?.bookmark)
     } catch {
       // Offline / network fallback: allow entering reader so user can read local cached chapters
       const resumeIdx = item.chapterIndex ?? 0
@@ -3427,7 +3442,10 @@ function App() {
           updatedAt: item.lastReadAt,
         },
         bookKind: item.bookKind,
-      }, 0, 'shelf', bookmark)
+      }, resumeIdx, 'shelf')
+      // 兜底目录只有当前这一章（index = resumeIdx），书签落点无处可落 ⇒ 不传 bookmark，
+      // 但必须把 resumeIdx 传回去：ReaderScreen 靠 `chapter.index === startIndex` 恢复进度，
+      // 传 0 会让 resumeIdx>0 的普通开书丢掉滚动位置（审查指出的回归）。
       toast.warning(t('reader.slowSourceOfflineFallback', '书源网络较慢，已为您进入离线阅读模式'))
     }
   }

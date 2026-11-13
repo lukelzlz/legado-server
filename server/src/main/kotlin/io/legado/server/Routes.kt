@@ -49,6 +49,12 @@ private const val MAX_LOCAL_BOOK_BYTES = 20L * 1024 * 1024
 /** 手动触发封面自愈时的单轮上限硬顶（防止一次管理请求把整架书都丢给上游）。 */
 private const val MAX_SELF_HEAL_LIMIT = 500
 
+/** 一次「请求封面」最多处理多少本（超出的下次再点，避免单请求跑几分钟）。 */
+private const val MAX_COVER_REFRESH_BATCH = 120
+
+/** 「请求封面」的并发上限（协程限流，不是阻塞信号量）。 */
+private const val COVER_REFRESH_CONCURRENCY = 4
+
 fun Route.apiRoutes(
     database: Database,
     auth: AuthService,
@@ -2677,15 +2683,23 @@ fun Route.apiRoutes(
             var failed = 0
             var skipped = 0
             var marked = 0
-            for (book in targets) {
-                val outcome = withContext(Dispatchers.IO) {
-                    BookmarkCoverService.BATCH_SEMAPHORE.acquire()
-                    try {
-                        bookmarkCovers.resolve(book.bookName, book.bookAuthor, force = request.force)
-                    } finally {
-                        BookmarkCoverService.BATCH_SEMAPHORE.release()
+            /*
+             * **真并发**（审查指出：原来的 for + java.util.concurrent.Semaphore 只是串行阻塞 IO 线程，
+             * 一次请求里把 N 本书挨个跑完，书多时必然超时）。这里用协程 + kotlinx Semaphore 限流。
+             *
+             * 单次请求**有上限**（[MAX_COVER_REFRESH_BATCH]）：超出的书这次先不抓，用户再点一次即可，
+             * 避免一个 HTTP 请求拖上几分钟。
+             */
+            val limited = targets.take(MAX_COVER_REFRESH_BATCH)
+            val outcomes = coroutineScope {
+                val gate = kotlinx.coroutines.sync.Semaphore(COVER_REFRESH_CONCURRENCY)
+                limited.map { book ->
+                    async(Dispatchers.IO) {
+                        gate.withPermit { bookmarkCovers.resolve(book.bookName, book.bookAuthor, force = request.force) }
                     }
-                }
+                }.awaitAll()
+            }
+            outcomes.forEach { outcome ->
                 when (outcome) {
                     is BookmarkCoverService.Outcome.Fetched -> fetched++
                     is BookmarkCoverService.Outcome.Failed -> {

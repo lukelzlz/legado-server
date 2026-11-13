@@ -133,3 +133,26 @@ CI 由红转绿（8 项 checks 全 pass）。
    `shelf-cover-timing` 假失败 ⇒ 参数类型抽成 `type BookmarkJumpTarget`。
 3. **`.NET` API 在 pwsh 里按进程 CWD 解析相对路径**（不认 `cd`）⇒ 文件读写一律 `Resolve-Path`/绝对路径。
 4. **移除封面不能只清 `book_cover`**：书在书架时封面权威在 `book_shelf.cover_key`，必须一起清（`clearCoverOnShelfRows`）。
+
+## 七、审查（devin-ai-integration）指出的 7 个问题与修法
+
+| # | 问题 | 修法 |
+| --- | --- | --- |
+| 1 | **只在书签里的书永远补不到封面**：`CoverBackfiller` → `materializeCover` → `updateBookshelfCover` 要求书在书架，非书架书恒 null | 非书架路径改为 `coverCache.cache(url, 书源 header)` + `recordCoverCache` + `saveBookCover`，不再经过 backfiller；新增 `BookmarkCoverFetchTest`（用 `searchBooks` / `Cache.fetcher` 两个接缝不触网验证） |
+| 2 | **移出书架后书签页封面消失、文件变孤儿**：key 只记在即将删除的 `book_shelf` 行上 | `removeBookshelf` 在同一事务里把 key **转存进 `book_cover`**（已有登记不覆盖），再删书架行 |
+| 3 | **`listBookmarkBooks` 条数被 JOIN 放大**（同一本挂多个书源） | `count(*)` → `count(distinct b.id)`，并加用例（2 行书架 + 1 条书签 ⇒ count 必须为 1） |
+| 4 | 测试断言恒真（`?: "kept"`） | 改成断言 `getBookCover().coverKey` 与概览里的 `coverKey` 都等于 `shared-cover` |
+| 5 | 换/删封面时旧 key 不回收，文件永久残留 | `attach` / `attachFromUrl` 先收集「登记表 key + 书架行所有 key」，改完逐个判 `isCoverKeyReferenced` 再删；补用例（换封面后旧文件消失、新文件还在） |
+| 6 | `/covers/refresh` 串行 + `java.util.concurrent.Semaphore` 阻塞 IO 线程 | 改成 `coroutineScope { async(Dispatchers.IO) { gate.withPermit { … } } }`（`kotlinx.coroutines.sync.Semaphore(4)`），单请求上限 `MAX_COVER_REFRESH_BATCH = 120` |
+| 7 | 离线兜底 `startIndex` 改成 0 ⇒ `resumeIdx>0` 的普通开书丢滚动位置 | 兜底路径恢复传 `resumeIdx`，且不传 bookmark（兜底目录只有一章） |
+
+审查摘要里另外三条也一并修了：
+
+- **书签落点写进 sessionStorage** ⇒ 阅读器里刷新会又跳回书签位置：现在**只持久化 `{book, index}`**，落点只活在内存；
+- **书签页跳转用原始 `chapterIndex`，与阅读器内 `matchBestChapter` 口径不一致** ⇒ 换源后可能落到别的章：
+  跳转时带上 `chapterName`，`openShelfItem` 统一用 `matchBestChapter`（章名优先、下标兜底）解析目标章；
+- **「导入时请求」对只在书签里的书不生效** ⇒ `BackupImporter` 导入后启动后台 `startBookmarkCoverBackfill()`
+  （只处理「不在书架且还没封面」的书，上限 30 本，失败只记 miss，不影响导入）。
+
+验证：`BookmarkCoverFetchTest` 3/3、`BookmarkCoverDbTest` 6/6、前端 422/422、`npm run check` 0 error；
+真浏览器 `e2e-bookmark-cover-ui` 6/6、`e2e-bookmark-browser` ALL PASSED；真实服务封面联调 **9/9**（含跑完自动恢复原封面）。

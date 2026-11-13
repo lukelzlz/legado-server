@@ -38,6 +38,13 @@ class BookmarkCoverService(
     private val database: Database,
     private val coverCache: CoverCache,
     private val runner: RuleRunner? = null,
+    /**
+     * 搜源接缝（测试用）：给定关键字返回候选书目。
+     *
+     * 缺省走「扫已启用书源 + `RuleRunner.search`」；单测里塞一个假实现即可验证
+     * 「**只在书签里的书**也能补到封面」这条路径（审查指出旧实现根本走不通）。
+     */
+    private val searchBooks: ((String) -> List<SearchResult>)? = null,
 ) {
     sealed interface Outcome {
         /** 抓到了，[coverKey] 已落盘并登记。 */
@@ -72,34 +79,74 @@ class BookmarkCoverService(
             return@withContext recordMiss(name, bookAuthor, existing)
         }
 
-        // ② 只在书签里有 ⇒ 书名 + 作者去书源搜一次
+        // ② 只在书签里有 ⇒ 书名 + 作者去书源搜一次，拿到候选书目后**直接下载**封面。
+        //
+        // ⚠️ 这条路径不能走 [CoverBackfiller]：它最终调 `materializeCover`，而后者要求
+        // `updateBookshelfCover` 成功（书必须在书架上）⇒ 非书架书恒返回 null（审查实测复现：
+        // 每次都记一次 miss、满 5 次被标成无封面，而下载下来的图还留在磁盘上没人引用）。
+        // 这里改成 coverCache 直下 + recordCoverCache + saveBookCover。
         val found = searchBookByName(name, bookAuthor)
         if (found != null) {
-            val result = backfiller.backfill(found, preferredUrl = found.coverUrl)
-            result.cacheKey?.let { key ->
-                database.saveBookCover(name, bookAuthor, key)
-                return@withContext Outcome.Fetched(key)
+            val detailsCover = if (found.coverUrl.isNullOrBlank() && runner != null) {
+                runCatching { fetchBookDetails(database, runner, found.sourceId, found.bookUrl) }.getOrNull()?.coverUrl
+            } else null
+            val url = detailsCover?.trim()?.takeIf { it.isNotEmpty() } ?: found.coverUrl?.trim()
+            if (!url.isNullOrEmpty()) {
+                val key = downloadCover(url, found.sourceId)
+                if (key != null) {
+                    database.saveBookCover(name, bookAuthor, key)
+                    return@withContext Outcome.Fetched(key)
+                }
             }
         }
         recordMiss(name, bookAuthor, existing)
     }
 
-    /** 手动上传/指定封面：写登记表 + 同步到该书所有书架行（书架上也要显示）。 */
+    /** 服务端代下一张封面并落盘（带该书源请求头），返回缓存 key。失败静默 null。 */
+    private fun downloadCover(url: String, sourceId: String?): String? = runCatching {
+        val cached = coverCache.cache(url, headers = headersOf(sourceId))
+        database.recordCoverCache(cached.key, cached.contentType)
+        cached.key
+    }.getOrNull()
+
+    /** 该书源自带的请求头（`header` + 已落库 Cookie）；拿不到就空表。 */
+    private fun headersOf(sourceId: String?): Map<String, String> {
+        if (sourceId.isNullOrBlank()) return emptyMap()
+        val ruleRunner = runner ?: return emptyMap()
+        return runCatching {
+            database.getSource(sourceId)?.let { ruleRunner.mediaHeaders(it.json, sourceId) }
+        }.getOrNull().orEmpty()
+    }
+
+    /**
+     * 手动上传/指定封面：写登记表 + 同步到该书所有书架行（书架上也要显示）。
+     *
+     * 换/删封面时**先把旧 key 记下来**，改完之后再逐个判定：没人引用就删文件
+     * （审查指出：只覆盖不回收会让旧图永远留在磁盘上）。
+     */
     fun attach(bookName: String, bookAuthor: String?, coverKey: String?): BookCoverState {
         val name = bookName.trim()
+        val oldKeys = (listOfNotNull(database.getBookCover(name, bookAuthor)?.coverKey) + database.shelfCoverKeys(name, bookAuthor))
+            .distinct()
         if (coverKey.isNullOrBlank()) {
-            // 「移除封面」：登记表与书架行都要清（书在架上时封面权威在 book_shelf），
-            // 只有确认再没有任何书/登记引用这张图时才算孤儿文件、予以删除。
-            val row = database.getBookCover(name, bookAuthor)
+            // 「移除封面」：登记表与书架行都要清（书在架上时封面权威在 book_shelf）
             database.clearBookCover(name, bookAuthor)
             database.clearCoverOnShelfRows(name, bookAuthor)
-            val key = row?.coverKey
-            if (key != null && !database.isCoverKeyReferenced(key)) runCatching { coverCache.delete(key) }
+            reclaimCoverKeys(oldKeys)
             return stateOf(name, bookAuthor)
         }
         database.saveBookCover(name, bookAuthor, coverKey)
         database.attachCoverToShelfRows(name, bookAuthor, coverKey)
+        reclaimCoverKeys(oldKeys, keep = coverKey)
         return stateOf(name, bookAuthor)
+    }
+
+    /** 回收一批旧封面 key：跳过 [keep]，且只在**再没有任何书/登记引用**时才删文件。 */
+    private fun reclaimCoverKeys(keys: Collection<String>, keep: String? = null) {
+        keys.asSequence()
+            .filter { it.isNotBlank() && it != keep }
+            .distinct()
+            .forEach { key -> if (!database.isCoverKeyReferenced(key)) runCatching { coverCache.delete(key) } }
     }
 
     /**
@@ -111,14 +158,14 @@ class BookmarkCoverService(
     suspend fun attachFromUrl(bookName: String, bookAuthor: String?, coverUrl: String, sourceId: String? = null): BookCoverState =
         withContext(Dispatchers.IO) {
             val name = bookName.trim()
-            val headers = sourceId?.let { id ->
-                runner?.let { rule -> runCatching { database.getSource(id)?.let { rule.mediaHeaders(it.json, id) } }.getOrNull() }
-            }.orEmpty()
-            val cached = runCatching { coverCache.cache(coverUrl, headers = headers) }.getOrNull()
+            val oldKeys = (listOfNotNull(database.getBookCover(name, bookAuthor)?.coverKey) + database.shelfCoverKeys(name, bookAuthor))
+                .distinct()
+            val cached = runCatching { coverCache.cache(coverUrl, headers = headersOf(sourceId)) }.getOrNull()
             if (cached == null) return@withContext stateOf(name, bookAuthor)
             database.recordCoverCache(cached.key, cached.contentType)
             database.saveBookCover(name, bookAuthor, cached.key)
             database.attachCoverToShelfRows(name, bookAuthor, cached.key)
+            reclaimCoverKeys(oldKeys, keep = cached.key)
             stateOf(name, bookAuthor)
         }
 
@@ -203,27 +250,32 @@ class BookmarkCoverService(
 
     /** 书名 + 作者去已启用书源搜一次（限量），返回第一条书名匹配的临时书目。 */
     private fun searchBookByName(bookName: String, bookAuthor: String?): BookshelfItem? {
-        val ruleRunner = runner ?: return null
         val keyword = listOfNotNull(bookName, bookAuthor?.takeIf { it.isNotBlank() }).joinToString(" ")
-        val sources = runCatching { database.listSearchSourceRecords(null, null) }.getOrNull().orEmpty()
-        var tried = 0
-        for (source in sources) {
-            if (tried >= MAX_SEARCH_SOURCES) break
-            tried++
-            val hits = runCatching { ruleRunner.search(source.json, keyword) }.getOrNull().orEmpty()
-            val match = hits.firstOrNull { sameBookName(it.name, bookName) } ?: continue
-            return BookshelfItem(
-                sourceId = match.sourceId,
-                bookUrl = match.bookUrl,
-                name = match.name,
-                author = match.author ?: bookAuthor,
-                tocUrl = match.bookUrl,
-                coverUrl = match.coverUrl,
-                lastReadAt = 0L,
-                bookKind = match.bookKind ?: "novel",
-            )
+        val hits: List<SearchResult> = searchBooks?.let { search ->
+            runCatching { search(keyword) }.getOrNull().orEmpty()
+        } ?: run {
+            val ruleRunner = runner ?: return null
+            val sources = runCatching { database.listSearchSourceRecords(null, null) }.getOrNull().orEmpty()
+            var tried = 0
+            for (source in sources) {
+                if (tried >= MAX_SEARCH_SOURCES) break
+                tried++
+                val found = runCatching { ruleRunner.search(source.json, keyword) }.getOrNull().orEmpty()
+                if (found.any { sameBookName(it.name, bookName) }) return@run found
+            }
+            emptyList()
         }
-        return null
+        val match = hits.firstOrNull { sameBookName(it.name, bookName) } ?: return null
+        return BookshelfItem(
+            sourceId = match.sourceId,
+            bookUrl = match.bookUrl,
+            name = match.name,
+            author = match.author ?: bookAuthor,
+            tocUrl = match.bookUrl,
+            coverUrl = match.coverUrl,
+            lastReadAt = 0L,
+            bookKind = match.bookKind ?: "novel",
+        )
     }
 
     private fun sameBookName(candidate: String, wanted: String): Boolean =

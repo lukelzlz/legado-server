@@ -2039,17 +2039,40 @@ class Database(private val path: String) : Closeable, AutoCloseable {
              *
              * ⚠️ 书签**不跟着移出书架一起删**（removeBookshelf 不碰 bookmark 表）：用户要求
              * 「在书架删除书时不删除书签」——书签是独立的阅读记录，靠「书签」页继续管理。
+             *
+             * ⚠️ ②成立（还有书签）时，必须先把封面 key **转存进 book_cover** 再删书架行：
+             * 否则这本书唯一的封面引用就随书架行一起消失了 —— 书签页会看不到封面，
+             * 而 purgeIfUnused 又只认 book_cover，导致文件永远删不掉（审查复现过）。
              */
+            val bookName = name
+            val normalizedAuthor = author?.trim().orEmpty()
+            val hasMarks = bookName != null && db.prepareStatement(
+                "select 1 from bookmark where book_name=? and coalesce(book_author,'')=? limit 1"
+            ).use { it.setString(1, bookName); it.setString(2, normalizedAuthor); it.executeQuery().next() }
+            if (key != null && hasMarks && bookName != null) {
+                // 已有登记（比如书签页上传过封面）就不覆盖，保留用户显式设置的优先
+                db.prepareStatement(
+                    """
+                    insert into book_cover(book_name,book_author,cover_key,missing_attempts,last_attempt_at,updated_at)
+                    values(?,?,?,0,?,?)
+                    on conflict(book_name,book_author) do update set
+                      cover_key = coalesce(book_cover.cover_key, excluded.cover_key),
+                      updated_at = excluded.updated_at
+                    """.trimIndent()
+                ).use { stmt ->
+                    val now = System.currentTimeMillis()
+                    stmt.setString(1, bookName)
+                    stmt.setString(2, normalizedAuthor)
+                    stmt.setString(3, key)
+                    stmt.setLong(4, now)
+                    stmt.setLong(5, now)
+                    stmt.executeUpdate()
+                }
+            }
             val orphan = key?.takeIf { value ->
                 val usedByShelf = db.prepareStatement("select 1 from book_shelf where cover_key=?").use { it.setString(1, value); it.executeQuery().next() }
                 if (usedByShelf) return@takeIf false
-                val bookName = name
-                if (bookName != null) {
-                    val hasMarks = db.prepareStatement(
-                        "select 1 from bookmark where book_name=? and coalesce(book_author,'')=? limit 1"
-                    ).use { it.setString(1, bookName); it.setString(2, author?.trim().orEmpty()); it.executeQuery().next() }
-                    if (hasMarks) return@takeIf false
-                }
+                if (hasMarks) return@takeIf false
                 val usedByRegister = db.prepareStatement("select 1 from book_cover where cover_key=?").use { it.setString(1, value); it.executeQuery().next() }
                 !usedByRegister
             }
@@ -3250,7 +3273,7 @@ class Database(private val path: String) : Closeable, AutoCloseable {
     fun listBookmarkBooks(): List<BookmarkBook> = connect { db ->
         db.prepareStatement(
             """
-            select b.book_name, b.book_author, count(*) as cnt, max(b.created_at) as last_at,
+            select b.book_name, b.book_author, count(distinct b.id) as cnt, max(b.created_at) as last_at,
                    max(s.cover_key) as cover_key, max(s.cover_url) as cover_url,
                    max(c.cover_key) as local_cover_key,
                    max(coalesce(c.missing_attempts, 0)) as cover_attempts
@@ -3507,6 +3530,19 @@ class Database(private val path: String) : Closeable, AutoCloseable {
             stmt.setString(2, bookName)
             stmt.setString(3, normalizeBookAuthor(bookAuthor))
             stmt.executeUpdate()
+        }
+    }
+
+    /** 这本书在书架上所有行用到的封面 key（去重，忽略空值）——换/删封面时用来回收旧图。 */
+    fun shelfCoverKeys(bookName: String, bookAuthor: String?): List<String> = connect { db ->
+        db.prepareStatement(
+            "select distinct cover_key from book_shelf where name=? and coalesce(author,'')=? and cover_key is not null"
+        ).use { stmt ->
+            stmt.setString(1, bookName)
+            stmt.setString(2, normalizeBookAuthor(bookAuthor))
+            stmt.executeQuery().use { rs ->
+                buildList { while (rs.next()) rs.getString(1)?.takeIf { it.isNotBlank() }?.let { add(it) } }
+            }
         }
     }
 

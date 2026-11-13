@@ -38,6 +38,8 @@ export type BookmarksPageProps = {
     bookAuthor?: string | null
     chapterIndex: number
     chapterPos: number
+    /** 章名（换源后目录会变，阅读器按「章名优先」重新定位）。 */
+    chapterName?: string | null
   }) => void
 }
 
@@ -345,6 +347,7 @@ export function BookmarksPage({ onOpenBookmark }: BookmarksPageProps = {}) {
       bookAuthor: item.bookAuthor,
       chapterIndex: item.chapterIndex,
       chapterPos: item.chapterPos,
+      chapterName: item.chapterName,
     })
   }
 

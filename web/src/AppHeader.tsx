@@ -9,7 +9,7 @@ import type { ReaderSettings } from './readerSettings'
 import { SUPPORTED_LOCALES, type SupportedLocale, changeAppLanguage, getCurrentLocale } from './i18n'
 import { api } from './api'
 
-export type AppPage = 'sources' | 'subscriptions' | 'library' | 'shelf' | 'reader' | 'rules' | 'webdav' | 'explore'
+export type AppPage = 'sources' | 'subscriptions' | 'library' | 'shelf' | 'reader' | 'rules' | 'webdav' | 'explore' | 'bookmarks'
 
 export interface AppHeaderProps {
   page: AppPage
@@ -292,6 +292,13 @@ export function AppHeader({
           onClick={() => onNavigate('shelf')}
         >
           {t('header.shelf')}
+        </button>
+        <button
+          type="button"
+          className={page === 'bookmarks' ? 'active' : ''}
+          onClick={() => onNavigate('bookmarks')}
+        >
+          {t('header.bookmarks', '书签')}
         </button>
         <button
           type="button"

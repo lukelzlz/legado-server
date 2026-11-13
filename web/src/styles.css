@@ -1136,6 +1136,142 @@ mark.search-highlight { background: var(--accent-soft); color: var(--accent); fo
 .reader-icon-button:hover { background: var(--surface-muted); }
 .reader-icon-button svg { width: 18px; }
 
+/* ------------------------------------------------------------------
+   小说阅读器书签（顶栏「书签」按钮打开列表；底部悬浮栏「添加书签」）
+   ------------------------------------------------------------------ */
+.bookmark-dialog {
+  width: min(520px, 100%);
+  max-height: min(82vh, 700px);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.25);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  animation: scaleUp .2s cubic-bezier(0.25, 1, 0.5, 1);
+}
+.bookmark-dialog-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px 18px 12px;
+  border-bottom: 1px solid var(--line);
+}
+.bookmark-dialog-title { min-width: 0; }
+.bookmark-dialog-title h2 {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 700;
+  font-family: Georgia, "Noto Serif SC", serif;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.bookmark-dialog-title small { display: block; margin-top: 2px; color: var(--muted); font-size: 12px; }
+.bookmark-dialog-kicker {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--accent);
+}
+.bookmark-dialog-kicker svg { width: 14px; height: 14px; }
+.bookmark-dialog-actions { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
+.bookmark-add-button { display: inline-flex; align-items: center; gap: 6px; }
+.bookmark-add-button svg { width: 14px; height: 14px; }
+.bookmark-dialog .close-btn { width: 32px; height: 32px; padding: 0; display: grid; place-items: center; color: var(--muted); }
+.bookmark-list { flex: 1 1 auto; overflow-y: auto; padding: 10px 12px 14px; display: grid; gap: 8px; align-content: start; }
+.bookmark-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface-muted);
+}
+.bookmark-item.current { border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); background: var(--accent-soft); }
+.bookmark-item.editing { grid-template-columns: minmax(0, 1fr); }
+.bookmark-jump {
+  display: grid;
+  gap: 3px;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  text-align: left;
+  cursor: pointer;
+}
+.bookmark-jump:hover .bookmark-chapter { color: var(--accent); }
+.bookmark-chapter {
+  font-size: 13px;
+  font-weight: 650;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  transition: color .15s ease;
+}
+.bookmark-text {
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--muted);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.bookmark-note {
+  font-size: 12px;
+  font-style: normal;
+  color: var(--accent-ink);
+  border-left: 2px solid color-mix(in srgb, var(--accent) 40%, transparent);
+  padding-left: 8px;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.bookmark-time { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.bookmark-item-actions { display: flex; align-items: center; gap: 2px; }
+.bookmark-item-actions .subtle-button { width: 30px; height: 30px; padding: 0; display: grid; place-items: center; }
+.bookmark-item-actions svg { width: 15px; height: 15px; }
+.bookmark-item-actions .shelf-remove { color: var(--danger); }
+.bookmark-confirm {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  padding-top: 8px;
+  margin-top: 6px;
+  border-top: 1px dashed var(--line);
+  font-size: 12px;
+  color: var(--muted);
+}
+.bookmark-confirm span { margin-right: auto; }
+.bookmark-edit { display: grid; gap: 8px; }
+.bookmark-field { display: grid; gap: 4px; font-size: 12px; color: var(--muted); }
+.bookmark-field textarea {
+  width: 100%;
+  box-sizing: border-box;
+  resize: vertical;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.5;
+}
+.bookmark-edit-actions { display: flex; justify-content: flex-end; gap: 8px; }
+
 /* Reader Floating Bottom Footer & Chapter Control Bar */
 .reader-floating-footer {
   position: fixed;
@@ -1745,7 +1881,7 @@ mark.search-highlight { background: var(--accent-soft); color: var(--accent); fo
 
   .mobile-reader-nav {
     display: grid;
-    grid-template-columns: repeat(4, 1fr);
+    grid-template-columns: repeat(5, 1fr);
     height: calc(52px + var(--safe-bottom));
     padding-bottom: var(--safe-bottom);
     padding-left: max(0px, var(--safe-left));
@@ -6124,6 +6260,164 @@ mark.search-highlight { background: var(--accent-soft); color: var(--accent); fo
 .illustration-lightbox-close:hover { background: rgba(255, 255, 255, .26); }
 
 /* ---------------------------------------------------------------------------
+   「书签」一级页面（左栏书列表 / 右栏该书书签）
+
+   布局、卡片、批量栏**全部复用替换规则页**的 class（`rules-page-container` /
+   `rules-sidebar` / `rules-list` / `rule-list-card` / `source-batch-bar`）——
+   两页的批量管理手感因此完全一致，这里只补书签特有的部分：
+   封面缩略图、条数徽标、书签行、空态，以及窄屏下「右栏不能被隐藏」。
+   --------------------------------------------------------------------------- */
+.bookmark-page-hint { padding: 24px 16px; text-align: center; color: var(--muted); font-size: 13px; }
+.bookmark-empty-state { display: grid; place-items: center; gap: 10px; padding: 80px 20px; color: var(--muted); }
+.bookmark-empty-state svg { width: 32px; height: 32px; opacity: .6; }
+.bookmark-empty-state p { margin: 0; font-size: 13px; }
+
+.bookmark-book-row { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.bookmark-book-cover {
+  flex-shrink: 0;
+  width: 32px;
+  aspect-ratio: 3 / 4;
+  border-radius: 4px;
+  overflow: hidden;
+  background: var(--accent-soft);
+  display: grid;
+  place-items: center;
+  color: var(--accent);
+  font-size: 14px;
+  font-family: Georgia, "Noto Serif SC", serif;
+}
+.bookmark-book-cover.large { width: 56px; font-size: 20px; }
+.bookmark-book-cover-img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.bookmark-book-cover-fallback { font-size: inherit; color: inherit; }
+.bookmark-book-meta { display: grid; gap: 2px; min-width: 0; flex: 1 1 auto; }
+.bookmark-book-meta small { color: var(--muted); font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bookmark-book-count {
+  flex-shrink: 0;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+.bookmark-book-card.checked { border-color: var(--accent); background: var(--accent-soft); }
+
+.bookmark-detail-head { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.bookmark-detail-head h2 {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 700;
+  font-family: Georgia, "Noto Serif SC", serif;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.bookmark-detail-head small { color: var(--muted); font-size: 12px; }
+.bookmark-detail-head > div { min-width: 0; }
+
+.bookmark-page-marks {
+  display: grid;
+  gap: 8px;
+  padding: 12px 16px 24px;
+  max-height: calc(100dvh - 330px);
+  overflow-y: auto;
+  align-content: start;
+}
+.bookmark-page-marks .bookmark-item.checked { border-color: var(--accent); background: var(--accent-soft); }
+.bookmark-mark-main { display: flex; align-items: flex-start; gap: 10px; min-width: 0; }
+.bookmark-mark-main .batch-checkbox-wrap { flex-shrink: 0; margin-top: 2px; }
+.bookmark-jump-static { display: grid; gap: 3px; min-width: 0; }
+
+/* 窄屏：规则页那套是「卡片内手风琴」，会把右栏整个隐藏；书签页是「左书右签」，
+   必须让右栏排到列表下方继续可见，否则手机上根本删不了单条书签。 */
+@media (max-width: 768px) {
+  .rules-page-container.bookmarks-page { grid-template-columns: 1fr; }
+  .rules-page-container.bookmarks-page .rules-content-area { display: block; }
+  .rules-page-container.bookmarks-page .rules-sidebar { border-right: 0; }
+  .bookmark-page-marks { max-height: none; }
+}
+
+/* ---------------------------------------------------------------------------
+   书签页封面：缩略图（点击 = 设置封面）、「无封面」标记、设置封面弹层
+   --------------------------------------------------------------------------- */
+/* 左栏顶部只有两个按钮（请求封面 / 批量管理），而书源页那套是 3 等分 ⇒ 两个按钮只占 2/3、
+   右边留一条空档。书签页显式改成 2 等分，让两个按钮**均分并占满**左栏宽度（用户要求）。 */
+.bookmarks-page .source-sidebar-top-actions {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.bookmarks-page .source-sidebar-top-actions .subtle-button {
+  width: 100%;
+  min-width: 0;
+}
+.bookmarks-page .source-sidebar-top-actions .subtle-button span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.bookmark-book-cover {
+  flex-shrink: 0;
+  width: 34px;
+  height: 46px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  overflow: hidden;
+  background: var(--surface-2, var(--surface));
+  cursor: pointer;
+  display: block;
+}
+.bookmark-book-cover.large { width: 56px; height: 76px; border-radius: 7px; }
+.bookmark-book-cover:hover { border-color: var(--accent); }
+.bookmark-book-cover .bookmark-book-cover-img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.bookmark-book-cover .bookmark-book-cover-fallback { font-size: 15px; }
+.bookmark-book-cover.large .bookmark-book-cover-fallback { font-size: 22px; }
+.bookmark-book-cover-missing {
+  flex-shrink: 0;
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  border: 1px dashed var(--line);
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.bookmark-cover-body { display: grid; gap: 18px; padding: 16px 18px 20px; }
+.bookmark-cover-current { display: flex; gap: 16px; align-items: flex-start; }
+.bookmark-cover-actions { display: flex; flex-wrap: wrap; gap: 8px; align-content: flex-start; }
+.bookmark-cover-candidates { display: grid; gap: 8px; }
+.bookmark-field-label { font-size: 12px; color: var(--muted); }
+.bookmark-cover-candidate-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(84px, 1fr));
+  gap: 10px;
+}
+.bookmark-cover-candidate {
+  display: grid;
+  gap: 4px;
+  padding: 4px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  cursor: pointer;
+  overflow: hidden;
+}
+.bookmark-cover-candidate:hover { border-color: var(--accent); }
+.bookmark-cover-candidate img { width: 100%; aspect-ratio: 3 / 4; object-fit: cover; border-radius: 5px; display: block; }
+.bookmark-cover-candidate small { font-size: 11px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 书签整行可点（跳到书签位置）：把静态布局的 div 语义换成 button 后不能丢掉排版 */
+.bookmark-jump-static.as-button {
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: 0;
+  padding: 0;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+.bookmark-jump-static.as-button:hover strong.bookmark-chapter { color: var(--accent); }
+
+
+/* ---------------------------------------------------------------------------
    漫画阅读器（方案 E）
    纵向连续阅读；宽高由 manifest 给出 ⇒ 用 aspect-ratio 占位，首屏不跳动。
    ⚠️ 本块**只用主题变量**（--surface/--ink/--line/--muted/--accent/--canvas/--safe-*），
@@ -6439,4 +6733,14 @@ mark.search-highlight { background: var(--accent-soft); color: var(--accent); fo
   .audiobook-body { flex-direction: row; align-items: center; justify-content: center; gap: clamp(32px, 6vw, 72px); }
   .audiobook-content { width: min(420px, 46vw); }
   .audiobook-cover-wrapper { width: min(280px, 30vw); }
+}
+
+/* 手机端：顶栏多了一颗「书签」按钮 ⇒ 操作区按内容自适应，标题继续靠 ellipsis 收缩。
+   原来的固定 80px/76px 只能塞下 2 颗按钮，第 3 颗会被挤出屏幕。 */
+@media (max-width: 720px) {
+  .reader-header { grid-template-columns: 80px minmax(0, 1fr) auto; }
+}
+@media (max-width: 420px) {
+  .reader-header { grid-template-columns: 40px minmax(0, 1fr) auto; }
+  .bookmark-dialog-actions .bookmark-add-button span { display: none; }
 }

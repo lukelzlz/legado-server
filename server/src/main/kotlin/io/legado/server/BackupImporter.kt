@@ -113,12 +113,12 @@ class BackupImporter(
         val usedGroupNames = shelf.mapNotNull { it.groupName?.takeIf { n -> n.isNotBlank() } }.toSet()
         val groups = parsedGroups.filter { it.groupName in usedGroupNames }
 
-        // 书签：只导入「书还在书架上」的。
-        // 自 G0/G 漫画放开后，只剩本地图书会被过滤（实测真实备份 47 条书签里 29 条曾挂在
-        // 被过滤的书上——音频/漫画那部分现在会正常导入）。
-        val shelfKeys = shelf.map { "${it.name}\u0000${it.author.orEmpty()}" }.toSet()
-        val bookmarks = parsedBookmarks.filter { "${it.bookName}\u0000${it.bookAuthor.orEmpty()}" in shelfKeys }
-        val bookmarksSkipped = parsedBookmarks.size - bookmarks.size
+        // 书签：**全量落库**，不再按书架过滤。
+        //
+        // 用户明确要求（2026-11-01）：「一股脑全存到表里，不论有没有这本书，不论是本地的还是什么的」——
+        // 独立的「书签」页以本表为唯一数据源，书不在书架上（本地书 / 已被移出书架）照样能看到并管理。
+        // 因此这里既不再算 `shelfKeys`，也不再报"跳过多少条"。
+        val bookmarks = parsedBookmarks
 
         // 备份导入是**唯一**会采用书源自带分组（`bookSourceGroup`）的入口：
         // 那是用户在手机端整理好的成果，必须原样带过来。
@@ -147,6 +147,10 @@ class BackupImporter(
         // 有 [coverBackfillScope] 时这里只是把全部待补书**受理**下来（`coversQueued`），
         // 真正的下载/回源在后台继续跑；进程退出可中断，重启后由常驻的 `CoverSelfHeal` 接续。
         val covers = startCoverBackfill(shelf)
+        // 用户要求「导入时请求」：**只在书签里存在**的书（书架里没有）也要补封面，否则书签页一律占位符。
+        // 这条路径只能按「书名 + 作者」去书源搜（没有 sourceId/bookUrl），比书架书贵得多 ⇒
+        // 放进后台作用域、限定本数，失败只记 miss，绝不影响导入本身。
+        startBookmarkCoverBackfill()
         BackupImportSummary(
             sources = sourceResult.imported,
             sourcesUpdated = sourceResult.updated,
@@ -161,7 +165,6 @@ class BackupImporter(
             coversResourced = covers.resourced,
             coversQueued = covers.queued,
             bookmarks = bookmarksImported,
-            bookmarksSkipped = bookmarksSkipped,
             // 书源分组没有独立条目：它是书源自带的 `bookSourceGroup`，随书源一起落库，
             // 这里只回报「带进来几个分组」（见 Database.importSources）。
             sourceGroups = sourceResult.sourceGroups,
@@ -179,6 +182,35 @@ class BackupImporter(
      * [CoverBackfillRunner.CONCURRENCY]、单本 [CoverBackfillRunner.TIMEOUT_SECONDS]、
      * 单本候选 [CoverBackfiller] 内部的 4 条 —— 那些是防止拖垮服务的，不是数量配额）。
      */
+    /**
+     * 给「只在书签里存在」的书补封面（导入后后台跑，限定本数）。
+     *
+     * 与 [startCoverBackfill] 的区别：那些书不在书架上，没有 `sourceId/bookUrl`，
+     * 只能按「书名 + 作者」去已启用书源搜（`BookmarkCoverService.resolve` 的第 ② 条路径）。
+     * 因此**必须限量**：备份里书签可能几百条，逐本搜源会把书源打爆。
+     */
+    private fun startBookmarkCoverBackfill() {
+        val cache = coverCache ?: return
+        val scope = coverBackfillScope ?: return
+        if (backfiller == null) return
+        val targets = runCatching {
+            database.listBookmarkBooks()
+                .filter { it.coverKey.isNullOrBlank() && !it.coverMissing }
+                // 已经不在书架上的书才需要走「按书名搜」这条贵路径
+                .filter { book -> !database.hasShelfBookFor(book.bookName, book.bookAuthor) }
+                .take(MAX_BOOKMARK_COVER_IMPORT)
+        }.getOrNull().orEmpty()
+        if (targets.isEmpty()) return
+        scope.launch(Dispatchers.IO) {
+            val service = BookmarkCoverService(database, cache, runner)
+            targets.forEach { book ->
+                if (!isActive) return@launch
+                runCatching { service.resolve(book.bookName, book.bookAuthor) }
+                    .onFailure { logger("bookmark cover failed: ${book.bookName} [${it.message}]") }
+            }
+        }
+    }
+
     private fun startCoverBackfill(entries: List<BackupShelfEntry>): CoverBackfill {
         val worker = backfiller ?: return CoverBackfill()
         val targets = entries
@@ -454,6 +486,9 @@ class BackupImporter(
     private companion object {
         const val MAX_ENTRY_BYTES = 64L * 1024 * 1024
         const val MAX_TOTAL_BYTES = 256L * 1024 * 1024
+
+        /** 导入后给「只在书签里存在」的书补封面，最多处理多少本（每本都要搜源，很贵）。 */
+        const val MAX_BOOKMARK_COVER_IMPORT = 30
         // ⚠️ 这里**刻意没有任何补抓数量上限**：用户明确要求「导入时优先全补上，不限数量上限」。
         // 曾经存在的 `MAX_COVER_BACKFILL = 300`（补抓总数）与 `MAX_COVER_RESOURCE = 60`（回源次数）
         // 会让大批量导入提前耗尽预算（实测真实 220 本备份：备份 URL 成功 3、回源成功 59、仍失败 153，

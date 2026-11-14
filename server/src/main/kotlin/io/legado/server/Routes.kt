@@ -2241,6 +2241,19 @@ fun Route.apiRoutes(
             }
             call.respond(HttpStatusCode.NoContent)
         }
+        // 孤儿缓存清理（书已不在书架的正文/目录/章节索引）：启动时会自动跑一次，这里提供手动入口。
+        post("/maintenance/purge-orphan-caches") {
+            if (auth.requireSession(call, true) == null) return@post
+            val result = database.purgeOrphanTextCaches()
+            call.respond(
+                OrphanCachePurgeResponse(
+                    contentRows = result.contentRows,
+                    tocRows = result.tocRows,
+                    chapterIndexRows = result.chapterIndexRows,
+                    total = result.total,
+                ),
+            )
+        }
         post("/bookshelf/reclean") {
             if (auth.requireSession(call, true) == null) return@post
             val req = call.receive<BookRecleanRequest>()

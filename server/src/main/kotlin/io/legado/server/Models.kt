@@ -644,6 +644,14 @@ data class AutoCacheMediaRequest(
 )
 
 /** 手动触发一轮的结果（`POST /api/auto-cache/run-now`，便于验收）。 */
+/** 孤儿缓存清理结果（`POST /api/maintenance/purge-orphan-caches`）。 */
+@Serializable data class OrphanCachePurgeResponse(
+    val contentRows: Int = 0,
+    val tocRows: Int = 0,
+    val chapterIndexRows: Int = 0,
+    val total: Int = 0,
+)
+
 @Serializable data class AutoCacheRunResult(
     val novelQueued: Int = 0,
     val comicQueued: Int = 0,

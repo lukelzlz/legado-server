@@ -163,6 +163,15 @@ class Database internal constructor(private val spec: DatabaseSpec) : Closeable,
         // 限量 50 本/次、幂等、失败静默 —— 启动路径绝不能因为一本书的坏 JSON 起不来。
         runCatching { backfillChapterIndex(db, CHAPTER_INDEX_BACKFILL_LIMIT) }
             .onFailure { error -> println("[db] 章节索引回填失败（忽略）：${error.message}") }
+        // 启动巡检：清掉「书已不在书架」的孤儿正文/目录/章节索引（换源、删书残留）。
+        // 只做一次全量扫描、失败只记日志 —— 启动路径绝不能因为清理失败起不来。
+        runCatching { purgeOrphanTextCaches(db) }
+            .onSuccess { result ->
+                if (result.total > 0) {
+                    println("[db] 孤儿缓存清理：正文 ${result.contentRows} 行 / 目录 ${result.tocRows} 行 / 章节索引 ${result.chapterIndexRows} 行")
+                }
+            }
+            .onFailure { error -> println("[db] 孤儿缓存清理失败（忽略）：${error.message}") }
         val userExists = db.prepareStatement("select 1 from app_user where id = 1").use { it.executeQuery().next() }
         if (!userExists) {
             require(!initialPassword.isNullOrBlank()) { "首次启动必须提供 ADMIN_PASSWORD" }
@@ -2496,6 +2505,129 @@ class Database internal constructor(private val spec: DatabaseSpec) : Closeable,
         }
         if (indexed > 0) println("[db] 章节索引回填：$indexed 本书")
         return indexed
+    }
+
+    /**
+     * 孤儿缓存清理结果（启动巡检与手动接口都用它）。
+     */
+    data class OrphanCachePurgeResult(
+        val contentRows: Int = 0,
+        val tocRows: Int = 0,
+        val chapterIndexRows: Int = 0,
+    ) {
+        val total: Int get() = contentRows + tocRows + chapterIndexRows
+    }
+
+    /**
+     * 清理**孤儿缓存**：书已经不在书架上，但正文/目录/章节索引还留着。
+     *
+     * 来源：换源（旧 sourceId/bookUrl 被替换）与删书后残留。它们既不能被打开、又占空间，
+     * 查询侧此前只能靠 INNER JOIN 把它们藏起来（表现为「未知书名」），这里才是真正的清理。
+     *
+     * ## 匹配规则必须宽容
+     *
+     * 同一本书在库里可能有**多种 URL 形态**：聚合源的 `book_url` 与 `toc_url` 只差尾部
+     * `{"type":"x"}` 字段（实测 qingtian / qingtian2），两者互不为子串。因此「活着」的判据是：
+     * 1. 与书架的 `book_url` 或 `toc_url` 精确相等；
+     * 2. 去掉尾部 `,{...}` 后缀后精确相等；
+     * 3. 一方的 URL 是另一方的子串（长度 >= 8，避免误判）。
+     *
+     * 宁可漏删，也绝不误删用户还在看的书。
+     */
+    fun purgeOrphanTextCaches(): OrphanCachePurgeResult = write { db -> purgeOrphanTextCaches(db) }
+
+    private fun purgeOrphanTextCaches(db: Connection): OrphanCachePurgeResult {
+        val shelfUrlsBySource = HashMap<String, MutableList<String>>()
+        db.prepareStatement("select source_id, book_url, toc_url from book_shelf").use { stmt ->
+            stmt.executeQuery().use { rs ->
+                while (rs.next()) {
+                    val sourceId = rs.getString(1) ?: continue
+                    val urls = shelfUrlsBySource.getOrPut(sourceId) { mutableListOf() }
+                    rs.getString(2)?.takeIf { it.isNotBlank() }?.let(urls::add)
+                    rs.getString(3)?.takeIf { it.isNotBlank() }?.let(urls::add)
+                }
+            }
+        }
+
+        fun normalize(url: String): String = url.substringBefore(",{").trim()
+
+        fun alive(sourceId: String, url: String): Boolean {
+            val candidates = shelfUrlsBySource[sourceId] ?: return false
+            val normalized = normalize(url)
+            return candidates.any { shelfUrl ->
+                shelfUrl == url ||
+                    normalize(shelfUrl) == normalized ||
+                    (url.length >= 8 && shelfUrl.contains(url)) ||
+                    (shelfUrl.length >= 8 && url.contains(shelfUrl))
+            }
+        }
+
+        var contentRows = 0
+        var tocRows = 0
+        var chapterIndexRows = 0
+
+        // ① 正文缓存：按 (source_id, book_url) 分组判活；整组一起删，避免半删。
+        val orphanContent = ArrayList<Pair<String, String>>()
+        db.prepareStatement("select distinct source_id, book_url from book_content_cache").use { stmt ->
+            stmt.executeQuery().use { rs ->
+                while (rs.next()) {
+                    val sourceId = rs.getString(1) ?: continue
+                    val bookUrl = rs.getString(2) ?: continue
+                    if (!alive(sourceId, bookUrl)) orphanContent.add(sourceId to bookUrl)
+                }
+            }
+        }
+        db.prepareStatement("delete from book_content_cache where source_id = ? and book_url = ?").use { stmt ->
+            orphanContent.forEach { (sourceId, bookUrl) ->
+                stmt.setString(1, sourceId)
+                stmt.setString(2, bookUrl)
+                contentRows += stmt.executeUpdate()
+            }
+        }
+
+        // ② 目录缓存：主键是 toc_url，同样按 URL 形态判活。
+        val orphanToc = ArrayList<Pair<String, String>>()
+        db.prepareStatement("select distinct source_id, toc_url from book_toc_cache").use { stmt ->
+            stmt.executeQuery().use { rs ->
+                while (rs.next()) {
+                    val sourceId = rs.getString(1) ?: continue
+                    val tocUrl = rs.getString(2) ?: continue
+                    if (!alive(sourceId, tocUrl)) orphanToc.add(sourceId to tocUrl)
+                }
+            }
+        }
+        db.prepareStatement("delete from book_toc_cache where source_id = ? and toc_url = ?").use { stmt ->
+            orphanToc.forEach { (sourceId, tocUrl) ->
+                stmt.setString(1, sourceId)
+                stmt.setString(2, tocUrl)
+                tocRows += stmt.executeUpdate()
+            }
+        }
+
+        // ③ 章节索引：挂在 book_url 上，孤儿会让「目录搜索」搜到打不开的书。
+        val orphanIndex = ArrayList<Pair<String, String>>()
+        db.prepareStatement("select distinct source_id, book_url from book_chapter_index").use { stmt ->
+            stmt.executeQuery().use { rs ->
+                while (rs.next()) {
+                    val sourceId = rs.getString(1) ?: continue
+                    val bookUrl = rs.getString(2) ?: continue
+                    if (!alive(sourceId, bookUrl)) orphanIndex.add(sourceId to bookUrl)
+                }
+            }
+        }
+        db.prepareStatement("delete from book_chapter_index where source_id = ? and book_url = ?").use { stmt ->
+            orphanIndex.forEach { (sourceId, bookUrl) ->
+                stmt.setString(1, sourceId)
+                stmt.setString(2, bookUrl)
+                chapterIndexRows += stmt.executeUpdate()
+            }
+        }
+
+        return OrphanCachePurgeResult(
+            contentRows = contentRows,
+            tocRows = tocRows,
+            chapterIndexRows = chapterIndexRows,
+        )
     }
 
     /**

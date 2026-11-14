@@ -1499,6 +1499,7 @@
     "coverNoCandidates": "書源に表紙付きの候補がありません",
     "coverFromAuthor": "著者で検索した表紙（クリックで使用）",
     "coverSearchByAuthor": "著者名で検索",
+    "coverSearchByTitle": "書名で検索",
     "coverSearchByAuthorHint": "この著者の他の本を検索して表紙を流用します",
     "coverNoAuthor": "この本には著者情報がないため著者検索できません",
     "coverNoAuthorCandidates": "この著者の本に表紙付きの候補がありません",
@@ -1514,5 +1515,6 @@
     "notInShelf": "この本は本棚にないため移動できません（しおりは保持されます）"
   }
 }
+
 
 

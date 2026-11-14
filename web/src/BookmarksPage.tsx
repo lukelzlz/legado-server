@@ -282,30 +282,8 @@ export function BookmarksPage({ onOpenBookmark }: BookmarksPageProps = {}) {
     }
   }
 
-  /** 弹层里针对当前书再抓一次（`force`：手动触发不受"已标记放弃"限制）。 */
-  const refetchCoverFor = async (book: BookmarkBook) => {
-    setFetchingCovers(true)
-    try {
-      const result = await api.refreshBookCovers({
-        books: [{ bookName: book.bookName, bookAuthor: book.bookAuthor }],
-        force: true,
-      })
-      if (result.fetched > 0) {
-        toast.success(t('bookmarks.coverUpdated', '封面已更新'))
-        setCoverFor(null)
-        await loadOverview(bookKeyOf(book))
-      } else {
-        toast.warning(t('bookmarks.coverFetchFailed', '没抓到封面，可手动上传'))
-      }
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : t('common.failed', '操作失败'))
-    } finally {
-      setFetchingCovers(false)
-    }
-  }
-
   /**
-   * 去书源搜候选封面。
+   * 去书源搜候选封面（结果**只展示在下方候选网格**，不自动套用）。
    *
    * @param byAuthor `true` = 只按作者名搜、不按书名过滤（借同一作者其它书的封面）。
    *   作者为空时后端返回空列表，前端直接把按钮置灰。
@@ -776,11 +754,12 @@ export function BookmarksPage({ onOpenBookmark }: BookmarksPageProps = {}) {
                   <button
                     type="button"
                     className="subtle-button"
-                    disabled={fetchingCovers || busy}
-                    onClick={() => void refetchCoverFor(coverFor)}
+                    // 按书名搜索：结果同样只送到下面的候选网格（不再自动套用）
+                    disabled={loadingCandidates || busy}
+                    onClick={() => loadCandidates(coverFor, false)}
                   >
-                    {fetchingCovers ? <ButtonSpinner size={12} /> : <Icon name="refresh" />}
-                    <span>{t('bookmarks.coverRefetch', '按书名重新获取')}</span>
+                    {loadingCandidates && !authorOnly ? <ButtonSpinner size={12} /> : <Icon name="search" />}
+                    <span>{t('bookmarks.coverSearchByTitle', '按书名搜索')}</span>
                   </button>
                   <button
                     type="button"
@@ -823,10 +802,10 @@ export function BookmarksPage({ onOpenBookmark }: BookmarksPageProps = {}) {
 
               <div className="bookmark-cover-candidates">
                 <span className="bookmark-field-label">
-                  {authorOnly
-                    ? t('bookmarks.coverFromAuthor', '按作者搜到的封面（点击使用）') +
-                      (candidates.length > 0 ? ` · ${candidates.length}` : '')
-                    : t('bookmarks.coverFromSources', '书源搜到的封面（点击使用）')}
+                  {(authorOnly
+                    ? t('bookmarks.coverFromAuthor', '按作者搜到的封面（点击使用）')
+                    : t('bookmarks.coverFromSources', '书源搜到的封面（点击使用）')) +
+                    (candidates.length > 0 ? ` · ${candidates.length}` : '')}
                 </span>
                 {loadingCandidates && <div className="bookmark-page-hint">{t('common.loading', '加载中...')}</div>}
                 {!loadingCandidates && candidates.length === 0 && (

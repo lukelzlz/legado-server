@@ -87,7 +87,7 @@ class ConfigFileTest {
             """.trimIndent(),
         )
 
-        val config = ServerConfig.load(baseDir, env = emptyMap(), log = {})
+        val config = readyConfig(baseDir, emptyMap())
 
         assertEquals("127.0.0.1", config.host)
         assertEquals(9000, config.port)
@@ -116,10 +116,9 @@ class ConfigFileTest {
             """.trimIndent(),
         )
 
-        val config = ServerConfig.load(
+        val config = readyConfig(
             baseDir,
-            env = mapOf("LEGADO_PORT" to "8123", "ADMIN_PASSWORD" to "", "LEGADO_HOST" to "0.0.0.0"),
-            log = {},
+            mapOf("LEGADO_PORT" to "8123", "ADMIN_PASSWORD" to "", "LEGADO_HOST" to "0.0.0.0"),
         )
 
         assertEquals("环境变量必须覆盖文件", 8123, config.port)
@@ -131,7 +130,7 @@ class ConfigFileTest {
     fun `YAML 写坏时回落到环境变量和默认值，不抛异常`() {
         writeConfig("server:\n  port: [unclosed\n")
 
-        val config = ServerConfig.load(baseDir, env = mapOf("LEGADO_PORT" to "7777"), log = {})
+        val config = readyConfig(baseDir, mapOf("LEGADO_PORT" to "7777"))
 
         assertEquals(7777, config.port)
         assertEquals("0.0.0.0", config.host)
@@ -139,7 +138,7 @@ class ConfigFileTest {
 
     @Test
     fun `没有配置文件时用内置默认值（端口 8080，Secure Cookie 默认开）`() {
-        val config = ServerConfig.load(baseDir, env = emptyMap(), log = {})
+        val config = readyConfig(baseDir, emptyMap())
         assertEquals(8080, config.port)
         assertTrue(config.secureCookies)
         assertNotNull(config.databasePath)
@@ -160,5 +159,72 @@ class ConfigFileTest {
         assertNotNull(values)
         assertEquals("8080", values!!["server.port"])
         assertFalse("留空的项等于没配", values.containsKey("auth.password"))
+    }
+
+    /** load() 返回 LoadResult；这里直接拿「已就绪」的配置。 */
+    private fun readyConfig(baseDir: Path, env: Map<String, String>): ServerConfig {
+        // 先确保配置文件存在（否则会走「首启只生成配置」分支）
+        ConfigFile.ensureDefault(baseDir, emptyMap())
+        return when (val loaded = ServerConfig.load(baseDir, env = env, log = {})) {
+            is ServerConfig.LoadResult.Ready -> loaded.config
+            is ServerConfig.LoadResult.FirstRun -> error("配置文件已存在，不应再走首启分支")
+        }
+    }
+
+    @Test
+    fun `首次启动只生成配置文件、不启动（返回 FirstRun）；第二次启动才 Ready`() {
+        val first = ServerConfig.load(baseDir, env = emptyMap(), log = {})
+        assertTrue("首次启动必须返回 FirstRun", first is ServerConfig.LoadResult.FirstRun)
+        val file = (first as ServerConfig.LoadResult.FirstRun).file
+        assertTrue("配置文件必须已生成", Files.exists(file))
+
+        val second = ServerConfig.load(baseDir, env = emptyMap(), log = {})
+        assertTrue("第二次启动必须返回 Ready", second is ServerConfig.LoadResult.Ready)
+    }
+
+    @Test
+    fun `首次启动生成的配置会写入环境变量里的实际值：端口与数据目录`() {
+        val env = mapOf("LEGADO_PORT" to "8231", "LEGADO_DATA_DIR" to baseDir.resolve("env-data").toString())
+        val first = ServerConfig.load(baseDir, env = env, log = {})
+        val file = (first as ServerConfig.LoadResult.FirstRun).file
+        val content = Files.readString(file)
+        assertTrue("端口要写实际生效值", content.contains("port: 8231"))
+        assertTrue("数据目录要写实际生效值", content.contains("env-data"))
+    }
+
+    @Test
+    fun `数据库类型：默认 sqlite；mysql 拼出连接串并被识别为外部库；postgresql 归一化`() {
+        writeConfig("database:\n  type: sqlite\n")
+        val sqlite = readyConfig(baseDir, emptyMap())
+        assertEquals("sqlite", sqlite.databaseType)
+        assertFalse("sqlite 不是外部库", sqlite.isExternalDatabase)
+        assertNull(sqlite.databaseJdbcUrl)
+
+        writeConfig(
+            """
+            database:
+              type: mysql
+              mysql:
+                host: db.local
+                port: 3307
+                database: legado_prod
+                user: legado
+                password: "s3cret"
+            """.trimIndent(),
+        )
+        val mysql = readyConfig(baseDir, emptyMap())
+        assertEquals("mysql", mysql.databaseType)
+        assertTrue(mysql.isExternalDatabase)
+        assertEquals("legado", mysql.databaseUser)
+        assertEquals("s3cret", mysql.databasePassword)
+        assertTrue(
+            "连接串要带主机/端口/库名：${mysql.databaseJdbcUrl}",
+            mysql.databaseJdbcUrl!!.contains("db.local:3307/legado_prod"),
+        )
+
+        writeConfig("database:\n  type: postgresql\n")
+        val pg = readyConfig(baseDir, emptyMap())
+        assertEquals("postgresql 要归一化成 postgres", "postgres", pg.databaseType)
+        assertTrue("默认连接串：${pg.databaseJdbcUrl}", pg.databaseJdbcUrl!!.startsWith("jdbc:postgresql://"))
     }
 }

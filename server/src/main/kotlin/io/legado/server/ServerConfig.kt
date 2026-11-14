@@ -83,7 +83,22 @@ data class ServerConfig(
      * 只有常驻巡检能把这种「书架一片裂图」自动治回来，见 [CoverSelfHeal]。
      */
     val coverSelfHealEnabled: Boolean = true,
+    /**
+     * 数据库类型：`sqlite`（默认）/ `mysql` / `postgres`。
+     *
+     * ⚠️ 目前只有 `sqlite` 可用：另外两种的配置项、驱动依赖与连接串构建已就位，
+     * 但数据层的 SQL 方言移植（`on conflict` / `collate nocase` / `pragma` 等）尚未完成。
+     * 选它们启动时会得到一条明确的「暂不支持 + 原因」错误，而不是静默跑坏。
+     */
+    val databaseType: String = "sqlite",
+    /** 非 sqlite 时的 JDBC 连接串（由 [fromSources] 按类型+主机/端口/库名拼出）。 */
+    val databaseJdbcUrl: String? = null,
+    val databaseUser: String? = null,
+    val databasePassword: String? = null,
 ) {
+    /** 是否为关系型以外的外部库（mysql/postgres）——目前用于启动期拦截。 */
+    val isExternalDatabase: Boolean get() = databaseType.lowercase() != "sqlite"
+
     companion object {
         /** 漫画缓存根目录名（**唯一来源**：默认路径与环境变量路径都引用它）。 */
         const val COMIC_DIR_NAME = "comic"
@@ -127,9 +142,10 @@ data class ServerConfig(
         const val COVER_SELF_HEAL_INTERVAL_MS: Long = 10 * 60 * 1000L
 
         /**
-         * 从 `config/config.yaml` + 环境变量装配配置（**服务启动的唯一入口**）。
+         * 从 `config/config.yaml` + 环境变量装配配置。
          *
-         * - 配置文件不存在 ⇒ 先按 [ConfigFile.defaultContent] 生成一份带注释的默认配置；
+         * - 配置文件不存在 ⇒ 生成一份带注释的默认配置，并返回 [LoadResult.FirstRun]
+         *   （**首次启动只生成配置、不真正启动**，用户改完再启动，见用户要求）；
          * - 优先级：环境变量 > 配置文件 > 内置默认值；
          * - 文件写坏了也不会让服务起不来（回落环境变量/默认值，只在日志里告警）。
          */
@@ -138,7 +154,7 @@ data class ServerConfig(
             env: Map<String, String> = System.getenv(),
             /** 日志接缝（测试/自定义启动器可用）。 */
             log: (String) -> Unit = { message -> System.err.println(message) },
-        ): ServerConfig {
+        ): LoadResult {
             // ① 文件不存在时，用「环境变量 + 内置默认值」算出的**实际生效值**去渲染模板：
             //    否则启动脚本导出的 LEGADO_DATA_DIR/LEGADO_PORT 会与生成的模板不一致，
             //    下次启动（脚本不再导出 env）就会换端口/换数据目录。
@@ -150,16 +166,21 @@ data class ServerConfig(
             val (file, generated) = runCatching { ConfigFile.ensureDefault(baseDir, templateValues) }
                 .getOrElse { error ->
                     log("[config] 无法在 $baseDir 生成 config.yaml：${error.message}（继续用环境变量/默认值）")
-                    return fromSources(emptyMap(), env)
+                    return LoadResult.Ready(fromSources(emptyMap(), env))
                 }
-            if (generated) log("[config] 已生成默认配置文件：$file（按注释修改后重启生效）")
+            if (generated) {
+                // 用户要求：**首次启动仅创建配置文件**，第二次启动再正式启动。
+                // 这样用户可以先按注释把数据库/端口/密码改好，再启动，避免「用默认值把库跑起来又得重配」。
+                log("[config] 已生成默认配置文件：$file")
+                return LoadResult.FirstRun(file)
+            }
             val values = ConfigFile.readValues(file)
             if (values == null) {
                 log("[config] 解析失败：$file 不是合法 YAML，已回落到环境变量/默认值")
-                return fromSources(emptyMap(), env)
+                return LoadResult.Ready(fromSources(emptyMap(), env))
             }
             log("[config] 已加载配置文件：$file（共 ${values.size} 项；环境变量优先）")
-            return fromSources(values, env)
+            return LoadResult.Ready(fromSources(values, env))
         }
 
         /**
@@ -259,7 +280,60 @@ data class ServerConfig(
                 audioPrefetchEnabled = pickBoolean("LEGADO_AUDIO_PREFETCH", "cache.audio.prefetch", true),
                 audioGcEnabled = pickBoolean("LEGADO_AUDIO_GC", "cache.audio.gc", true),
                 coverSelfHealEnabled = pickBoolean("LEGADO_COVER_SELFHEAL", "cover.self_heal", true),
+                databaseType = databaseTypeOf(pick("LEGADO_DB_TYPE", "database.type")),
+                databaseJdbcUrl = externalJdbcUrl(databaseTypeOf(pick("LEGADO_DB_TYPE", "database.type")), fileValues, env),
+                databaseUser = when (databaseTypeOf(pick("LEGADO_DB_TYPE", "database.type"))) {
+                    "mysql" -> pick("LEGADO_DB_USER", "database.mysql.user")
+                    "postgres" -> pick("LEGADO_DB_USER", "database.postgres.user")
+                    else -> null
+                },
+                databasePassword = when (databaseTypeOf(pick("LEGADO_DB_TYPE", "database.type"))) {
+                    "mysql" -> pick("LEGADO_DB_PASSWORD", "database.mysql.password")
+                    "postgres" -> pick("LEGADO_DB_PASSWORD", "database.postgres.password")
+                    else -> null
+                },
             )
         }
+
+        /** 归一化数据库类型：只认 sqlite/mysql/postgres，其它值按 sqlite 处理并忽略。 */
+        private fun databaseTypeOf(raw: String?): String = when (raw?.trim()?.lowercase()) {
+            "mysql" -> "mysql"
+            "postgres", "postgresql" -> "postgres"
+            else -> "sqlite"
+        }
+
+        /**
+         * 外部数据库连接串（`LEGADO_DB_URL` 优先，其次按类型拼）。
+         *
+         * 目前 mysql/postgres **尚未接线到数据层**（见 [ServerConfig.databaseType] 的说明）；
+         * 先把连接串/账号密码算出来，启动期就能给出「连哪个库、用什么账号」的明确报错。
+         */
+        private fun externalJdbcUrl(type: String, fileValues: ConfigFile.Values, env: Map<String, String>): String? {
+            env["LEGADO_DB_URL"]?.takeIf { it.isNotBlank() }?.let { return it }
+            fun fileValue(key: String) = fileValues[key]?.takeIf { it.isNotBlank() }
+            return when (type) {
+                "mysql" -> {
+                    val host = fileValue("database.mysql.host") ?: "127.0.0.1"
+                    val port = fileValue("database.mysql.port") ?: "3306"
+                    val db = fileValue("database.mysql.database") ?: "legado"
+                    "jdbc:mysql://$host:$port/$db?useUnicode=true&characterEncoding=utf8&serverTimezone=UTC&allowPublicKeyRetrieval=true&useSSL=false"
+                }
+                "postgres" -> {
+                    val host = fileValue("database.postgres.host") ?: "127.0.0.1"
+                    val port = fileValue("database.postgres.port") ?: "5432"
+                    val db = fileValue("database.postgres.database") ?: "legado"
+                    "jdbc:postgresql://$host:$port/$db"
+                }
+                else -> null
+            }
+        }
+    }
+
+    /** [load] 的结果：要么「已就绪，可以启动」，要么「首次启动，只生成了配置」。 */
+    sealed interface LoadResult {
+        data class Ready(val config: ServerConfig) : LoadResult
+
+        /** 首次启动：配置已生成到 [file]，本次**不启动**，等用户改完再启动。 */
+        data class FirstRun(val file: Path) : LoadResult
     }
 }

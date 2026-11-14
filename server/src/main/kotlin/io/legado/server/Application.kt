@@ -23,7 +23,27 @@ fun main(args: Array<String>) {
     }
     // 配置来源：<jar 目录>/config/config.yaml（首次启动自动生成带注释的默认文件），
     // 环境变量优先于文件（容器部署仍可只用 env）。
-    val config = ServerConfig.load()
+    val config = when (val loaded = ServerConfig.load()) {
+        is ServerConfig.LoadResult.FirstRun -> {
+            // 用户要求：**首次启动仅创建配置文件，第二次启动再正式启动**。
+            // 这样可以先改好数据库/端口/密码，避免用默认值把库跑起来之后再返工。
+            println("[config] 首次启动：已生成配置文件 ${loaded.file}")
+            println("[config] 请按注释修改后**再次启动**；本次不启动服务。")
+            return
+        }
+        is ServerConfig.LoadResult.Ready -> loaded.config
+    }
+    if (config.isExternalDatabase) {
+        // 数据层仍是 SQLite 方言；把「连哪个库、用什么账号」明确打出来再拒绝启动，
+        // 免得用户以为改了类型却没生效。
+        System.err.println(
+            "[config] 数据库类型 ${config.databaseType} 暂未支持（当前版本仅 sqlite）。\n" +
+                "         目标连接：${config.databaseJdbcUrl}（user=${config.databaseUser}）\n" +
+                "         原因：数据层 SQL 方言移植（on conflict / collate nocase / pragma）尚未完成。\n" +
+                "         请把 database.type 改回 sqlite，或等待后续版本。",
+        )
+        return
+    }
     embeddedServer(CIO, host = config.host, port = config.port) {
         legadoApplication(config)
     }.start(wait = true)

@@ -95,7 +95,33 @@ $env:JAVA_HOME = "C:\Program Files\Amazon Corretto\jdk21.0.11_10"
 
 ✅ 判据：`6 tests completed, 0 failed`。
 
+## 6. 首次启动只生成配置（2026-11-14 起）
+
+1. 换一个**全新空目录**，只放 jar；
+2. 直接 `java -jar` → 控制台打印「已生成配置文件…**本次不启动服务**」，进程**退出**，
+   `http://127.0.0.1:<端口>` 打不开（这是预期）；
+3. 按注释改好端口/数据库/密码；
+4. **再启动一次** → 这次才真正监听端口，`/healthz` 返回 ok。
+
+✅ 判据：第一次启动**不监听端口**、只生成 `config/config.yaml`；第二次启动才对外服务。
+
+## 7. 数据库类型（当前只有 sqlite 可用）
+
+`config/config.yaml` 里：
+
+```yaml
+database:
+  type: sqlite      # sqlite / mysql / postgres
+```
+
+- `type: sqlite`（默认）：用 `data.dir` 下的 `legado.sqlite`；
+- 改成 `type: mysql` 或 `postgres` 后启动 → 会打印**目标连接串/账号**，并明确提示
+  「暂未支持（当前版本仅 sqlite）」，然后退出（不会连错库、也不会静默跑 SQLite）。
+
+✅ 判据：报错里能看到你配置的 host/port/库名与 user，且进程不监听端口。
+
 ## 回滚
 
 `config/` 目录可以整目录删掉（下次启动会重新生成默认模板）；
 想回到「只用环境变量」的老习惯：不建 `config/config.yaml` 即可（或删掉它）。
+---

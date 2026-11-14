@@ -63,8 +63,33 @@ object ConfigFile {
         data:
           # 数据根目录（等价 LEGADO_DATA_DIR）。相对路径按「启动时的工作目录」解析
           dir: ${v("data.dir", "./data")}
-          # 数据库文件。留空 = <data.dir>/legado.sqlite（等价 LEGADO_DATABASE）
-          database: ${v("data.database", "")}
+
+        database:
+          # 数据库类型：sqlite（默认）/ mysql / postgres
+          # ⚠️ 当前版本只有 sqlite 可用；mysql/postgres 的配置项与驱动已就位，
+          #    但 SQL 方言移植（on conflict / collate nocase / pragma 等）在后续版本完成。
+          # 等价环境变量 LEGADO_DB_TYPE
+          type: ${v("database.type", "sqlite")}
+
+          sqlite:
+            # 数据库文件。留空 = <data.dir>/legado.sqlite（等价 LEGADO_DATABASE）
+            file: ${v("database.sqlite.file", "")}
+
+          # MySQL / PostgreSQL 连接参数（type 为 mysql / postgres 时使用）
+          # 也可用环境变量 LEGADO_DB_URL / LEGADO_DB_USER / LEGADO_DB_PASSWORD 覆盖
+          mysql:
+            host: ${v("database.mysql.host", "127.0.0.1")}
+            port: ${v("database.mysql.port", "3306")}
+            database: ${v("database.mysql.database", "legado")}
+            user: ${v("database.mysql.user", "root")}
+            password: "${v("database.mysql.password", "")}"
+
+          postgres:
+            host: ${v("database.postgres.host", "127.0.0.1")}
+            port: ${v("database.postgres.port", "5432")}
+            database: ${v("database.postgres.database", "legado")}
+            user: ${v("database.postgres.user", "postgres")}
+            password: "${v("database.postgres.password", "")}"
 
         auth:
           # 首次启动时设置的管理员密码（等价 ADMIN_PASSWORD）。

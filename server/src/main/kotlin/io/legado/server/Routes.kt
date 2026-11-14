@@ -753,6 +753,56 @@ fun Route.apiRoutes(
                 }
             }
         }
+        /**
+         * 全局搜索 —— 书架 / 目录 / 正文三种模式，查的都是**本地库**。
+         *
+         * 与下面那个 `post("/search")`（多书源全网搜索，跑书源规则去外网抓）是两件不同的事。
+         *
+         * ⚠️ **刻意不用 `POST /api/search`**：那条路径已经被全网搜索占用（前端 `api.search`、
+         * `SearchRoutesTest` 都在打它）。Ktor 的路由树里同一个节点注册两个 handler 不会报错，
+         * 但第二个要么永不生效、要么在第一个 `respond` 之后再 respond 抛异常 —— 属于
+         * 「看起来能用、某天突然 500」的隐患。语义上 `search/local` 也更准确：搜的是本地库。
+         */
+        post("/search/local") {
+            // 只要求登录、不要求 CSRF：纯只读查询，与 `GET` 同风险等级（用户指定）。
+            if (auth.requireSession(call) == null) return@post
+            val request = runCatching { call.receive<GlobalSearchRequest>() }.getOrNull()
+            if (request == null) {
+                call.respondApiError(HttpStatusCode.BadRequest, "invalid_request", "搜索请求格式无效")
+                return@post
+            }
+            val query = request.query.trim()
+            val limit = request.limit.coerceIn(1, 100)
+            // 空查询直接空结果：绝不能把 `like '%%'` 打到库上（等于全表扫描 + 全量返回）。
+            if (query.isEmpty()) {
+                call.respond(SearchResponse(emptyList(), 0, false))
+                return@post
+            }
+            val mode = request.mode.trim().lowercase()
+            val sourceId = request.sourceId?.trim()?.takeIf { it.isNotEmpty() }
+            val bookUrl = request.bookUrl?.trim()?.takeIf { it.isNotEmpty() }
+            // 多取一条用于判断"是否被截断"，不为统计单独跑一次 count(*)。
+            val probe = limit + 1
+            val hits = try {
+                when (mode) {
+                    "shelf" -> database.searchShelf(query, probe)
+                    "toc" -> database.searchToc(query, probe, sourceId, bookUrl)
+                    "content" -> database.searchContent(query, probe, sourceId, bookUrl)
+                    else -> {
+                        call.respondApiError(HttpStatusCode.BadRequest, "invalid_mode", "搜索方式无效")
+                        return@post
+                    }
+                }
+            } catch (error: Throwable) {
+                // 搜索失败必须**明确报错**，不能静默返回空列表（用户会以为"就是没有结果"）。
+                call.application.log.warn("global search failed (mode=$mode): ${error.message}")
+                call.respondApiError(HttpStatusCode.InternalServerError, "search_failed", "搜索失败，请稍后重试")
+                return@post
+            }
+            val truncated = hits.size > limit
+            val items = if (truncated) hits.take(limit) else hits
+            call.respond(SearchResponse(items = items, total = items.size, truncated = truncated))
+        }
         post("/search") {
             if (auth.requireSession(call, true) == null) return@post
             val request = call.receive<SearchRequest>()

@@ -11,6 +11,27 @@ import i18n, { getCurrentLocale } from './i18n'
 export type SourceSummary = { id: string; name: string; url: string; group?: string; enabled: boolean; isJsSource: boolean; hasLogin: boolean; updatedAt: number; version: number }
 export type SourceRecord = { id: string; json: string; version: number; updatedAt: number }
 export type SearchResult = { sourceId: string; name: string; author?: string; bookUrl: string; coverUrl?: string; intro?: string; bookKind?: string }
+/**
+ * 全局搜索的三种模式：书架 / 目录 / 正文。
+ *
+ * 与 [SearchResult]（跑书源规则去外网抓的全网搜索）**是两件事**：
+ * 这里搜的全是本地库（`/api/search/local`）。
+ */
+export type LocalSearchMode = 'shelf' | 'toc' | 'content'
+/** 一条本地库搜索命中；字段按 `kind` 解释（shelf 无章节、content 多 snippet）。 */
+export type LocalSearchHit = {
+  kind: LocalSearchMode | string
+  sourceId: string
+  bookUrl: string
+  bookName: string
+  bookAuthor?: string | null
+  coverKey?: string | null
+  chapterIndex?: number | null
+  chapterTitle?: string | null
+  chapterUrl?: string | null
+  snippet?: string | null
+}
+export type LocalSearchResponse = { items: LocalSearchHit[]; total: number; truncated: boolean }
 export type ExploreSourceItem = { id: string; name: string; group?: string | null; enabled: boolean }
 export type ExploreCategory = { title: string; url?: string | null; subCategories: ExploreCategory[] }
 export type BookDetails = { sourceId: string; name: string; author?: string; intro?: string; coverUrl?: string; tocUrl: string; bookKind?: string; alternateSources?: SearchResult[]; variables?: Record<string, string> }
@@ -684,6 +705,18 @@ export const api = {
     `/api/sources/${encodeURIComponent(sourceId)}/browser/page?t=${encodeURIComponent(token)}&i=${encodeURIComponent(key)}`,
   search: (keyword: string, sourceIds?: string[], signal?: AbortSignal, groups?: string[]) =>
     request<SearchResult[]>('/api/search', { method: 'POST', body: JSON.stringify({ keyword, sourceIds, groups }), signal }),
+  /**
+   * 本地库搜索（书架 / 目录 / 正文）。
+   *
+   * ⚠️ 路径**不是** `/api/search`：那条路径是上面的「多书源全网搜索」，
+   * 服务端两个 handler 挂同一个节点会互相打架（见 `Routes.kt` 的注释）。
+   * `sourceId + bookUrl` 用于阅读器里的「只搜当前这本书」。
+   */
+  searchLocal: (
+    payload: { mode: LocalSearchMode; query: string; limit?: number; sourceId?: string; bookUrl?: string },
+    signal?: AbortSignal,
+  ) =>
+    request<LocalSearchResponse>('/api/search/local', { method: 'POST', body: JSON.stringify(payload), signal }),
   details: (sourceId: string, bookUrl: string, signal?: AbortSignal) => request<BookDetails>('/api/books/details', { method: 'POST', body: JSON.stringify({ sourceId, bookUrl }), signal }),
   chapters: (sourceId: string, bookUrl: string, signal?: AbortSignal) => request<Chapter[]>('/api/books/chapters', { method: 'POST', body: JSON.stringify({ sourceId, bookUrl }), signal }),
   /**

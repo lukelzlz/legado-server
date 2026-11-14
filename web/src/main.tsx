@@ -2,7 +2,7 @@ import { FormEvent, useCallback, useEffect, useMemo, useReducer, useRef, useStat
 import { createPortal } from 'react-dom'
 import { createRoot } from 'react-dom/client'
 import { useTranslation } from 'react-i18next'
-import { api, BookDetails, BookGroup, BookshelfItem, Chapter, NetworkImportPreview, SearchResult, SearchStreamEvent, setCsrfToken, SourceGroupSummary, SourceRecord, SourceSummary, streamSearch, UNGROUPED_SOURCE_GROUP } from './api'
+import { api, BookDetails, BookGroup, BookshelfItem, Chapter, LocalSearchHit, NetworkImportPreview, SearchResult, SearchStreamEvent, setCsrfToken, SourceGroupSummary, SourceRecord, SourceSummary, streamSearch, UNGROUPED_SOURCE_GROUP } from './api'
 import { Icon } from './icons'
 import { Logo } from './Logo'
 import { Login } from './Login'
@@ -14,6 +14,7 @@ import { AppHeader } from './AppHeader'
 import { cleanAuthor, cleanTitle, defaultSearchFilters, filterSearchGroups, isExactMatch, isPopularMatch, SearchFilters, SearchGroup, SortMode } from './searchFilters'
 import { groupSearchResults, searchStore, SourceChoice, SourceChoiceStatus, useSearchStore } from './searchStore'
 import { SourceSwitchModal } from './SourceSwitchModal'
+import { GlobalSearchModal } from './GlobalSearchModal'
 import { matchBestChapter } from './sourceSwitchRemap'
 import { SourceLoginModal } from './SourceLoginModal'
 import { NetworkImportModal } from './NetworkImportModal'
@@ -2467,7 +2468,7 @@ function BatchMoveGroupModal({
  */
 const CACHE_POLL_GRACE_MS = 30_000
 
-function ShelfPage({ onOpen, theme }: { onOpen: (item: BookshelfItem) => void; theme: ReaderTheme }) {
+function ShelfPage({ onOpen, theme }: { onOpen: (item: BookshelfItem, jump?: BookmarkJumpTarget) => void; theme: ReaderTheme }) {
   const { t } = useTranslation()
   const [items, setItems] = useState<BookshelfItem[]>([])
   const [groups, setGroups] = useState<BookGroup[]>([])
@@ -2496,6 +2497,8 @@ function ShelfPage({ onOpen, theme }: { onOpen: (item: BookshelfItem) => void; t
   const [selectedKeys, setSelectedKeys] = useState<Set<string>>(new Set())
   const [batchMoving, setBatchMoving] = useState(false)
   const previousStateRef = useRef<Map<string, string>>(new Map())
+  /** 全局搜索弹窗（书架页顶栏「搜索」按钮打开）。 */
+  const [showGlobalSearch, setShowGlobalSearch] = useState(false)
 
   const load = useCallback(async () => {
     try {
@@ -2850,6 +2853,33 @@ function ShelfPage({ onOpen, theme }: { onOpen: (item: BookshelfItem) => void; t
     }
   }
 
+  /**
+   * 全局搜索里点一条结果 → 打开那本书（目录/正文命中还要跳到该章）。
+   *
+   * 搜索结果来自**服务端本地库**，而打开书需要完整的 `BookshelfItem`（tocUrl / 封面 / 类型），
+   * 所以必须回到 `items` 里找同一行；找不到说明这本书已经不在书架上了 ⇒ 明确提示，
+   * 绝不"猜一个 item"去开书（那会用错 tocUrl，直接进到别的书/空目录）。
+   *
+   * 跳章复用 `openShelfItem(item, bookmark)` 那条通道：它内部用 `matchBestChapter`
+   * 按「章名优先、下标兜底」定位，与阅读器自己的跳章规则**同一套**。
+   */
+  const openSearchHit = (hit: LocalSearchHit) => {
+    const item = items.find(entry => entry.sourceId === hit.sourceId && entry.bookUrl === hit.bookUrl)
+    if (!item) {
+      toast.error(t('search.bookNotInShelf', '这本书不在书架里，无法打开'))
+      return
+    }
+    if (hit.kind === 'shelf') {
+      onOpen(item)
+      return
+    }
+    onOpen(item, {
+      chapterIndex: typeof hit.chapterIndex === 'number' ? hit.chapterIndex : 0,
+      chapterPos: 0,
+      chapterName: hit.chapterTitle ?? undefined,
+    })
+  }
+
   return (
     <main
       className={`shelf-page ${dragOver ? 'drag-active' : ''}`}
@@ -2874,6 +2904,16 @@ function ShelfPage({ onOpen, theme }: { onOpen: (item: BookshelfItem) => void; t
           <p>{t('shelf.emptyDesc', '继续上次未读完的故事，或导入本地 TXT / EPUB 电子书。')}</p>
         </div>
         <div className="shelf-header-actions">
+          {/* 书架搜索入口：弹窗里三件事（书架 / 目录 / 正文），都是查本地库 */}
+          <button
+            type="button"
+            className="shelf-search-btn"
+            onClick={() => setShowGlobalSearch(true)}
+            title={t('search.title', '搜索')}
+          >
+            <Icon name="search" />
+            <span>{t('search.title', '搜索')}</span>
+          </button>
           <input
             ref={fileInputRef}
             type="file"
@@ -3233,6 +3273,16 @@ function ShelfPage({ onOpen, theme }: { onOpen: (item: BookshelfItem) => void; t
           onSelectGroup={handleBatchMoveGroup}
         />
       )}
+
+      {/* 全局搜索（书架 / 目录 / 正文）。自带 portal，与上面几个弹窗**互斥**：
+          打开它时不渲染书籍管理那一层，杜绝嵌套 backdrop 的幽灵穿透 */}
+      {showGlobalSearch && (
+        <GlobalSearchModal
+          theme={theme}
+          onPick={openSearchHit}
+          onClose={() => setShowGlobalSearch(false)}
+        />
+      )}
     </main>
   )
 }
@@ -3575,7 +3625,7 @@ function App() {
         ) : page === 'explore' ? (
           <ExplorePage onOpen={(book, index) => openReader(book, index, 'explore')} />
         ) : page === 'shelf' ? (
-          <ShelfPage theme={settings.theme} onOpen={item => void openShelfItem(item)} />
+          <ShelfPage theme={settings.theme} onOpen={(item, jump) => void openShelfItem(item, jump)} />
         ) : page === 'bookmarks' ? (
           <BookmarksPage onOpenBookmark={target => void openBookmarkTarget(target)} />
         ) : (

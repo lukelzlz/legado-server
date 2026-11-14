@@ -6745,3 +6745,185 @@ mark.search-highlight { background: var(--accent-soft); color: var(--accent); fo
   .bookmark-dialog-actions .bookmark-add-button span { display: none; }
 }
 
+/* ---------------------------------------------------------------------------
+   全局搜索弹窗（`GlobalSearchModal`）
+   书架页顶栏「搜索」与阅读器顶栏「正文搜索」共用同一个组件；portal 到 body，
+   因此 `.global-search-backdrop` 上必须带 `theme-*`（否则 CSS 变量回退成透明/黑字）。
+   类名统一前缀 `global-search-`，与书架/书签弹窗的风格保持一致。
+   --------------------------------------------------------------------------- */
+.global-search-dialog {
+  width: min(620px, 100%);
+  max-height: min(84vh, 760px);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  /* 阴影用主题变量 + color-mix，不写死色值：本块落在 styles.css 末尾，
+     而 `manga-reader.test.ts` 会对「漫画样式块之后」的全部 CSS 断言"只能用主题变量"。 */
+  box-shadow: var(--shadow), 0 20px 50px color-mix(in srgb, var(--ink) 22%, transparent);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  animation: scaleUp .2s cubic-bezier(.25, 1, .5, 1);
+}
+.global-search-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 16px 10px;
+  border-bottom: 1px solid var(--line);
+}
+.global-search-title { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.global-search-title svg { width: 17px; height: 17px; color: var(--accent); flex-shrink: 0; }
+.global-search-title h2 {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 700;
+  font-family: Georgia, "Noto Serif SC", serif;
+  white-space: nowrap;
+}
+.global-search-scope {
+  padding: 1px 7px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 11px;
+  white-space: nowrap;
+}
+.global-search-dialog .close-btn { width: 32px; height: 32px; padding: 0; display: grid; place-items: center; color: var(--muted); flex-shrink: 0; }
+
+/* 三个 tab：只有「书架页」会看到；阅读器里 `modes=['content']` 时整段不渲染 */
+.global-search-tabs {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 16px 0;
+  flex-shrink: 0;
+}
+.global-search-tabs button {
+  padding: 5px 14px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface-muted);
+  color: var(--muted);
+  font-size: 13px;
+  cursor: pointer;
+}
+.global-search-tabs button.active {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--line));
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.global-search-input {
+  height: 38px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 10px 16px 0;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--muted);
+  flex-shrink: 0;
+}
+.global-search-input input { width: 100%; padding: 0; border: 0; background: transparent; font-size: 14px; color: var(--ink); }
+.global-search-input svg { width: 15px; height: 15px; flex-shrink: 0; }
+.global-search-clear { width: 26px; height: 26px; padding: 0; display: grid; place-items: center; flex-shrink: 0; }
+
+.global-search-hint { margin: 8px 16px 0; color: var(--muted); font-size: 12px; line-height: 1.5; }
+
+.global-search-results {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  padding: 10px 12px 14px;
+  display: grid;
+  gap: 8px;
+  align-content: start;
+}
+
+.global-search-item {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface-muted);
+  color: var(--ink);
+  text-align: left;
+  cursor: pointer;
+}
+.global-search-item:hover { border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); background: var(--accent-soft); }
+.global-search-item > svg { width: 15px; height: 15px; color: var(--muted); flex-shrink: 0; }
+.global-search-item:hover > svg { color: var(--accent); }
+/* 目录/正文结果没有封面 ⇒ 两列布局（否则左侧会留一个空洞的 auto 列） */
+.global-search-item-toc,
+.global-search-item-content { grid-template-columns: minmax(0, 1fr) auto; }
+
+.global-search-cover { display: block; width: 34px; height: 46px; border-radius: 4px; overflow: hidden; flex-shrink: 0; }
+.global-search-cover-img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.global-search-cover-fallback {
+  display: grid;
+  place-items: center;
+  width: 100%;
+  height: 100%;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.global-search-body { display: grid; gap: 3px; min-width: 0; }
+.global-search-book-name {
+  font-size: 14px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.global-search-book-author { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.global-search-chapter { color: var(--ink); font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.global-search-snippet {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.55;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+}
+.global-search-mark { background: color-mix(in srgb, var(--accent) 35%, transparent); color: inherit; padding: 0 1px; border-radius: 2px; }
+
+.global-search-truncated { margin: 2px 4px 0; color: var(--muted); font-size: 12px; text-align: center; }
+
+/* 书架页顶栏的「搜索」按钮：与「导入本地」「批量管理」同一排、同一种视觉重量 */
+.shelf-search-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-muted);
+  color: var(--ink);
+  font-size: 13px;
+  cursor: pointer;
+}
+.shelf-search-btn:hover { border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); color: var(--accent); }
+.shelf-search-btn svg { width: 15px; height: 15px; }
+
+@media (max-width: 640px) {
+  .global-search-dialog { max-height: 88vh; width: 100%; }
+  .global-search-input { margin: 10px 12px 0; }
+  .global-search-tabs { padding: 10px 12px 0; }
+  .global-search-hint { margin: 8px 12px 0; }
+  .global-search-results { padding: 10px 10px 12px; }
+  .shelf-search-btn span { display: none; }
+}
+

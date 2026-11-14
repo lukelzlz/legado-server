@@ -96,6 +96,13 @@ fun Route.apiRoutes(
      * （老测试构造 `apiRoutes` 时不必关心它；定时巡检在 `Application` 里另有一份接线）。
      */
     coverSelfHeal: CoverSelfHeal? = null,
+    /**
+     * 自动缓存调度器（小说 / 漫画 / 有声）。
+     *
+     * 只为 `POST /api/auto-cache/run-now`（手动跑一轮，便于验收）而注入：
+     * 定时那一侧在 `Application` 里独立接线。可为 null ⇒ run-now 路由回 503。
+     */
+    autoCacheScheduler: AutoCacheScheduler? = null,
 ) {
     val webView = WebViewProxy(database)
 
@@ -213,6 +220,48 @@ fun Route.apiRoutes(
                 database.setSetting("locale", normalized)
                 call.application.log.info("server locale setting updated to: {}", normalized)
                 call.respond(LocaleSettingResponse(locale = normalized))
+            }
+        }
+        /*
+         * 自动缓存（文件页 / WebDAV 设置页里的「自动缓存」区块）。
+         *
+         * 设置走 `app_setting`（与 `backup_export_*` 同一机制）；`GET` 只读、`PUT` 是**局部更新**
+         * （只写请求里出现过的字段），写操作按会话鉴权 + CSRF 双轨。
+         * 真正的抓取全部由既有服务完成（BookCacheService / MangaPrefetchService / AudioPrefetchService），
+         * 这里只负责「设置」与「手动跑一轮」两个入口。
+         */
+        route("/auto-cache") {
+            get("/settings") {
+                if (auth.requireSession(call) == null) return@get
+                call.respond(readAutoCacheSettings(database))
+            }
+            put("/settings") {
+                if (auth.requireSession(call, csrfRequired = true) == null) return@put
+                val request = runCatching { call.receive<AutoCacheSettingsUpdate>() }.getOrNull()
+                if (request == null) {
+                    call.respondApiError(HttpStatusCode.BadRequest, "invalid_auto_cache_setting", "缺少自动缓存设置")
+                    return@put
+                }
+                val saved = runCatching { applyAutoCacheSettingsUpdate(database, request) }.getOrElse { error ->
+                    // 错误码刻意不在四语字典里：字典里的通用码会盖掉真正可据以行动的原因
+                    // （用户要看到的是「间隔需在 1~1440 分钟之间」而不是「设置无效」）。
+                    call.respondApiError(
+                        HttpStatusCode.BadRequest,
+                        "invalid_auto_cache_setting",
+                        error.message ?: "自动缓存设置无效",
+                    )
+                    return@put
+                }
+                call.respond(saved)
+            }
+            post("/run-now") {
+                if (auth.requireSession(call, csrfRequired = true) == null) return@post
+                val scheduler = autoCacheScheduler
+                if (scheduler == null) {
+                    call.respondApiError(HttpStatusCode.ServiceUnavailable, "auto_cache_disabled", "自动缓存调度未启用")
+                    return@post
+                }
+                call.respond(scheduler.runNow())
             }
         }
         route("/explore") {
@@ -752,6 +801,56 @@ fun Route.apiRoutes(
                     call.respondProxied { webView.submitForm(sourceId, token, target, "POST", contentType, body) }
                 }
             }
+        }
+        /**
+         * 全局搜索 —— 书架 / 目录 / 正文三种模式，查的都是**本地库**。
+         *
+         * 与下面那个 `post("/search")`（多书源全网搜索，跑书源规则去外网抓）是两件不同的事。
+         *
+         * ⚠️ **刻意不用 `POST /api/search`**：那条路径已经被全网搜索占用（前端 `api.search`、
+         * `SearchRoutesTest` 都在打它）。Ktor 的路由树里同一个节点注册两个 handler 不会报错，
+         * 但第二个要么永不生效、要么在第一个 `respond` 之后再 respond 抛异常 —— 属于
+         * 「看起来能用、某天突然 500」的隐患。语义上 `search/local` 也更准确：搜的是本地库。
+         */
+        post("/search/local") {
+            // 只要求登录、不要求 CSRF：纯只读查询，与 `GET` 同风险等级（用户指定）。
+            if (auth.requireSession(call) == null) return@post
+            val request = runCatching { call.receive<GlobalSearchRequest>() }.getOrNull()
+            if (request == null) {
+                call.respondApiError(HttpStatusCode.BadRequest, "invalid_request", "搜索请求格式无效")
+                return@post
+            }
+            val query = request.query.trim()
+            val limit = request.limit.coerceIn(1, 100)
+            // 空查询直接空结果：绝不能把 `like '%%'` 打到库上（等于全表扫描 + 全量返回）。
+            if (query.isEmpty()) {
+                call.respond(SearchResponse(emptyList(), 0, false))
+                return@post
+            }
+            val mode = request.mode.trim().lowercase()
+            val sourceId = request.sourceId?.trim()?.takeIf { it.isNotEmpty() }
+            val bookUrl = request.bookUrl?.trim()?.takeIf { it.isNotEmpty() }
+            // 多取一条用于判断"是否被截断"，不为统计单独跑一次 count(*)。
+            val probe = limit + 1
+            val hits = try {
+                when (mode) {
+                    "shelf" -> database.searchShelf(query, probe)
+                    "toc" -> database.searchToc(query, probe, sourceId, bookUrl)
+                    "content" -> database.searchContent(query, probe, sourceId, bookUrl)
+                    else -> {
+                        call.respondApiError(HttpStatusCode.BadRequest, "invalid_mode", "搜索方式无效")
+                        return@post
+                    }
+                }
+            } catch (error: Throwable) {
+                // 搜索失败必须**明确报错**，不能静默返回空列表（用户会以为"就是没有结果"）。
+                call.application.log.warn("global search failed (mode=$mode): ${error.message}")
+                call.respondApiError(HttpStatusCode.InternalServerError, "search_failed", "搜索失败，请稍后重试")
+                return@post
+            }
+            val truncated = hits.size > limit
+            val items = if (truncated) hits.take(limit) else hits
+            call.respond(SearchResponse(items = items, total = items.size, truncated = truncated))
         }
         post("/search") {
             if (auth.requireSession(call, true) == null) return@post
@@ -2142,6 +2241,19 @@ fun Route.apiRoutes(
             }
             call.respond(HttpStatusCode.NoContent)
         }
+        // 孤儿缓存清理（书已不在书架的正文/目录/章节索引）：启动时会自动跑一次，这里提供手动入口。
+        post("/maintenance/purge-orphan-caches") {
+            if (auth.requireSession(call, true) == null) return@post
+            val result = database.purgeOrphanTextCaches()
+            call.respond(
+                OrphanCachePurgeResponse(
+                    contentRows = result.contentRows,
+                    tocRows = result.tocRows,
+                    chapterIndexRows = result.chapterIndexRows,
+                    total = result.total,
+                ),
+            )
+        }
         post("/bookshelf/reclean") {
             if (auth.requireSession(call, true) == null) return@post
             val req = call.receive<BookRecleanRequest>()
@@ -2830,7 +2942,9 @@ fun Route.apiRoutes(
                 return@get
             }
             val bookAuthor = call.request.queryParameters["bookAuthor"]
-            call.respond(BookCoverCandidateResponse(bookmarkCovers.candidates(bookName, bookAuthor)))
+            // byAuthor=true ⇒ 只按作者名搜（借同作者其它书的封面），前端「按作者搜索」按钮会带它
+            val byAuthorOnly = call.request.queryParameters["byAuthor"]?.toBooleanStrictOrNull() ?: false
+            call.respond(BookCoverCandidateResponse(bookmarkCovers.candidates(bookName, bookAuthor, byAuthorOnly)))
         }
         route("/tts") {
             get("/voices") {

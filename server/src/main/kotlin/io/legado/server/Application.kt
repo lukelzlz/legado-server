@@ -21,7 +21,33 @@ fun main(args: Array<String>) {
         resetPasswordMain(args.drop(1).toTypedArray())
         return
     }
-    val config = ServerConfig.fromEnvironment()
+    // 配置来源：<jar 目录>/config/config.yaml（首次启动自动生成带注释的默认文件），
+    // 环境变量优先于文件（容器部署仍可只用 env）。
+    val loadedConfig = try {
+        ServerConfig.load()
+    } catch (error: UnsupportedDatabaseTypeException) {
+        // 用户拍板移除 MySQL：配置里还写 `database.type: mysql` 时**明确报错并非 0 退出**，
+        // 绝不静默回落 sqlite（那会让用户以为在用远端 MySQL，实际写进了本地空库）。
+        System.err.println("[config] ${error.message}")
+        kotlin.system.exitProcess(2)
+    }
+    val config = when (val loaded = loadedConfig) {
+        is ServerConfig.LoadResult.FirstRun -> {
+            // 用户要求：**首次启动仅创建配置文件，第二次启动再正式启动**。
+            // 这样可以先改好数据库/端口/密码，避免用默认值把库跑起来之后再返工。
+            println("[config] 首次启动：已生成配置文件 ${loaded.file}")
+            println("[config] 请按注释修改后**再次启动**；本次不启动服务。")
+            return
+        }
+        is ServerConfig.LoadResult.Ready -> loaded.config
+    }
+    if (config.isExternalDatabase) {
+        // 外部库（postgres）是**真实支持**的：连接、自动建库、自动建表、方言翻译都在数据层里。
+        // 这里只把「连哪个库、用什么账号」打出来，便于排障（密码绝不打日志）。
+        println(
+            "[db] 数据库类型：${config.databaseType}；目标：${config.databaseJdbcUrl}（user=${config.databaseUser}）",
+        )
+    }
     embeddedServer(CIO, host = config.host, port = config.port) {
         legadoApplication(config)
     }.start(wait = true)
@@ -37,7 +63,7 @@ fun Application.legadoApplication(
      */
     injectedImageFetcher: MangaImageFetcher? = null,
 ) {
-    val database = Database(config.databasePath)
+    val database = Database(config.databaseSpec())
     database.initialize(config.initialAdminPassword)
     // 缓存目录结构升级到 v3 的唯一入口（同一套 `app_setting.cache_layout` 版本判断）：
     // - v2 → v3：漫画根 `images` 改名成 `comic`，动作是**移动**（布局没变 ⇒ 用户零数据损失），
@@ -83,12 +109,9 @@ fun Application.legadoApplication(
     subscriptions.start()
     bookCache.start()
     backupExportScheduler.start()
-    val stopServices = {
-        subscriptions.stop(); bookCache.stop(); backupExportScheduler.stop()
-        ttsSessions.close(); database.close()
-    }
-    environment.monitor.subscribe(ApplicationStopping) { stopServices() }
-    environment.monitor.subscribe(ApplicationStopped) { stopServices() }
+    // ⚠️ stopServices 故意**留到自动缓存调度器建好之后再定义**：
+    // 它要停 `autoCacheScheduler`，而那个调度器依赖下面才创建的漫画/有声预取服务。
+    // 早定义就只能用 `var`+可空，反而更容易在接线时漏掉某一侧。
 
     install(ContentNegotiation) {
         json(Json { ignoreUnknownKeys = true; explicitNulls = false; encodeDefaults = true })
@@ -181,6 +204,38 @@ fun Application.legadoApplication(
             environment.monitor.subscribe(ApplicationStopped) { audioGcJob.cancel() }
         }
         authRoutes(auth)
+        // 自动缓存（小说 / 漫画 / 有声，三组各自独立）。
+        // 「忽略内存大小限制」→ `pin = true`（既有 pinned 免 GC 机制，不新造配额旁路）。
+        // 入队一律走**既有服务**：小说 BookCacheService，漫画 MangaPrefetchService，有声 AudioPrefetchService。
+        // 「正在跑」的集合只为轮转公平：booksPerRound=1 时若不跳过在跑的书，其余书永远轮不到。
+        val autoCacheScheduler = AutoCacheScheduler(
+            database = database,
+            enqueueNovel = { request -> bookCache.enqueue(request) },
+            enqueueComic = { request ->
+                mangaPrefetch.enqueue(request.sourceId, request.bookUrl, request.fromChapterIndex, request.ahead, request.pin)
+            },
+            enqueueAudio = { request ->
+                audioPrefetch.enqueue(request.sourceId, request.bookUrl, request.fromChapterIndex, request.ahead, request.pin)
+            },
+            comicRunning = {
+                mangaPrefetch.status().filter { it.running }
+                    .map { "${it.sourceId}\u0000${it.bookUrl}" }.toSet()
+            },
+            audioRunning = {
+                audioPrefetch.status().filter { it.running }
+                    .map { "${it.sourceId}\u0000${it.bookUrl}" }.toSet()
+            },
+            log = { message -> log.info(message) },
+        )
+        autoCacheScheduler.start()
+        // 启动顺序：所有后台服务都建好之后才注册停机钩子（照抄 backupExportScheduler 的接法）
+        val stopServices = {
+            autoCacheScheduler.stop()
+            subscriptions.stop(); bookCache.stop(); backupExportScheduler.stop()
+            ttsSessions.close(); database.close()
+        }
+        environment.monitor.subscribe(ApplicationStopping) { stopServices() }
+        environment.monitor.subscribe(ApplicationStopped) { stopServices() }
         apiRoutes(
             database, auth, runner, coverCache, subscriptions, bookCache, edgeTts, ttsSessions,
             config.localBooksDirectory,
@@ -198,6 +253,7 @@ fun Application.legadoApplication(
             // 手动触发一轮封面自愈的入口（`POST /api/bookshelf/self-heal-covers`，便于验收）。
             // 开关关掉时传 null ⇒ 该路由回 503「未启用」，与"不动任何东西"的回滚语义一致。
             coverSelfHeal.takeIf { config.coverSelfHealEnabled },
+            autoCacheScheduler,
         )
         webDavRoutes(auth, webDavStorage, database, coverCache, runner)
         staticWeb()

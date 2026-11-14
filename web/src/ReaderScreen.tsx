@@ -5,6 +5,7 @@ import { api, BookDetails, BookmarkRecord, Chapter, ReadingProgress, SearchResul
 import { Icon } from './icons'
 import { bookmarkOffsetFromPosition, bookmarkPositionFraction, bookmarkSnippet } from './bookmarkPos'
 import { BookmarkListModal } from './BookmarkListModal'
+import { GlobalSearchModal } from './GlobalSearchModal'
 import { matchBestChapter } from './sourceSwitchRemap'
 import { calculatePaginationLayout, chapterTurnClassName, findFirstFullyVisibleParagraphIndex, isAtBottomBoundary, isAtTopBoundary, isInteractiveReaderTarget, isTapGesture, paginateTapZone, scrollTapZone, splitParagraphs, swipeDirection, ViewportBounds } from './readerInteractions'
 import type { ChapterTurnDirection, ChapterTurnPhase } from './readerInteractions'
@@ -347,6 +348,14 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
   const [offlineTtsConfirmOpen, setOfflineTtsConfirmOpen] = useState(false)
   /** 书签列表弹窗（顶栏「书签」按钮打开）。 */
   const [showBookmarks, setShowBookmarks] = useState(false)
+  /**
+   * 正文搜索弹窗（顶栏「目录」右边的搜索按钮打开）。
+   *
+   * 用户原话：「小说阅读器中在上方悬浮栏目录按钮右边添加搜索按钮，这个只是正文搜索」
+   * ⇒ 复用书架页那个 `GlobalSearchModal`，但只给 `modes={['content']}` 并带上当前书，
+   * 搜索范围天然收窄成"当前这本书已缓存的正文"。
+   */
+  const [showContentSearch, setShowContentSearch] = useState(false)
   /**
    * 书签跳转的「待落点」。
    *
@@ -2552,6 +2561,12 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
             }
           }}
         />
+        {/* 「目录」右边：正文搜索（只搜当前书已缓存的正文） */}
+        <IconButton
+          label={t('search.content', '正文搜索')}
+          icon="search"
+          onClick={() => setShowContentSearch(true)}
+        />
       </div>
       <strong className="reader-header-title" title={bookName}>{bookName}</strong>
       <div className="reader-header-actions">
@@ -3035,6 +3050,26 @@ export function ReaderScreen({ openBook, startIndex, settings, onSettingsChange,
         onAddHere={addBookmarkHere}
         onJump={jumpToBookmark}
         onClose={() => setShowBookmarks(false)}
+      />
+    )}
+
+    {/* 正文搜索弹窗（顶栏「目录」右边的搜索按钮）：
+        同一套组件、只给 content 模式，并用 scope 收窄到当前这本书。
+        点结果 ⇒ 按「章名优先、下标兜底」定位后走既有 changeChapter 跳章。 */}
+    {showContentSearch && (
+      <GlobalSearchModal
+        theme={settings.theme}
+        modes={['content']}
+        scope={{ sourceId: currentBook.details.sourceId, bookUrl: currentBook.bookUrl }}
+        onPick={hit => {
+          const target = matchBestChapter(
+            currentBook.chapters,
+            hit.chapterTitle ?? undefined,
+            typeof hit.chapterIndex === 'number' ? hit.chapterIndex : 0,
+          ).index
+          changeChapter(target, 'first')
+        }}
+        onClose={() => setShowContentSearch(false)}
       />
     )}
 

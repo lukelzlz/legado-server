@@ -11,6 +11,27 @@ import i18n, { getCurrentLocale } from './i18n'
 export type SourceSummary = { id: string; name: string; url: string; group?: string; enabled: boolean; isJsSource: boolean; hasLogin: boolean; updatedAt: number; version: number }
 export type SourceRecord = { id: string; json: string; version: number; updatedAt: number }
 export type SearchResult = { sourceId: string; name: string; author?: string; bookUrl: string; coverUrl?: string; intro?: string; bookKind?: string }
+/**
+ * 全局搜索的三种模式：书架 / 目录 / 正文。
+ *
+ * 与 [SearchResult]（跑书源规则去外网抓的全网搜索）**是两件事**：
+ * 这里搜的全是本地库（`/api/search/local`）。
+ */
+export type LocalSearchMode = 'shelf' | 'toc' | 'content'
+/** 一条本地库搜索命中；字段按 `kind` 解释（shelf 无章节、content 多 snippet）。 */
+export type LocalSearchHit = {
+  kind: LocalSearchMode | string
+  sourceId: string
+  bookUrl: string
+  bookName: string
+  bookAuthor?: string | null
+  coverKey?: string | null
+  chapterIndex?: number | null
+  chapterTitle?: string | null
+  chapterUrl?: string | null
+  snippet?: string | null
+}
+export type LocalSearchResponse = { items: LocalSearchHit[]; total: number; truncated: boolean }
 export type ExploreSourceItem = { id: string; name: string; group?: string | null; enabled: boolean }
 export type ExploreCategory = { title: string; url?: string | null; subCategories: ExploreCategory[] }
 export type BookDetails = { sourceId: string; name: string; author?: string; intro?: string; coverUrl?: string; tocUrl: string; bookKind?: string; alternateSources?: SearchResult[]; variables?: Record<string, string> }
@@ -136,6 +157,39 @@ export type BackupExportResult = {
   sources: number
   bookmarks: number
   groups: number
+}
+
+/**
+ * 自动缓存设置（文件页里的小说 / 漫画 / 有声三组，各自独立）。
+ *
+ * 服务端存 `app_setting`，键名固定（`auto_cache_<kind>_*`）。三组**完全独立**：
+ * 开哪一组只影响那一组。只有漫画与有声有 `ignoreQuota`（= 忽略内存大小限制，
+ * 落地为既有的 pinned 免 GC），小说的正文缓存不占图/音配额，因此没有这一项。
+ */
+export type AutoCacheSettings = {
+  /** 小说：是否参与自动缓存。默认关。 */
+  novelEnabled: boolean
+  /** 小说：每隔多少分钟跑一轮（1..1440），默认 60。 */
+  novelIntervalHours: number
+  /** 小说：每轮最多入队几本（>=1，无上限），默认 1。 */
+  novelBooksPerRound: number
+  comicEnabled: boolean
+  comicIntervalHours: number
+  comicBooksPerRound: number
+  /** 漫画：忽略内存大小限制（pinned 免 GC）。 */
+  comicIgnoreQuota: boolean
+  audioEnabled: boolean
+  audioIntervalHours: number
+  audioBooksPerRound: number
+  /** 有声：忽略内存大小限制（pinned 免 GC）。 */
+  audioIgnoreQuota: boolean
+}
+
+/** 手动跑一轮自动缓存的结果（`POST /api/auto-cache/run-now`，主要用于验收）。 */
+export type AutoCacheRunResult = {
+  novelQueued: number
+  comicQueued: number
+  audioQueued: number
 }
 export type ProgressMergeResponse = { source: 'file' | 'database'; progress?: ReadingProgress; fileFound: boolean; alignedIndex?: number }
 export type BookshelfItem = { sourceId: string; bookUrl: string; name: string; author?: string; tocUrl: string; coverKey?: string; coverUrl?: string; chapterIndex?: number; scrollPosition?: number; lastReadAt: number; cachedChapters: number; totalChapters: number; cacheState: 'idle' | 'caching' | 'ready' | 'failed'; cacheError?: string; completed: boolean; alternateSources?: SearchResult[]; groupName?: string; bookKind?: string; variable?: string }
@@ -684,6 +738,18 @@ export const api = {
     `/api/sources/${encodeURIComponent(sourceId)}/browser/page?t=${encodeURIComponent(token)}&i=${encodeURIComponent(key)}`,
   search: (keyword: string, sourceIds?: string[], signal?: AbortSignal, groups?: string[]) =>
     request<SearchResult[]>('/api/search', { method: 'POST', body: JSON.stringify({ keyword, sourceIds, groups }), signal }),
+  /**
+   * 本地库搜索（书架 / 目录 / 正文）。
+   *
+   * ⚠️ 路径**不是** `/api/search`：那条路径是上面的「多书源全网搜索」，
+   * 服务端两个 handler 挂同一个节点会互相打架（见 `Routes.kt` 的注释）。
+   * `sourceId + bookUrl` 用于阅读器里的「只搜当前这本书」。
+   */
+  searchLocal: (
+    payload: { mode: LocalSearchMode; query: string; limit?: number; sourceId?: string; bookUrl?: string },
+    signal?: AbortSignal,
+  ) =>
+    request<LocalSearchResponse>('/api/search/local', { method: 'POST', body: JSON.stringify(payload), signal }),
   details: (sourceId: string, bookUrl: string, signal?: AbortSignal) => request<BookDetails>('/api/books/details', { method: 'POST', body: JSON.stringify({ sourceId, bookUrl }), signal }),
   chapters: (sourceId: string, bookUrl: string, signal?: AbortSignal) => request<Chapter[]>('/api/books/chapters', { method: 'POST', body: JSON.stringify({ sourceId, bookUrl }), signal }),
   /**
@@ -870,9 +936,9 @@ export const api = {
     remove?: boolean
   }) => request<BookCoverState>('/api/covers/book', { method: 'PUT', body: JSON.stringify(payload) }),
   /** 手动设置封面用：书源搜出来的候选封面（只列不写）。 */
-  bookCoverCandidates: (bookName: string, bookAuthor?: string | null) =>
+  bookCoverCandidates: (bookName: string, bookAuthor?: string | null, byAuthor = false) =>
     request<{ items: BookCoverCandidate[] }>(
-      `/api/covers/candidates?bookName=${encodeURIComponent(bookName)}${bookAuthor ? `&bookAuthor=${encodeURIComponent(bookAuthor)}` : ''}`,
+      `/api/covers/candidates?bookName=${encodeURIComponent(bookName)}${bookAuthor ? `&bookAuthor=${encodeURIComponent(bookAuthor)}` : ''}${byAuthor ? '&byAuthor=true' : ''}`,
     ),
   bookshelf: async () => {
     try {
@@ -984,6 +1050,18 @@ export const api = {
     request<BackupExportSettings>('/api/webdav/export/settings', { method: 'PUT', body: JSON.stringify(patch) }),
   /** 按 Legado 格式导出备份（书源及分组 + 书架及分组 + 阅读进度），写入 WebDAV 存储区。 */
   backupExport: () => request<BackupExportResult>('/api/webdav/export', { method: 'POST' }),
+  /** 自动缓存设置（小说 / 漫画 / 有声三组，各自独立）。 */
+  autoCacheSettings: () => request<AutoCacheSettings>('/api/auto-cache/settings'),
+  /**
+   * 保存自动缓存设置 —— **局部更新**：只提交传进来的字段。
+   *
+   * 勾选类开关（启用 / 忽略内存大小限制）是勾了就存，间隔与每轮本数是组内保存按钮，
+   * 因此必须「改哪个存哪个」，否则点一下开关会把用户还没保存的输入一起写进去。
+   */
+  saveAutoCacheSettings: (patch: Partial<AutoCacheSettings>) =>
+    request<AutoCacheSettings>('/api/auto-cache/settings', { method: 'PUT', body: JSON.stringify(patch) }),
+  /** 手动跑一轮自动缓存（间隔忽略，但仍尊重各组的启用开关）。 */
+  runAutoCacheNow: () => request<AutoCacheRunResult>('/api/auto-cache/run-now', { method: 'POST' }),
   /**
    * 自动导出：关闭网页 / 关闭书籍时由前端上报，服务端按开关决定是否真的写盘。
    *

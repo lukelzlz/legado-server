@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { i18n } from './i18n'
-import { api, joinWebDavPath, webDavFileUrl, WebDavInfo, ProgressSyncSettings, BackupExportSettings } from './api'
+import { api, joinWebDavPath, webDavFileUrl, WebDavInfo, ProgressSyncSettings, BackupExportSettings, AutoCacheSettings } from './api'
 import { toast } from './Toast'
 import { backupImportNotes } from './backupImportNotes'
 import { Icon } from './icons'
@@ -79,6 +79,20 @@ export const isBackupArchive = (name: string) => name.toLowerCase().endsWith('.z
  */
 export const isLocalBookFile = (name: string) => isSupportedLocalBook(name)
 
+/**
+ * 自动缓存的三种书型。
+ *
+ * 刻意与 `book_kind` 的字符串对齐（`novel` / `comic` / `audio`），
+ * 这样前端 patch 的字段名、服务端设置键名与书架里的类型三处天然一致，不需要再做一次映射。
+ */
+export type AutoCacheKind = 'novel' | 'comic' | 'audio'
+
+/** 间隔的合法范围，单位**小时**（与服务端 `AUTO_CACHE_MIN/MAX_INTERVAL_HOURS` 同一口径）。 */
+export const AUTO_CACHE_INTERVAL_RANGE = [0.1, 240] as const
+
+/** 每轮本数：只有下限（服务端无上限，用户要求「书籍数量无上限」）。 */
+export const AUTO_CACHE_BOOKS_RANGE = [1, Number.MAX_SAFE_INTEGER] as const
+
 async function copyText(text: string, successMessage: string, failureMessage?: string) {
   try {
     await navigator.clipboard.writeText(text)
@@ -124,6 +138,24 @@ export function WebDavSettingsPage() {
    */
   const autoLocked = exportSettings === null || !exportSettings.autoExport
   const [exporting, setExporting] = useState(false)
+
+  // 自动缓存（小说 / 漫画 / 有声三组，各自独立 —— 用户要求「三个分开」）
+  const [autoCacheSettings, setAutoCacheSettings] = useState<AutoCacheSettings | null>(null)
+  /**
+   * 三组的「间隔 / 每轮本数」是**本地草稿**，只有点组内「保存」才提交。
+   *
+   * 勾选类开关（启用 / 忽略内存大小限制）才走「勾了就存」—— 与备份导出的交互风格一致，
+   * 但草稿与已存状态必须分开，否则每敲一个数字都会发一次请求。
+   */
+  const [autoCacheInputs, setAutoCacheInputs] = useState<Record<AutoCacheKind, { interval: string; books: string }>>({
+    novel: { interval: '', books: '' },
+    comic: { interval: '', books: '' },
+    audio: { interval: '', books: '' },
+  })
+  /** 哪一组正在保存（`null` = 空闲）；只改那一组的按钮文案，避免其它按钮闪宽 */
+  const [autoCacheSaving, setAutoCacheSaving] = useState<AutoCacheKind | null>(null)
+  /** 勾选类开关的忙碌标记：不改任何按钮文案，因此不会有宽度变化引起的重排 */
+  const [autoCacheBusy, setAutoCacheBusy] = useState(false)
 
   // 本地书籍导入（仅 TXT / EPUB）
   const localBookInputRef = useRef<HTMLInputElement>(null)
@@ -273,6 +305,104 @@ export function WebDavSettingsPage() {
     void saveExportPatch({ scheduledTime: value }, 'time', t('webdav.scheduledTimeSaved', { time: value, defaultValue: `定时导出时间已保存：每天 ${value}` }))
   }
 
+  // ------------------------------------------------------------------
+  // 自动缓存（小说 / 漫画 / 有声）
+  // ------------------------------------------------------------------
+
+  const loadAutoCacheSettings = useCallback(async () => {
+    try {
+      const s = await api.autoCacheSettings()
+      setAutoCacheSettings(s)
+      // 每次读回都同步草稿：页面打开时输入框显示的必须是**已保存的真实值**，而不是空框
+      setAutoCacheInputs({
+        novel: { interval: String(s.novelIntervalHours), books: String(s.novelBooksPerRound) },
+        comic: { interval: String(s.comicIntervalHours), books: String(s.comicBooksPerRound) },
+        audio: { interval: String(s.audioIntervalHours), books: String(s.audioBooksPerRound) },
+      })
+    } catch {
+      // 与进度同步 / 备份导出同理：自动缓存设置读不到不该影响文件页其它功能
+      setAutoCacheSettings(null)
+    }
+  }, [])
+
+  /**
+   * 自动缓存的局部保存：`patch` 里只放本次真正要改的字段。
+   *
+   * @param group   哪个组点了「保存」—— 只有它自己会显示「保存中…」；
+   *                传 `null` 表示勾选类开关触发的，**不改任何按钮文案**。
+   */
+  const saveAutoCachePatch = useCallback(async (
+    patch: Partial<AutoCacheSettings>,
+    group: AutoCacheKind | null,
+    message?: string,
+  ) => {
+    if (group) setAutoCacheSaving(group)
+    else setAutoCacheBusy(true)
+    try {
+      const saved = await api.saveAutoCacheSettings(patch)
+      setAutoCacheSettings(saved)
+      // ⚠️ 只回填被保存的那一组，别把其它组正在输入的草稿冲掉
+      if (group === 'novel') {
+        setAutoCacheInputs(c => ({ ...c, novel: { interval: String(saved.novelIntervalHours), books: String(saved.novelBooksPerRound) } }))
+      } else if (group === 'comic') {
+        setAutoCacheInputs(c => ({ ...c, comic: { interval: String(saved.comicIntervalHours), books: String(saved.comicBooksPerRound) } }))
+      } else if (group === 'audio') {
+        setAutoCacheInputs(c => ({ ...c, audio: { interval: String(saved.audioIntervalHours), books: String(saved.audioBooksPerRound) } }))
+      }
+      if (message) toast.success(message)
+      return saved
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : t('webdav.saveFailed', { defaultValue: '保存失败' }))
+      return null
+    } finally {
+      if (group) setAutoCacheSaving(null)
+      else setAutoCacheBusy(false)
+    }
+  }, [t])
+
+  /** 勾选即保存：启用开关（三组都有）。 */
+  const handleToggleAutoCache = (kind: AutoCacheKind, checked: boolean) => {
+    const patch: Partial<AutoCacheSettings> =
+      kind === 'novel' ? { novelEnabled: checked }
+        : kind === 'comic' ? { comicEnabled: checked }
+          : { audioEnabled: checked }
+    void saveAutoCachePatch(patch, null)
+  }
+
+  /** 勾选即保存：「忽略内存大小限制」只有漫画与有声有。 */
+  const handleToggleIgnoreQuota = (kind: 'comic' | 'audio', checked: boolean) => {
+    void saveAutoCachePatch(kind === 'comic' ? { comicIgnoreQuota: checked } : { audioIgnoreQuota: checked }, null)
+  }
+
+  /** 组内「保存」：把这一组的间隔与每轮本数一起提交（两者同属一个语义单元）。 */
+  const handleSaveAutoCacheGroup = (kind: AutoCacheKind) => {
+    const draft = autoCacheInputs[kind]
+    const interval = Number(draft.interval.trim())
+    const books = Number(draft.books.trim())
+    // 前端先粗校验一次给出即时反馈；服务端还会按同一范围再校验一遍（非法值 → 400）
+    if (!Number.isFinite(interval) || interval < AUTO_CACHE_INTERVAL_RANGE[0] || interval > AUTO_CACHE_INTERVAL_RANGE[1]) {
+      toast.warning(t('webdav.autoCacheIntervalInvalid', {
+        min: AUTO_CACHE_INTERVAL_RANGE[0],
+        max: AUTO_CACHE_INTERVAL_RANGE[1],
+        defaultValue: `间隔需在 ${AUTO_CACHE_INTERVAL_RANGE[0]}~${AUTO_CACHE_INTERVAL_RANGE[1]} 小时之间`,
+      }))
+      return
+    }
+    if (!Number.isInteger(books) || books < AUTO_CACHE_BOOKS_RANGE[0]) {
+      toast.warning(t('webdav.autoCacheBooksInvalid', {
+        min: AUTO_CACHE_BOOKS_RANGE[0],
+        max: AUTO_CACHE_BOOKS_RANGE[1],
+        defaultValue: `每轮至少 ${AUTO_CACHE_BOOKS_RANGE[0]} 本`,
+      }))
+      return
+    }
+    const patch: Partial<AutoCacheSettings> =
+      kind === 'novel' ? { novelIntervalHours: interval, novelBooksPerRound: books }
+        : kind === 'comic' ? { comicIntervalHours: interval, comicBooksPerRound: books }
+          : { audioIntervalHours: interval, audioBooksPerRound: books }
+    void saveAutoCachePatch(patch, kind, t('webdav.autoCacheSaved', { defaultValue: '自动缓存设置已保存' }))
+  }
+
   /**
    * 导出备份到 WebDAV 存储区。
    *
@@ -324,6 +454,10 @@ export function WebDavSettingsPage() {
   useEffect(() => {
     void loadExportSettings()
   }, [loadExportSettings])
+
+  useEffect(() => {
+    void loadAutoCacheSettings()
+  }, [loadAutoCacheSettings])
 
   const refresh = () => void load(path)
 
@@ -679,6 +813,106 @@ export function WebDavSettingsPage() {
             </div>
           )}
         </div>
+      </section>
+
+      <section className="webdav-section">
+        <h2 className="webdav-section-title">{t('webdav.autoCacheTitle', { defaultValue: '自动缓存' })}</h2>
+        <p className="webdav-section-desc">
+          {t('webdav.autoCacheDesc', { defaultValue: '按书型分开配置：每隔多少分钟，自动挑几本「还没缓存完」的书排队缓存。小说、漫画、有声三组互不影响；勾选后立即生效，间隔与每轮本数点该组的「保存」才提交。' })}
+        </p>
+        <div className="auto-cache-groups">
+          {([
+            { kind: 'novel' as const, title: t('webdav.autoCacheNovel', { defaultValue: '小说' }), quota: false },
+            { kind: 'comic' as const, title: t('webdav.autoCacheComic', { defaultValue: '漫画' }), quota: true },
+            { kind: 'audio' as const, title: t('webdav.autoCacheAudio', { defaultValue: '有声' }), quota: true },
+          ]).map(group => {
+            const settings = autoCacheSettings
+            // 三组的字段名与服务端的设置键名同源（`<kind>Enabled` / `<kind>IntervalMinutes` / ...），
+            // 这里仍然逐个写出来：动态拼字段名 TS 查不出错，写错了只会在运行时静默变成 undefined。
+            const enabled = settings === null ? false
+              : group.kind === 'novel' ? settings.novelEnabled
+                : group.kind === 'comic' ? settings.comicEnabled
+                  : settings.audioEnabled
+            const ignoreQuota = settings === null ? false
+              : group.kind === 'comic' ? settings.comicIgnoreQuota
+                : group.kind === 'audio' ? settings.audioIgnoreQuota
+                  : false
+            const draft = autoCacheInputs[group.kind]
+            const saving = autoCacheSaving === group.kind
+            const disabled = autoCacheBusy || settings === null
+            const updateDraft = (field: 'interval' | 'books', value: string) =>
+              setAutoCacheInputs(current => ({
+                ...current,
+                [group.kind]: { ...current[group.kind], [field]: value },
+              }))
+            return (
+              <div className="auto-cache-group" data-kind={group.kind} key={group.kind}>
+                <h3 className="auto-cache-group-title">{group.title}</h3>
+                <label className="export-auto-switch">
+                  <input
+                    type="checkbox"
+                    checked={enabled}
+                    onChange={e => handleToggleAutoCache(group.kind, e.target.checked)}
+                    disabled={disabled}
+                    aria-label={`${group.title} ${t('webdav.autoCacheEnable', { defaultValue: '启用' })}`}
+                  />
+                  <span>{t('webdav.autoCacheEnable', { defaultValue: '启用' })}</span>
+                </label>
+                <div className="auto-cache-row">
+                  <label className="auto-cache-field">
+                    <span>{t('webdav.autoCacheEvery', { defaultValue: '每隔' })}</span>
+                    <input
+                      type="number"
+                      min={AUTO_CACHE_INTERVAL_RANGE[0]}
+                      max={AUTO_CACHE_INTERVAL_RANGE[1]}
+                      value={draft.interval}
+                      onChange={e => updateDraft('interval', e.target.value)}
+                      disabled={saving || disabled}
+                      aria-label={t('webdav.autoCacheIntervalAria', { n: draft.interval, defaultValue: `每隔 ${draft.interval} 小时` })}
+                    />
+                    <span>{t('webdav.autoCacheHours', { defaultValue: '小时' })}</span>
+                  </label>
+                  <label className="auto-cache-field">
+                    <span>{t('webdav.autoCachePerRound', { defaultValue: '每轮' })}</span>
+                    <input
+                      type="number"
+                      min={AUTO_CACHE_BOOKS_RANGE[0]}
+                      max={AUTO_CACHE_BOOKS_RANGE[1]}
+                      value={draft.books}
+                      onChange={e => updateDraft('books', e.target.value)}
+                      disabled={saving || disabled}
+                      aria-label={t('webdav.autoCacheBooksAria', { n: draft.books, defaultValue: `每轮 ${draft.books} 本` })}
+                    />
+                    <span>{t('webdav.autoCacheBooks', { defaultValue: '本' })}</span>
+                  </label>
+                  <button
+                    type="button"
+                    className="primary-button"
+                    onClick={() => handleSaveAutoCacheGroup(group.kind)}
+                    disabled={saving || disabled}
+                  >
+                    {saving ? t('common.saving', { defaultValue: '保存中…' }) : t('common.save', { defaultValue: '保存' })}
+                  </button>
+                </div>
+                {group.quota && (
+                  // 「忽略内存大小限制」**各自放在自己那组下面**（用户明确要求），且只有漫画/有声有
+                  <label className="export-auto-switch auto-cache-quota">
+                    <input
+                      type="checkbox"
+                      checked={ignoreQuota}
+                      onChange={e => handleToggleIgnoreQuota(group.kind as 'comic' | 'audio', e.target.checked)}
+                      disabled={disabled}
+                    />
+                    <span>{t('webdav.autoCacheIgnoreQuota', { defaultValue: '忽略内存大小限制' })}</span>
+                  </label>
+                )}
+              </div>
+            )
+          })}
+        </div>
+        <small className="progress-sync-hint">
+          {t('webdav.autoCacheHint', { defaultValue: '「忽略内存大小限制」勾上后，这本自动缓存的书会被 pin 住、不会被缓存清理淘汰（漫画与有声各自的配额限制不再生效）。小说的正文缓存不占图/音配额，因此没有这一项。' })}
+        </small>
       </section>
 
       <section className="webdav-section">

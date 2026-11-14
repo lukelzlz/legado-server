@@ -335,6 +335,46 @@ data class SourceLoginStateRecord(
 ) {
     val effectiveKeyword: String get() = keyword.ifBlank { query }
 }
+/**
+ * 全局搜索请求（书架页弹窗 / 阅读器顶栏）。
+ *
+ * 与书库「全网搜索」的 [SearchRequest] **是两件不同的事**：那个是跑书源规则去外网抓，
+ * 这个是查本地库（书架 / 已抓到的目录 / 已缓存的正文）。
+ *
+ * `sourceId` + `bookUrl` 用于阅读器内「只搜当前这本书」。
+ */
+@Serializable data class GlobalSearchRequest(
+    /** `shelf` 书架 / `toc` 目录 / `content` 正文。 */
+    val mode: String = "shelf",
+    val query: String = "",
+    val limit: Int = 50,
+    val sourceId: String? = null,
+    val bookUrl: String? = null,
+)
+
+/**
+ * 一条搜索命中。
+ *
+ * 刻意**合并三种模式到一个形状**（而不是三个类）：前端结果列表是同一个组件，
+ * 字段按 `kind` 解释 —— `shelf` 只用书名字段，`toc` 加章节，`content` 再加 `snippet`。
+ */
+@Serializable data class SearchHit(
+    /** `shelf` / `toc` / `content` */
+    val kind: String,
+    val sourceId: String,
+    val bookUrl: String,
+    val bookName: String,
+    val bookAuthor: String? = null,
+    val coverKey: String? = null,
+    val chapterIndex: Int? = null,
+    val chapterTitle: String? = null,
+    val chapterUrl: String? = null,
+    val snippet: String? = null,
+)
+
+/** 全局搜索响应。`truncated` = 命中数超过 `limit`（只为提示"结果被截断"，不做总数统计）。 */
+@Serializable data class SearchResponse(val items: List<SearchHit>, val total: Int, val truncated: Boolean)
+
 @Serializable data class SearchStreamEvent(
     val type: String,
     val totalSources: Int = 0,
@@ -538,6 +578,84 @@ data class SourceLoginStateRecord(
     val exportOnBookClose: Boolean? = null,
     val scheduledExport: Boolean? = null,
     val scheduledTime: String? = null,
+)
+
+/**
+ * 自动缓存的**设置**（小说 / 漫画 / 有声，三组各自独立）。
+ *
+ * 存在 `app_setting` 表（键名固定，见 [AutoCacheScheduler] 顶部的常量），与备份导出同一机制。
+ *
+ * 三组**完全独立**（用户要求「三个分开」）：开哪一组只影响那一组；漫画与有声另有
+ * [comicIgnoreQuota] / [audioIgnoreQuota]，语义是「这本书的缓存不受内存配额限制」
+ * （落地为既有 pinned 机制，绝不另造配额旁路）。小说**没有**这一项 —— 正文缓存本来就不占图/音配额。
+ */
+@Serializable data class AutoCacheSettings(
+    val novelEnabled: Boolean = false,
+    /** 每隔多少**小时**跑一轮：0.1 ~ 240（旧键 `_interval_minutes` 会在读取时 /60 换算）。 */
+    val novelIntervalHours: Double = 1.0,
+    /** 每轮最多入队几本：>= 1，**无上限**。 */
+    val novelBooksPerRound: Int = 1,
+    val comicEnabled: Boolean = false,
+    val comicIntervalHours: Double = 1.0,
+    val comicBooksPerRound: Int = 1,
+    /** 漫画：忽略内存大小限制（pinned 免 GC）。 */
+    val comicIgnoreQuota: Boolean = false,
+    val audioEnabled: Boolean = false,
+    val audioIntervalHours: Double = 1.0,
+    val audioBooksPerRound: Int = 1,
+    /** 有声：忽略内存大小限制（pinned 免 GC）。 */
+    val audioIgnoreQuota: Boolean = false,
+)
+
+/**
+ * 自动缓存设置的**局部**更新：为 null 的字段表示「这次不改」。
+ *
+ * 页面上勾选类开关是**勾了就存**，而间隔/本数是输入框 + 组内保存按钮，
+ * 契约必须是「改哪个存哪个」，否则点一下开关会把用户还没保存的输入一起写进去
+ * （与备份导出的 update 语义逐字一致）。
+ */
+@Serializable data class AutoCacheSettingsUpdate(
+    val novelEnabled: Boolean? = null,
+    val novelIntervalHours: Double? = null,
+    val novelBooksPerRound: Int? = null,
+    val comicEnabled: Boolean? = null,
+    val comicIntervalHours: Double? = null,
+    val comicBooksPerRound: Int? = null,
+    val comicIgnoreQuota: Boolean? = null,
+    val audioEnabled: Boolean? = null,
+    val audioIntervalHours: Double? = null,
+    val audioBooksPerRound: Int? = null,
+    val audioIgnoreQuota: Boolean? = null,
+)
+
+/**
+ * 媒体书（漫画 / 有声）一轮要入队的任务。
+ *
+ * [ahead] 语义与 `MangaPrefetchService.enqueue` 一致：从 [fromChapterIndex] 起**再往后**
+ * 多少章（含起始章共 `ahead+1` 章）。整本缓存传「章节数 - 1」。
+ * [pin] 就是「忽略内存大小限制」的落地形态（pinned 免 GC）。
+ */
+data class AutoCacheMediaRequest(
+    val sourceId: String,
+    val bookUrl: String,
+    val fromChapterIndex: Int,
+    val ahead: Int,
+    val pin: Boolean,
+)
+
+/** 手动触发一轮的结果（`POST /api/auto-cache/run-now`，便于验收）。 */
+/** 孤儿缓存清理结果（`POST /api/maintenance/purge-orphan-caches`）。 */
+@Serializable data class OrphanCachePurgeResponse(
+    val contentRows: Int = 0,
+    val tocRows: Int = 0,
+    val chapterIndexRows: Int = 0,
+    val total: Int = 0,
+)
+
+@Serializable data class AutoCacheRunResult(
+    val novelQueued: Int = 0,
+    val comicQueued: Int = 0,
+    val audioQueued: Int = 0,
 )
 
 /**

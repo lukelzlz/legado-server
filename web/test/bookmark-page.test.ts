@@ -291,12 +291,19 @@ test('封面 - 书签页可请求封面、点封面手动设置（书源候选�
   assert.match(bookmarksPage, /type="file"/)
   assert.match(bookmarksPage, /remove: true/)
   // 「无封面·已停止自动补抓」要有可见标记
+  // 按作者名搜索：按钮 + 带 byAuthor 的请求 + 作者为空时禁用
+  assert.match(bookmarksPage, /coverSearchByAuthor/)
+  assert.match(bookmarksPage, /loadCandidates\(coverFor, !authorOnly\)/)
+  assert.match(bookmarksPage, /authorOnly/)
+  assert.match(bookmarksPage, /bookmarks\.coverNoAuthor/)
   assert.match(bookmarksPage, /book\.coverMissing && !book\.coverKey/)
 })
 
 test('封面 - 接口契约：批量补抓 / 候选列表 / 挂载封面', () => {
   assert.match(apiTs, /refreshBookCovers: \(payload: \{[\s\S]{0,200}?\) =>\s*request<BookCoverRefreshResult>\('\/api\/covers\/refresh'/)
   assert.match(apiTs, /attachBookCover: \(payload: \{[\s\S]{0,400}?'\/api\/covers\/book'/)
-  assert.match(apiTs, /bookCoverCandidates: \(bookName: string, bookAuthor\?: string \| null\) =>[\s\S]{0,300}?\/api\/covers\/candidates\?bookName=/)
+  assert.match(apiTs, /bookCoverCandidates: \(bookName: string, bookAuthor\?: string \| null, byAuthor = false\) =>[\s\S]{0,320}?\/api\/covers\/candidates\?bookName=/)
+  // 按作者名搜索要真的把 byAuthor=true 带给服务端
+  assert.match(apiTs, /byAuthor \? '&byAuthor=true' : ''/)
 })
 

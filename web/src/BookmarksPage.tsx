@@ -68,6 +68,8 @@ export function BookmarksPage({ onOpenBookmark }: BookmarksPageProps = {}) {
   const [coverFor, setCoverFor] = useState<BookmarkBook | null>(null)
   const [candidates, setCandidates] = useState<BookCoverCandidate[]>([])
   const [loadingCandidates, setLoadingCandidates] = useState(false)
+  /** 候选列表当前是「按作者名搜」还是「按书名搜」。 */
+  const [authorOnly, setAuthorOnly] = useState(false)
   const [coverUploading, setCoverUploading] = useState(false)
   const fileInputRef = useRef<HTMLInputElement | null>(null)
 
@@ -302,15 +304,26 @@ export function BookmarksPage({ onOpenBookmark }: BookmarksPageProps = {}) {
     }
   }
 
-  /** 打开「设置封面」弹层，并顺手去书源搜候选（与书架换封面同一套体验）。 */
-  const openCoverDialog = (book: BookmarkBook) => {
-    setCoverFor(book)
+  /**
+   * 去书源搜候选封面。
+   *
+   * @param byAuthor `true` = 只按作者名搜、不按书名过滤（借同一作者其它书的封面）。
+   *   作者为空时后端返回空列表，前端直接把按钮置灰。
+   */
+  const loadCandidates = (book: BookmarkBook, byAuthor: boolean) => {
+    setAuthorOnly(byAuthor)
     setCandidates([])
     setLoadingCandidates(true)
-    void api.bookCoverCandidates(book.bookName, book.bookAuthor)
+    void api.bookCoverCandidates(book.bookName, book.bookAuthor, byAuthor)
       .then(result => setCandidates(result.items ?? []))
       .catch(() => setCandidates([]))
       .finally(() => setLoadingCandidates(false))
+  }
+
+  /** 打开「设置封面」弹层，并顺手去书源搜候选（与书架换封面同一套体验）。 */
+  const openCoverDialog = (book: BookmarkBook) => {
+    setCoverFor(book)
+    loadCandidates(book, false)
   }
 
   const applyCover = async (payload: { coverKey?: string; coverUrl?: string; sourceId?: string; remove?: boolean }) => {
@@ -793,10 +806,39 @@ export function BookmarksPage({ onOpenBookmark }: BookmarksPageProps = {}) {
               </div>
 
               <div className="bookmark-cover-candidates">
-                <span className="bookmark-field-label">{t('bookmarks.coverFromSources', '书源搜到的封面（点击使用）')}</span>
+                <div className="bookmark-cover-candidates-head">
+                  <span className="bookmark-field-label">
+                    {authorOnly
+                      ? t('bookmarks.coverFromAuthor', '按作者搜到的封面（点击使用）')
+                      : t('bookmarks.coverFromSources', '书源搜到的封面（点击使用）')}
+                  </span>
+                  <button
+                    type="button"
+                    className="subtle-button bookmark-cover-search-toggle"
+                    // 作者为空时按作者搜必然没结果，直接禁用（title 说明原因）
+                    disabled={loadingCandidates || busy || (!coverFor.bookAuthor && !authorOnly)}
+                    title={
+                      coverFor.bookAuthor
+                        ? t('bookmarks.coverSearchByAuthorHint', '搜索该作者名下的其它书，借它们的封面')
+                        : t('bookmarks.coverNoAuthor', '这本书没有作者信息，无法按作者搜索')
+                    }
+                    onClick={() => loadCandidates(coverFor, !authorOnly)}
+                  >
+                    <Icon name='search' />
+                    <span>
+                      {authorOnly
+                        ? t('bookmarks.coverSearchByName', '改回按书名搜索')
+                        : t('bookmarks.coverSearchByAuthor', '按作者名搜索')}
+                    </span>
+                  </button>
+                </div>
                 {loadingCandidates && <div className="bookmark-page-hint">{t('common.loading', '加载中...')}</div>}
                 {!loadingCandidates && candidates.length === 0 && (
-                  <div className="bookmark-page-hint">{t('bookmarks.coverNoCandidates', '书源里没有搜到带封面的候选')}</div>
+                  <div className="bookmark-page-hint">
+                    {authorOnly
+                      ? t('bookmarks.coverNoAuthorCandidates', '这个作者名下的书没搜到带封面的候选')
+                      : t('bookmarks.coverNoCandidates', '书源里没有搜到带封面的候选')}
+                  </div>
                 )}
                 <div className="bookmark-cover-candidate-grid">
                   {candidates.map(candidate => {

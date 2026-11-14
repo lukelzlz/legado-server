@@ -2814,7 +2814,9 @@ fun Route.apiRoutes(
                 return@get
             }
             val bookAuthor = call.request.queryParameters["bookAuthor"]
-            call.respond(BookCoverCandidateResponse(bookmarkCovers.candidates(bookName, bookAuthor)))
+            // byAuthor=true ⇒ 只按作者名搜（借同作者其它书的封面），前端「按作者搜索」按钮会带它
+            val byAuthorOnly = call.request.queryParameters["byAuthor"]?.toBooleanStrictOrNull() ?: false
+            call.respond(BookCoverCandidateResponse(bookmarkCovers.candidates(bookName, bookAuthor, byAuthorOnly)))
         }
         route("/tts") {
             get("/voices") {

@@ -173,34 +173,59 @@ class BookmarkCoverService(
      * 给「手动设置封面」用的候选列表：按书名+作者去已启用书源搜，取**带封面的**前几条。
      *
      * 与 [resolve] 的区别：这里只**列候选**给用户挑，不写库（用户点谁才写谁）。
+     *
+     * @param byAuthorOnly `true` = 只按**作者名**搜、且**不按书名过滤** ⇒ 用来借同一作者
+     *   其它书的封面（系列书/工具书封面常常通用）。作者为空时直接返回空列表。
      */
-    suspend fun candidates(bookName: String, bookAuthor: String?): List<BookCoverCandidate> = withContext(Dispatchers.IO) {
-        val ruleRunner = runner ?: return@withContext emptyList()
-        val keyword = listOfNotNull(bookName.trim(), bookAuthor?.trim()?.takeIf { it.isNotEmpty() }).joinToString(" ")
-        val sources = runCatching { database.listSearchSourceRecords(null, null) }.getOrNull().orEmpty()
+    suspend fun candidates(
+        bookName: String,
+        bookAuthor: String?,
+        byAuthorOnly: Boolean = false,
+    ): List<BookCoverCandidate> = withContext(Dispatchers.IO) {
+        val author = bookAuthor?.trim().orEmpty()
+        val keyword = if (byAuthorOnly) {
+            if (author.isEmpty()) return@withContext emptyList()
+            author
+        } else {
+            listOfNotNull(bookName.trim().takeIf { it.isNotEmpty() }, author.takeIf { it.isNotEmpty() }).joinToString(" ")
+        }
+        if (keyword.isBlank()) return@withContext emptyList()
         val out = LinkedHashMap<String, BookCoverCandidate>()
-        var tried = 0
-        for (source in sources) {
-            if (tried >= MAX_SEARCH_SOURCES || out.size >= MAX_CANDIDATES) break
-            tried++
-            val hits = runCatching { ruleRunner.search(source.json, keyword) }.getOrNull().orEmpty()
-            hits.asSequence()
-                .filter { sameBookName(it.name, bookName) }
-                .forEach { hit ->
-                    val url = hit.coverUrl?.trim()?.takeIf { it.startsWith("http", ignoreCase = true) } ?: return@forEach
-                    val key = hit.bookUrl
-                    if (!out.containsKey(key) && out.size < MAX_CANDIDATES) {
-                        out[key] = BookCoverCandidate(
-                            sourceId = hit.sourceId,
-                            bookUrl = hit.bookUrl,
-                            name = hit.name,
-                            author = hit.author,
-                            coverUrl = url,
-                        )
-                    }
-                }
+        for (hit in searchHits(keyword)) {
+            if (out.size >= MAX_CANDIDATES) break
+            // 按作者搜索时不过滤书名：目标就是看这个作者名下的其它书
+            if (!byAuthorOnly && !sameBookName(hit.name, bookName)) continue
+            val url = hit.coverUrl?.trim()?.takeIf { it.startsWith("http", ignoreCase = true) } ?: continue
+            if (out.containsKey(hit.bookUrl)) continue
+            out[hit.bookUrl] = BookCoverCandidate(
+                sourceId = hit.sourceId,
+                bookUrl = hit.bookUrl,
+                name = hit.name,
+                author = hit.author,
+                coverUrl = url,
+            )
         }
         out.values.toList()
+    }
+
+    /**
+     * 用一个关键词去书源搜一轮（最多 [MAX_SEARCH_SOURCES] 个源）。
+     *
+     * 有 `searchBooks` 测试接缝时**优先用它**（单测不需要真书源/真网络），
+     * 否则扫已启用书源 + `RuleRunner.search`。
+     */
+    private fun searchHits(keyword: String): List<SearchResult> {
+        searchBooks?.let { seam -> return runCatching { seam(keyword) }.getOrNull().orEmpty() }
+        val ruleRunner = runner ?: return emptyList()
+        val sources = runCatching { database.listSearchSourceRecords(null, null) }.getOrNull().orEmpty()
+        val hits = ArrayList<SearchResult>()
+        var tried = 0
+        for (source in sources) {
+            if (tried >= MAX_SEARCH_SOURCES) break
+            tried++
+            hits += runCatching { ruleRunner.search(source.json, keyword) }.getOrNull().orEmpty()
+        }
+        return hits
     }
 
 

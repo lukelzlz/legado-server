@@ -86,9 +86,9 @@ data class ServerConfig(
     /**
      * 数据库类型：`sqlite`（默认）/ `mysql` / `postgres`。
      *
-     * ⚠️ 目前只有 `sqlite` 可用：另外两种的配置项、驱动依赖与连接串构建已就位，
-     * 但数据层的 SQL 方言移植（`on conflict` / `collate nocase` / `pragma` 等）尚未完成。
-     * 选它们启动时会得到一条明确的「暂不支持 + 原因」错误，而不是静默跑坏。
+     * 三种都**真实可用**：mysql/postgres 会在启动时自动建库（若不存在）+ 自动建表，
+     * 方言差异（`on conflict` / `collate nocase` / `pragma` / `real` / DDL）收敛在
+     * [SqlTranslator] 与 [DatabaseSchema] 两处，业务代码无感。
      */
     val databaseType: String = "sqlite",
     /** 非 sqlite 时的 JDBC 连接串（由 [fromSources] 按类型+主机/端口/库名拼出）。 */
@@ -96,8 +96,26 @@ data class ServerConfig(
     val databaseUser: String? = null,
     val databasePassword: String? = null,
 ) {
-    /** 是否为关系型以外的外部库（mysql/postgres）——目前用于启动期拦截。 */
+    /** 是否为关系型以外的外部库（mysql/postgres）——用于选择连接方式与方言。 */
     val isExternalDatabase: Boolean get() = databaseType.lowercase() != "sqlite"
+
+    /**
+     * 数据层连接规格（[Database] 的唯一入参）。
+     *
+     * sqlite ⇒ 只用 [databasePath]；mysql/postgres ⇒ 用 [databaseJdbcUrl] + 账号密码，
+     * 启动时会自动建库 + 自动建表（见 [DatabaseSpec.ensureDatabase]）。
+     */
+    fun databaseSpec(): DatabaseSpec = if (isExternalDatabase) {
+        DatabaseSpec(
+            engine = DatabaseEngine.of(databaseType),
+            path = databasePath,
+            jdbcUrl = databaseJdbcUrl,
+            user = databaseUser,
+            password = databasePassword,
+        )
+    } else {
+        DatabaseSpec.sqlite(databasePath)
+    }
 
     companion object {
         /** 漫画缓存根目录名（**唯一来源**：默认路径与环境变量路径都引用它）。 */
@@ -305,8 +323,8 @@ data class ServerConfig(
         /**
          * 外部数据库连接串（`LEGADO_DB_URL` 优先，其次按类型拼）。
          *
-         * 目前 mysql/postgres **尚未接线到数据层**（见 [ServerConfig.databaseType] 的说明）；
-         * 先把连接串/账号密码算出来，启动期就能给出「连哪个库、用什么账号」的明确报错。
+         * 注意：这里的库名（`database.mysql.database` / `database.postgres.database`）允许
+         * **尚不存在** —— 服务启动时会自动建库（见 [DatabaseSpec.ensureDatabase]）。
          */
         private fun externalJdbcUrl(type: String, fileValues: ConfigFile.Values, env: Map<String, String>): String? {
             env["LEGADO_DB_URL"]?.takeIf { it.isNotBlank() }?.let { return it }

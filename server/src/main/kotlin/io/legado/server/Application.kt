@@ -34,18 +34,11 @@ fun main(args: Array<String>) {
         is ServerConfig.LoadResult.Ready -> loaded.config
     }
     if (config.isExternalDatabase) {
-        // 数据层仍是 SQLite 方言；把「连哪个库、用什么账号」明确打出来再拒绝启动，
-        // 免得用户以为改了类型却没生效。
-        System.err.println(
-            "[config] 数据库类型 ${config.databaseType} 暂未支持（当前版本仅 sqlite）。\n" +
-                "         目标连接：${config.databaseJdbcUrl}（user=${config.databaseUser}）\n" +
-                "         原因：数据层 SQL 方言移植（on conflict / collate nocase / pragma）尚未完成。\n" +
-                "         请把 database.type 改回 sqlite，或等待后续版本。",
+        // 外部库（mysql/postgres）是**真实支持**的：连接、自动建库、自动建表、方言翻译都在数据层里。
+        // 这里只把「连哪个库、用什么账号」打出来，便于排障（密码绝不打日志）。
+        println(
+            "[db] 数据库类型：${config.databaseType}；目标：${config.databaseJdbcUrl}（user=${config.databaseUser}）",
         )
-        // 非 0 退出码：双击 start.cmd 时窗口会停在 pause 上，让这条说明看得见
-        // （否则 `return` 是 0，窗口一闪而过，用户只会看到「启动了就闪退」）。
-        System.exit(2)
-        return
     }
     embeddedServer(CIO, host = config.host, port = config.port) {
         legadoApplication(config)
@@ -62,7 +55,7 @@ fun Application.legadoApplication(
      */
     injectedImageFetcher: MangaImageFetcher? = null,
 ) {
-    val database = Database(config.databasePath)
+    val database = Database(config.databaseSpec())
     database.initialize(config.initialAdminPassword)
     // 缓存目录结构升级到 v3 的唯一入口（同一套 `app_setting.cache_layout` 版本判断）：
     // - v2 → v3：漫画根 `images` 改名成 `comic`，动作是**移动**（布局没变 ⇒ 用户零数据损失），

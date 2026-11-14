@@ -26,7 +26,22 @@ import javax.crypto.SecretKeyFactory
 import javax.crypto.spec.PBEKeySpec
 import kotlin.concurrent.withLock
 
-class Database(private val path: String) : Closeable, AutoCloseable {
+/**
+ * 数据层（三种引擎共用一套实现）。
+ *
+ * 引擎差异**只有两处**，都在构造/连接阶段决定，业务代码（280+ 处 `prepareStatement`）无感知：
+ * 1. **连接**：sqlite 用本地文件（[SQLiteConfig] 的 WAL/超时设置不变），
+ *    mysql/postgres 用 [DatabaseSpec] 的 JDBC 串，并把连接包进 [DialectConnection]；
+ * 2. **DDL**：sqlite 原样执行 [DatabaseSchema.SQLITE_DDL]，外部库执行按方言转换后的语句。
+ *
+ * 事务语义与引擎无关：`write {}` 下面那段 `autoCommit = false → commit/rollback → autoCommit = true`
+ * 是既有写法（`saveSource` 等 20 多处），三家 JDBC 驱动语义一致，因此**没有**引入行为差异。
+ */
+class Database internal constructor(private val spec: DatabaseSpec) : Closeable, AutoCloseable {
+    /** 便捷构造（保留给全部既有测试与 `reset-password`）：等同于一个 sqlite 规格。 */
+    constructor(path: String) : this(DatabaseSpec.sqlite(path))
+
+    private val engine: DatabaseEngine = spec.engine
     private val random = SecureRandom()
     private val writeLock = ReentrantLock()
     private val readPool = ConcurrentLinkedQueue<Connection>()
@@ -41,9 +56,17 @@ class Database(private val path: String) : Closeable, AutoCloseable {
         enforceForeignKeys(true)
     }
 
-    init { Files.createDirectories(Path.of(path).toAbsolutePath().parent) }
+    init {
+        if (!engine.isExternal) {
+            Files.createDirectories(Path.of(spec.path).toAbsolutePath().parent)
+        }
+    }
 
-    private fun createConnection(): Connection = sqliteConfig.createConnection("jdbc:sqlite:$path")
+    private fun createConnection(): Connection = if (engine.isExternal) {
+        DialectConnection(spec.openExternalConnection(), engine)
+    } else {
+        sqliteConfig.createConnection("jdbc:sqlite:${spec.path}")
+    }
 
     private fun getWriteConnection(): Connection {
         var conn = _writeConnection
@@ -105,265 +128,28 @@ class Database(private val path: String) : Closeable, AutoCloseable {
         }
     }
 
-    fun initialize(initialPassword: String?) = write { db ->
-        db.createStatement().use { statement ->
-            statement.execute("pragma journal_mode = wal")
-            statement.executeUpdate("""
-                create table if not exists app_user (
-                  id integer primary key check (id = 1), password_hash text not null
-                );
-                create table if not exists session (
-                  id text primary key, csrf_token text not null, expires_at integer not null
-                );
-                create table if not exists source (
-                  id text primary key, name text not null, source_url text not null,
-                  source_group text, enabled integer not null, is_js integer not null,
-                  payload text not null, version integer not null, updated_at integer not null
-                );
-                create index if not exists source_name_idx on source(name);
-                create index if not exists idx_source_name_nocase on source(name collate nocase);
-                create table if not exists reading_progress (
-                  source_id text not null, book_url text not null, chapter_url text not null,
-                  chapter_index integer not null, updated_at integer not null,
-                  primary key (source_id, book_url)
-                );
-                create table if not exists cover_cache (
-                  cache_key text primary key, content_type text not null,
-                  file_path text not null default ''
-                );
-                create table if not exists app_setting (
-                  key text primary key, value text not null, updated_at integer not null
-                );
-                create table if not exists book_group (
-                  id integer primary key autoincrement,
-                  name text not null unique collate nocase,
-                  sort_order integer not null default 0,
-                  created_at integer not null
-                );
-                create index if not exists idx_book_group_sort on book_group(sort_order asc, id asc);
-                create table if not exists bookmark (
-                  id integer primary key autoincrement,
-                  book_name text not null,
-                  book_author text,
-                  chapter_index integer not null default 0,
-                  chapter_name text,
-                  chapter_pos integer not null default 0,
-                  book_text text,
-                  content text,
-                  created_at integer not null,
-                  unique(book_name, book_author, chapter_index, chapter_pos)
-                );
-                create index if not exists idx_bookmark_book on bookmark(book_name, book_author);
-                /*
-                 * 书籍封面登记（按「书名 + 作者」，与书架/书签同一套身份）：
-                 *
-                 * - 书在书架上时封面仍以 `book_shelf.cover_key` 为准，本表只是**兜底**
-                 *   （书签里有、书架里没有的书 —— 用户要求「一股脑全存」后这种书是常态）；
-                 * - 书签页上传/抓到的封面写在这里，书架行不存在也能显示；
-                 * - `missing_attempts` 记录"连续抓了几次都没抓到"，到阈值就不再自动重试
-                 *   （用户要求「超过五次没找到就标记」）。
-                 *
-                 * ⚠️ `book_author` 必须 `not null default ''`：SQLite 的 UNIQUE/PK 把 NULL 视为互不相等，
-                 * 可空列做主键列会让同一本书插出多行（书签表踩过这个坑，见 AGENTS.md）。
-                 */
-                create table if not exists book_cover (
-                  book_name text not null,
-                  book_author text not null default '',
-                  cover_key text,
-                  missing_attempts integer not null default 0,
-                  last_attempt_at integer not null default 0,
-                  updated_at integer not null default 0,
-                  primary key (book_name, book_author)
-                );
-                create table if not exists book_shelf (
-                  source_id text not null, book_url text not null, name text not null,
-                  author text, toc_url text not null, cover_url text, cover_key text,
-                  last_read_at integer not null, completed integer not null default 0,
-                  alternate_sources text, group_name text,
-                  primary key (source_id, book_url)
-                );
-                create index if not exists book_shelf_last_read_idx on book_shelf(last_read_at desc);
-                create table if not exists book_content_cache (
-                  source_id text not null, book_url text not null, chapter_url text not null,
-                  title text, content text not null, cached_at integer not null,
-                  raw_title text, raw_content text,
-                  primary key (source_id, book_url, chapter_url)
-                );
-                create index if not exists book_content_cache_book_idx on book_content_cache(source_id, book_url);
-                create table if not exists book_cache_status (
-                  source_id text not null, book_url text not null, total_chapters integer not null default 0,
-                  cached_chapters integer not null default 0, state text not null default 'idle',
-                  last_error text, updated_at integer not null,
-                  primary key (source_id, book_url)
-                );
-                create table if not exists source_subscription (
-                  id integer primary key autoincrement, url text not null unique,
-                  enabled integer not null, created_at integer not null, updated_at integer not null,
-                  last_success_at integer, last_attempt_at integer, last_error text,
-                  last_imported integer not null default 0, content_hash text
-                );
-                create index if not exists source_subscription_enabled_idx on source_subscription(enabled);
-                create table if not exists rss_source (
-                  id text primary key, name text not null, icon text, source_group text,
-                  enabled integer not null default 1, single_url integer not null default 0,
-                  sort_url text, custom_order integer not null default 0,
-                  payload text not null, updated_at integer not null
-                );
-                create table if not exists book_toc_cache (
-                  source_id text not null, toc_url text not null, chapters_json text not null, updated_at integer not null,
-                  primary key (source_id, toc_url)
-                );
-                create table if not exists source_login_state (
-                  source_id text primary key,
-                  login_info text,
-                  login_header text,
-                  source_variable text,
-                  source_kv text,
-                  cookie_jar text,
-                  updated_at integer not null
-                );
-                create table if not exists replace_rule (
-                  id text primary key,
-                  name text not null,
-                  group_name text,
-                  pattern text not null,
-                  replacement text not null default '',
-                  is_regex integer not null default 1,
-                  scope text,
-                  exclude_scope text,
-                  scope_title integer not null default 0,
-                  scope_content integer not null default 1,
-                  is_enabled integer not null default 1,
-                  sort_order integer not null default 0,
-                  timeout_ms integer not null default 3000,
-                  created_at integer not null,
-                  updated_at integer not null
-                );
-                create index if not exists idx_replace_rule_enabled on replace_rule(is_enabled, sort_order asc);
-                create index if not exists idx_replace_rule_group on replace_rule(group_name);
-                create table if not exists http_tts (
-                  id integer primary key,
-                  name text not null,
-                  url text not null,
-                  header text,
-                  content_type text,
-                  concurrent_rate text,
-                  login_url text,
-                  login_check_js text,
-                  login_ui text,
-                  js_lib text,
-                  enabled_cookie_jar integer not null default 0,
-                  last_update_time integer not null
-                );
-                create index if not exists idx_http_tts_name on http_tts(name);
-                -- ------------------------------------------------------------------
-                -- 漫画链路（方案 E）：
-                --   manga_chapter_cache = 章节图片清单 + 整章就绪度（L2 视图层）
-                --   manga_image_cache   = 图片字节索引（L1 唯一副本 + GC 依据）
-                -- 详见 docs/proposals/PROPOSAL-028-* 与 docs/decisions/ADR-028-*
-                -- ------------------------------------------------------------------
-                create table if not exists manga_chapter_cache (
-                  source_id     text not null,
-                  book_url      text not null,
-                  chapter_url   text not null,
-                  chapter_index integer not null default 0,
-                  pinned        integer not null default 0,
-                  images_json   text not null,
-                  total         integer not null default 0,
-                  ready         integer not null default 0,
-                  skipped       integer not null default 0,
-                  state         text not null default 'pending',
-                  last_error    text,
-                  created_at    integer not null,
-                  updated_at    integer not null,
-                  primary key (source_id, book_url, chapter_url)
-                );
-                create index if not exists idx_manga_chapter_state on manga_chapter_cache(source_id, book_url, state);
-                create index if not exists idx_manga_chapter_pinned on manga_chapter_cache(pinned);
-                create table if not exists manga_image_cache (
-                  url_hash       text primary key,
-                  cache_key      text not null default '',
-                  source_id      text not null,
-                  book_url       text not null,
-                  chapter_url    text not null,
-                  chapter_index  integer not null default 0,
-                  segment_index  integer not null default 0,
-                  upstream_url   text not null,
-                  content_type   text not null default '',
-                  byte_size      integer not null default 0,
-                  width          integer,
-                  height         integer,
-                  state          text not null default 'pending',
-                  last_error     text,
-                  created_at     integer not null,
-                  last_access_at integer not null,
-                  file_path      text not null default ''
-                );
-                create index if not exists idx_manga_image_key on manga_image_cache(cache_key);
-                create index if not exists idx_manga_image_book on manga_image_cache(source_id, book_url);
-                create index if not exists idx_manga_image_chapter on manga_image_cache(source_id, book_url, chapter_url, segment_index);
-                create index if not exists idx_manga_image_access on manga_image_cache(last_access_at asc);
-                -- ------------------------------------------------------------------
-                -- 有声书链路（方案 G2）：
-                --   audio_cache = 音频字节索引（**URL 寻址**：key 可预测 ⇒ 前端直接拼 src，
-                --                 不做内容寻址去重 —— 见 ADR-029 的 G-2 裁决）
-                -- 没有"音频章节清单表"：整章就绪度由本表按 chapter_url 聚合即得（少一张表少一处漂移）。
-                -- 详见 docs/proposals/PROPOSAL-029-* 与 docs/decisions/ADR-029-*
-                -- ------------------------------------------------------------------
-                create table if not exists audio_cache (
-                  cache_key      text primary key,
-                  source_id      text not null,
-                  book_url       text not null,
-                  chapter_url    text not null,
-                  chapter_index  integer not null default 0,
-                  segment_index  integer not null default 0,
-                  upstream_url   text not null,
-                  headers_json   text,
-                  content_type   text not null default '',
-                  byte_size      integer not null default 0,
-                  duration_ms    integer not null default 0,
-                  state          text not null default 'pending',
-                  last_error     text,
-                  pinned         integer not null default 0,
-                  listened       integer not null default 0,
-                  created_at     integer not null,
-                  last_access_at integer not null,
-                  file_path      text not null default ''
-                );
-                -- 刻意**不是**唯一索引：书源换了某一段的地址时，新 key 会挂在同一个 segment_index 上，
-                -- 唯一索引会让那次 upsert 直接抛异常（一次书源变更 ⇒ 整章打不开）。
-                -- 排序/拼装只需要索引能加速，不需要唯一性。
-                create index if not exists idx_audio_cache_segment on audio_cache(source_id, book_url, chapter_url, segment_index);
-                create index if not exists idx_audio_cache_book on audio_cache(source_id, book_url);
-                create index if not exists idx_audio_cache_state on audio_cache(state);
-                create index if not exists idx_audio_cache_access on audio_cache(last_access_at asc);
-                create index if not exists idx_audio_cache_pinned on audio_cache(pinned);
-                -- ------------------------------------------------------------------
-                -- 小说正文插图链路：
-                --   illustration_cache = 插图字节索引（URL 寻址 + 章节内序号 + 落盘相对路径）
-                -- 落盘在 <data>/images/（与漫画 <data>/comic/ 分开，见 ADR-033）。
-                -- 序号来自**正文里的出现顺序**，首次登记后不再改写（保证「序号 ↔ 文件」单射）。
-                -- 详见 docs/proposals/PROPOSAL-034-* 与 docs/decisions/ADR-033-*
-                -- ------------------------------------------------------------------
-                create table if not exists illustration_cache (
-                  url_hash       text primary key,
-                  source_id      text not null,
-                  book_url       text not null default '',
-                  chapter_url    text not null default '',
-                  chapter_index  integer not null default 0,
-                  segment_index  integer not null default 0,
-                  upstream_url   text not null,
-                  content_type   text not null default '',
-                  byte_size      integer not null default 0,
-                  cache_key      text not null default '',
-                  state          text not null default 'pending',
-                  created_at     integer not null,
-                  last_access_at integer not null,
-                  file_path      text not null default ''
-                );
-                create index if not exists idx_illustration_chapter on illustration_cache(source_id, book_url, chapter_url, segment_index);
-                create index if not exists idx_illustration_book on illustration_cache(source_id, book_url);
-            """.trimIndent())
+    /**
+     * 启动初始化：**先建库（外部库）再建表**。
+     *
+     * 「库不存在就自动建库」只在这里做一次（MySQL 连无库名的服务器串执行
+     * `create database if not exists`；PG 连 `postgres` 库执行 `create database` 并吞掉已存在）。
+     */
+    fun initialize(initialPassword: String?) {
+        spec.ensureDatabase()
+        initializeSchema(initialPassword)
+    }
+
+    private fun initializeSchema(initialPassword: String?) = write { db ->
+        if (engine == DatabaseEngine.SQLITE) {
+            // SQLite：pragma 与建表脚本**原样**执行（一个字都不改，保证既有测试零回归）
+            db.createStatement().use { statement ->
+                statement.execute("pragma journal_mode = wal")
+                statement.executeUpdate(DatabaseSchema.SQLITE_DDL)
+            }
+        } else {
+            // MySQL / PostgreSQL：同一份 schema 按方言转换后逐条执行（见 DatabaseSchema）。
+            // 「库不存在就自动建库」发生在更早的 DatabaseSpec.ensureDatabase。
+            applyExternalSchema(db, engine) { message -> println(message) }
         }
         migrateReadingProgress(db)
         migrateBookshelf(db)
@@ -1030,7 +816,7 @@ class Database(private val path: String) : Closeable, AutoCloseable {
                    select source_id, book_url, chapter_url from audio_cache
                     group by source_id, book_url, chapter_url
                    having count(*) > 0 and sum(case when state='ready' then 1 else 0 end) = count(*)
-               ) group by source_id, book_url""",
+               ) ready_chapters group by source_id, book_url""",
         ).use { ps ->
             ps.executeQuery().use { rs ->
                 buildMap { while (rs.next()) put("${rs.getString(1)}\u0000${rs.getString(2)}", rs.getInt(3)) }
@@ -1328,7 +1114,7 @@ class Database(private val path: String) : Closeable, AutoCloseable {
 
     fun mangaCacheStatsByBook(): List<MangaCacheBookStat> = connect { db ->
         db.prepareStatement(
-            """select i.source_id, i.book_url, s.name, count(*) as image_count, coalesce(sum(i.byte_size),0) as total_bytes,
+            """select i.source_id, i.book_url, max(s.name) as name, count(*) as image_count, coalesce(sum(i.byte_size),0) as total_bytes,
                       coalesce(c.chapter_count,0), coalesce(c.ready_count,0), coalesce(c.pinned,0)
                from manga_image_cache i
                left join book_shelf s on s.source_id = i.source_id and s.book_url = i.book_url
@@ -1608,7 +1394,7 @@ class Database(private val path: String) : Closeable, AutoCloseable {
 
     fun audioCacheStatsByBook(): List<AudioCacheBookStat> = connect { db ->
         db.prepareStatement(
-            """select a.source_id, a.book_url, s.name, count(*) as track_count, coalesce(sum(a.byte_size),0) as total_bytes,
+            """select a.source_id, a.book_url, max(s.name) as name, count(*) as track_count, coalesce(sum(a.byte_size),0) as total_bytes,
                       coalesce(c.chapter_count,0), coalesce(c.ready_count,0), coalesce(c.pinned,0)
                from audio_cache a
                left join book_shelf s on s.source_id = a.source_id and s.book_url = a.book_url
@@ -1621,7 +1407,7 @@ class Database(private val path: String) : Closeable, AutoCloseable {
                           min(case when state='ready' then 1 else 0 end) as ready_all,
                           max(pinned) as pinned
                    from audio_cache group by source_id, book_url, chapter_url
-                 )
+                 ) chapter_state
                  group by source_id, book_url
                ) c on c.source_id = a.source_id and c.book_url = a.book_url
                group by a.source_id, a.book_url
@@ -3280,7 +3066,7 @@ class Database(private val path: String) : Closeable, AutoCloseable {
     fun listBookmarkBooks(): List<BookmarkBook> = connect { db ->
         db.prepareStatement(
             """
-            select b.book_name, b.book_author, count(distinct b.id) as cnt, max(b.created_at) as last_at,
+            select b.book_name, max(b.book_author) as book_author, count(distinct b.id) as cnt, max(b.created_at) as last_at,
                    max(s.cover_key) as cover_key, max(s.cover_url) as cover_url,
                    max(c.cover_key) as local_cover_key,
                    max(coalesce(c.missing_attempts, 0)) as cover_attempts

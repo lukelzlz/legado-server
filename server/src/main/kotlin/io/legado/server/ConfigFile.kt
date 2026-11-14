@@ -65,8 +65,8 @@ object ConfigFile {
           dir: ${v("data.dir", "./data")}
 
         database:
-          # 数据库类型：sqlite（默认）/ mysql / postgres
-          # mysql / postgres：启动时会**自动建库（若不存在）+ 自动建表**，库名留空则用 legado。
+          # 数据库类型：sqlite（默认）/ postgres
+          # postgres：启动时会**自动建库（若不存在）+ 自动建表**，库名留空则用 legado。
           # 等价环境变量 LEGADO_DB_TYPE
           type: ${v("database.type", "sqlite")}
 
@@ -74,16 +74,9 @@ object ConfigFile {
             # 数据库文件。留空 = <data.dir>/legado.sqlite（等价 LEGADO_DATABASE）
             file: ${v("database.sqlite.file", "")}
 
-          # MySQL / PostgreSQL 连接参数（type 为 mysql / postgres 时使用）
+          # PostgreSQL 连接参数（type 为 postgres 时使用）
           # 也可用环境变量 LEGADO_DB_URL / LEGADO_DB_USER / LEGADO_DB_PASSWORD 覆盖
           # 账号需要「建库 + 建表」权限；若库已由 DBA 建好则只连目标库、不再尝试建库。
-          mysql:
-            host: ${v("database.mysql.host", "127.0.0.1")}
-            port: ${v("database.mysql.port", "3306")}
-            database: ${v("database.mysql.database", "legado")}
-            user: ${v("database.mysql.user", "root")}
-            password: "${v("database.mysql.password", "")}"
-
           postgres:
             host: ${v("database.postgres.host", "127.0.0.1")}
             port: ${v("database.postgres.port", "5432")}

@@ -23,7 +23,15 @@ fun main(args: Array<String>) {
     }
     // 配置来源：<jar 目录>/config/config.yaml（首次启动自动生成带注释的默认文件），
     // 环境变量优先于文件（容器部署仍可只用 env）。
-    val config = when (val loaded = ServerConfig.load()) {
+    val loadedConfig = try {
+        ServerConfig.load()
+    } catch (error: UnsupportedDatabaseTypeException) {
+        // 用户拍板移除 MySQL：配置里还写 `database.type: mysql` 时**明确报错并非 0 退出**，
+        // 绝不静默回落 sqlite（那会让用户以为在用远端 MySQL，实际写进了本地空库）。
+        System.err.println("[config] ${error.message}")
+        kotlin.system.exitProcess(2)
+    }
+    val config = when (val loaded = loadedConfig) {
         is ServerConfig.LoadResult.FirstRun -> {
             // 用户要求：**首次启动仅创建配置文件，第二次启动再正式启动**。
             // 这样可以先改好数据库/端口/密码，避免用默认值把库跑起来之后再返工。
@@ -34,7 +42,7 @@ fun main(args: Array<String>) {
         is ServerConfig.LoadResult.Ready -> loaded.config
     }
     if (config.isExternalDatabase) {
-        // 外部库（mysql/postgres）是**真实支持**的：连接、自动建库、自动建表、方言翻译都在数据层里。
+        // 外部库（postgres）是**真实支持**的：连接、自动建库、自动建表、方言翻译都在数据层里。
         // 这里只把「连哪个库、用什么账号」打出来，便于排障（密码绝不打日志）。
         println(
             "[db] 数据库类型：${config.databaseType}；目标：${config.databaseJdbcUrl}（user=${config.databaseUser}）",

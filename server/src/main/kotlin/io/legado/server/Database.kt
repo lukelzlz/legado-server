@@ -27,15 +27,15 @@ import javax.crypto.spec.PBEKeySpec
 import kotlin.concurrent.withLock
 
 /**
- * 数据层（三种引擎共用一套实现）。
+ * 数据层（两种引擎共用一套实现）。
  *
  * 引擎差异**只有两处**，都在构造/连接阶段决定，业务代码（280+ 处 `prepareStatement`）无感知：
  * 1. **连接**：sqlite 用本地文件（[SQLiteConfig] 的 WAL/超时设置不变），
- *    mysql/postgres 用 [DatabaseSpec] 的 JDBC 串，并把连接包进 [DialectConnection]；
+ *    postgres 用 [DatabaseSpec] 的 JDBC 串，并把连接包进 [DialectConnection]；
  * 2. **DDL**：sqlite 原样执行 [DatabaseSchema.SQLITE_DDL]，外部库执行按方言转换后的语句。
  *
  * 事务语义与引擎无关：`write {}` 下面那段 `autoCommit = false → commit/rollback → autoCommit = true`
- * 是既有写法（`saveSource` 等 20 多处），三家 JDBC 驱动语义一致，因此**没有**引入行为差异。
+ * 是既有写法（`saveSource` 等 20 多处），两家 JDBC 驱动语义一致，因此**没有**引入行为差异。
  */
 class Database internal constructor(private val spec: DatabaseSpec) : Closeable, AutoCloseable {
     /** 便捷构造（保留给全部既有测试与 `reset-password`）：等同于一个 sqlite 规格。 */
@@ -131,8 +131,7 @@ class Database internal constructor(private val spec: DatabaseSpec) : Closeable,
     /**
      * 启动初始化：**先建库（外部库）再建表**。
      *
-     * 「库不存在就自动建库」只在这里做一次（MySQL 连无库名的服务器串执行
-     * `create database if not exists`；PG 连 `postgres` 库执行 `create database` 并吞掉已存在）。
+     * 「库不存在就自动建库」只在这里做一次（PG 连 `postgres` 库执行 `create database` 并吞掉已存在）。
      */
     fun initialize(initialPassword: String?) {
         spec.ensureDatabase()
@@ -147,7 +146,7 @@ class Database internal constructor(private val spec: DatabaseSpec) : Closeable,
                 statement.executeUpdate(DatabaseSchema.SQLITE_DDL)
             }
         } else {
-            // MySQL / PostgreSQL：同一份 schema 按方言转换后逐条执行（见 DatabaseSchema）。
+            // PostgreSQL：同一份 schema 按方言转换后逐条执行（见 DatabaseSchema）。
             // 「库不存在就自动建库」发生在更早的 DatabaseSpec.ensureDatabase。
             applyExternalSchema(db, engine) { message -> println(message) }
         }

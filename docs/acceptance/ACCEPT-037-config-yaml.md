@@ -105,20 +105,21 @@ $env:JAVA_HOME = "C:\Program Files\Amazon Corretto\jdk21.0.11_10"
 
 ✅ 判据：第一次启动**不监听端口**、只生成 `config/config.yaml`；第二次启动才对外服务。
 
-## 7. 数据库类型（当前只有 sqlite 可用）
+## 7. 数据库类型（sqlite 默认 / postgres）
 
 `config/config.yaml` 里：
 
 ```yaml
 database:
-  type: sqlite      # sqlite / mysql / postgres
+  type: sqlite      # sqlite（默认）/ postgres
 ```
 
 - `type: sqlite`（默认）：用 `data.dir` 下的 `legado.sqlite`；
-- 改成 `type: mysql` 或 `postgres` 后启动 → 会打印**目标连接串/账号**，并明确提示
-  「暂未支持（当前版本仅 sqlite）」，然后退出（不会连错库、也不会静默跑 SQLite）。
+- `type: postgres`：填好 `database.postgres.*`（host/port/库名/user/password）后启动 → 自动建库 + 自动建表，
+  日志会打印目标连接串/账号（完整验收见 `ACCEPT-038-multi-database-engine.md`）；
+- `type: mysql`：**支持已移除** → 启动时给出明确错误并**非 0 退出**（不会静默回落 sqlite）。
 
-✅ 判据：报错里能看到你配置的 host/port/库名与 user，且进程不监听端口。
+✅ 判据：postgres 启动后日志能看到目标连接串与 user；写 mysql 则看到「mysql 支持已移除」且进程不监听端口。
 
 ## 回滚
 

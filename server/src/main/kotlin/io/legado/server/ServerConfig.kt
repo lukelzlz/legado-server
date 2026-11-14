@@ -84,9 +84,9 @@ data class ServerConfig(
      */
     val coverSelfHealEnabled: Boolean = true,
     /**
-     * 数据库类型：`sqlite`（默认）/ `mysql` / `postgres`。
+     * 数据库类型：`sqlite`（默认）/ `postgres`。
      *
-     * 三种都**真实可用**：mysql/postgres 会在启动时自动建库（若不存在）+ 自动建表，
+     * 两种都**真实可用**：postgres 会在启动时自动建库（若不存在）+ 自动建表，
      * 方言差异（`on conflict` / `collate nocase` / `pragma` / `real` / DDL）收敛在
      * [SqlTranslator] 与 [DatabaseSchema] 两处，业务代码无感。
      */
@@ -96,13 +96,13 @@ data class ServerConfig(
     val databaseUser: String? = null,
     val databasePassword: String? = null,
 ) {
-    /** 是否为关系型以外的外部库（mysql/postgres）——用于选择连接方式与方言。 */
+    /** 是否为关系型以外的外部库（postgres）——用于选择连接方式与方言。 */
     val isExternalDatabase: Boolean get() = databaseType.lowercase() != "sqlite"
 
     /**
      * 数据层连接规格（[Database] 的唯一入参）。
      *
-     * sqlite ⇒ 只用 [databasePath]；mysql/postgres ⇒ 用 [databaseJdbcUrl] + 账号密码，
+     * sqlite ⇒ 只用 [databasePath]；postgres ⇒ 用 [databaseJdbcUrl] + 账号密码，
      * 启动时会自动建库 + 自动建表（见 [DatabaseSpec.ensureDatabase]）。
      */
     fun databaseSpec(): DatabaseSpec = if (isExternalDatabase) {
@@ -270,6 +270,8 @@ data class ServerConfig(
                 }
             }
             val dataDir = Path.of(rawDataDir).toAbsolutePath()
+            // 数据库类型只解析一次：`mysql` 已移除 ⇒ 这里**明确报错**（绝不静默回落 sqlite）
+            val databaseType = databaseTypeOf(pick("LEGADO_DB_TYPE", "database.type"))
             return ServerConfig(
                 host = pick("LEGADO_HOST", "server.host") ?: "0.0.0.0",
                 port = pick("LEGADO_PORT", "server.port")?.toIntOrNull() ?: 8080,
@@ -300,44 +302,36 @@ data class ServerConfig(
                 audioPrefetchEnabled = pickBoolean("LEGADO_AUDIO_PREFETCH", "cache.audio.prefetch", true),
                 audioGcEnabled = pickBoolean("LEGADO_AUDIO_GC", "cache.audio.gc", true),
                 coverSelfHealEnabled = pickBoolean("LEGADO_COVER_SELFHEAL", "cover.self_heal", true),
-                databaseType = databaseTypeOf(pick("LEGADO_DB_TYPE", "database.type")),
-                databaseJdbcUrl = externalJdbcUrl(databaseTypeOf(pick("LEGADO_DB_TYPE", "database.type")), fileValues, env),
-                databaseUser = when (databaseTypeOf(pick("LEGADO_DB_TYPE", "database.type"))) {
-                    "mysql" -> pick("LEGADO_DB_USER", "database.mysql.user")
+                databaseType = databaseType,
+                databaseJdbcUrl = externalJdbcUrl(databaseType, fileValues, env),
+                databaseUser = when (databaseType) {
                     "postgres" -> pick("LEGADO_DB_USER", "database.postgres.user")
                     else -> null
                 },
-                databasePassword = when (databaseTypeOf(pick("LEGADO_DB_TYPE", "database.type"))) {
-                    "mysql" -> pick("LEGADO_DB_PASSWORD", "database.mysql.password")
+                databasePassword = when (databaseType) {
                     "postgres" -> pick("LEGADO_DB_PASSWORD", "database.postgres.password")
                     else -> null
                 },
             )
         }
 
-        /** 归一化数据库类型：只认 sqlite/mysql/postgres，其它值按 sqlite 处理并忽略。 */
+        /** 归一化数据库类型：只认 sqlite/postgres（`postgresql` 归一到 postgres），其余值按 sqlite。 */
         private fun databaseTypeOf(raw: String?): String = when (raw?.trim()?.lowercase()) {
-            "mysql" -> "mysql"
             "postgres", "postgresql" -> "postgres"
+            "mysql" -> throw UnsupportedDatabaseTypeException(MYSQL_REMOVED_MESSAGE)
             else -> "sqlite"
         }
 
         /**
          * 外部数据库连接串（`LEGADO_DB_URL` 优先，其次按类型拼）。
          *
-         * 注意：这里的库名（`database.mysql.database` / `database.postgres.database`）允许
-         * **尚不存在** —— 服务启动时会自动建库（见 [DatabaseSpec.ensureDatabase]）。
+         * 注意：这里的库名（`database.postgres.database`）允许**尚不存在** ——
+         * 服务启动时会自动建库（见 [DatabaseSpec.ensureDatabase]）。
          */
         private fun externalJdbcUrl(type: String, fileValues: ConfigFile.Values, env: Map<String, String>): String? {
             env["LEGADO_DB_URL"]?.takeIf { it.isNotBlank() }?.let { return it }
             fun fileValue(key: String) = fileValues[key]?.takeIf { it.isNotBlank() }
             return when (type) {
-                "mysql" -> {
-                    val host = fileValue("database.mysql.host") ?: "127.0.0.1"
-                    val port = fileValue("database.mysql.port") ?: "3306"
-                    val db = fileValue("database.mysql.database") ?: "legado"
-                    "jdbc:mysql://$host:$port/$db?useUnicode=true&characterEncoding=utf8&serverTimezone=UTC&allowPublicKeyRetrieval=true&useSSL=false"
-                }
                 "postgres" -> {
                     val host = fileValue("database.postgres.host") ?: "127.0.0.1"
                     val port = fileValue("database.postgres.port") ?: "5432"

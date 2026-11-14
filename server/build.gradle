@@ -139,9 +139,8 @@ dependencies {
     implementation "org.slf4j:slf4j-simple:2.0.16"
     // `config/config.yaml` 解析（用户要手改的配置文件，必须支持注释/嵌套/引号）
     implementation "org.yaml:snakeyaml:2.3"
-    // 可选数据库驱动（database.type = mysql/postgres 时使用；sqlite 仍是默认，不加载它们）
+    // 可选数据库驱动（database.type = postgres 时使用；sqlite 仍是默认，不加载它）
     implementation "org.postgresql:postgresql:42.7.4"
-    implementation "com.mysql:mysql-connector-j:9.1.0"
     testImplementation "io.ktor:ktor-server-test-host:3.4.3"
     testImplementation "io.ktor:ktor-client-content-negotiation:3.4.3"
     testImplementation libs.junit

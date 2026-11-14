@@ -5,22 +5,19 @@ import java.sql.Connection
 /**
  * 建表脚本（DDL）的**唯一权威来源** + 分方言生成。
  *
- * ## 为什么以 SQLite 为权威、再翻译成另外两家
+ * ## 为什么以 SQLite 为权威、再翻译成 PostgreSQL
  * 既有 30+ 个测试全部跑在 SQLite 上，DDL 一旦「改写」就等于把测试基线也改了。
  * 所以这里 [SQLITE_DDL] **逐字保留**原来的建表脚本（`Database.initialize` 里原本就是它），
- * MySQL / PostgreSQL 的 DDL 由它**转换生成** —— 表结构永远只有一份定义，不会漂移。
+ * PostgreSQL 的 DDL 由它**转换生成** —— 表结构永远只有一份定义，不会漂移。
+ *
+ * （MySQL 支持已移除，原先的 `varchar(255)` 索引列 / `longtext` / `auto_increment` /
+ * utf8mb4 那套规则一并删除。）
  *
  * ## 真实踩过的坑（这些不是理论问题，是建表立刻报错的）
- * 1. **MySQL 的 `text` 不能有默认值**：`text not null default ''` 直接语法错误 ⇒ 这类列必须 `varchar`；
- * 2. **索引列不能是 `text/longtext`**（必须给前缀长度）⇒ 主键/唯一键/索引列统一 `varchar(255)`；
- * 3. **utf8mb4 下联合索引按字节算 ≤3072**：`varchar(255)*4 = 1020`，
- *    三列联合主键 `(source_id, book_url, chapter_url)` = 3060 刚好合规，
- *    四列 `(…, segment_index)` = 3060 + 8 = 3068 也在线内（**别再往上加 varchar 长度**）；
- * 4. **MySQL 8 没有 `create index if not exists`** ⇒ 建索引前查 `information_schema.statistics`
- *    （见 `Database.applyExternalSchema`），不做「吞异常」这种自欺欺人的兜底；
- * 5. **`integer` 是 64 位（SQLite）vs 32 位（MySQL/PG）**：本项目所有时间戳都是毫秒
+ * 1. **`integer` 是 64 位（SQLite）vs 32 位（PG）**：本项目所有时间戳都是毫秒
  *    （`System.currentTimeMillis()`），映射成 `int` 会**直接溢出** ⇒ 一律 `bigint`；
- * 6. **自增主键语法三家全不同**：`autoincrement` / `auto_increment` / `bigserial`。
+ * 2. **自增主键语法不同**：SQLite `autoincrement` ⇒ PG `bigserial`；
+ * 3. **`collate nocase` 与 `real` 在 PG 都不存在** ⇒ 分别删掉 / 换成 `double precision`。
  */
 internal object DatabaseSchema {
 
@@ -282,83 +279,42 @@ internal object DatabaseSchema {
                 create index if not exists idx_illustration_book on illustration_cache(source_id, book_url);
                 """.trimIndent()
 
-    // 每张表里「被索引到」的列（主键 / 唯一键 / create index）。
-    // MySQL 必须把它们建成 varchar，其它 text 列才能放心用 longtext。
     private val CREATE_TABLE_RE = Regex("""(?is)^create\s+table\s+(?:if\s+not\s+exists\s+)?([`"\w.]+)\s*\((.*)\)$""")
     private val CREATE_INDEX_RE = Regex("""(?is)^create\s+index\s+(?:if\s+not\s+exists\s+)?([`"\w]+)\s+on\s+([`"\w.]+)\s*\((.*)\)$""")
     private val KEY_CONSTRAINT_RE = Regex("""(?is)^(?:primary\s+key|unique|constraint|foreign\s+key|check)\b""")
-    private val INLINE_INDEXED_RE = Regex("""(?i)\b(primary\s+key|unique|references)\b""")
     private val NOCASE_RE = Regex("""(?i)\s*collate\s+nocase""")
     private val LINE_COMMENT_RE = Regex("""(?m)--[^\n]*""")
     private val BLOCK_COMMENT_RE = Regex("""(?s)/\*.*?\*/""")
     private val ORDER_SUFFIX_RE = Regex("""(?i)\s+(asc|desc)\s*$""")
 
-    /** 引擎 ⇒ 一串**可逐条执行**的 DDL 语句。 */
+    /** 引擎 ⇒ 一串**可逐条执行**的 DDL 语句（外部库目前只有 PostgreSQL）。 */
     fun statements(engine: DatabaseEngine): List<String> {
         if (engine == DatabaseEngine.SQLITE) return listOf(SQLITE_DDL)
         val clean = BLOCK_COMMENT_RE.replace(LINE_COMMENT_RE.replace(SQLITE_DDL, ""), "")
         val raw = clean.split(';').map { it.trim() }.filter { it.isNotEmpty() }
-        val indexed = collectIndexedColumns(raw)
-        return raw.mapNotNull { statement -> render(engine, statement, indexed) }
+        return raw.mapNotNull { statement -> render(statement) }
     }
 
-    /** 表名（小写）⇒ 被索引的列名集合（小写）。 */
-    private fun collectIndexedColumns(statements: List<String>): Map<String, Set<String>> {
-        val indexed = mutableMapOf<String, MutableSet<String>>()
-        fun add(table: String, column: String) {
-            val name = column.trim().trim('`', '"').trim()
-            if (name.isEmpty()) return
-            indexed.getOrPut(table.trim().trim('`', '"').lowercase()) { mutableSetOf() }.add(name.lowercase())
-        }
-        statements.forEach { statement ->
-            CREATE_INDEX_RE.find(statement)?.let { match ->
-                splitTopLevel(match.groupValues[3]).forEach { add(match.groupValues[2], it.trim().split(Regex("""\s+"""), limit = 2).first()) }
-                return@forEach
-            }
-            val table = CREATE_TABLE_RE.find(statement) ?: return@forEach
-            val tableName = table.groupValues[1]
-            splitTopLevel(table.groupValues[2]).forEach { part ->
-                val text = part.trim()
-                val constraint = Regex("""(?is)^(?:primary\s+key|unique)\s*\((.*)\)""").find(text)
-                if (constraint != null) {
-                    splitTopLevel(constraint.groupValues[1]).forEach { add(tableName, it) }
-                    return@forEach
-                }
-                if (KEY_CONSTRAINT_RE.containsMatchIn(text)) return@forEach
-                val name = text.split(Regex("\\s+"), limit = 2).firstOrNull().orEmpty()
-                if (name.isNotEmpty() && INLINE_INDEXED_RE.containsMatchIn(text)) add(tableName, name)
-            }
-        }
-        return indexed
-    }
-
-    private fun render(engine: DatabaseEngine, statement: String, indexed: Map<String, Set<String>>): String? {
+    private fun render(statement: String): String? {
         CREATE_TABLE_RE.find(statement)?.let { match ->
             val table = match.groupValues[1].trim().trim('`', '"')
-            val columns = indexed[table.lowercase()].orEmpty()
             val body = splitTopLevel(match.groupValues[2])
-                .map { renderColumn(engine, it, columns) }
+                .map { renderColumn(it) }
                 .filter { it.isNotEmpty() }
                 .joinToString(",\n")
-            val suffix = if (engine == DatabaseEngine.MYSQL) {
-                "\n) engine=InnoDB default charset=utf8mb4 collate=utf8mb4_general_ci"
-            } else {
-                "\n)"
-            }
-            return "create table if not exists $table (\n$body$suffix"
+            return "create table if not exists $table (\n$body\n)"
         }
         CREATE_INDEX_RE.find(statement)?.let { match ->
             val name = match.groupValues[1].trim()
             val table = match.groupValues[2].trim()
-            val columns = splitTopLevel(match.groupValues[3]).map { renderIndexColumn(engine, it) }
-            val prefix = if (engine == DatabaseEngine.POSTGRES) "create index if not exists" else "create index"
-            return "$prefix $name on $table (${columns.joinToString(", ")})"
+            val columns = splitTopLevel(match.groupValues[3]).map { renderIndexColumn(it) }
+            return "create index if not exists $name on $table (${columns.joinToString(", ")})"
         }
         // 其它语句（本脚本里没有）原样下发，交给引擎自己判断
         return statement
     }
 
-    private fun renderColumn(engine: DatabaseEngine, part: String, indexed: Set<String>): String {
+    private fun renderColumn(part: String): String {
         val text = part.trim()
         if (text.isEmpty()) return ""
         if (KEY_CONSTRAINT_RE.containsMatchIn(text)) return stripNocase(text)
@@ -366,48 +322,26 @@ internal object DatabaseSchema {
         val name = tokens[0]
         val rawType = tokens.getOrNull(1)?.lowercase() ?: return stripNocase(text)
         var rest = tokens.getOrNull(2).orEmpty()
-        val isIndexed = indexed.contains(name.trim('`', '"').lowercase())
-        val type = when (engine) {
-            DatabaseEngine.MYSQL -> when (rawType) {
-                // SQLite 的 integer 是 64 位；MySQL 的 int 是 32 位，毫秒时间戳会溢出
-                "integer" -> "bigint"
-                "real" -> "double"
-                "text" -> when {
-                    isIndexed -> "varchar(255)" // 索引列必须定长；utf8mb4 下 255*4=1020 字节
-                    rest.contains("default", ignoreCase = true) -> "varchar(512)" // TEXT 不能有默认值
-                    else -> "longtext" // 正文/JSON 载荷
-                }
-                else -> rawType
-            }
-            DatabaseEngine.POSTGRES -> when {
-                rawType == "integer" && rest.contains("autoincrement", ignoreCase = true) -> "bigserial"
-                rawType == "integer" -> "bigint"
-                rawType == "real" -> "double precision"
-                else -> rawType
-            }
-            DatabaseEngine.SQLITE -> rawType
+        val type = when {
+            rawType == "integer" && rest.contains("autoincrement", ignoreCase = true) -> "bigserial"
+            rawType == "integer" -> "bigint"
+            rawType == "real" -> "double precision"
+            else -> rawType
         }
         if (rest.contains("autoincrement", ignoreCase = true)) {
-            rest = if (engine == DatabaseEngine.MYSQL) {
-                rest.replace(Regex("(?i)autoincrement"), "auto_increment")
-            } else {
-                rest.replace(Regex("""(?i)\s*autoincrement"""), "")
-            }
+            rest = rest.replace(Regex("""(?i)\s*autoincrement"""), "")
         }
         val constraints = stripNocase(rest).trim()
         return if (constraints.isEmpty()) "$name $type" else "$name $type $constraints"
     }
 
-    private fun renderIndexColumn(engine: DatabaseEngine, raw: String): String {
+    private fun renderIndexColumn(raw: String): String {
         val column = raw.trim()
         val nocase = column.contains("nocase", ignoreCase = true)
-        if (engine == DatabaseEngine.POSTGRES) {
-            if (!nocase) return column
-            // 查询侧已被翻译成 lower(x)，索引侧必须跟上，否则索引永远用不上
-            val base = ORDER_SUFFIX_RE.replace(stripNocase(column), "").trim()
-            return "lower($base)"
-        }
-        return stripNocase(column).trim()
+        if (!nocase) return column
+        // 查询侧已被翻译成 lower(x)，索引侧必须跟上，否则索引永远用不上
+        val base = ORDER_SUFFIX_RE.replace(stripNocase(column), "").trim()
+        return "lower($base)"
     }
 
     private fun stripNocase(text: String): String = NOCASE_RE.replace(text, "")
@@ -432,40 +366,16 @@ internal object DatabaseSchema {
 }
 
 /**
- * 把分方言 DDL 真正落到库里（MySQL / PostgreSQL 路径）。
+ * 把分方言 DDL 真正落到库里（PostgreSQL 路径）。
  *
- * MySQL 8 **没有 `create index if not exists`**：重启时重复建索引会抛 1061。
- * 这里先查 `information_schema.statistics`（不在同一个地方查也就无从知道索引是否已存在），
- * 而不是「把异常吞掉」—— 吞异常会把真正的 SQL 写错也一并藏起来。
+ * PG 支持 `create index if not exists`，所以重复启动天然幂等，不需要额外的「索引是否已存在」查询。
  */
 internal fun applyExternalSchema(connection: Connection, engine: DatabaseEngine, log: (String) -> Unit) {
     var tables = 0
     var indexes = 0
-    var skipped = 0
-    val indexNameRe = Regex("""(?is)^create\s+index\s+([`"\w]+)\s+on\s+([`"\w.]+)""")
     DatabaseSchema.statements(engine).forEach { sql ->
-        val isIndex = sql.startsWith("create index", ignoreCase = true)
-        if (isIndex && engine == DatabaseEngine.MYSQL) {
-            val match = indexNameRe.find(sql)
-            val name = match?.groupValues?.get(1)?.trim()?.trim('`', '"')
-            val table = match?.groupValues?.get(2)?.trim()?.trim('`', '"')
-            if (name != null && table != null && mysqlIndexExists(connection, table, name)) {
-                skipped++
-                return@forEach
-            }
-        }
         connection.createStatement().use { it.executeUpdate(sql) }
-        if (isIndex) indexes++ else tables++
+        if (sql.startsWith("create index", ignoreCase = true)) indexes++ else tables++
     }
-    log("[db] 建表完成：$tables 张表 / $indexes 个索引（已存在索引跳过 $skipped 个）")
+    log("[db] 建表完成：$tables 张表 / $indexes 个索引")
 }
-
-private fun mysqlIndexExists(connection: Connection, table: String, index: String): Boolean =
-    connection.prepareStatement(
-        "select 1 from information_schema.statistics " +
-            "where table_schema = database() and table_name = ? and index_name = ? limit 1",
-    ).use { statement ->
-        statement.setString(1, table)
-        statement.setString(2, index)
-        statement.executeQuery().use { it.next() }
-    }

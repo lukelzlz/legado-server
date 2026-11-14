@@ -53,6 +53,9 @@ class ConfigFileTest {
         assertTrue("必须解释优先级", content.contains("环境变量"))
         assertTrue("必须包含端口项", content.contains("port: 8080"))
         assertTrue("必须包含配置文件用于明文 HTTP 的提示", content.contains("secure_cookies"))
+        // MySQL 支持已移除：默认模板里不能再出现 mysql 段（否则用户会被引导去配一个不支持的引擎）
+        assertFalse("默认模板不能再出现 mysql", content.contains("mysql", ignoreCase = true))
+        assertTrue("默认模板要保留 postgres 段", content.contains("postgres:"))
 
         // 用户改过之后再次 ensure：内容原封不动
         Files.writeString(file, "server:\n  port: 9999\n")
@@ -193,33 +196,20 @@ class ConfigFileTest {
     }
 
     @Test
-    fun `数据库类型：默认 sqlite；mysql 拼出连接串并被识别为外部库；postgresql 归一化`() {
+    fun `数据库类型：默认 sqlite；postgresql 归一化；mysql 已移除必须明确报错`() {
         writeConfig("database:\n  type: sqlite\n")
         val sqlite = readyConfig(baseDir, emptyMap())
         assertEquals("sqlite", sqlite.databaseType)
         assertFalse("sqlite 不是外部库", sqlite.isExternalDatabase)
         assertNull(sqlite.databaseJdbcUrl)
 
-        writeConfig(
-            """
-            database:
-              type: mysql
-              mysql:
-                host: db.local
-                port: 3307
-                database: legado_prod
-                user: legado
-                password: "s3cret"
-            """.trimIndent(),
-        )
-        val mysql = readyConfig(baseDir, emptyMap())
-        assertEquals("mysql", mysql.databaseType)
-        assertTrue(mysql.isExternalDatabase)
-        assertEquals("legado", mysql.databaseUser)
-        assertEquals("s3cret", mysql.databasePassword)
+        // 用户拍板移除 MySQL：旧配置里写着 mysql 必须**明确报错**，不能静默回落 sqlite
+        writeConfig("database:\n  type: mysql\n")
+        val removed = runCatching { readyConfig(baseDir, emptyMap()) }.exceptionOrNull()
+        assertTrue("mysql 已移除：必须抛明确错误而不是静默回落：$removed", removed is UnsupportedDatabaseTypeException)
         assertTrue(
-            "连接串要带主机/端口/库名：${mysql.databaseJdbcUrl}",
-            mysql.databaseJdbcUrl!!.contains("db.local:3307/legado_prod"),
+            "错误提示要给出替代方案：${removed?.message}",
+            removed!!.message!!.contains("mysql 支持已移除") && removed.message!!.contains("postgres"),
         )
 
         writeConfig("database:\n  type: postgresql\n")

@@ -6898,6 +6898,8 @@ mark.search-highlight { background: var(--accent-soft); color: var(--accent); fo
 .global-search-results {
   flex: 1 1 auto;
   overflow-y: auto;
+  /* 滚到顶/底时不要把滚动链给背景层 */
+  overscroll-behavior: contain;
   padding: 10px 12px 14px;
   display: grid;
   gap: 8px;

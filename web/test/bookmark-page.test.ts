@@ -294,6 +294,9 @@ test('封面 - 书签页可请求封面、点封面手动设置（书源候选�
   // 按作者名搜索：按钮 + 带 byAuthor 的请求 + 作者为空时禁用
   assert.match(bookmarksPage, /coverSearchByAuthor/)
   assert.match(bookmarksPage, /loadCandidates\(coverFor, !authorOnly\)/)
+  // 按钮要和「上传本地图片 / 按书名重新获取 / 移除封面」放在同一列（bookmark-cover-actions）里
+  assert.match(bookmarksPage, /bookmark-cover-actions[\s\S]{0,3000}coverSearchByAuthor/)
+  assert.doesNotMatch(bookmarksPage, /bookmark-cover-candidates-head/)
   assert.match(bookmarksPage, /authorOnly/)
   assert.match(bookmarksPage, /bookmarks\.coverNoAuthor/)
   assert.match(bookmarksPage, /book\.coverMissing && !book\.coverKey/)

@@ -784,6 +784,25 @@ export function BookmarksPage({ onOpenBookmark }: BookmarksPageProps = {}) {
                   </button>
                   <button
                     type="button"
+                    className="subtle-button"
+                    // 作者为空时按作者搜必然没结果，直接禁用（title 说明原因）
+                    disabled={loadingCandidates || busy || (!coverFor.bookAuthor && !authorOnly)}
+                    title={
+                      coverFor.bookAuthor
+                        ? t('bookmarks.coverSearchByAuthorHint', '搜索该作者名下的其它书，借它们的封面')
+                        : t('bookmarks.coverNoAuthor', '这本书没有作者信息，无法按作者搜索')
+                    }
+                    onClick={() => loadCandidates(coverFor, !authorOnly)}
+                  >
+                    {loadingCandidates ? <ButtonSpinner size={12} /> : <Icon name="search" />}
+                    <span>
+                      {authorOnly
+                        ? t('bookmarks.coverSearchByName', '改回按书名搜索')
+                        : t('bookmarks.coverSearchByAuthor', '按作者名搜索')}
+                    </span>
+                  </button>
+                  <button
+                    type="button"
                     className="subtle-button shelf-remove"
                     disabled={busy || (!coverFor.coverKey && !coverFor.coverUrl)}
                     onClick={() => void applyCover({ remove: true })}
@@ -806,32 +825,11 @@ export function BookmarksPage({ onOpenBookmark }: BookmarksPageProps = {}) {
               </div>
 
               <div className="bookmark-cover-candidates">
-                <div className="bookmark-cover-candidates-head">
-                  <span className="bookmark-field-label">
-                    {authorOnly
-                      ? t('bookmarks.coverFromAuthor', '按作者搜到的封面（点击使用）')
-                      : t('bookmarks.coverFromSources', '书源搜到的封面（点击使用）')}
-                  </span>
-                  <button
-                    type="button"
-                    className="subtle-button bookmark-cover-search-toggle"
-                    // 作者为空时按作者搜必然没结果，直接禁用（title 说明原因）
-                    disabled={loadingCandidates || busy || (!coverFor.bookAuthor && !authorOnly)}
-                    title={
-                      coverFor.bookAuthor
-                        ? t('bookmarks.coverSearchByAuthorHint', '搜索该作者名下的其它书，借它们的封面')
-                        : t('bookmarks.coverNoAuthor', '这本书没有作者信息，无法按作者搜索')
-                    }
-                    onClick={() => loadCandidates(coverFor, !authorOnly)}
-                  >
-                    <Icon name='search' />
-                    <span>
-                      {authorOnly
-                        ? t('bookmarks.coverSearchByName', '改回按书名搜索')
-                        : t('bookmarks.coverSearchByAuthor', '按作者名搜索')}
-                    </span>
-                  </button>
-                </div>
+                <span className="bookmark-field-label">
+                  {authorOnly
+                    ? t('bookmarks.coverFromAuthor', '按作者搜到的封面（点击使用）')
+                    : t('bookmarks.coverFromSources', '书源搜到的封面（点击使用）')}
+                </span>
                 {loadingCandidates && <div className="bookmark-page-hint">{t('common.loading', '加载中...')}</div>}
                 {!loadingCandidates && candidates.length === 0 && (
                   <div className="bookmark-page-hint">

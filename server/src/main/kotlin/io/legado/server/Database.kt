@@ -2408,6 +2408,11 @@ class Database internal constructor(private val spec: DatabaseSpec) : Closeable,
             left join book_chapter_index c
                    on c.source_id = cc.source_id and c.book_url = cc.book_url and c.chapter_url = cc.chapter_url
             where $where
+            -- 正文命中必须有稳定顺序：按书的最近阅读时间、再按章节序号。
+            -- 否则 PG 会按物理堆顺序返回，阅读器里第 80 章可能排在第一章前面。
+            order by coalesce(s.last_read_at, 0) desc,
+                     coalesce(c.chapter_index, 2147483647) asc,
+                     cc.chapter_url asc
             limit ?
         """.trimIndent()
         db.prepareStatement(sql).use { stmt ->

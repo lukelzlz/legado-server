@@ -185,14 +185,36 @@ class ConfigFileTest {
         assertTrue("第二次启动必须返回 Ready", second is ServerConfig.LoadResult.Ready)
     }
 
-    @Test
-    fun `首次启动生成的配置会写入环境变量里的实际值：端口与数据目录`() {
-        val env = mapOf("LEGADO_PORT" to "8231", "LEGADO_DATA_DIR" to baseDir.resolve("env-data").toString())
-        val first = ServerConfig.load(baseDir, env = env, log = {})
+    fun `桌面首次启动：生成配置后停下（FirstRun），模板里带上环境变量的实际值`() {
+        // 没有任何「关键环境变量」⇒ 视为桌面/裸 jar 场景：生成模板后停一次
+        val first = ServerConfig.load(baseDir, env = emptyMap(), log = {})
         val file = (first as ServerConfig.LoadResult.FirstRun).file
+        val content = Files.readString(file)
+        assertTrue("模板必须写实际生效端口", content.contains("port: "))
+        assertTrue("模板必须写数据目录", content.contains("data:"))
+    }
+
+    @Test
+    fun `容器部署（有环境变量）：首次启动也要直接 Ready，且配置落在数据卷上`() {
+        // Docker/K8s 里「起一次就退出」会被判成崩溃重启 ⇒ 有环境变量就不再等人工改配置
+        val dataDir = baseDir.resolve("env-data")
+        val env = mapOf("LEGADO_PORT" to "8231", "LEGADO_DATA_DIR" to dataDir.toString())
+        val loaded = ServerConfig.load(baseDir, env = env, log = {})
+        assertTrue("环境变量部署必须直接 Ready：$loaded", loaded is ServerConfig.LoadResult.Ready)
+        val file = dataDir.resolve("config").resolve("config.yaml")
+        assertTrue("配置文件必须生成在数据卷上：$file", Files.exists(file))
         val content = Files.readString(file)
         assertTrue("端口要写实际生效值", content.contains("port: 8231"))
         assertTrue("数据目录要写实际生效值", content.contains("env-data"))
+    }
+
+    @Test
+    fun `LEGADO_CONFIG_FILE 显式指定配置文件路径时按它读写`() {
+        val custom = baseDir.resolve("custom").resolve("my.yaml")
+        val env = mapOf("LEGADO_CONFIG_FILE" to custom.toString(), "ADMIN_PASSWORD" to "pw-123456")
+        val loaded = ServerConfig.load(baseDir, env = env, log = {})
+        assertTrue("显式配置文件 + 环境变量 ⇒ 直接 Ready：$loaded", loaded is ServerConfig.LoadResult.Ready)
+        assertTrue("配置文件必须落在 LEGADO_CONFIG_FILE 指定处：$custom", Files.exists(custom))
     }
 
     @Test
@@ -239,3 +261,5 @@ class ConfigFileTest {
         val legacy = readyConfig(baseDir, emptyMap())
         assertEquals("/tmp/legacy-key.sqlite", legacy.databasePath)
     }}
+
+

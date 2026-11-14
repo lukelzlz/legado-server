@@ -176,20 +176,30 @@ data class ServerConfig(
             // ① 文件不存在时，用「环境变量 + 内置默认值」算出的**实际生效值**去渲染模板：
             //    否则启动脚本导出的 LEGADO_DATA_DIR/LEGADO_PORT 会与生成的模板不一致，
             //    下次启动（脚本不再导出 env）就会换端口/换数据目录。
-            val templateValues = if (java.nio.file.Files.exists(ConfigFile.fileOf(baseDir))) {
+            // ② 配置文件位置支持环境变量（容器场景：jar 在 root 所有的 /app/lib，写不进去）：
+            //    LEGADO_CONFIG_FILE > <LEGADO_DATA_DIR>/config/config.yaml > <jar>/config/config.yaml
+            val explicitFile = runCatching { ConfigFile.resolveFile(baseDir, env) }
+                .getOrDefault(ConfigFile.fileOf(baseDir))
+            val templateValues = if (java.nio.file.Files.exists(explicitFile)) {
                 emptyMap()
             } else {
                 effectiveValues(fromSources(emptyMap(), env))
             }
-            val (file, generated) = runCatching { ConfigFile.ensureDefault(baseDir, templateValues) }
+            val (file, generated) = runCatching { ConfigFile.ensureDefaultAt(explicitFile, templateValues) }
                 .getOrElse { error ->
-                    log("[config] 无法在 $baseDir 生成 config.yaml：${error.message}（继续用环境变量/默认值）")
+                    log("[config] 无法在 $explicitFile 生成 config.yaml：${error.message}（继续用环境变量/默认值）")
                     return LoadResult.Ready(fromSources(emptyMap(), env))
                 }
             if (generated) {
-                // 用户要求：**首次启动仅创建配置文件**，第二次启动再正式启动。
-                // 这样用户可以先按注释把数据库/端口/密码改好，再启动，避免「用默认值把库跑起来又得重配」。
                 log("[config] 已生成默认配置文件：$file")
+                // 用户要求：**首次启动仅创建配置文件**，第二次启动再正式启动。
+                // 但容器/K8s/CI 里「起一次就退出」会被判定为崩溃重启，而这类部署本来就用环境变量配置 ⇒
+                // 只要检测到环境变量已把关键项配好，就不中断启动，直接 Ready。
+                if (isEnvDriven(env)) {
+                    log("[config] 检测到环境变量部署（无需等待人工改配置），本次直接启动")
+                    return LoadResult.Ready(fromSources(emptyMap(), env))
+                }
+                // 桌面 / 裸 jar：让用户先按注释把数据库、端口、密码改好再启动。
                 return LoadResult.FirstRun(file)
             }
             val values = ConfigFile.readValues(file)
@@ -231,6 +241,22 @@ data class ServerConfig(
         private fun formatGb(bytes: Long): String {
             val gb = bytes / (1024.0 * 1024.0 * 1024.0)
             return if (gb == gb.toLong().toDouble()) gb.toLong().toString() else String.format("%.1f", gb)
+        }
+
+        /**
+         * 判断这次启动是不是「纯环境变量部署」（Docker / K8s / CI）。
+         *
+         * 判据：只要用户显式给了**任一关键环境变量**，就说明他并不打算靠人工编辑 config.yaml，
+         * 此时首次启动生成模板后不能退出（否则容器启动即 Exited）。
+         * 故意不把 `LEGADO_DATA_DIR` 排除在外：镜像里它几乎总是被设置。
+         */
+        internal fun isEnvDriven(env: Map<String, String> = System.getenv()): Boolean {
+            val keys = listOf(
+                "ADMIN_PASSWORD", "LEGADO_CONFIG_FILE", "LEGADO_DATA_DIR", "LEGADO_HOST", "LEGADO_PORT",
+                "LEGADO_DB_TYPE", "LEGADO_DB_URL", "LEGADO_DB_USER", "LEGADO_DB_PASSWORD",
+                "LEGADO_SECURE_COOKIES", "LEGADO_DATABASE",
+            )
+            return keys.any { !env[it].isNullOrBlank() }
         }
 
         /**

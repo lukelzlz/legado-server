@@ -243,9 +243,6 @@ export function GlobalSearchModal({
         <div className="global-search-results">
           {loading && items.length === 0 && <p className="reader-status">{t('search.loading', '正在搜索…')}</p>}
           {!loading && error && <p className="reader-error">{error}</p>}
-          {!loading && !error && !query.trim() && (
-            <p className="reader-status">{t('search.empty', '没有找到匹配的内容')}</p>
-          )}
           {!loading && !error && searched && items.length === 0 && (
             <p className="reader-status">{t('search.empty', '没有找到匹配的内容')}</p>
           )}
@@ -289,3 +286,4 @@ export function GlobalSearchModal({
     document.body,
   )
 }
+

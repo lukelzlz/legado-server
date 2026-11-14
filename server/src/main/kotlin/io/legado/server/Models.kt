@@ -591,9 +591,9 @@ data class SourceLoginStateRecord(
  */
 @Serializable data class AutoCacheSettings(
     val novelEnabled: Boolean = false,
-    /** 每隔多少分钟跑一轮，1..1440。 */
+    /** 每隔多少**小时**跑一轮：0.1 ~ 240（旧键 `_interval_minutes` 会在读取时 /60 换算）。 */
     val novelIntervalHours: Double = 1.0,
-    /** 每轮最多入队几本，1..20。 */
+    /** 每轮最多入队几本：>= 1，**无上限**。 */
     val novelBooksPerRound: Int = 1,
     val comicEnabled: Boolean = false,
     val comicIntervalHours: Double = 1.0,

@@ -52,6 +52,8 @@ internal object DatabaseSchema {
                   id integer primary key autoincrement,
                   name text not null unique collate nocase,
                   sort_order integer not null default 0,
+                  -- 隐藏分组（PR #89）：权威 Schema 必须带上，否则新库要先建旧表再 alter 补列
+                  is_private integer not null default 0,
                   created_at integer not null
                 );
                 create index if not exists idx_book_group_sort on book_group(sort_order asc, id asc);

@@ -774,7 +774,7 @@ export function BookmarksPage({ onOpenBookmark }: BookmarksPageProps = {}) {
                     // 按钮文案固定不变：点一下就在下面换成「该作者名下的书」的封面列表
                     onClick={() => loadCandidates(coverFor, true)}
                   >
-                    {loadingCandidates ? <ButtonSpinner size={12} /> : <Icon name="search" />}
+                    {loadingCandidates && authorOnly ? <ButtonSpinner size={12} /> : <Icon name="search" />}
                     <span>{t('bookmarks.coverSearchByAuthor', '按作者名搜索')}</span>
                   </button>
                   <button

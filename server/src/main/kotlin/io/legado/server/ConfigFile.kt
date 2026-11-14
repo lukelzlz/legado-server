@@ -117,6 +117,23 @@ object ConfigFile {
         """.trimIndent() + "\n"
     }
 
+    /**
+     * 配置文件位置的**环境变量感知**解析（容器/纯环境变量部署用）。
+     *
+     * 优先级：
+     * 1. `LEGADO_CONFIG_FILE`：显式指定完整路径；
+     * 2. `LEGADO_DATA_DIR`：持久化卷（Docker 里通常是 `/data`）下的 `config/config.yaml`；
+     * 3. 否则 `<jar 同级>/config/config.yaml`（桌面/裸 jar 场景）。
+     *
+     * 为什么要有前两条：官方镜像里 jar 位于 `/app/lib`（root 所有、进程已降权），
+     * 既写不进去、重建容器又会丢——配置文件必须落在持久化卷上。
+     */
+    fun resolveFile(baseDir: Path, env: Map<String, String> = System.getenv()): Path {
+        env["LEGADO_CONFIG_FILE"]?.takeIf { it.isNotBlank() }?.let { return Path.of(it).toAbsolutePath() }
+        env["LEGADO_DATA_DIR"]?.takeIf { it.isNotBlank() }?.let { return fileOf(Path.of(it).toAbsolutePath()) }
+        return fileOf(baseDir)
+    }
+
     /** 配置目录（`<baseDir>/config`）。 */
     fun directoryOf(baseDir: Path): Path = baseDir.resolve(DIRECTORY_NAME)
 
@@ -128,8 +145,11 @@ object ConfigFile {
      *
      * **绝不覆盖已有文件**（用户改过的模板必须保住）。
      */
-    fun ensureDefault(baseDir: Path, values: Values = emptyMap()): Pair<Path, Boolean> {
-        val file = fileOf(baseDir)
+    fun ensureDefault(baseDir: Path, values: Values = emptyMap()): Pair<Path, Boolean> =
+        ensureDefaultAt(fileOf(baseDir), values)
+
+    /** 同 [ensureDefault]，但目标文件路径由调用方给定（支持 `LEGADO_CONFIG_FILE` / 数据卷）。 */
+    fun ensureDefaultAt(file: Path, values: Values = emptyMap()): Pair<Path, Boolean> {
         if (Files.exists(file)) return file to false
         runCatching { Files.createDirectories(file.parent) }
         Files.writeString(file, defaultContent(values))

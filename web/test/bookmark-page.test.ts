@@ -12,7 +12,9 @@ import {
 import type { BookmarkBook, BookmarkRecord } from '../src/api'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
-const src = (name: string) => fs.readFileSync(path.resolve(here, '../src', name), 'utf-8')
+// 统一换行成 LF：源码按行切片的断言必须与平台换行无关（Windows CRLF vs CI LF）。
+const src = (name: string) =>
+  fs.readFileSync(path.resolve(here, '../src', name), 'utf-8').replace(/\r\n/g, '\n')
 
 const page = src('BookmarksPage.tsx')
 const bookmarksPage = page

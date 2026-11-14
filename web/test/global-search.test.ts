@@ -13,7 +13,10 @@ import { fileURLToPath } from 'node:url'
  */
 
 const here = path.dirname(fileURLToPath(import.meta.url))
-const src = (name: string) => fs.readFileSync(path.resolve(here, '../src', name), 'utf-8')
+// 统一换行成 LF 再断言：源码里有「按行切片」的断言（如 indexOf('return (\n    <main')），
+// Windows 检出（CRLF）会切不出预期片段、CI（LF）会切出空串 —— 同一份测试必须与平台换行无关。
+const src = (name: string) =>
+  fs.readFileSync(path.resolve(here, '../src', name), 'utf-8').replace(/\r\n/g, '\n')
 
 const modal = src('GlobalSearchModal.tsx')
 const mainTsx = src('main.tsx')
@@ -103,7 +106,12 @@ test('书架页顶栏有「搜索」按钮，点击打开同一个弹窗', () =>
 })
 
 test('书架页搜索命中后：书架结果直接开书，目录/正文结果带章定位', () => {
-  const body = mainTsx.slice(mainTsx.indexOf('const openSearchHit'), mainTsx.indexOf('return (\n    <main'))
+  // 切到 openSearchHit 这个函数体结束（下一个 `  return (` 之前），
+  // 不要拿 App 的 `<main` 当终点：那个 return 在函数**之前**，会切出空串。
+  const bodyStart = mainTsx.indexOf('const openSearchHit')
+  const bodyEnd = mainTsx.indexOf('\n  return (', bodyStart)
+  assert.ok(bodyStart >= 0 && bodyEnd > bodyStart, '必须能定位到 openSearchHit 的函数体')
+  const body = mainTsx.slice(bodyStart, bodyEnd)
   // 书不在架 ⇒ 明确提示，绝不猜一个 item 去开书
   assert.match(body, /items\.find\(entry => entry\.sourceId === hit\.sourceId && entry\.bookUrl === hit\.bookUrl\)/)
   assert.match(body, /t\('search\.bookNotInShelf', '这本书不在书架里，无法打开'\)/)

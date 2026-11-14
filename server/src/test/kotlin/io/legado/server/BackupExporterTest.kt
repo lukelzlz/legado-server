@@ -192,7 +192,31 @@ class BackupExporterTest {
                 "groupId": $groupId,
                 "groupName": "分组A",
                 "order": 0,
-                "show": false
+                "show": true,
+                "isPrivate": false
+              }
+            ]
+            """.trimIndent(),
+            groups,
+        )
+    }
+
+    @Test
+    fun `private book group entry exports show false and isPrivate true`() = withDatabase { db ->
+        val group = db.createBookGroup("私密分组", isPrivate = true)
+        val groups = entriesOf(BackupExporter(db).export("", LocalDate.of(2026, 9, 30)).bytes).getValue("bookGroup.json")
+
+        assertEquals(
+            """
+            [
+              {
+                "bookSort": -1,
+                "enableRefresh": true,
+                "groupId": ${group.id},
+                "groupName": "私密分组",
+                "order": ${group.sortOrder},
+                "show": false,
+                "isPrivate": true
               }
             ]
             """.trimIndent(),

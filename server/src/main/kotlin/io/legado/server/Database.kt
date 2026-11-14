@@ -150,6 +150,7 @@ class Database internal constructor(private val spec: DatabaseSpec) : Closeable,
             // 「库不存在就自动建库」发生在更早的 DatabaseSpec.ensureDatabase。
             applyExternalSchema(db, engine) { message -> println(message) }
         }
+        migrateBookGroup(db)
         migrateReadingProgress(db)
         migrateBookshelf(db)
         migrateSourceTable(db)
@@ -1927,10 +1928,10 @@ class Database internal constructor(private val spec: DatabaseSpec) : Closeable,
 
     fun listBookGroups(): List<BookGroup> = connect { db ->
         db.prepareStatement("""
-            select g.id, g.name, g.sort_order, count(s.book_url) as book_count
+            select g.id, g.name, g.sort_order, count(s.book_url) as book_count, g.is_private
             from book_group g
             left join book_shelf s on s.group_name = g.name collate nocase
-            group by g.id, g.name, g.sort_order
+            group by g.id, g.name, g.sort_order, g.is_private
             order by g.sort_order asc, g.id asc
         """).use { stmt ->
             stmt.executeQuery().use { rs ->
@@ -1941,7 +1942,8 @@ class Database internal constructor(private val spec: DatabaseSpec) : Closeable,
                                 id = rs.getLong(1),
                                 name = rs.getString(2),
                                 sortOrder = rs.getInt(3),
-                                bookCount = rs.getInt(4)
+                                bookCount = rs.getInt(4),
+                                isPrivate = rs.getInt(5) == 1,
                             )
                         )
                     }
@@ -1952,11 +1954,11 @@ class Database internal constructor(private val spec: DatabaseSpec) : Closeable,
 
     fun getBookGroup(name: String): BookGroup? = connect { db ->
         db.prepareStatement("""
-            select g.id, g.name, g.sort_order, count(s.book_url) as book_count
+            select g.id, g.name, g.sort_order, count(s.book_url) as book_count, g.is_private
             from book_group g
             left join book_shelf s on s.group_name = g.name collate nocase
             where g.name = ? collate nocase
-            group by g.id, g.name, g.sort_order
+            group by g.id, g.name, g.sort_order, g.is_private
         """).use { stmt ->
             stmt.setString(1, name.trim())
             stmt.executeQuery().use { rs ->
@@ -1965,14 +1967,15 @@ class Database internal constructor(private val spec: DatabaseSpec) : Closeable,
                         id = rs.getLong(1),
                         name = rs.getString(2),
                         sortOrder = rs.getInt(3),
-                        bookCount = rs.getInt(4)
+                        bookCount = rs.getInt(4),
+                        isPrivate = rs.getInt(5) == 1,
                     )
                 } else null
             }
         }
     }
 
-    fun createBookGroup(name: String): BookGroup = write { db ->
+    fun createBookGroup(name: String, isPrivate: Boolean = false): BookGroup = write { db ->
         val trimmed = name.trim()
         require(trimmed.isNotBlank()) { "分组名称不能为空" }
         val exists = db.prepareStatement("select count(*) from book_group where name=? collate nocase").use { stmt ->
@@ -1985,10 +1988,11 @@ class Database internal constructor(private val spec: DatabaseSpec) : Closeable,
         }
         val now = System.currentTimeMillis()
         try {
-            db.prepareStatement("insert into book_group(name, sort_order, created_at) values(?, ?, ?)").use { stmt ->
+            db.prepareStatement("insert into book_group(name, sort_order, is_private, created_at) values(?, ?, ?, ?)").use { stmt ->
                 stmt.setString(1, trimmed)
                 stmt.setInt(2, maxOrder + 1)
-                stmt.setLong(3, now)
+                stmt.setInt(3, if (isPrivate) 1 else 0)
+                stmt.setLong(4, now)
                 stmt.executeUpdate()
             }
         } catch (error: java.sql.SQLException) {
@@ -1998,13 +2002,25 @@ class Database internal constructor(private val spec: DatabaseSpec) : Closeable,
             if (isUniqueViolation(error)) throw IllegalArgumentException("分组「$trimmed」已存在")
             throw error
         }
-        db.prepareStatement("select id, name, sort_order from book_group where name=? collate nocase").use { stmt ->
+        db.prepareStatement("select id, name, sort_order, is_private from book_group where name=? collate nocase").use { stmt ->
             stmt.setString(1, trimmed)
             stmt.executeQuery().use { rs ->
-                if (rs.next()) BookGroup(rs.getLong(1), rs.getString(2), rs.getInt(3), 0)
+                if (rs.next()) BookGroup(rs.getLong(1), rs.getString(2), rs.getInt(3), 0, rs.getInt(4) == 1)
                 else throw IllegalStateException("创建分组失败")
             }
         }
+    }
+
+    fun updateBookGroupPrivacy(name: String, isPrivate: Boolean): BookGroup = write { db ->
+        val trimmed = name.trim()
+        require(trimmed.isNotBlank()) { "分组名称不能为空" }
+        val updated = db.prepareStatement("update book_group set is_private=? where name=? collate nocase").use { stmt ->
+            stmt.setInt(1, if (isPrivate) 1 else 0)
+            stmt.setString(2, trimmed)
+            stmt.executeUpdate() > 0
+        }
+        if (!updated) throw NoSuchElementException("原分组不存在")
+        getBookGroup(trimmed) ?: throw IllegalStateException("更新分组私密状态失败")
     }
 
     fun renameBookGroup(oldName: String, newName: String): BookGroup = write { db ->
@@ -3177,14 +3193,15 @@ class Database internal constructor(private val spec: DatabaseSpec) : Closeable,
                 }
             if (toInsert.isNotEmpty()) {
                 db.prepareStatement(
-                    "insert into book_group(name, sort_order, created_at) values(?,?,?) " +
-                        "on conflict(name) do update set sort_order=excluded.sort_order"
+                    "insert into book_group(name, sort_order, is_private, created_at) values(?,?,?,?) " +
+                        "on conflict(name) do update set sort_order=excluded.sort_order, is_private=excluded.is_private"
                 ).use { stmt ->
                     val now = System.currentTimeMillis()
                     toInsert.forEach { group ->
                         stmt.setString(1, group.groupName)
                         stmt.setInt(2, group.order)
-                        stmt.setLong(3, now)
+                        stmt.setInt(3, if (group.isPrivate) 1 else 0)
+                        stmt.setLong(4, now)
                         stmt.addBatch()
                     }
                     created = stmt.executeBatch().count { it > 0 }
@@ -4570,6 +4587,16 @@ class Database internal constructor(private val spec: DatabaseSpec) : Closeable,
         val key = path.removePrefix("/api/covers/").trim('/')
         // 本服务封面 key 是 64 位 hex；与自身 key 相同、或本身就指向本服务封面接口，均视为自引用
         return coverKey == null || key == coverKey || key.matches(Regex("[0-9a-f]{64}"))
+    }
+    private fun migrateBookGroup(db: Connection) {
+        val columns = db.createStatement().use { statement ->
+            statement.executeQuery("pragma table_info(book_group)").use { result ->
+                buildSet { while (result.next()) add(result.getString("name")) }
+            }
+        }
+        if ("is_private" !in columns) {
+            db.createStatement().use { it.executeUpdate("alter table book_group add column is_private integer not null default 0") }
+        }
     }
     private fun migrateReadingProgress(db: Connection) {
         val columns = db.createStatement().use { statement ->

@@ -207,7 +207,8 @@ class BackupExporter(private val database: Database) {
         put("groupId", JsonPrimitive(group.id))
         put("groupName", JsonPrimitive(group.name))
         put("order", JsonPrimitive(group.sortOrder))
-        put("show", JsonPrimitive(false))
+        put("show", JsonPrimitive(!group.isPrivate))
+        put("isPrivate", JsonPrimitive(group.isPrivate))
     }
 
     /**

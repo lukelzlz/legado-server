@@ -353,11 +353,13 @@ class BackupImporter(
             val group = element as? JsonObject ?: return@mapNotNull null
             val id = group.number("groupId") ?: return@mapNotNull null
             val name = group.text("groupName")?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
+            val isPrivate = group.flag("isPrivate") ?: (if (id >= 0) group.flag("show")?.let { !it } ?: false else false)
             BackupGroupEntry(
                 groupId = id,
                 groupName = name,
                 order = group.number("order")?.toInt() ?: 0,
                 builtIn = id < 0,
+                isPrivate = isPrivate,
             )
         }
 

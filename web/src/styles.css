@@ -944,10 +944,13 @@ mark.search-highlight { background: var(--accent-soft); color: var(--accent); fo
 .group-list-empty { text-align: center; color: var(--muted); font-size: 13px; padding: 24px 0; }
 .group-item-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
 .group-item-info { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.group-private-badge { display: inline-flex; align-items: center; margin-right: 4px; color: var(--muted); vertical-align: middle; }
+.group-private-badge svg { width: 12px; height: 12px; }
 .group-item-name { font-size: 14px; font-weight: 600; color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .group-item-count { font-size: 11px; color: var(--muted); background: var(--surface-muted); padding: 1px 6px; border-radius: 4px; }
 .group-item-actions { display: flex; align-items: center; gap: 4px; }
 .group-item-actions .subtle-button { width: 28px; height: 28px; padding: 0; display: grid; place-items: center; font-size: 13px; }
+.group-item-actions .subtle-button.active { color: var(--accent); background: var(--accent-soft); }
 .group-item-actions .danger-icon-btn:hover { color: var(--danger); }
 .group-item-editing { display: flex; align-items: center; gap: 6px; width: 100%; }
 .group-item-editing input { flex: 1; height: 32px; padding: 0 8px; border: 1px solid var(--accent); border-radius: 4px; font-size: 13px; }

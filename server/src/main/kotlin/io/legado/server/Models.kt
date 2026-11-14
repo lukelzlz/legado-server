@@ -804,6 +804,7 @@ data class BookGroup(
     val name: String,
     val sortOrder: Int,
     val bookCount: Int = 0,
+    val isPrivate: Boolean = false,
 )
 
 /**
@@ -959,7 +960,10 @@ data class BookmarkBookKey(val bookName: String, val bookAuthor: String? = null)
 data class BookmarkDeleteResult(val deleted: Int)
 
 @Serializable
-data class BookGroupCreateRequest(val name: String)
+data class BookGroupCreateRequest(val name: String, val isPrivate: Boolean = false)
+
+@Serializable
+data class BookGroupPrivacyRequest(val name: String, val isPrivate: Boolean)
 
 @Serializable
 data class BookGroupRenameRequest(val oldName: String, val newName: String)
@@ -1381,6 +1385,7 @@ data class BackupGroupEntry(
      * 等，它们是**按条件动态筛选**的虚拟分组、不是真实归类，实测这些分组在真实备份里都是空的。
      */
     val builtIn: Boolean,
+    val isPrivate: Boolean = false,
 )
 
 /**

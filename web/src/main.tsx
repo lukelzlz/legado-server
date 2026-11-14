@@ -2255,6 +2255,21 @@ function GroupManageModal({
     }
   }
 
+  const handleTogglePrivacy = async (group: BookGroup) => {
+    setBusy(true)
+    setError('')
+    try {
+      const next = !group.isPrivate
+      await api.updateBookGroupPrivacy(group.name, next)
+      await onGroupsChanged()
+      toast.success(next ? t('shelf.groupSetPrivate', '已将分组「{{name}}」设为隐藏', { name: group.name }) : t('shelf.groupSetPublic', '已将分组「{{name}}」恢复为公开', { name: group.name }))
+    } catch (err) {
+      setError(err instanceof Error ? err.message : t('shelf.togglePrivacyFailed', '更新分组隐藏状态失败'))
+    } finally {
+      setBusy(false)
+    }
+  }
+
   const handleDelete = async (group: BookGroup) => {
     const confirmMsg = group.bookCount > 0
       ? t('shelf.deleteGroupConfirmWithCount', '确定删除分组「{{name}}」吗？组内 {{count}} 本书籍将自动归入“未分组”，书籍不会被删除。', { name: group.name, count: group.bookCount })
@@ -2348,10 +2363,22 @@ function GroupManageModal({
                   ) : (
                     <>
                       <div className="group-item-info">
-                        <span className="group-item-name">{group.name}</span>
+                        <span className="group-item-name">
+                          {group.isPrivate && <span className="group-private-badge" title={t('shelf.hiddenGroupBadge', '隐藏')}><Icon name="lock" /></span>}
+                          {group.name}
+                        </span>
                         <span className="group-item-count">{t('shelf.booksInGroup', '{{count}} 本', { count: group.bookCount })}</span>
                       </div>
                       <div className="group-item-actions">
+                        <button
+                          type="button"
+                          className={`subtle-button ${group.isPrivate ? 'active' : ''}`}
+                          disabled={busy}
+                          onClick={() => void handleTogglePrivacy(group)}
+                          title={group.isPrivate ? t('shelf.makePublic', '恢复公开显示') : t('shelf.makePrivate', '设为隐藏分组')}
+                        >
+                          <Icon name={group.isPrivate ? 'eyeOff' : 'eye'} />
+                        </button>
                         <button
                           type="button"
                           className="subtle-button"
@@ -2736,11 +2763,25 @@ function ShelfPage({ onOpen, theme }: { onOpen: (item: BookshelfItem, jump?: Boo
     return null
   }
 
+  const hiddenGroupNames = useMemo(() => new Set(groups.filter(g => g.isPrivate).map(g => g.name.toLowerCase())), [groups])
+
+  // 若当前选中的分组被设为隐藏，自动安全退回「全部」
+  useEffect(() => {
+    if (selectedGroup !== 'all' && selectedGroup !== '__ungrouped__') {
+      const isCurrentGroupHidden = groups.some(g => g.name === selectedGroup && g.isPrivate)
+      if (isCurrentGroupHidden) {
+        setSelectedGroup('all')
+      }
+    }
+  }, [selectedGroup, groups])
+
   const groupFilteredItems = useMemo(() => {
-    if (selectedGroup === 'all') return items
+    if (selectedGroup === 'all') {
+      return items.filter(i => !i.groupName || !hiddenGroupNames.has(i.groupName.toLowerCase()))
+    }
     if (selectedGroup === '__ungrouped__') return items.filter(i => !i.groupName)
     return items.filter(i => i.groupName === selectedGroup)
-  }, [items, selectedGroup])
+  }, [items, selectedGroup, hiddenGroupNames])
 
   const visibleItems = useMemo(() => {
     if (statusFilter === 'all') return groupFilteredItems
@@ -2750,11 +2791,15 @@ function ShelfPage({ onOpen, theme }: { onOpen: (item: BookshelfItem, jump?: Boo
 
   const groupCounts = useMemo(() => {
     let ungrouped = 0
+    let visibleTotal = 0
     items.forEach(i => {
       if (!i.groupName) ungrouped++
+      if (!i.groupName || !hiddenGroupNames.has(i.groupName.toLowerCase())) {
+        visibleTotal++
+      }
     })
-    return { ungrouped, all: items.length }
-  }, [items])
+    return { ungrouped, all: visibleTotal }
+  }, [items, hiddenGroupNames])
 
   const statusCounts = useMemo(() => ({
     all: groupFilteredItems.length,
@@ -2972,7 +3017,7 @@ function ShelfPage({ onOpen, theme }: { onOpen: (item: BookshelfItem, jump?: Boo
         >
           {t('search.scopeUngrouped', '未分组')}<small>{groupCounts.ungrouped}</small>
         </button>
-        {groups.map(g => (
+        {groups.filter(g => !g.isPrivate).map(g => (
           <button
             key={g.id}
             type="button"

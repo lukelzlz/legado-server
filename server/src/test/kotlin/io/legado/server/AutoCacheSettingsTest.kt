@@ -224,20 +224,22 @@ class AutoCacheSettingsTest {
     }
 
     @Test
-    fun `novel reuses the existing pending caching 口径`() = withFixture { fixture ->
-        // 只有 state in ('pending','caching') 的书才算「缓存未完成」
+    fun `novel candidates include never-cached books but skip ready and caching`() = withFixture { fixture ->
+        // ① 进过队列、还在 pending：算未完成
         fixture.database.saveBookshelf(novel("https://book/pending"), null)
         fixture.database.beginBookCache("https://s1.test", "https://book/pending", 5)
-        // 已缓存完（ready）的书不该再排进队列
+        // ② **从未缓存过**（没有 book_cache_status 行）：自动缓存也要挑中它
+        fixture.database.saveBookshelf(novel("https://book/fresh"), null)
+        // ③ 已完成（ready）：不该再排进队列
         fixture.database.saveBookshelf(novel("https://book/done"), null)
         fixture.database.beginBookCache("https://s1.test", "https://book/done", 1)
         fixture.database.finishBookCache("https://s1.test", "https://book/done")
 
-        applyAutoCacheSettingsUpdate(fixture.database, AutoCacheSettingsUpdate(novelEnabled = true))
+        applyAutoCacheSettingsUpdate(fixture.database, AutoCacheSettingsUpdate(novelEnabled = true, novelBooksPerRound = 5))
         runBlocking { fixture.scheduler.tick(now) }
 
-        assertEquals(1, fixture.novels.size)
-        assertEquals("https://book/pending", fixture.novels.single().bookUrl)
+        val queued = fixture.novels.map { it.bookUrl }.toSet()
+        assertEquals(setOf("https://book/pending", "https://book/fresh"), queued)
     }
 
     @Test
@@ -403,3 +405,4 @@ class AutoCacheSettingsTest {
         )
     }
 }
+

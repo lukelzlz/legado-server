@@ -83,11 +83,35 @@ export function GlobalSearchModal({
   /** 是否已经真正发过一次查询（区分「还没搜」与「搜了没结果」）。 */
   const [searched, setSearched] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
+  const backdropRef = useRef<HTMLDivElement>(null)
+  const resultsRef = useRef<HTMLDivElement>(null)
+  /** 「重试」按钮：只是让下面的查询 effect 再跑一次。 */
+  const [retryTick, setRetryTick] = useState(0)
 
   // 模式被外部收窄（理论上只在重新挂载时变）时校正一次，避免停在一个不存在的 tab 上
   useEffect(() => {
     if (!available.includes(mode)) setMode(available[0])
   }, [available, mode])
+
+  /**
+   * 滚轮在**磨砂遮罩**上时，事件不会落到结果列表上（弹窗贴边时尤其明显），
+   * 表现为「滚轮没反应」。这里把遮罩上的滚轮转发给结果列表：
+   * - 只在 target 就是遮罩本身时转发（弹窗内部的滚动交给原生行为）；
+   * - 必须 `passive: false` 才能 `preventDefault`，否则页面背后会跟着滚。
+   */
+  useEffect(() => {
+    const node = backdropRef.current
+    if (!node) return
+    const onWheel = (event: WheelEvent) => {
+      if (event.target !== node) return
+      const list = resultsRef.current
+      if (!list) return
+      event.preventDefault()
+      list.scrollTop += event.deltaY
+    }
+    node.addEventListener('wheel', onWheel, { passive: false })
+    return () => node.removeEventListener('wheel', onWheel)
+  }, [])
 
   // ESC ≡ 关闭（参考现有弹窗写法）
   useEffect(() => {
@@ -97,6 +121,21 @@ export function GlobalSearchModal({
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
   }, [onClose])
+
+  /**
+   * 打开时锁住背景滚动。
+   *
+   * 不锁的话，滚轮放在弹窗上（尤其是头部/输入框这种「没得滚」的区域）时，
+   * 滚动会落到书架页 body 上 —— 用户看到的是「弹窗没动、下面那层在动」。
+   * 关窗时恢复原值，避免影响其它页面。
+   */
+  useEffect(() => {
+    const previous = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    return () => {
+      document.body.style.overflow = previous
+    }
+  }, [])
 
   // 打开即聚焦输入框（书架页点「搜索」后用户下一步一定是输入）
   useEffect(() => {
@@ -154,7 +193,7 @@ export function GlobalSearchModal({
       controller.abort()
       setLoading(false)
     }
-  }, [query, mode, sourceId, bookUrl, t])
+  }, [query, mode, sourceId, bookUrl, t, retryTick])
 
   const modeLabel = (value: LocalSearchMode): string => {
     if (value === 'shelf') return t('search.shelf', '书架')
@@ -184,6 +223,7 @@ export function GlobalSearchModal({
   return createPortal(
     <div
       className={`modal-backdrop global-search-backdrop theme-${theme}`}
+      ref={backdropRef}
       // 点磨砂遮罩关闭：用 mousedown + target 判定，和书架其它弹窗行为一致；
       // 这样即使从弹窗内部拖出来松开，也不会误关。
       onMouseDown={event => {
@@ -248,9 +288,17 @@ export function GlobalSearchModal({
 
         <p className="global-search-hint">{hintOf(mode)}</p>
 
-        <div className="global-search-results">
+        <div className="global-search-results" ref={resultsRef}>
           {loading && items.length === 0 && <p className="reader-status">{t('search.loading', '正在搜索…')}</p>}
-          {!loading && error && <p className="reader-error">{error}</p>}
+          {!loading && error && (
+            <div className="global-search-error">
+              <p className="reader-error">{error}</p>
+              {/* 出错时给个「重试」，省得用户改一个字再改回去 */}
+              <button type="button" className="subtle-button" onClick={() => setRetryTick(value => value + 1)}>
+                {t('common.retry', '重试')}
+              </button>
+            </div>
+          )}
           {!loading && !error && searched && items.length === 0 && (
             <p className="reader-status">{t('search.empty', '没有找到匹配的内容')}</p>
           )}

@@ -6886,10 +6886,20 @@ mark.search-highlight { background: var(--accent-soft); color: var(--accent); fo
 .global-search-clear { width: 26px; height: 26px; padding: 0; display: grid; place-items: center; flex-shrink: 0; }
 
 .global-search-hint { margin: 8px 16px 0; color: var(--muted); font-size: 12px; line-height: 1.5; }
+.global-search-error {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 6px 4px;
+}
+.global-search-error .reader-error { margin: 0; }
 
 .global-search-results {
   flex: 1 1 auto;
   overflow-y: auto;
+  /* 滚到顶/底时不要把滚动链给背景层 */
+  overscroll-behavior: contain;
   padding: 10px 12px 14px;
   display: grid;
   gap: 8px;

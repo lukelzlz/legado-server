@@ -73,3 +73,13 @@
 1. **PG 唯一约束大小写**：`book_group.name` 在 PG 是大小写敏感 unique（SQLite 是 `collate nocase`）；应用层 `lower()` 重名拦截仍在，DB 层若要齐平需补表达式唯一索引。
 2. **PG 实测修掉的两类 SQL**：`order by <select 别名> collate nocase` 在 PG 会被翻成 `lower(别名)` 而报 column does not exist（`listSourceGroups` 改为 `min(trim(..))` 分组 + 裸别名排序）；`coalesce(c.chapter_count,0)` 这类非聚合列在 GROUP BY 里 PG 直接拒绝（漫画/音频缓存统计改为 `coalesce(max(...),0)`）。
 3. **配置键修正（历史小 bug）**：模板写 `database.sqlite.file`，而旧解析读 `data.database` ⇒ 本次改为**读 `database.sqlite.file` 并兼容旧键**（`data.database` 仍可用）。
+## 追加：分组名大小写语义以 SQLite 为准
+
+用户明确「按 sqlite 的逻辑来」⇒ PostgreSQL 上补齐 `book_group` 名字的大小写不敏感唯一：
+
+- **DDL**：PG 保留列级 `unique(name)`（`importBookGroups` 的 `on conflict(name)` 必须能匹配到普通唯一约束），**追加**
+  `create unique index if not exists book_group_name_ci on book_group (lower(name))`；
+- **建索引容错**：库里若已有 `News`/`news` 这类重复，建索引会失败 ⇒ 只对这一种情况**打 warning 并跳过**（附排查 SQL），其它 DDL 错误照旧抛出；
+- **导入**：`importBookGroups` 写库前按 `lower(name)` 读出现有分组，大小写变体映射到库里既有写法（不新建、不改用户分组名），避免新索引把整包导入搞失败；
+- **建组**：`createBookGroup` 的「先 count 再 insert」竞态窗口现在被数据库拦住，`isUniqueViolation` 翻成「分组「X」已存在」，不再漏成 500；
+- **实测**：PG 真机建 `News` 成功、再建 `news` 返回 `group_exists` 友好提示；`[db] 建表完成：22 张表 / 24 个索引`；冒烟 34/34。

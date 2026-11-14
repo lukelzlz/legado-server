@@ -1977,11 +1977,19 @@ class Database internal constructor(private val spec: DatabaseSpec) : Closeable,
             stmt.executeQuery().use { rs -> if (rs.next()) rs.getInt(1) else 0 }
         }
         val now = System.currentTimeMillis()
-        db.prepareStatement("insert into book_group(name, sort_order, created_at) values(?, ?, ?)").use { stmt ->
-            stmt.setString(1, trimmed)
-            stmt.setInt(2, maxOrder + 1)
-            stmt.setLong(3, now)
-            stmt.executeUpdate()
+        try {
+            db.prepareStatement("insert into book_group(name, sort_order, created_at) values(?, ?, ?)").use { stmt ->
+                stmt.setString(1, trimmed)
+                stmt.setInt(2, maxOrder + 1)
+                stmt.setLong(3, now)
+                stmt.executeUpdate()
+            }
+        } catch (error: java.sql.SQLException) {
+            // 上面的 count 查重与 insert 之间有竞态窗口；PG 的 `unique(lower(name))`（对齐 SQLite 的
+            // `unique collate nocase`）会把并发/大小写变体挡在数据库层 ⇒ 这里翻成与查重一致的用户提示，
+            // 别把 SQL 异常漏成 500。
+            if (isUniqueViolation(error)) throw IllegalArgumentException("分组「$trimmed」已存在")
+            throw error
         }
         db.prepareStatement("select id, name, sort_order from book_group where name=? collate nocase").use { stmt ->
             stmt.setString(1, trimmed)
@@ -2805,13 +2813,37 @@ class Database internal constructor(private val spec: DatabaseSpec) : Closeable,
         var assigned = 0
         try {
             // ① 建分组（按名字去重；已存在则只更新排序）
-            if (groups.isNotEmpty()) {
+            //
+            // ⚠️ 先按「大小写不敏感」读出现有分组再决定插不插：PG 侧 `book_group` 有
+            // `unique(lower(name))` 表达式唯一索引（对齐 SQLite 的 `unique collate nocase`），
+            // 而下面的 `on conflict(name)` 只能命中**区分大小写**的普通唯一约束 ⇒
+            // 备份里的 `news` 撞上库里的 `News` 会抛唯一冲突、整包导入失败。
+            // 所以在内存里把「大小写不同但同一个分组」映射到库里既有名字：既不新建，也不改用户分组名。
+            val existingGroups = LinkedHashMap<String, String>()
+            db.prepareStatement("select name from book_group").use { stmt ->
+                stmt.executeQuery().use { rs ->
+                    while (rs.next()) rs.getString(1)?.let { existingGroups[it.lowercase()] = it }
+                }
+            }
+            val nameOverrides = HashMap<String, String>()
+            val toInsert = groups
+                .distinctBy { it.groupName.lowercase() }
+                .filter { group ->
+                    val existing = existingGroups[group.groupName.lowercase()]
+                    if (existing != null) {
+                        if (existing != group.groupName) nameOverrides[group.groupName] = existing
+                        false
+                    } else {
+                        true
+                    }
+                }
+            if (toInsert.isNotEmpty()) {
                 db.prepareStatement(
                     "insert into book_group(name, sort_order, created_at) values(?,?,?) " +
                         "on conflict(name) do update set sort_order=excluded.sort_order"
                 ).use { stmt ->
                     val now = System.currentTimeMillis()
-                    groups.distinctBy { it.groupName.lowercase() }.forEach { group ->
+                    toInsert.forEach { group ->
                         stmt.setString(1, group.groupName)
                         stmt.setInt(2, group.order)
                         stmt.setLong(3, now)
@@ -2829,7 +2861,8 @@ class Database internal constructor(private val spec: DatabaseSpec) : Closeable,
                         "and (group_name is null or group_name='')"
                 ).use { stmt ->
                     withGroup.forEach { entry ->
-                        stmt.setString(1, entry.groupName)
+                        // 名字归一化到库里既有写法（大小写不同视为同一分组）
+                        stmt.setString(1, nameOverrides[entry.groupName] ?: entry.groupName)
                         stmt.setString(2, entry.sourceId)
                         stmt.setString(3, entry.bookUrl)
                         stmt.addBatch()

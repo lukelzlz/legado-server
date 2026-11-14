@@ -215,4 +215,35 @@ class MultiEngineDbTest {
         val fromEngine = runCatching { DatabaseEngine.of("mysql") }.exceptionOrNull()
         assertTrue("引擎解析同样要拦：$fromEngine", fromEngine is UnsupportedDatabaseTypeException)
     }
-}
+    // ------------------------------------------- book_group 大小写：以 SQLite 为准
+    @Test
+    fun `DDL：PG 追加 lower(name) 唯一索引，同时保留列级 unique（on conflict 需要它）`() {
+        val statements = DatabaseSchema.statements(DatabaseEngine.POSTGRES)
+        assertTrue(
+            "PG 必须有 lower(name) 表达式唯一索引（对齐 SQLite 的 unique collate nocase）：$statements",
+            statements.any { it.contains("create unique index if not exists book_group_name_ci on book_group (lower(name))") },
+        )
+        val bookGroup = statements.first { it.startsWith("create table if not exists book_group", ignoreCase = true) }
+        assertTrue(
+            "列级 unique(name) 必须保留，否则 importBookGroups 的 on conflict(name) 在 PG 上无约束可匹配：$bookGroup",
+            bookGroup.contains("unique", ignoreCase = true),
+        )
+        assertFalse("外部库 DDL 不能残留 collate nocase：$bookGroup", bookGroup.contains("collate nocase", ignoreCase = true))
+    }
+
+    @Test
+    fun `SQLite：分组名大小写不同视为同一个分组（建第二个要报「已存在」）`() {
+        val dir = java.nio.file.Files.createTempDirectory("legado-group-ci")
+        val db = Database(dir.resolve("x.sqlite").toString())
+        try {
+            db.initialize("pw")
+            db.createBookGroup("News")
+            val error = runCatching { db.createBookGroup("news") }.exceptionOrNull()
+            assertTrue("必须是友好的已存在提示，而不是 SQL 异常：$error", error is IllegalArgumentException)
+            assertTrue("提示语要带分组名：${error?.message}", error!!.message!!.contains("已存在"))
+            assertEquals("只应存在一个分组", 1, db.listBookGroups().size)
+        } finally {
+            db.close()
+            runCatching { dir.toFile().deleteRecursively() }
+        }
+    }}

@@ -292,8 +292,25 @@ internal object DatabaseSchema {
         if (engine == DatabaseEngine.SQLITE) return listOf(SQLITE_DDL)
         val clean = BLOCK_COMMENT_RE.replace(LINE_COMMENT_RE.replace(SQLITE_DDL, ""), "")
         val raw = clean.split(';').map { it.trim() }.filter { it.isNotEmpty() }
-        return raw.mapNotNull { statement -> render(statement) }
+        val rendered = raw.mapNotNull { statement -> render(statement) }
+        return if (engine == DatabaseEngine.POSTGRES) rendered + POSTGRES_EXTRA_DDL else rendered
     }
+
+    /**
+     * **PG 专属**的补充约束（与 SQLite 语义对齐，见 AGENTS/SESSION-059）。
+     *
+     * `book_group.name` 在 SQLite 里是 `unique collate nocase`（`News` / `news` 不允许共存）。
+     * PG 没有 per-column 的 nocase 唯一约束，只能用**表达式唯一索引** `lower(name)` 达到同样效果。
+     *
+     * ⚠️ 但列级 `unique(name)` **必须保留**：`importBookGroups` 用的是
+     * `insert … on conflict(name) do update`，PG 要求存在针对 `name` 列的普通唯一约束，
+     * 只有表达式索引时 `on conflict(name)` 会报
+     * 「there is no unique or exclusion constraint matching the ON CONFLICT specification」。
+     * 所以是「普通唯一 + 表达式唯一」两条并存。
+     */
+    private val POSTGRES_EXTRA_DDL = listOf(
+        "create unique index if not exists book_group_name_ci on book_group (lower(name))",
+    )
 
     private fun render(statement: String): String? {
         CREATE_TABLE_RE.find(statement)?.let { match ->
@@ -374,8 +391,40 @@ internal fun applyExternalSchema(connection: Connection, engine: DatabaseEngine,
     var tables = 0
     var indexes = 0
     DatabaseSchema.statements(engine).forEach { sql ->
-        connection.createStatement().use { it.executeUpdate(sql) }
-        if (sql.startsWith("create index", ignoreCase = true)) indexes++ else tables++
+        val isIndex = sql.startsWith("create index", ignoreCase = true) ||
+            sql.startsWith("create unique index", ignoreCase = true)
+        try {
+            connection.createStatement().use { it.executeUpdate(sql) }
+        } catch (error: java.sql.SQLException) {
+            // **只放行「唯一索引已有重复数据」这一种失败**：其它 DDL 错误必须照旧炸出来，
+            // 否则表结构缺了也没人知道。
+            if (isIndex && sql.contains("unique", ignoreCase = true) && isUniqueViolation(error)) {
+                log(
+                    "[db] 跳过唯一索引（库里已有重复数据，先清理再重启即可生效）：$sql\n" +
+                        "         排查：select lower(name), count(*) from book_group group by 1 having count(*) > 1;",
+                )
+            } else {
+                throw error
+            }
+        }
+        if (isIndex) indexes++ else tables++
     }
     log("[db] 建表完成：$tables 张表 / $indexes 个索引")
+}
+
+/** PostgreSQL 唯一冲突（23505）/ SQLite 唯一约束（结果码 19）都算「已有重复数据」。 */
+/** 是否为「唯一约束冲突」：PG 23505 / SQLite constraint failed / 通用 duplicate key 文案。 */
+internal fun isUniqueViolation(error: java.sql.SQLException): Boolean {
+    var current: Throwable? = error
+    while (current != null) {
+        if (current is java.sql.SQLException && current.sqlState == "23505") return true
+        val message = current.message.orEmpty().lowercase()
+        if (message.contains("duplicate key") ||
+            message.contains("unique constraint") ||
+            message.contains("unique index") ||
+            message.contains("constraint failed")
+        ) return true
+        current = current.cause
+    }
+    return false
 }

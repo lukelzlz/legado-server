@@ -541,6 +541,76 @@ data class SourceLoginStateRecord(
 )
 
 /**
+ * 自动缓存的**设置**（小说 / 漫画 / 有声，三组各自独立）。
+ *
+ * 存在 `app_setting` 表（键名固定，见 [AutoCacheScheduler] 顶部的常量），与备份导出同一机制。
+ *
+ * 三组**完全独立**（用户要求「三个分开」）：开哪一组只影响那一组；漫画与有声另有
+ * [comicIgnoreQuota] / [audioIgnoreQuota]，语义是「这本书的缓存不受内存配额限制」
+ * （落地为既有 pinned 机制，绝不另造配额旁路）。小说**没有**这一项 —— 正文缓存本来就不占图/音配额。
+ */
+@Serializable data class AutoCacheSettings(
+    val novelEnabled: Boolean = false,
+    /** 每隔多少分钟跑一轮，1..1440。 */
+    val novelIntervalMinutes: Int = 60,
+    /** 每轮最多入队几本，1..20。 */
+    val novelBooksPerRound: Int = 1,
+    val comicEnabled: Boolean = false,
+    val comicIntervalMinutes: Int = 60,
+    val comicBooksPerRound: Int = 1,
+    /** 漫画：忽略内存大小限制（pinned 免 GC）。 */
+    val comicIgnoreQuota: Boolean = false,
+    val audioEnabled: Boolean = false,
+    val audioIntervalMinutes: Int = 60,
+    val audioBooksPerRound: Int = 1,
+    /** 有声：忽略内存大小限制（pinned 免 GC）。 */
+    val audioIgnoreQuota: Boolean = false,
+)
+
+/**
+ * 自动缓存设置的**局部**更新：为 null 的字段表示「这次不改」。
+ *
+ * 页面上勾选类开关是**勾了就存**，而间隔/本数是输入框 + 组内保存按钮，
+ * 契约必须是「改哪个存哪个」，否则点一下开关会把用户还没保存的输入一起写进去
+ * （与备份导出的 update 语义逐字一致）。
+ */
+@Serializable data class AutoCacheSettingsUpdate(
+    val novelEnabled: Boolean? = null,
+    val novelIntervalMinutes: Int? = null,
+    val novelBooksPerRound: Int? = null,
+    val comicEnabled: Boolean? = null,
+    val comicIntervalMinutes: Int? = null,
+    val comicBooksPerRound: Int? = null,
+    val comicIgnoreQuota: Boolean? = null,
+    val audioEnabled: Boolean? = null,
+    val audioIntervalMinutes: Int? = null,
+    val audioBooksPerRound: Int? = null,
+    val audioIgnoreQuota: Boolean? = null,
+)
+
+/**
+ * 媒体书（漫画 / 有声）一轮要入队的任务。
+ *
+ * [ahead] 语义与 `MangaPrefetchService.enqueue` 一致：从 [fromChapterIndex] 起**再往后**
+ * 多少章（含起始章共 `ahead+1` 章）。整本缓存传「章节数 - 1」。
+ * [pin] 就是「忽略内存大小限制」的落地形态（pinned 免 GC）。
+ */
+data class AutoCacheMediaRequest(
+    val sourceId: String,
+    val bookUrl: String,
+    val fromChapterIndex: Int,
+    val ahead: Int,
+    val pin: Boolean,
+)
+
+/** 手动触发一轮的结果（`POST /api/auto-cache/run-now`，便于验收）。 */
+@Serializable data class AutoCacheRunResult(
+    val novelQueued: Int = 0,
+    val comicQueued: Int = 0,
+    val audioQueued: Int = 0,
+)
+
+/**
  * 自动导出的响应。
  *
  * `exported=false` 是**正常结果**（开关没开），不是错误 —— 前端在页面关闭时无条件上报，

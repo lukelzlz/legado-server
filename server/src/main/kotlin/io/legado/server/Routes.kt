@@ -96,6 +96,13 @@ fun Route.apiRoutes(
      * （老测试构造 `apiRoutes` 时不必关心它；定时巡检在 `Application` 里另有一份接线）。
      */
     coverSelfHeal: CoverSelfHeal? = null,
+    /**
+     * 自动缓存调度器（小说 / 漫画 / 有声）。
+     *
+     * 只为 `POST /api/auto-cache/run-now`（手动跑一轮，便于验收）而注入：
+     * 定时那一侧在 `Application` 里独立接线。可为 null ⇒ run-now 路由回 503。
+     */
+    autoCacheScheduler: AutoCacheScheduler? = null,
 ) {
     val webView = WebViewProxy(database)
 
@@ -213,6 +220,48 @@ fun Route.apiRoutes(
                 database.setSetting("locale", normalized)
                 call.application.log.info("server locale setting updated to: {}", normalized)
                 call.respond(LocaleSettingResponse(locale = normalized))
+            }
+        }
+        /*
+         * 自动缓存（文件页 / WebDAV 设置页里的「自动缓存」区块）。
+         *
+         * 设置走 `app_setting`（与 `backup_export_*` 同一机制）；`GET` 只读、`PUT` 是**局部更新**
+         * （只写请求里出现过的字段），写操作按会话鉴权 + CSRF 双轨。
+         * 真正的抓取全部由既有服务完成（BookCacheService / MangaPrefetchService / AudioPrefetchService），
+         * 这里只负责「设置」与「手动跑一轮」两个入口。
+         */
+        route("/auto-cache") {
+            get("/settings") {
+                if (auth.requireSession(call) == null) return@get
+                call.respond(readAutoCacheSettings(database))
+            }
+            put("/settings") {
+                if (auth.requireSession(call, csrfRequired = true) == null) return@put
+                val request = runCatching { call.receive<AutoCacheSettingsUpdate>() }.getOrNull()
+                if (request == null) {
+                    call.respondApiError(HttpStatusCode.BadRequest, "invalid_auto_cache_setting", "缺少自动缓存设置")
+                    return@put
+                }
+                val saved = runCatching { applyAutoCacheSettingsUpdate(database, request) }.getOrElse { error ->
+                    // 错误码刻意不在四语字典里：字典里的通用码会盖掉真正可据以行动的原因
+                    // （用户要看到的是「间隔需在 1~1440 分钟之间」而不是「设置无效」）。
+                    call.respondApiError(
+                        HttpStatusCode.BadRequest,
+                        "invalid_auto_cache_setting",
+                        error.message ?: "自动缓存设置无效",
+                    )
+                    return@put
+                }
+                call.respond(saved)
+            }
+            post("/run-now") {
+                if (auth.requireSession(call, csrfRequired = true) == null) return@post
+                val scheduler = autoCacheScheduler
+                if (scheduler == null) {
+                    call.respondApiError(HttpStatusCode.ServiceUnavailable, "auto_cache_disabled", "自动缓存调度未启用")
+                    return@post
+                }
+                call.respond(scheduler.runNow())
             }
         }
         route("/explore") {

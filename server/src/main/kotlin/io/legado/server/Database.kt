@@ -158,6 +158,10 @@ class Database internal constructor(private val spec: DatabaseSpec) : Closeable,
         migrateMangaImageCache(db)
         migrateCacheFilePaths(db)
         healLocalBookCacheStatus(db)
+        // 「目录搜索」的存量回填（新增能力，老库的 book_toc_cache 里已经有几千本的目录）：
+        // 限量 50 本/次、幂等、失败静默 —— 启动路径绝不能因为一本书的坏 JSON 起不来。
+        runCatching { backfillChapterIndex(db, CHAPTER_INDEX_BACKFILL_LIMIT) }
+            .onFailure { error -> println("[db] 章节索引回填失败（忽略）：${error.message}") }
         val userExists = db.prepareStatement("select 1 from app_user where id = 1").use { it.executeQuery().next() }
         if (!userExists) {
             require(!initialPassword.isNullOrBlank()) { "首次启动必须提供 ADMIN_PASSWORD" }
@@ -1823,6 +1827,8 @@ class Database internal constructor(private val spec: DatabaseSpec) : Closeable,
             db.prepareStatement("delete from book_content_cache where source_id=? and book_url=?").use { it.setString(1, sourceId); it.setString(2, bookUrl); it.executeUpdate() }
             db.prepareStatement("delete from book_cache_status where source_id=? and book_url=?").use { it.setString(1, sourceId); it.setString(2, bookUrl); it.executeUpdate() }
             db.prepareStatement("delete from book_toc_cache where source_id=? and (toc_url=? or toc_url like ?)").use { it.setString(1, sourceId); it.setString(2, bookUrl); it.setString(3, "%$bookUrl%"); it.executeUpdate() }
+            // 章节检索索引跟着书架行一起走（否则「目录搜索」会命中已经不在书架上的书）。
+            db.prepareStatement("delete from book_chapter_index where source_id=? and book_url=?").use { it.setString(1, sourceId); it.setString(2, bookUrl); it.executeUpdate() }
             /*
              * 封面文件的回收判定（用户要求：「只要书架或者书签任何一个或两者存在，那书籍的封面文件就保留」）。
              *
@@ -1906,6 +1912,7 @@ class Database internal constructor(private val spec: DatabaseSpec) : Closeable,
             db.prepareStatement("delete from book_content_cache where source_id=? and book_url=?").use { it.setString(1, oldSourceId); it.setString(2, oldBookUrl); it.executeUpdate() }
             db.prepareStatement("delete from book_cache_status where source_id=? and book_url=?").use { it.setString(1, oldSourceId); it.setString(2, oldBookUrl); it.executeUpdate() }
             db.prepareStatement("delete from book_toc_cache where source_id=? and (toc_url=? or toc_url like ?)").use { it.setString(1, oldSourceId); it.setString(2, oldBookUrl); it.setString(3, "%$oldBookUrl%"); it.executeUpdate() }
+            db.prepareStatement("delete from book_chapter_index where source_id=? and book_url=?").use { it.setString(1, oldSourceId); it.setString(2, oldBookUrl); it.executeUpdate() }
             cover?.let { value -> db.prepareStatement("insert into cover_cache(cache_key,content_type) values(?,?) on conflict(cache_key) do update set content_type=excluded.content_type").use { it.setString(1, value.key); it.setString(2, value.contentType); it.executeUpdate() } }
             val newCoverKey = cover?.key ?: oldCover
             db.prepareStatement("""insert into book_shelf(source_id,book_url,name,author,toc_url,cover_url,cover_key,last_read_at,alternate_sources,group_name,book_kind) values(?,?,?,?,?,?,?,?,?,?,?)
@@ -2132,6 +2139,7 @@ class Database internal constructor(private val spec: DatabaseSpec) : Closeable,
                         db.prepareStatement("delete from reading_progress where source_id=? and book_url=?").use { it.setString(1, item.sourceId); it.setString(2, item.bookUrl); it.executeUpdate() }
                         db.prepareStatement("delete from book_content_cache where source_id=? and book_url=?").use { it.setString(1, item.sourceId); it.setString(2, item.bookUrl); it.executeUpdate() }
                         db.prepareStatement("delete from book_cache_status where source_id=? and book_url=?").use { it.setString(1, item.sourceId); it.setString(2, item.bookUrl); it.executeUpdate() }
+                        db.prepareStatement("delete from book_chapter_index where source_id=? and book_url=?").use { it.setString(1, item.sourceId); it.setString(2, item.bookUrl); it.executeUpdate() }
                         val orphan = key?.takeIf { value -> db.prepareStatement("select 1 from book_shelf where cover_key=?").use { it.setString(1, value); !it.executeQuery().next() } }
                         orphan?.let { value ->
                             db.prepareStatement("delete from cover_cache where cache_key=?").use { it.setString(1, value); it.executeUpdate() }
@@ -2203,6 +2211,286 @@ class Database internal constructor(private val spec: DatabaseSpec) : Closeable,
             stmt.setLong(4, System.currentTimeMillis())
             stmt.executeUpdate()
         }
+        // 目录缓存落库的同时把章名摊平进检索索引（全局搜索的「目录搜索」靠它）。
+        // `tocUrl` 可能是 `/toc` 变体 ⇒ 用书架行反查真正的 `book_url` 再落索引；
+        // 反查不到（书不在书架）就**跳过**：目录搜索本来就只针对书架里的书。
+        val shelfBookUrl = resolveShelfBookUrl(db, sourceId, tocUrl)
+        if (shelfBookUrl != null) replaceChapterIndex(db, sourceId, shelfBookUrl, chapters)
+    }
+
+    /**
+     * 由 `book_toc_cache.toc_url` 反查书架上的 `book_url`。
+     *
+     * 只做**精确匹配**（`book_url` 或 `toc_url` 相等）：`like %…%` 在几千本书上是
+     * 全表扫描且可能匹配到别的书，宁可少索引几本，也不能把章名挂到错的书上。
+     */
+    private fun resolveShelfBookUrl(db: Connection, sourceId: String, tocUrl: String): String? =
+        db.prepareStatement("select book_url from book_shelf where source_id = ? and (book_url = ? or toc_url = ?) limit 1").use { stmt ->
+            stmt.setString(1, sourceId)
+            stmt.setString(2, tocUrl)
+            stmt.setString(3, tocUrl)
+            stmt.executeQuery().use { rs -> if (rs.next()) rs.getString(1) else null }
+        }
+
+    /**
+     * 用一本书的完整目录**整体替换**它的章节索引（先删后插，语义与 `book_toc_cache` 一致）。
+     *
+     * 为什么是「替换」而不是「增量」：目录会被刷新/换源重排，章数变少时旧行必须消失，
+     * 否则目录搜索会命中已经不存在的章。
+     *
+     * ⚠️ `on conflict … do update` 不能省：真实目录里同一个 `chapter_url` 出现两次是常态
+     * （书源的"最新章节"区会重复列一遍），没有它整批 insert 会因主键冲突全部失败。
+     */
+    private fun replaceChapterIndex(db: Connection, sourceId: String, bookUrl: String, chapters: List<Chapter>) {
+        val ownTransaction = db.autoCommit
+        if (ownTransaction) db.autoCommit = false
+        try {
+            db.prepareStatement("delete from book_chapter_index where source_id = ? and book_url = ?").use { stmt ->
+                stmt.setString(1, sourceId)
+                stmt.setString(2, bookUrl)
+                stmt.executeUpdate()
+            }
+            if (chapters.isNotEmpty()) {
+                db.prepareStatement("""
+                    insert into book_chapter_index(source_id, book_url, chapter_url, chapter_index, title)
+                    values(?, ?, ?, ?, ?)
+                    on conflict(source_id, book_url, chapter_url) do update set
+                        chapter_index = excluded.chapter_index, title = excluded.title
+                """.trimIndent()).use { stmt ->
+                    chapters.forEachIndexed { position, chapter ->
+                        stmt.setString(1, sourceId)
+                        stmt.setString(2, bookUrl)
+                        stmt.setString(3, chapter.url)
+                        // 存**目录里的位置**（数组下标）而不是 `Chapter.index`：
+                        // 前端 `changeChapter(index)` / `matchBestChapter` 用的都是数组下标，
+                        // 而 `Chapter.index` 是书源给的、可能从 1 开始或干脆乱序。
+                        stmt.setInt(4, position)
+                        stmt.setString(5, chapter.title)
+                        stmt.addBatch()
+                    }
+                    stmt.executeBatch()
+                }
+            }
+            if (ownTransaction) db.commit()
+        } catch (error: Throwable) {
+            if (ownTransaction) runCatching { db.rollback() }
+            throw error
+        } finally {
+            if (ownTransaction) db.autoCommit = true
+        }
+    }
+
+    // ---------------------------------------------------------------------
+    // 全局搜索（书架 / 目录 / 正文）
+    //
+    // 三条查询都**只用 SQLite 与 PostgreSQL 都支持**的语法：`lower()` 做大小写不敏感、
+    // `coalesce()` 兜空、`limit ?` 传参。没有 rowid / insert or / pragma / strftime
+    // （`order by rowid` 让 PG 秒 500 的教训见 AGENTS.md）。
+    // ---------------------------------------------------------------------
+
+    /**
+     * 书架搜索：书名或作者命中。
+     *
+     * 排序用 `last_read_at desc`，与书架列表同源 —— 用户最近读的书排前面最符合直觉。
+     */
+    fun searchShelf(query: String, limit: Int): List<SearchHit> = connect { db ->
+        val like = "%$query%"
+        db.prepareStatement(
+            """
+            select source_id, book_url, name, author, cover_key
+            from book_shelf
+            where lower(name) like lower(?) or lower(coalesce(author, '')) like lower(?)
+            order by last_read_at desc
+            limit ?
+            """.trimIndent(),
+        ).use { stmt ->
+            stmt.setString(1, like)
+            stmt.setString(2, like)
+            stmt.setInt(3, limit)
+            stmt.executeQuery().use { rs ->
+                buildList {
+                    while (rs.next()) {
+                        add(
+                            SearchHit(
+                                kind = "shelf",
+                                sourceId = rs.getString(1),
+                                bookUrl = rs.getString(2),
+                                bookName = rs.getString(3),
+                                bookAuthor = rs.getString(4),
+                                coverKey = rs.getString(5),
+                            ),
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * 目录搜索：在**已抓到目录**的书里按章名找。
+     *
+     * join `book_shelf` 是为了带出书名与封面（章名本身对用户没意义）。
+     * 传了 `sourceId` + `bookUrl` 时收窄到单本书（阅读器里的「只搜当前书」）。
+     */
+    fun searchToc(query: String, limit: Int, sourceId: String? = null, bookUrl: String? = null): List<SearchHit> = connect { db ->
+        val like = "%$query%"
+        val where = StringBuilder("lower(c.title) like lower(?)")
+        val params = mutableListOf<String>(like)
+        if (!sourceId.isNullOrBlank()) { where.append(" and c.source_id = ?"); params.add(sourceId) }
+        if (!bookUrl.isNullOrBlank()) { where.append(" and c.book_url = ?"); params.add(bookUrl) }
+        val sql = """
+            select c.source_id, c.book_url, c.chapter_url, c.chapter_index, c.title,
+                   s.name, s.author, s.cover_key
+            from book_chapter_index c
+            left join book_shelf s on s.source_id = c.source_id and s.book_url = c.book_url
+            where $where
+            order by s.last_read_at desc, c.chapter_index asc
+            limit ?
+        """.trimIndent()
+        db.prepareStatement(sql).use { stmt ->
+            params.forEachIndexed { index, value -> stmt.setString(index + 1, value) }
+            stmt.setInt(params.size + 1, limit)
+            stmt.executeQuery().use { rs ->
+                buildList {
+                    while (rs.next()) {
+                        add(
+                            SearchHit(
+                                kind = "toc",
+                                sourceId = rs.getString(1),
+                                bookUrl = rs.getString(2),
+                                chapterUrl = rs.getString(3),
+                                chapterIndex = rs.getInt(4),
+                                chapterTitle = rs.getString(5),
+                                bookName = rs.getString(6).orEmpty(),
+                                bookAuthor = rs.getString(7),
+                                coverKey = rs.getString(8),
+                            ),
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * 正文搜索：在**已缓存正文**里找，服务端生成 snippet。
+     *
+     * `lower(content) like lower(?)` 在大表上是顺序扫描，但正文缓存本来就是"读过的书"的
+     * 子集，配合 `limit` 足够；真正的性能上限由前端 debounce（300ms）挡在前面。
+     */
+    fun searchContent(query: String, limit: Int, sourceId: String? = null, bookUrl: String? = null): List<SearchHit> = connect { db ->
+        val like = "%$query%"
+        val where = StringBuilder("lower(cc.content) like lower(?)")
+        val params = mutableListOf<String>(like)
+        if (!sourceId.isNullOrBlank()) { where.append(" and cc.source_id = ?"); params.add(sourceId) }
+        if (!bookUrl.isNullOrBlank()) { where.append(" and cc.book_url = ?"); params.add(bookUrl) }
+        val sql = """
+            select cc.source_id, cc.book_url, cc.chapter_url, cc.title, cc.content,
+                   s.name, s.author, s.cover_key, c.chapter_index
+            from book_content_cache cc
+            left join book_shelf s on s.source_id = cc.source_id and s.book_url = cc.book_url
+            left join book_chapter_index c
+                   on c.source_id = cc.source_id and c.book_url = cc.book_url and c.chapter_url = cc.chapter_url
+            where $where
+            limit ?
+        """.trimIndent()
+        db.prepareStatement(sql).use { stmt ->
+            params.forEachIndexed { index, value -> stmt.setString(index + 1, value) }
+            stmt.setInt(params.size + 1, limit)
+            stmt.executeQuery().use { rs ->
+                buildList {
+                    while (rs.next()) {
+                        val content = rs.getString(5).orEmpty()
+                        val chapterIndex = rs.getInt(9).let { if (rs.wasNull()) null else it }
+                        add(
+                            SearchHit(
+                                kind = "content",
+                                sourceId = rs.getString(1),
+                                bookUrl = rs.getString(2),
+                                chapterUrl = rs.getString(3),
+                                chapterTitle = rs.getString(4),
+                                snippet = buildSearchSnippet(content, query),
+                                bookName = rs.getString(6).orEmpty(),
+                                bookAuthor = rs.getString(7),
+                                coverKey = rs.getString(8),
+                                chapterIndex = chapterIndex,
+                            ),
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * 启动时**一次性回填**章节索引：扫「在书架里、但 `book_chapter_index` 一行都没有」的书。
+     *
+     * 为什么要它：「目录搜索」是本次新增的能力，存量库里 `book_toc_cache` 已经有几千本书的目录，
+     * 不回填的话老用户搜不到任何东西（新数据不再出错 ≠ 老数据自动好了）。
+     *
+     * 幂等：只挑完全没进索引的书；每轮限 [limit] 本（默认 50），失败的书静默跳过并记日志
+     * （单本书的坏 JSON 不该拖垮启动）。返回本轮实际写入索引的书数。
+     */
+    fun backfillChapterIndex(limit: Int = CHAPTER_INDEX_BACKFILL_LIMIT): Int = write { db ->
+        backfillChapterIndex(db, limit)
+    }
+
+    private fun backfillChapterIndex(db: Connection, limit: Int): Int {
+        val targets = mutableListOf<Pair<String, String>>()
+        db.prepareStatement(
+            """
+            select s.source_id, s.book_url
+            from book_shelf s
+            where not exists (
+                select 1 from book_chapter_index c
+                where c.source_id = s.source_id and c.book_url = s.book_url
+            )
+            order by s.last_read_at desc
+            limit ?
+            """.trimIndent(),
+        ).use { stmt ->
+            stmt.setInt(1, limit)
+            stmt.executeQuery().use { rs ->
+                while (rs.next()) targets.add(rs.getString(1) to rs.getString(2))
+            }
+        }
+        var indexed = 0
+        for ((sourceId, bookUrl) in targets) {
+            val chapters = runCatching { cachedTocChapters(db, sourceId, bookUrl) }.getOrNull().orEmpty()
+            if (chapters.isEmpty()) continue
+            val ok = runCatching {
+                replaceChapterIndex(db, sourceId, bookUrl, chapters)
+            }.isSuccess
+            if (ok) {
+                indexed++
+            } else {
+                println("[db] 章节索引回填跳过（写入失败）：$sourceId / $bookUrl")
+            }
+        }
+        if (indexed > 0) println("[db] 章节索引回填：$indexed 本书")
+        return indexed
+    }
+
+    /**
+     * 取一本书的目录缓存（回填用）。
+     *
+     * `toc_url` 有多个变体（书源详情给的 tocUrl、书架存的 tocUrl、以及 `like %bookUrl%` 命中的），
+     * 与 [getChapterTitle] 同一套兜底口径：按 `updated_at desc` 取最新几条，第一条能解析的胜出。
+     */
+    private fun cachedTocChapters(db: Connection, sourceId: String, bookUrl: String): List<Chapter> {
+        val sql = "select chapters_json from book_toc_cache where source_id = ? and (toc_url = ? or toc_url like ?) order by updated_at desc limit 5"
+        db.prepareStatement(sql).use { stmt ->
+            stmt.setString(1, sourceId)
+            stmt.setString(2, bookUrl)
+            stmt.setString(3, "%$bookUrl%")
+            stmt.executeQuery().use { rs ->
+                while (rs.next()) {
+                    val chapters = runCatching { Json.decodeFromString<List<Chapter>>(rs.getString(1)) }.getOrNull()
+                    if (!chapters.isNullOrEmpty()) return chapters
+                }
+            }
+        }
+        return emptyList()
     }
 
     fun importLocalBook(
@@ -2314,6 +2602,9 @@ class Database internal constructor(private val spec: DatabaseSpec) : Closeable,
             stmt.setLong(4, now)
             stmt.executeUpdate()
         }
+        // 目录摊平进检索索引（本地书同样要能被「目录搜索」找到）。
+        // 两个 toc 键（`tocUrl` / `bookUrl`）指向同一份目录 ⇒ 只需要索引一次。
+        replaceChapterIndex(db, sourceId, bookUrl, chapters)
 
         // 2. 正文缓存：先清后写，保证重新解析后不残留旧章节行（章节数变少时尤其重要）。
         db.prepareStatement("delete from book_content_cache where source_id = ? and book_url = ?").use {
@@ -4546,10 +4837,59 @@ class Database internal constructor(private val spec: DatabaseSpec) : Closeable,
         private const val PBKDF2_ITERATIONS = 600_000
         private const val SALT_BYTES = 16
         private const val HASH_BITS = 256
+
+        /**
+         * 章节索引启动回填的单轮上限。
+         *
+         * 限量是为了守住「启动路径不许重 I/O」：50 本书的 `chapters_json` 解析在毫秒级，
+         * 而整架书（实测 400+ 本）一次全解析会让 `Application started` 明显推迟。
+         * 剩下的由后续每次启动继续补（幂等：已索引的书不会再被挑中）。
+         */
+        private const val CHAPTER_INDEX_BACKFILL_LIMIT = 50
     }
 }
 
 class VersionConflict : RuntimeException()
+
+/** 正文搜索 snippet 的前后文半径（命中位置前后各 40 字符）。 */
+private const val SNIPPET_RADIUS = 40
+
+/** 正文搜索 snippet 的总长度上限（含首尾省略号）。 */
+private const val SNIPPET_MAX_LENGTH = 120
+
+/** snippet 需要压掉的空白：正文按段落换行，弹窗里一行就够。 */
+private val SNIPPET_WHITESPACE_RE = Regex("""[\r\n\t\u00a0\u3000 ]+""")
+
+/**
+ * 由命中位置生成正文摘要（服务端做，前端只管高亮）。
+ *
+ * 规则（用户要求）：命中位置**前后各 40 字符**、压掉换行、最多 **120 字符**。
+ * 找不到命中位置（理论上不该发生，SQL 已经筛过）时退化为「正文开头 120 字符」，
+ * 只影响展示，绝不能让整条搜索结果消失。
+ *
+ * ⚠️ 大小写折叠后**下标可能对不上原串**（极少数字符 lowercase 会变长），
+ * 所以起止下标一律 `coerceIn` 到安全范围，宁可摘要偏一点也不能抛
+ * `StringIndexOutOfBoundsException` 把整个搜索请求打成 500。
+ */
+internal fun buildSearchSnippet(
+    content: String,
+    query: String,
+    radius: Int = SNIPPET_RADIUS,
+    maxLength: Int = SNIPPET_MAX_LENGTH,
+): String {
+    if (content.isEmpty()) return ""
+    val flat = SNIPPET_WHITESPACE_RE.replace(content, " ").trim()
+    if (flat.isEmpty()) return ""
+    val needle = SNIPPET_WHITESPACE_RE.replace(query.trim(), " ")
+    val hit = if (needle.isEmpty()) -1 else flat.lowercase().indexOf(needle.lowercase())
+    if (hit < 0) return flat.take(maxLength)
+    val start = (hit - radius).coerceIn(0, flat.length)
+    val end = (hit + needle.length + radius).coerceIn(start, flat.length)
+    val body = flat.substring(start, end).trim().ifEmpty { flat.take(maxLength) }
+    val prefix = if (start > 0) "…" else ""
+    val suffix = if (end < flat.length) "…" else ""
+    return (prefix + body + suffix).take(maxLength)
+}
 
 private fun ResultSet.toHttpTts(): HttpTts = HttpTts(
     id = getLong("id"),

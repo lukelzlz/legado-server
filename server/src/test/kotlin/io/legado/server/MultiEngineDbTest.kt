@@ -124,19 +124,20 @@ class MultiEngineDbTest {
         DatabaseSchema.statements(engine).filter { it.startsWith("create index", ignoreCase = true) }
 
     @Test
-    fun `DDL：22 张表都生成出来，且表名与 SQLite 一致`() {
+    fun `DDL：23 张表都生成出来，且表名与 SQLite 一致`() {
         val expected = listOf(
             "app_user", "session", "source", "reading_progress", "cover_cache", "app_setting", "book_group",
             "bookmark", "book_cover", "book_shelf", "book_content_cache", "book_cache_status",
-            "source_subscription", "rss_source", "book_toc_cache", "source_login_state", "replace_rule",
-            "http_tts", "manga_chapter_cache", "manga_image_cache", "audio_cache", "illustration_cache",
+            "source_subscription", "rss_source", "book_toc_cache", "book_chapter_index", "source_login_state",
+            "replace_rule", "http_tts", "manga_chapter_cache", "manga_image_cache", "audio_cache",
+            "illustration_cache",
         )
-        assertEquals(22, expected.size)
+        assertEquals(23, expected.size)
         val engine = DatabaseEngine.POSTGRES
         val names = tables(engine).map { statement ->
             Regex("""(?is)^create\s+table\s+if\s+not\s+exists\s+([\w`"]+)""").find(statement)!!.groupValues[1].trim('`', '"')
         }
-        assertEquals("$engine 表数量", 22, names.size)
+        assertEquals("$engine 表数量", 23, names.size)
         assertEquals("$engine 表集合", expected.toSet(), names.toSet())
         assertTrue("$engine 索引数量异常：${indexes(engine).size}", indexes(engine).size >= 20)
     }

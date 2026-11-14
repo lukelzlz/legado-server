@@ -127,6 +127,27 @@ internal object DatabaseSchema {
                   source_id text not null, toc_url text not null, chapters_json text not null, updated_at integer not null,
                   primary key (source_id, toc_url)
                 );
+                -- ------------------------------------------------------------------
+                -- 全局搜索：目录（章节）索引
+                --
+                -- `book_toc_cache` 存的是整本目录的 JSON 大字段，**没法用 like 检索章名**；
+                -- 这里把目录摊平成「一行一章」的可检索表。`book_url` 一律取**书架的 book_url**
+                -- （不是 toc_url —— toc_url 有多种变体，见 Database.saveTocCache 的注释），
+                -- 与 `book_shelf` 的主键对齐后才能 join 出书名/封面。
+                --
+                -- ⚠️ 只用 SQLite 与 PostgreSQL **都支持**的写法：没有 rowid、没有 insert or、
+                -- 没有 changes()、没有 strftime（AGENTS.md 里 `order by rowid` 让 PG 秒 500 的教训）。
+                -- ------------------------------------------------------------------
+                create table if not exists book_chapter_index (
+                  source_id text not null, book_url text not null, chapter_url text not null,
+                  chapter_index integer not null, title text not null,
+                  primary key (source_id, book_url, chapter_url)
+                );
+                -- 表达式索引：查询侧已统一写成 lower(title) / lower(name)，索引必须跟上才用得上。
+                -- SQLite 与 PostgreSQL 都支持表达式索引（由现有生成器原样下发）。
+                create index if not exists book_chapter_index_title_idx on book_chapter_index(lower(title));
+                create index if not exists book_shelf_name_ci_idx on book_shelf(lower(name));
+                create index if not exists book_shelf_author_ci_idx on book_shelf(lower(coalesce(author, '')));
                 create table if not exists source_login_state (
                   source_id text primary key,
                   login_info text,

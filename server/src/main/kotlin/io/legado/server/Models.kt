@@ -335,6 +335,46 @@ data class SourceLoginStateRecord(
 ) {
     val effectiveKeyword: String get() = keyword.ifBlank { query }
 }
+/**
+ * 全局搜索请求（书架页弹窗 / 阅读器顶栏）。
+ *
+ * 与书库「全网搜索」的 [SearchRequest] **是两件不同的事**：那个是跑书源规则去外网抓，
+ * 这个是查本地库（书架 / 已抓到的目录 / 已缓存的正文）。
+ *
+ * `sourceId` + `bookUrl` 用于阅读器内「只搜当前这本书」。
+ */
+@Serializable data class GlobalSearchRequest(
+    /** `shelf` 书架 / `toc` 目录 / `content` 正文。 */
+    val mode: String = "shelf",
+    val query: String = "",
+    val limit: Int = 50,
+    val sourceId: String? = null,
+    val bookUrl: String? = null,
+)
+
+/**
+ * 一条搜索命中。
+ *
+ * 刻意**合并三种模式到一个形状**（而不是三个类）：前端结果列表是同一个组件，
+ * 字段按 `kind` 解释 —— `shelf` 只用书名字段，`toc` 加章节，`content` 再加 `snippet`。
+ */
+@Serializable data class SearchHit(
+    /** `shelf` / `toc` / `content` */
+    val kind: String,
+    val sourceId: String,
+    val bookUrl: String,
+    val bookName: String,
+    val bookAuthor: String? = null,
+    val coverKey: String? = null,
+    val chapterIndex: Int? = null,
+    val chapterTitle: String? = null,
+    val chapterUrl: String? = null,
+    val snippet: String? = null,
+)
+
+/** 全局搜索响应。`truncated` = 命中数超过 `limit`（只为提示"结果被截断"，不做总数统计）。 */
+@Serializable data class SearchResponse(val items: List<SearchHit>, val total: Int, val truncated: Boolean)
+
 @Serializable data class SearchStreamEvent(
     val type: String,
     val totalSources: Int = 0,

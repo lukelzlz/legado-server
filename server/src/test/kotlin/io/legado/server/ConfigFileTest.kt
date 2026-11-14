@@ -227,4 +227,25 @@ class ConfigFileTest {
         assertEquals("postgresql 要归一化成 postgres", "postgres", pg.databaseType)
         assertTrue("默认连接串：${pg.databaseJdbcUrl}", pg.databaseJdbcUrl!!.startsWith("jdbc:postgresql://"))
     }
-}
+@Test
+    fun `sqlite 文件路径：database_sqlite_file 生效，旧键 data_database 仍兼容`() {
+        writeConfig(
+            """
+            database:
+              type: sqlite
+              sqlite:
+                file: /tmp/new-key.sqlite
+            """.trimIndent(),
+        )
+        val fresh = readyConfig(baseDir, emptyMap())
+        assertEquals("/tmp/new-key.sqlite", fresh.databasePath)
+
+        writeConfig(
+            """
+            data:
+              database: /tmp/legacy-key.sqlite
+            """.trimIndent(),
+        )
+        val legacy = readyConfig(baseDir, emptyMap())
+        assertEquals("/tmp/legacy-key.sqlite", legacy.databasePath)
+    }}

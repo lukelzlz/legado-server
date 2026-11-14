@@ -209,7 +209,7 @@ data class ServerConfig(
         fun effectiveValues(config: ServerConfig): ConfigFile.Values = linkedMapOf<String, String>().apply {
             put("server.host", config.host)
             put("server.port", config.port.toString())
-            put("data.database", config.databasePath)
+            put("database.sqlite.file", config.databasePath)
             put("auth.secure_cookies", config.secureCookies.toString())
             // 数据目录从数据库文件反推（`<data>/legado.sqlite`），保证迁移到文件后仍指向同一份数据
             runCatching {
@@ -273,7 +273,9 @@ data class ServerConfig(
             return ServerConfig(
                 host = pick("LEGADO_HOST", "server.host") ?: "0.0.0.0",
                 port = pick("LEGADO_PORT", "server.port")?.toIntOrNull() ?: 8080,
-                databasePath = pick("LEGADO_DATABASE", "data.database")
+                // 新键 database.sqlite.file；data.database 是旧键，保留兼容（老配置文件里写过它）
+                databasePath = pick("LEGADO_DATABASE", "database.sqlite.file")
+                    ?: pick("LEGADO_DATABASE", "data.database")
                     ?: dataDir.resolve("legado.sqlite").absolutePathString(),
                 coverCacheDirectory = dataDir.resolve(COVER_DIR_NAME),
                 webDavDirectory = dataDir.resolve("webdav"),

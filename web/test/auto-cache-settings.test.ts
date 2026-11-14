@@ -24,7 +24,7 @@ const AUTO_CACHE_KEYS = [
   'autoCacheAudio',
   'autoCacheEnable',
   'autoCacheEvery',
-  'autoCacheMinutes',
+  'autoCacheHours',
   'autoCachePerRound',
   'autoCacheBooks',
   'autoCacheIntervalAria',
@@ -48,14 +48,14 @@ test('auto cache - every key exists and is non-empty in all four locales', () =>
 })
 
 test('auto cache - Chinese copy says what the user asked for', () => {
-  // 用户原话里的关键词：自动缓存 / 小说 / 漫画 / 有声 / 忽略内存大小限制 / 每隔 N 分钟 / 每轮 N 本
+  // 用户原话里的关键词：自动缓存 / 小说 / 漫画 / 有声 / 忽略内存大小限制 / 每隔 N **小时** / 每轮 N 本
   assert.equal(zhCN.webdav.autoCacheTitle, '自动缓存')
   assert.equal(zhCN.webdav.autoCacheNovel, '小说')
   assert.equal(zhCN.webdav.autoCacheComic, '漫画')
   assert.equal(zhCN.webdav.autoCacheAudio, '有声')
   assert.equal(zhCN.webdav.autoCacheIgnoreQuota, '忽略内存大小限制')
   assert.ok(zhCN.webdav.autoCacheIntervalAria.includes('每隔'))
-  assert.ok(zhCN.webdav.autoCacheIntervalAria.includes('分钟'))
+  assert.ok(zhCN.webdav.autoCacheIntervalAria.includes('小时'))
   assert.ok(zhCN.webdav.autoCacheBooksAria.includes('每轮'))
   assert.ok(zhCN.webdav.autoCacheBooksAria.includes('本'))
   // 其它三语言不能是中文占位（否则用户切语言后看到的还是中文）
@@ -93,9 +93,11 @@ test('auto cache - page renders three separate groups with two ignore-quota chec
 })
 
 test('auto cache - range constants match the server validation', () => {
-  // 服务端：间隔 1..1440、每轮 1..20（AutoCacheScheduler.kt 的 AUTO_CACHE_MIN/MAX_*）
-  assert.deepEqual([...AUTO_CACHE_INTERVAL_RANGE], [1, 1440])
-  assert.deepEqual([...AUTO_CACHE_BOOKS_RANGE], [1, 20])
+  // 服务端：间隔 0.1~240 **小时**、每轮本数只要求 >= 1（无上限）
+  // 见 AutoCacheScheduler.kt 的 AUTO_CACHE_MIN/MAX_INTERVAL_HOURS 与 AUTO_CACHE_MIN_BOOKS_PER_ROUND
+  assert.deepEqual([...AUTO_CACHE_INTERVAL_RANGE], [0.1, 240])
+  assert.equal(AUTO_CACHE_BOOKS_RANGE[0], 1)
+  assert.ok(AUTO_CACHE_BOOKS_RANGE[1] >= 1000, '每轮本数应无实际上限')
 })
 
 test('auto cache - api exposes settings/run-now on the documented paths', async () => {

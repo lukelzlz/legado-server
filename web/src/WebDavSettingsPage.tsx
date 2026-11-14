@@ -87,11 +87,11 @@ export const isLocalBookFile = (name: string) => isSupportedLocalBook(name)
  */
 export type AutoCacheKind = 'novel' | 'comic' | 'audio'
 
-/** 间隔的合法范围（与服务端 `AUTO_CACHE_MIN/MAX_INTERVAL_MINUTES` 同一口径，前端先粗校验一次）。 */
-export const AUTO_CACHE_INTERVAL_RANGE = [1, 1440] as const
+/** 间隔的合法范围，单位**小时**（与服务端 `AUTO_CACHE_MIN/MAX_INTERVAL_HOURS` 同一口径）。 */
+export const AUTO_CACHE_INTERVAL_RANGE = [0.1, 240] as const
 
-/** 每轮本数的合法范围（与服务端 `AUTO_CACHE_MIN/MAX_BOOKS_PER_ROUND` 同一口径）。 */
-export const AUTO_CACHE_BOOKS_RANGE = [1, 20] as const
+/** 每轮本数：只有下限（服务端无上限，用户要求「书籍数量无上限」）。 */
+export const AUTO_CACHE_BOOKS_RANGE = [1, Number.MAX_SAFE_INTEGER] as const
 
 async function copyText(text: string, successMessage: string, failureMessage?: string) {
   try {
@@ -315,9 +315,9 @@ export function WebDavSettingsPage() {
       setAutoCacheSettings(s)
       // 每次读回都同步草稿：页面打开时输入框显示的必须是**已保存的真实值**，而不是空框
       setAutoCacheInputs({
-        novel: { interval: String(s.novelIntervalMinutes), books: String(s.novelBooksPerRound) },
-        comic: { interval: String(s.comicIntervalMinutes), books: String(s.comicBooksPerRound) },
-        audio: { interval: String(s.audioIntervalMinutes), books: String(s.audioBooksPerRound) },
+        novel: { interval: String(s.novelIntervalHours), books: String(s.novelBooksPerRound) },
+        comic: { interval: String(s.comicIntervalHours), books: String(s.comicBooksPerRound) },
+        audio: { interval: String(s.audioIntervalHours), books: String(s.audioBooksPerRound) },
       })
     } catch {
       // 与进度同步 / 备份导出同理：自动缓存设置读不到不该影响文件页其它功能
@@ -343,11 +343,11 @@ export function WebDavSettingsPage() {
       setAutoCacheSettings(saved)
       // ⚠️ 只回填被保存的那一组，别把其它组正在输入的草稿冲掉
       if (group === 'novel') {
-        setAutoCacheInputs(c => ({ ...c, novel: { interval: String(saved.novelIntervalMinutes), books: String(saved.novelBooksPerRound) } }))
+        setAutoCacheInputs(c => ({ ...c, novel: { interval: String(saved.novelIntervalHours), books: String(saved.novelBooksPerRound) } }))
       } else if (group === 'comic') {
-        setAutoCacheInputs(c => ({ ...c, comic: { interval: String(saved.comicIntervalMinutes), books: String(saved.comicBooksPerRound) } }))
+        setAutoCacheInputs(c => ({ ...c, comic: { interval: String(saved.comicIntervalHours), books: String(saved.comicBooksPerRound) } }))
       } else if (group === 'audio') {
-        setAutoCacheInputs(c => ({ ...c, audio: { interval: String(saved.audioIntervalMinutes), books: String(saved.audioBooksPerRound) } }))
+        setAutoCacheInputs(c => ({ ...c, audio: { interval: String(saved.audioIntervalHours), books: String(saved.audioBooksPerRound) } }))
       }
       if (message) toast.success(message)
       return saved
@@ -380,26 +380,26 @@ export function WebDavSettingsPage() {
     const interval = Number(draft.interval.trim())
     const books = Number(draft.books.trim())
     // 前端先粗校验一次给出即时反馈；服务端还会按同一范围再校验一遍（非法值 → 400）
-    if (!Number.isInteger(interval) || interval < AUTO_CACHE_INTERVAL_RANGE[0] || interval > AUTO_CACHE_INTERVAL_RANGE[1]) {
+    if (!Number.isFinite(interval) || interval < AUTO_CACHE_INTERVAL_RANGE[0] || interval > AUTO_CACHE_INTERVAL_RANGE[1]) {
       toast.warning(t('webdav.autoCacheIntervalInvalid', {
         min: AUTO_CACHE_INTERVAL_RANGE[0],
         max: AUTO_CACHE_INTERVAL_RANGE[1],
-        defaultValue: `间隔需在 ${AUTO_CACHE_INTERVAL_RANGE[0]}~${AUTO_CACHE_INTERVAL_RANGE[1]} 分钟之间`,
+        defaultValue: `间隔需在 ${AUTO_CACHE_INTERVAL_RANGE[0]}~${AUTO_CACHE_INTERVAL_RANGE[1]} 小时之间`,
       }))
       return
     }
-    if (!Number.isInteger(books) || books < AUTO_CACHE_BOOKS_RANGE[0] || books > AUTO_CACHE_BOOKS_RANGE[1]) {
+    if (!Number.isInteger(books) || books < AUTO_CACHE_BOOKS_RANGE[0]) {
       toast.warning(t('webdav.autoCacheBooksInvalid', {
         min: AUTO_CACHE_BOOKS_RANGE[0],
         max: AUTO_CACHE_BOOKS_RANGE[1],
-        defaultValue: `每轮本数需在 ${AUTO_CACHE_BOOKS_RANGE[0]}~${AUTO_CACHE_BOOKS_RANGE[1]} 之间`,
+        defaultValue: `每轮至少 ${AUTO_CACHE_BOOKS_RANGE[0]} 本`,
       }))
       return
     }
     const patch: Partial<AutoCacheSettings> =
-      kind === 'novel' ? { novelIntervalMinutes: interval, novelBooksPerRound: books }
-        : kind === 'comic' ? { comicIntervalMinutes: interval, comicBooksPerRound: books }
-          : { audioIntervalMinutes: interval, audioBooksPerRound: books }
+      kind === 'novel' ? { novelIntervalHours: interval, novelBooksPerRound: books }
+        : kind === 'comic' ? { comicIntervalHours: interval, comicBooksPerRound: books }
+          : { audioIntervalHours: interval, audioBooksPerRound: books }
     void saveAutoCachePatch(patch, kind, t('webdav.autoCacheSaved', { defaultValue: '自动缓存设置已保存' }))
   }
 
@@ -868,9 +868,9 @@ export function WebDavSettingsPage() {
                       value={draft.interval}
                       onChange={e => updateDraft('interval', e.target.value)}
                       disabled={saving || disabled}
-                      aria-label={t('webdav.autoCacheIntervalAria', { n: draft.interval, defaultValue: `每隔 ${draft.interval} 分钟` })}
+                      aria-label={t('webdav.autoCacheIntervalAria', { n: draft.interval, defaultValue: `每隔 ${draft.interval} 小时` })}
                     />
-                    <span>{t('webdav.autoCacheMinutes', { defaultValue: '分钟' })}</span>
+                    <span>{t('webdav.autoCacheHours', { defaultValue: '小时' })}</span>
                   </label>
                   <label className="auto-cache-field">
                     <span>{t('webdav.autoCachePerRound', { defaultValue: '每轮' })}</span>

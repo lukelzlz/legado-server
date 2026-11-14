@@ -1400,22 +1400,22 @@
     "scheduledTimeSaved": "定時書き出しの時刻を保存しました：毎日 {{time}}",
     "scheduledTimeInvalid": "時刻は 24 時間制の HH:mm（例：03:00）で入力してください",
     "autoCacheTitle": "自動キャッシュ",
-    "autoCacheDesc": "書種ごとに設定します：何分おきに、まだキャッシュが完了していない本を何冊キューに入れるか。小説・漫画・オーディオブックの 3 グループは互いに独立しています。チェックは即時反映され、間隔と 1 回あたりの冊数はそのグループの「保存」で送信されます。",
+    "autoCacheDesc": "書籍タイプごとに設定：何**時間**ごとに、まだキャッシュが完了していない本を数冊キューに積みます。小説・漫画・オーディオは互いに独立。チェックは即時反映、間隔と 1 回あたりの冊数は各グループの「保存」で反映されます。",
     "autoCacheNovel": "小説",
     "autoCacheComic": "漫画",
     "autoCacheAudio": "オーディオブック",
     "autoCacheEnable": "有効化",
     "autoCacheEvery": "間隔",
-    "autoCacheMinutes": "分",
     "autoCachePerRound": "1 回あたり",
     "autoCacheBooks": "冊",
-    "autoCacheIntervalAria": "{{n}} 分おき",
+    "autoCacheIntervalAria": "{{n}} 時間ごと",
     "autoCacheBooksAria": "1 回あたり {{n}} 冊",
     "autoCacheIgnoreQuota": "ストレージ容量制限を無視",
     "autoCacheHint": "「ストレージ容量制限を無視」をオンにすると、自動キャッシュされた本は pin され、キャッシュ整理で削除されません（漫画・オーディオブックの容量上限は適用されません）。小説の本文キャッシュは画像・音声の容量を使わないため、この項目はありません。",
-    "autoCacheIntervalInvalid": "間隔は {{min}}〜{{max}} 分の範囲で入力してください",
-    "autoCacheBooksInvalid": "1 回あたりの冊数は {{min}}〜{{max}} の範囲で入力してください",
-    "autoCacheSaved": "自動キャッシュ設定を保存しました"
+    "autoCacheIntervalInvalid": "間隔は {{min}}〜{{max}} 時間の範囲で指定してください",
+    "autoCacheBooksInvalid": "1 回あたり最低 {{min}} 冊",
+    "autoCacheSaved": "自動キャッシュ設定を保存しました",
+    "autoCacheHours": "時間"
   },
   "errorBoundary": {
     "title": "エラーが発生しました",
@@ -1551,6 +1551,3 @@
     "notInShelf": "この本は本棚にないため移動できません（しおりは保持されます）"
   }
 }
-
-
-

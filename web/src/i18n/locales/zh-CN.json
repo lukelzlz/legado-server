@@ -1400,22 +1400,22 @@
     "scheduledTimeSaved": "定时导出时间已保存：每天 {{time}}",
     "scheduledTimeInvalid": "定时时间格式应为 HH:mm（24 小时制），如 03:00",
     "autoCacheTitle": "自动缓存",
-    "autoCacheDesc": "按书型分开配置：每隔多少分钟，自动挑几本「还没缓存完」的书排队缓存。小说、漫画、有声三组互不影响；勾选后立即生效，间隔与每轮本数点该组的「保存」才提交。",
+    "autoCacheDesc": "按书型分开配置：每隔多少**小时**，自动挑几本「还没缓存完」的书排队缓存。小说、漫画、有声三组互不影响；勾选后立即生效，间隔与每轮本数点该组的「保存」才提交。",
     "autoCacheNovel": "小说",
     "autoCacheComic": "漫画",
     "autoCacheAudio": "有声",
     "autoCacheEnable": "启用",
     "autoCacheEvery": "每隔",
-    "autoCacheMinutes": "分钟",
     "autoCachePerRound": "每轮",
     "autoCacheBooks": "本",
-    "autoCacheIntervalAria": "每隔 {{n}} 分钟",
+    "autoCacheIntervalAria": "每隔 {{n}} 小时",
     "autoCacheBooksAria": "每轮 {{n}} 本",
     "autoCacheIgnoreQuota": "忽略内存大小限制",
     "autoCacheHint": "「忽略内存大小限制」勾上后，这本自动缓存的书会被 pin 住、不会被缓存清理淘汰（漫画与有声各自的配额限制不再生效）。小说的正文缓存不占图/音配额，因此没有这一项。",
-    "autoCacheIntervalInvalid": "间隔需在 {{min}}~{{max}} 分钟之间",
-    "autoCacheBooksInvalid": "每轮本数需在 {{min}}~{{max}} 之间",
-    "autoCacheSaved": "自动缓存设置已保存"
+    "autoCacheIntervalInvalid": "间隔需在 {{min}}~{{max}} 小时之间",
+    "autoCacheBooksInvalid": "每轮至少 {{min}} 本",
+    "autoCacheSaved": "自动缓存设置已保存",
+    "autoCacheHours": "小时"
   },
   "errorBoundary": {
     "title": "页面渲染遇到异常",
@@ -1551,6 +1551,3 @@
     "notInShelf": "这本书不在书架里，无法跳转（书签仍保留）"
   }
 }
-
-
-

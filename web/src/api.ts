@@ -170,16 +170,16 @@ export type AutoCacheSettings = {
   /** 小说：是否参与自动缓存。默认关。 */
   novelEnabled: boolean
   /** 小说：每隔多少分钟跑一轮（1..1440），默认 60。 */
-  novelIntervalMinutes: number
-  /** 小说：每轮最多入队几本（1..20），默认 1。 */
+  novelIntervalHours: number
+  /** 小说：每轮最多入队几本（>=1，无上限），默认 1。 */
   novelBooksPerRound: number
   comicEnabled: boolean
-  comicIntervalMinutes: number
+  comicIntervalHours: number
   comicBooksPerRound: number
   /** 漫画：忽略内存大小限制（pinned 免 GC）。 */
   comicIgnoreQuota: boolean
   audioEnabled: boolean
-  audioIntervalMinutes: number
+  audioIntervalHours: number
   audioBooksPerRound: number
   /** 有声：忽略内存大小限制（pinned 免 GC）。 */
   audioIgnoreQuota: boolean

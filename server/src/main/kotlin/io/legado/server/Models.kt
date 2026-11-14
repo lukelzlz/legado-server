@@ -592,16 +592,16 @@ data class SourceLoginStateRecord(
 @Serializable data class AutoCacheSettings(
     val novelEnabled: Boolean = false,
     /** 每隔多少分钟跑一轮，1..1440。 */
-    val novelIntervalMinutes: Int = 60,
+    val novelIntervalHours: Double = 1.0,
     /** 每轮最多入队几本，1..20。 */
     val novelBooksPerRound: Int = 1,
     val comicEnabled: Boolean = false,
-    val comicIntervalMinutes: Int = 60,
+    val comicIntervalHours: Double = 1.0,
     val comicBooksPerRound: Int = 1,
     /** 漫画：忽略内存大小限制（pinned 免 GC）。 */
     val comicIgnoreQuota: Boolean = false,
     val audioEnabled: Boolean = false,
-    val audioIntervalMinutes: Int = 60,
+    val audioIntervalHours: Double = 1.0,
     val audioBooksPerRound: Int = 1,
     /** 有声：忽略内存大小限制（pinned 免 GC）。 */
     val audioIgnoreQuota: Boolean = false,
@@ -616,14 +616,14 @@ data class SourceLoginStateRecord(
  */
 @Serializable data class AutoCacheSettingsUpdate(
     val novelEnabled: Boolean? = null,
-    val novelIntervalMinutes: Int? = null,
+    val novelIntervalHours: Double? = null,
     val novelBooksPerRound: Int? = null,
     val comicEnabled: Boolean? = null,
-    val comicIntervalMinutes: Int? = null,
+    val comicIntervalHours: Double? = null,
     val comicBooksPerRound: Int? = null,
     val comicIgnoreQuota: Boolean? = null,
     val audioEnabled: Boolean? = null,
-    val audioIntervalMinutes: Int? = null,
+    val audioIntervalHours: Double? = null,
     val audioBooksPerRound: Int? = null,
     val audioIgnoreQuota: Boolean? = null,
 )

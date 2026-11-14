@@ -76,9 +76,9 @@ class AutoCacheSettingsTest {
         assertFalse(settings.comicEnabled)
         assertFalse(settings.audioEnabled)
         // 间隔 60 分钟、每轮 1 本（三组各自的默认值都要对）
-        assertEquals(60, settings.novelIntervalMinutes)
-        assertEquals(60, settings.comicIntervalMinutes)
-        assertEquals(60, settings.audioIntervalMinutes)
+        assertEquals(1.0, settings.novelIntervalHours, 0.0001)
+        assertEquals(1.0, settings.comicIntervalHours, 0.0001)
+        assertEquals(1.0, settings.audioIntervalHours, 0.0001)
         assertEquals(1, settings.novelBooksPerRound)
         assertEquals(1, settings.comicBooksPerRound)
         assertEquals(1, settings.audioBooksPerRound)
@@ -98,16 +98,16 @@ class AutoCacheSettingsTest {
         // 其余字段全部保持默认，没有被这次更新带偏
         assertFalse(afterSwitch.novelEnabled)
         assertFalse(afterSwitch.audioEnabled)
-        assertEquals(60, afterSwitch.comicIntervalMinutes)
+        assertEquals(1.0, afterSwitch.comicIntervalHours, 0.0001)
         assertEquals(1, afterSwitch.comicBooksPerRound)
         assertFalse(afterSwitch.comicIgnoreQuota)
 
         val afterNumbers = applyAutoCacheSettingsUpdate(
             fixture.database,
-            AutoCacheSettingsUpdate(novelIntervalMinutes = 15, novelBooksPerRound = 3),
+            AutoCacheSettingsUpdate(novelIntervalHours = 0.5, novelBooksPerRound = 300),
         )
-        assertEquals(15, afterNumbers.novelIntervalMinutes)
-        assertEquals(3, afterNumbers.novelBooksPerRound)
+        assertEquals(0.5, afterNumbers.novelIntervalHours, 0.0001)
+        assertEquals(300, afterNumbers.novelBooksPerRound)
         // 上一次改的漫画开关还在
         assertTrue(afterNumbers.comicEnabled)
 
@@ -117,52 +117,52 @@ class AutoCacheSettingsTest {
         )
         assertTrue(afterQuota.audioIgnoreQuota)
         // 没传的字段一个都不许动
-        assertEquals(15, afterQuota.novelIntervalMinutes)
+        assertEquals(0.5, afterQuota.novelIntervalHours, 0.0001)
         assertTrue(afterQuota.comicEnabled)
     }
 
     @Test
     fun `invalid interval or books per round is rejected without writing anything`() = withFixture { fixture ->
-        // 间隔必须 1..1440
+        // 间隔必须是 0.1..240 小时
         assertRejected("小说间隔 0") {
-            applyAutoCacheSettingsUpdate(fixture.database, AutoCacheSettingsUpdate(novelIntervalMinutes = 0))
+            applyAutoCacheSettingsUpdate(fixture.database, AutoCacheSettingsUpdate(novelIntervalHours = 0.0))
         }
         assertRejected("漫画间隔 1441") {
-            applyAutoCacheSettingsUpdate(fixture.database, AutoCacheSettingsUpdate(comicIntervalMinutes = 1441))
+            applyAutoCacheSettingsUpdate(fixture.database, AutoCacheSettingsUpdate(comicIntervalHours = 240.5))
         }
         assertRejected("有声间隔负数") {
-            applyAutoCacheSettingsUpdate(fixture.database, AutoCacheSettingsUpdate(audioIntervalMinutes = -5))
+            applyAutoCacheSettingsUpdate(fixture.database, AutoCacheSettingsUpdate(audioIntervalHours = -5.0))
         }
-        // 每轮本数必须 1..20
+        // 每轮本数：只要求 >= 1
         assertRejected("小说每轮 0 本") {
             applyAutoCacheSettingsUpdate(fixture.database, AutoCacheSettingsUpdate(novelBooksPerRound = 0))
         }
-        assertRejected("漫画每轮 21 本") {
-            applyAutoCacheSettingsUpdate(fixture.database, AutoCacheSettingsUpdate(comicBooksPerRound = 21))
+        // 每轮本数：现在**没有上限**，只有下限 1
+        assertRejected("漫画每轮 0 本") {
+            applyAutoCacheSettingsUpdate(fixture.database, AutoCacheSettingsUpdate(comicBooksPerRound = 0))
         }
-
         // **半保存**是必须挡住的形态：合法字段与非法字段同时传时，一个都不许落库
         assertRejected("启用 + 非法间隔") {
             applyAutoCacheSettingsUpdate(
                 fixture.database,
-                AutoCacheSettingsUpdate(novelEnabled = true, novelIntervalMinutes = 0),
+                AutoCacheSettingsUpdate(novelEnabled = true, novelIntervalHours = 0.0),
             )
         }
         val settings = readAutoCacheSettings(fixture.database)
         assertFalse("非法更新整体被拒时开关也不许被打开", settings.novelEnabled)
-        assertEquals(60, settings.novelIntervalMinutes)
+        assertEquals(1.0, settings.novelIntervalHours, 0.0001)
     }
 
     /** 库里存了坏值（手工改库/旧版本残留）时回退默认，绝不因为一个脏字段把设置接口打成 500。 */
     @Test
     fun `corrupt stored values fall back to defaults instead of throwing`() = withFixture { fixture ->
         fixture.database.setSetting(AUTO_CACHE_NOVEL_INTERVAL_KEY, "abc")
-        fixture.database.setSetting(AUTO_CACHE_COMIC_BOOKS_KEY, "9999")
+        fixture.database.setSetting(AUTO_CACHE_COMIC_BOOKS_KEY, "9999")  // 每轮本数没有上限：9999 是**合法值**
         fixture.database.setSetting(AUTO_CACHE_AUDIO_ENABLED_KEY, "yes")
 
         val settings = readAutoCacheSettings(fixture.database)
-        assertEquals(60, settings.novelIntervalMinutes)
-        assertEquals(1, settings.comicBooksPerRound)
+        assertEquals(1.0, settings.novelIntervalHours, 0.0001)
+        assertEquals(9999, settings.comicBooksPerRound)
         // 只有字面量 "true" 才算打开（"yes" 不是）
         assertFalse(settings.audioEnabled)
     }
@@ -249,7 +249,7 @@ class AutoCacheSettingsTest {
         }
         applyAutoCacheSettingsUpdate(
             fixture.database,
-            AutoCacheSettingsUpdate(comicEnabled = true, comicBooksPerRound = 2, comicIntervalMinutes = 60),
+            AutoCacheSettingsUpdate(comicEnabled = true, comicBooksPerRound = 2, comicIntervalHours = 1.0),
         )
 
         runBlocking { fixture.scheduler.tick(now) }
@@ -405,4 +405,7 @@ class AutoCacheSettingsTest {
         )
     }
 }
+
+
+
 

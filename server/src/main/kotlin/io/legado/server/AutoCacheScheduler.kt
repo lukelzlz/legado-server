@@ -43,60 +43,52 @@ import java.time.LocalDateTime
 internal const val NOVEL_CANDIDATE_CAP = 200
 
 internal const val AUTO_CACHE_NOVEL_ENABLED_KEY = "auto_cache_novel_enabled"
-internal const val AUTO_CACHE_NOVEL_INTERVAL_KEY = "auto_cache_novel_interval_minutes"
+internal const val AUTO_CACHE_NOVEL_INTERVAL_KEY = "auto_cache_novel_interval_hours"
 internal const val AUTO_CACHE_NOVEL_BOOKS_KEY = "auto_cache_novel_books_per_round"
 internal const val AUTO_CACHE_COMIC_ENABLED_KEY = "auto_cache_comic_enabled"
-internal const val AUTO_CACHE_COMIC_INTERVAL_KEY = "auto_cache_comic_interval_minutes"
+internal const val AUTO_CACHE_COMIC_INTERVAL_KEY = "auto_cache_comic_interval_hours"
 internal const val AUTO_CACHE_COMIC_BOOKS_KEY = "auto_cache_comic_books_per_round"
 internal const val AUTO_CACHE_COMIC_IGNORE_QUOTA_KEY = "auto_cache_comic_ignore_quota"
 internal const val AUTO_CACHE_AUDIO_ENABLED_KEY = "auto_cache_audio_enabled"
-internal const val AUTO_CACHE_AUDIO_INTERVAL_KEY = "auto_cache_audio_interval_minutes"
+internal const val AUTO_CACHE_AUDIO_INTERVAL_KEY = "auto_cache_audio_interval_hours"
 internal const val AUTO_CACHE_AUDIO_BOOKS_KEY = "auto_cache_audio_books_per_round"
 internal const val AUTO_CACHE_AUDIO_IGNORE_QUOTA_KEY = "auto_cache_audio_ignore_quota"
 
-/** 默认间隔 60 分钟、每轮 1 本 —— 与用户描述「隔多长时间下载几本书」的最小可用值。 */
-internal const val AUTO_CACHE_DEFAULT_INTERVAL_MINUTES = 60
+/** 默认间隔 1 小时、每轮 1 本 —— 与用户描述「隔多长时间下载几本书」的最小可用值。 */
+internal const val AUTO_CACHE_DEFAULT_INTERVAL_HOURS = 1.0
 internal const val AUTO_CACHE_DEFAULT_BOOKS_PER_ROUND = 1
 
-internal const val AUTO_CACHE_MIN_INTERVAL_MINUTES = 1
-internal const val AUTO_CACHE_MAX_INTERVAL_MINUTES = 1440
+/** 间隔单位是**小时**：0.1 ~ 240（6 分钟 ~ 10 天）。 */
+internal const val AUTO_CACHE_MIN_INTERVAL_HOURS = 0.1
+internal const val AUTO_CACHE_MAX_INTERVAL_HOURS = 240.0
+/** 每轮本数**没有上限**（用户要求），只要求 >= 1。 */
 internal const val AUTO_CACHE_MIN_BOOKS_PER_ROUND = 1
-internal const val AUTO_CACHE_MAX_BOOKS_PER_ROUND = 20
 
 /**
- * 读设置：**全部默认关、间隔 60 分钟、每轮 1 本、ignore_quota 关**。
+ * 读设置：**全部默认关、间隔 1 小时、每轮 1 本、ignore_quota 关**。
  *
  * 库里存了坏值（手工改库、旧版本残留）一律**回退到默认值**，绝不抛错 ——
  * 读接口因为一个脏字段 500，用户连页面都打不开，反而更容易把库改坏。
  */
 internal fun readAutoCacheSettings(database: Database): AutoCacheSettings = AutoCacheSettings(
     novelEnabled = database.getSetting(AUTO_CACHE_NOVEL_ENABLED_KEY) == "true",
-    novelIntervalMinutes = readBoundedInt(
-        database, AUTO_CACHE_NOVEL_INTERVAL_KEY,
-        AUTO_CACHE_DEFAULT_INTERVAL_MINUTES, AUTO_CACHE_MIN_INTERVAL_MINUTES, AUTO_CACHE_MAX_INTERVAL_MINUTES,
-    ),
+    novelIntervalHours = readIntervalHours(database, AUTO_CACHE_NOVEL_INTERVAL_KEY, "auto_cache_novel_interval_minutes"),
     novelBooksPerRound = readBoundedInt(
         database, AUTO_CACHE_NOVEL_BOOKS_KEY,
-        AUTO_CACHE_DEFAULT_BOOKS_PER_ROUND, AUTO_CACHE_MIN_BOOKS_PER_ROUND, AUTO_CACHE_MAX_BOOKS_PER_ROUND,
+        AUTO_CACHE_DEFAULT_BOOKS_PER_ROUND, AUTO_CACHE_MIN_BOOKS_PER_ROUND, Int.MAX_VALUE,
     ),
     comicEnabled = database.getSetting(AUTO_CACHE_COMIC_ENABLED_KEY) == "true",
-    comicIntervalMinutes = readBoundedInt(
-        database, AUTO_CACHE_COMIC_INTERVAL_KEY,
-        AUTO_CACHE_DEFAULT_INTERVAL_MINUTES, AUTO_CACHE_MIN_INTERVAL_MINUTES, AUTO_CACHE_MAX_INTERVAL_MINUTES,
-    ),
+    comicIntervalHours = readIntervalHours(database, AUTO_CACHE_COMIC_INTERVAL_KEY, "auto_cache_comic_interval_minutes"),
     comicBooksPerRound = readBoundedInt(
         database, AUTO_CACHE_COMIC_BOOKS_KEY,
-        AUTO_CACHE_DEFAULT_BOOKS_PER_ROUND, AUTO_CACHE_MIN_BOOKS_PER_ROUND, AUTO_CACHE_MAX_BOOKS_PER_ROUND,
+        AUTO_CACHE_DEFAULT_BOOKS_PER_ROUND, AUTO_CACHE_MIN_BOOKS_PER_ROUND, Int.MAX_VALUE,
     ),
     comicIgnoreQuota = database.getSetting(AUTO_CACHE_COMIC_IGNORE_QUOTA_KEY) == "true",
     audioEnabled = database.getSetting(AUTO_CACHE_AUDIO_ENABLED_KEY) == "true",
-    audioIntervalMinutes = readBoundedInt(
-        database, AUTO_CACHE_AUDIO_INTERVAL_KEY,
-        AUTO_CACHE_DEFAULT_INTERVAL_MINUTES, AUTO_CACHE_MIN_INTERVAL_MINUTES, AUTO_CACHE_MAX_INTERVAL_MINUTES,
-    ),
+    audioIntervalHours = readIntervalHours(database, AUTO_CACHE_AUDIO_INTERVAL_KEY, "auto_cache_audio_interval_minutes"),
     audioBooksPerRound = readBoundedInt(
         database, AUTO_CACHE_AUDIO_BOOKS_KEY,
-        AUTO_CACHE_DEFAULT_BOOKS_PER_ROUND, AUTO_CACHE_MIN_BOOKS_PER_ROUND, AUTO_CACHE_MAX_BOOKS_PER_ROUND,
+        AUTO_CACHE_DEFAULT_BOOKS_PER_ROUND, AUTO_CACHE_MIN_BOOKS_PER_ROUND, Int.MAX_VALUE,
     ),
     audioIgnoreQuota = database.getSetting(AUTO_CACHE_AUDIO_IGNORE_QUOTA_KEY) == "true",
 )
@@ -105,48 +97,66 @@ private fun readBoundedInt(database: Database, key: String, default: Int, min: I
     database.getSetting(key)?.trim()?.toIntOrNull()?.takeIf { it in min..max } ?: default
 
 /**
+ * 读间隔（**小时**）。
+ *
+ * 旧版本按分钟存在 `*_interval_minutes` 里：升级后必须换算，否则用户原来的「60」
+ * 会被当成 60 小时。新键优先，旧键兜底（分钟 / 60）。
+ */
+private fun readIntervalHours(database: Database, key: String, legacyKey: String): Double {
+    val current = database.getSetting(key)?.trim()?.toDoubleOrNull()
+    if (current != null && current in AUTO_CACHE_MIN_INTERVAL_HOURS..AUTO_CACHE_MAX_INTERVAL_HOURS) return current
+    val legacyMinutes = database.getSetting(legacyKey)?.trim()?.toDoubleOrNull()
+    if (legacyMinutes != null && legacyMinutes > 0) {
+        val hours = legacyMinutes / 60.0
+        if (hours in AUTO_CACHE_MIN_INTERVAL_HOURS..AUTO_CACHE_MAX_INTERVAL_HOURS) return hours
+    }
+    return AUTO_CACHE_DEFAULT_INTERVAL_HOURS
+}
+
+/**
  * 局部更新：**只写请求里出现过的字段**（与备份导出的 update 语义逐字一致）。
  *
  * ⚠️ 校验必须在**任何写库之前**跑完：否则 `enabled=true` 已落库、`interval=0` 才被拒，
  * 用户会得到一个「半保存」的状态 —— 页面上看是保存失败，实际开关已经打开了。
  *
- * @throws IllegalArgumentException 间隔不在 1..1440，或每轮本数不在 1..20
+ * @throws IllegalArgumentException 间隔不在 0.1..240 小时，或每轮本数 < 1
  */
 internal fun applyAutoCacheSettingsUpdate(
     database: Database,
     update: AutoCacheSettingsUpdate,
 ): AutoCacheSettings {
-    update.novelIntervalMinutes?.let { requireInterval(it, "小说") }
-    update.comicIntervalMinutes?.let { requireInterval(it, "漫画") }
-    update.audioIntervalMinutes?.let { requireInterval(it, "有声") }
+    update.novelIntervalHours?.let { requireInterval(it, "小说") }
+    update.comicIntervalHours?.let { requireInterval(it, "漫画") }
+    update.audioIntervalHours?.let { requireInterval(it, "有声") }
     update.novelBooksPerRound?.let { requireBooksPerRound(it, "小说") }
     update.comicBooksPerRound?.let { requireBooksPerRound(it, "漫画") }
     update.audioBooksPerRound?.let { requireBooksPerRound(it, "有声") }
 
     update.novelEnabled?.let { database.setSetting(AUTO_CACHE_NOVEL_ENABLED_KEY, it.toString()) }
-    update.novelIntervalMinutes?.let { database.setSetting(AUTO_CACHE_NOVEL_INTERVAL_KEY, it.toString()) }
+    update.novelIntervalHours?.let { database.setSetting(AUTO_CACHE_NOVEL_INTERVAL_KEY, it.toString()) }
     update.novelBooksPerRound?.let { database.setSetting(AUTO_CACHE_NOVEL_BOOKS_KEY, it.toString()) }
     update.comicEnabled?.let { database.setSetting(AUTO_CACHE_COMIC_ENABLED_KEY, it.toString()) }
-    update.comicIntervalMinutes?.let { database.setSetting(AUTO_CACHE_COMIC_INTERVAL_KEY, it.toString()) }
+    update.comicIntervalHours?.let { database.setSetting(AUTO_CACHE_COMIC_INTERVAL_KEY, it.toString()) }
     update.comicBooksPerRound?.let { database.setSetting(AUTO_CACHE_COMIC_BOOKS_KEY, it.toString()) }
     update.comicIgnoreQuota?.let { database.setSetting(AUTO_CACHE_COMIC_IGNORE_QUOTA_KEY, it.toString()) }
     update.audioEnabled?.let { database.setSetting(AUTO_CACHE_AUDIO_ENABLED_KEY, it.toString()) }
-    update.audioIntervalMinutes?.let { database.setSetting(AUTO_CACHE_AUDIO_INTERVAL_KEY, it.toString()) }
+    update.audioIntervalHours?.let { database.setSetting(AUTO_CACHE_AUDIO_INTERVAL_KEY, it.toString()) }
     update.audioBooksPerRound?.let { database.setSetting(AUTO_CACHE_AUDIO_BOOKS_KEY, it.toString()) }
     update.audioIgnoreQuota?.let { database.setSetting(AUTO_CACHE_AUDIO_IGNORE_QUOTA_KEY, it.toString()) }
     return readAutoCacheSettings(database)
 }
 
-private fun requireInterval(value: Int, label: String): Int {
-    require(value in AUTO_CACHE_MIN_INTERVAL_MINUTES..AUTO_CACHE_MAX_INTERVAL_MINUTES) {
-        "${label}自动缓存的间隔需在 ${AUTO_CACHE_MIN_INTERVAL_MINUTES}~${AUTO_CACHE_MAX_INTERVAL_MINUTES} 分钟之间（当前 $value）"
+private fun requireInterval(value: Double, label: String): Double {
+    require(value in AUTO_CACHE_MIN_INTERVAL_HOURS..AUTO_CACHE_MAX_INTERVAL_HOURS) {
+        "${label}自动缓存的间隔需在 ${AUTO_CACHE_MIN_INTERVAL_HOURS}~${AUTO_CACHE_MAX_INTERVAL_HOURS} 小时之间（当前 $value）"
     }
     return value
 }
 
 private fun requireBooksPerRound(value: Int, label: String): Int {
-    require(value in AUTO_CACHE_MIN_BOOKS_PER_ROUND..AUTO_CACHE_MAX_BOOKS_PER_ROUND) {
-        "${label}自动缓存每轮本数需在 ${AUTO_CACHE_MIN_BOOKS_PER_ROUND}~${AUTO_CACHE_MAX_BOOKS_PER_ROUND} 之间（当前 $value）"
+    // 每轮本数**没有上限**（用户要求），只要求至少 1 本
+    require(value >= AUTO_CACHE_MIN_BOOKS_PER_ROUND) {
+        "${label}自动缓存每轮至少 ${AUTO_CACHE_MIN_BOOKS_PER_ROUND} 本（当前 $value）"
     }
     return value
 }
@@ -157,7 +167,7 @@ private class MediaRound(
     val label: String,
     val kind: BookKind,
     val enabled: Boolean,
-    val intervalMinutes: Int,
+    val intervalHours: Double,
     val booksPerRound: Int,
     val ignoreQuota: Boolean,
     val runningKeys: Set<String>,
@@ -234,7 +244,7 @@ class AutoCacheScheduler(
                 label = "comic",
                 kind = BookKind.COMIC,
                 enabled = settings.comicEnabled,
-                intervalMinutes = settings.comicIntervalMinutes,
+                intervalHours = settings.comicIntervalHours,
                 booksPerRound = settings.comicBooksPerRound,
                 ignoreQuota = settings.comicIgnoreQuota,
                 runningKeys = safeSet(comicRunning),
@@ -248,7 +258,7 @@ class AutoCacheScheduler(
                 label = "audio",
                 kind = BookKind.AUDIO,
                 enabled = settings.audioEnabled,
-                intervalMinutes = settings.audioIntervalMinutes,
+                intervalHours = settings.audioIntervalHours,
                 booksPerRound = settings.audioBooksPerRound,
                 ignoreQuota = settings.audioIgnoreQuota,
                 runningKeys = safeSet(audioRunning),
@@ -263,7 +273,7 @@ class AutoCacheScheduler(
     private fun runNovel(settings: AutoCacheSettings, now: LocalDateTime, force: Boolean): Int {
         val label = "novel"
         if (!settings.novelEnabled) return 0
-        if (!isDue(now, lastRun[label], settings.novelIntervalMinutes, force)) return 0
+        if (!isDue(now, lastRun[label], settings.novelIntervalHours, force)) return 0
 
         // 候选口径：**包括从未缓存过的书**（idle / 无状态行 / failed 都算未完成），
         // 只排除 ready 与 caching。`Database.cacheRequests()` 是「启动续做」语义（只认 pending/caching），
@@ -286,7 +296,7 @@ class AutoCacheScheduler(
 
     private fun runMedia(plan: MediaRound, now: LocalDateTime, force: Boolean): Int {
         if (!plan.enabled) return 0
-        if (!isDue(now, lastRun[plan.label], plan.intervalMinutes, force)) return 0
+        if (!isDue(now, lastRun[plan.label], plan.intervalHours, force)) return 0
 
         val (candidates, picked) = pickMedia(plan)
         var queued = 0
@@ -350,10 +360,10 @@ class AutoCacheScheduler(
         return candidates to picked
     }
 
-    private fun isDue(now: LocalDateTime, last: LocalDateTime?, intervalMinutes: Int, force: Boolean): Boolean {
+    private fun isDue(now: LocalDateTime, last: LocalDateTime?, intervalHours: Double, force: Boolean): Boolean {
         if (force) return true
         if (last == null) return true
-        return Duration.between(last, now).toMinutes() >= intervalMinutes
+        return Duration.between(last, now).seconds >= (intervalHours * 3600.0).toLong()
     }
 
     private fun logRound(label: String, queued: Int, candidates: Int) {

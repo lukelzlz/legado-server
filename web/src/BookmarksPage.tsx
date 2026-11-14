@@ -786,20 +786,17 @@ export function BookmarksPage({ onOpenBookmark }: BookmarksPageProps = {}) {
                     type="button"
                     className="subtle-button"
                     // 作者为空时按作者搜必然没结果，直接禁用（title 说明原因）
-                    disabled={loadingCandidates || busy || (!coverFor.bookAuthor && !authorOnly)}
+                    disabled={loadingCandidates || busy || !coverFor.bookAuthor}
                     title={
                       coverFor.bookAuthor
                         ? t('bookmarks.coverSearchByAuthorHint', '搜索该作者名下的其它书，借它们的封面')
                         : t('bookmarks.coverNoAuthor', '这本书没有作者信息，无法按作者搜索')
                     }
-                    onClick={() => loadCandidates(coverFor, !authorOnly)}
+                    // 按钮文案固定不变：点一下就在下面换成「该作者名下的书」的封面列表
+                    onClick={() => loadCandidates(coverFor, true)}
                   >
                     {loadingCandidates ? <ButtonSpinner size={12} /> : <Icon name="search" />}
-                    <span>
-                      {authorOnly
-                        ? t('bookmarks.coverSearchByName', '改回按书名搜索')
-                        : t('bookmarks.coverSearchByAuthor', '按作者名搜索')}
-                    </span>
+                    <span>{t('bookmarks.coverSearchByAuthor', '按作者名搜索')}</span>
                   </button>
                   <button
                     type="button"
@@ -827,7 +824,8 @@ export function BookmarksPage({ onOpenBookmark }: BookmarksPageProps = {}) {
               <div className="bookmark-cover-candidates">
                 <span className="bookmark-field-label">
                   {authorOnly
-                    ? t('bookmarks.coverFromAuthor', '按作者搜到的封面（点击使用）')
+                    ? t('bookmarks.coverFromAuthor', '按作者搜到的封面（点击使用）') +
+                      (candidates.length > 0 ? ` · ${candidates.length}` : '')
                     : t('bookmarks.coverFromSources', '书源搜到的封面（点击使用）')}
                 </span>
                 {loadingCandidates && <div className="bookmark-page-hint">{t('common.loading', '加载中...')}</div>}

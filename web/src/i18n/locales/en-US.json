@@ -1501,7 +1501,6 @@
     "coverSearchByAuthor": "Search by author",
     "coverSearchByAuthorHint": "Search other books by this author and reuse their covers",
     "coverNoAuthor": "No author for this book, cannot search by author",
-    "coverSearchByName": "Back to title search",
     "coverNoAuthorCandidates": "No covers found among books by this author",
     "coverRemove": "Remove cover",
     "coverMissing": "No cover",
@@ -1515,4 +1514,5 @@
     "notInShelf": "This book is not in the shelf, cannot jump (bookmark kept)"
   }
 }
+
 

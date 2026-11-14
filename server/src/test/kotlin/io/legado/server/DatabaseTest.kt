@@ -1,6 +1,7 @@
 package io.legado.server
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -581,6 +582,12 @@ class DatabaseTest {
             val reordered = database.updateBookGroupsOrder(listOf("科幻", "仙侠修真"))
             assertEquals("科幻", reordered[0].name)
             assertEquals("仙侠修真", reordered[1].name)
+
+            // Update privacy
+            assertFalse(database.getBookGroup("仙侠修真")!!.isPrivate)
+            val updatedPrivacy = database.updateBookGroupPrivacy("仙侠修真", isPrivate = true)
+            assertTrue(updatedPrivacy.isPrivate)
+            assertTrue(database.listBookGroups().first { it.name == "仙侠修真" }.isPrivate)
 
             // Delete group - books move to ungrouped (null)
             database.deleteBookGroup("科幻")

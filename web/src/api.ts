@@ -225,7 +225,7 @@ export type AudioPrefetchStatus = {
 // Serialize saves per book so an older response cannot arrive after a newer position and overwrite it.
 const progressSaveQueues = new Map<string, Promise<void>>()
 export type BookshelfSourceSwitch = { oldSourceId: string; oldBookUrl: string; book: BookshelfWrite; alternateSources?: SearchResult[] }
-export type BookGroup = { id: number; name: string; sortOrder: number; bookCount: number }
+export type BookGroup = { id: number; name: string; sortOrder: number; bookCount: number; isPrivate: boolean }
 export type BookshelfBatchRequest = {
   action: 'move_group' | 'mark_completed' | 'delete'
   items: { sourceId: string; bookUrl: string }[]
@@ -940,6 +940,7 @@ export const api = {
   createBookGroup: (name: string) => request<BookGroup>('/api/bookshelf/groups', { method: 'POST', body: JSON.stringify({ name }) }),
   renameBookGroup: (oldName: string, newName: string) => request<BookGroup>('/api/bookshelf/groups/rename', { method: 'PUT', body: JSON.stringify({ oldName, newName }) }),
   reorderBookGroups: (groupNames: string[]) => request<BookGroup[]>('/api/bookshelf/groups/order', { method: 'PUT', body: JSON.stringify({ groupNames }) }),
+  updateBookGroupPrivacy: (name: string, isPrivate: boolean) => request<BookGroup>('/api/bookshelf/groups/privacy', { method: 'PUT', body: JSON.stringify({ name, isPrivate }) }),
   deleteBookGroup: (name: string) => request<void>(`/api/bookshelf/groups?name=${encodeURIComponent(name)}`, { method: 'DELETE' }),
   updateBookGroup: (sourceId: string, bookUrl: string, groupName?: string | null) => request<BookshelfItem>('/api/bookshelf/group', { method: 'PUT', body: JSON.stringify({ sourceId, bookUrl, groupName }) }),
   batchBookshelf: (data: BookshelfBatchRequest) => request<{ affected: number }>('/api/bookshelf/batch', { method: 'POST', body: JSON.stringify(data) }),

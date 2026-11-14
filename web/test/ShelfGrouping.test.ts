@@ -62,3 +62,44 @@ test('ShelfGrouping - group and status counts calculation', () => {
   assert.equal(groupAItems.filter(i => !i.completed).length, 1)
   assert.equal(groupAItems.filter(i => i.completed).length, 1)
 })
+
+test('ShelfGrouping - hidden groups excluded from "all" and count calculation (Plan A)', () => {
+  const groups: BookGroup[] = [
+    { id: 1, name: '公开组', sortOrder: 1, bookCount: 1, isPrivate: false },
+    { id: 2, name: '私密组', sortOrder: 2, bookCount: 2, isPrivate: true },
+  ]
+  const items: BookshelfItem[] = [
+    { sourceId: 's1', bookUrl: 'https://b1', name: '公开书', tocUrl: 'toc1', lastReadAt: 1000, cachedChapters: 0, totalChapters: 10, cacheState: 'idle', completed: false, groupName: '公开组' },
+    { sourceId: 's1', bookUrl: 'https://b2', name: '私密书1', tocUrl: 'toc2', lastReadAt: 2000, cachedChapters: 0, totalChapters: 10, cacheState: 'idle', completed: false, groupName: '私密组' },
+    { sourceId: 's1', bookUrl: 'https://b3', name: '私密书2', tocUrl: 'toc3', lastReadAt: 3000, cachedChapters: 0, totalChapters: 10, cacheState: 'idle', completed: true, groupName: '私密组' },
+    { sourceId: 's1', bookUrl: 'https://b4', name: '无分组书', tocUrl: 'toc4', lastReadAt: 4000, cachedChapters: 0, totalChapters: 10, cacheState: 'idle', completed: false },
+  ]
+
+  const hiddenGroupNames = new Set(groups.filter(g => g.isPrivate).map(g => g.name.toLowerCase()))
+
+  const filterItems = (selectedGroup: string) => {
+    if (selectedGroup === 'all') {
+      return items.filter(i => !i.groupName || !hiddenGroupNames.has(i.groupName.toLowerCase()))
+    }
+    if (selectedGroup === '__ungrouped__') return items.filter(i => !i.groupName)
+    return items.filter(i => i.groupName === selectedGroup)
+  }
+
+  // 1. 方案 A 下，「全部」Tab 排除私密组书籍
+  const defaultAll = filterItems('all')
+  assert.equal(defaultAll.length, 2)
+  assert.deepEqual(defaultAll.map(i => i.name), ['公开书', '无分组书'])
+
+  // 2. 顶栏 Tab 只渲染公开分组
+  const visibleTabs = groups.filter(g => !g.isPrivate).map(g => g.name)
+  assert.deepEqual(visibleTabs, ['公开组'])
+
+  // 3. 统计数字：全部计数排除私密书籍
+  let visibleTotal = 0
+  items.forEach(i => {
+    if (!i.groupName || !hiddenGroupNames.has(i.groupName.toLowerCase())) {
+      visibleTotal++
+    }
+  })
+  assert.equal(visibleTotal, 2)
+})

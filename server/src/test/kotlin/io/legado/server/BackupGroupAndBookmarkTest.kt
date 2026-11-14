@@ -3,6 +3,7 @@ package io.legado.server
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.longOrNull
 import org.junit.Assert.assertEquals
@@ -105,6 +106,21 @@ class BackupGroupAndBookmarkTest {
         assertEquals(1L, groups.first { it.groupName == "FQ" }.groupId)
         assertEquals(2L, groups.first { it.groupName == "完结" }.groupId)
         assertEquals(8L, groups.first { it.groupName == "15" }.groupId)
+    }
+
+    @Test
+    fun `parses private bookGroup when show is false or isPrivate is true`() {
+        val text = """
+        [
+          {"groupId":1,"groupName":"公开组","order":0,"show":true},
+          {"groupId":2,"groupName":"隐藏组1","order":1,"show":false},
+          {"groupId":3,"groupName":"隐藏组2","order":2,"show":true,"isPrivate":true}
+        ]
+        """.trimIndent()
+        val groups = parseGroupsForTest(text)
+        assertFalse(groups[0].isPrivate)
+        assertTrue(groups[1].isPrivate)
+        assertTrue(groups[2].isPrivate)
     }
 
     // ------------------------------------------------------------------
@@ -436,7 +452,9 @@ class BackupGroupAndBookmarkTest {
             val id = (g["groupId"] as? JsonPrimitive)?.longOrNull ?: return@mapNotNull null
             val name = (g["groupName"] as? JsonPrimitive)?.contentOrNull?.takeIf { it.isNotBlank() }
                 ?: return@mapNotNull null
-            BackupGroupEntry(id, name, (g["order"] as? JsonPrimitive)?.longOrNull?.toInt() ?: 0, id < 0)
+            val isPrivate = (g["isPrivate"] as? JsonPrimitive)?.booleanOrNull
+                ?: (if (id >= 0) (g["show"] as? JsonPrimitive)?.booleanOrNull?.let { !it } ?: false else false)
+            BackupGroupEntry(id, name, (g["order"] as? JsonPrimitive)?.longOrNull?.toInt() ?: 0, id < 0, isPrivate)
         }
 
     /** 复刻 `parseShelf`（含 group id → 名字映射），用于验证解析层。 */

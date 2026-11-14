@@ -2391,10 +2391,26 @@ fun Route.apiRoutes(
                 return@post
             }
             try {
-                val group = database.createBookGroup(request.name)
+                val group = database.createBookGroup(request.name, request.isPrivate)
                 call.respond(HttpStatusCode.Created, group)
             } catch (e: Exception) {
                 call.respond(HttpStatusCode.Conflict, ApiError("group_exists", e.message ?: "分组已存在或创建失败"))
+            }
+        }
+        put("/bookshelf/groups/privacy") {
+            if (auth.requireSession(call, true) == null) return@put
+            val request = call.receive<BookGroupPrivacyRequest>()
+            if (request.name.isBlank()) {
+                call.respond(HttpStatusCode.BadRequest, ApiError("invalid_group", "分组名称不能为空"))
+                return@put
+            }
+            try {
+                val updated = database.updateBookGroupPrivacy(request.name, request.isPrivate)
+                call.respond(updated)
+            } catch (_: NoSuchElementException) {
+                call.respond(HttpStatusCode.NotFound, ApiError("not_found", "原分组不存在"))
+            } catch (e: Exception) {
+                call.respond(HttpStatusCode.BadRequest, ApiError("group_error", e.message ?: "更新分组私密状态失败"))
             }
         }
         put("/bookshelf/groups/rename") {

@@ -122,6 +122,21 @@ export function GlobalSearchModal({
     return () => window.removeEventListener('keydown', handleKeyDown)
   }, [onClose])
 
+  /**
+   * 打开时锁住背景滚动。
+   *
+   * 不锁的话，滚轮放在弹窗上（尤其是头部/输入框这种「没得滚」的区域）时，
+   * 滚动会落到书架页 body 上 —— 用户看到的是「弹窗没动、下面那层在动」。
+   * 关窗时恢复原值，避免影响其它页面。
+   */
+  useEffect(() => {
+    const previous = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    return () => {
+      document.body.style.overflow = previous
+    }
+  }, [])
+
   // 打开即聚焦输入框（书架页点「搜索」后用户下一步一定是输入）
   useEffect(() => {
     const timer = window.setTimeout(() => inputRef.current?.focus(), 0)

@@ -41,6 +41,7 @@ import './inline-illustrations.test.ts'
 
 console.log('🚀 Running Legado Web Frontend Comprehensive Test Suite (Tier 1, 2, 4 + Challenger Stress)...\n')
 import './webdav-settings.test.ts'
+import './auto-cache-settings.test.ts'
 import './progress-sync-settings.test.ts'
 import './progress-sync-kind.test.ts'
 import './BookInfoMetaSearch.test.ts'

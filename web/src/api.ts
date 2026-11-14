@@ -158,6 +158,39 @@ export type BackupExportResult = {
   bookmarks: number
   groups: number
 }
+
+/**
+ * 自动缓存设置（文件页里的小说 / 漫画 / 有声三组，各自独立）。
+ *
+ * 服务端存 `app_setting`，键名固定（`auto_cache_<kind>_*`）。三组**完全独立**：
+ * 开哪一组只影响那一组。只有漫画与有声有 `ignoreQuota`（= 忽略内存大小限制，
+ * 落地为既有的 pinned 免 GC），小说的正文缓存不占图/音配额，因此没有这一项。
+ */
+export type AutoCacheSettings = {
+  /** 小说：是否参与自动缓存。默认关。 */
+  novelEnabled: boolean
+  /** 小说：每隔多少分钟跑一轮（1..1440），默认 60。 */
+  novelIntervalMinutes: number
+  /** 小说：每轮最多入队几本（1..20），默认 1。 */
+  novelBooksPerRound: number
+  comicEnabled: boolean
+  comicIntervalMinutes: number
+  comicBooksPerRound: number
+  /** 漫画：忽略内存大小限制（pinned 免 GC）。 */
+  comicIgnoreQuota: boolean
+  audioEnabled: boolean
+  audioIntervalMinutes: number
+  audioBooksPerRound: number
+  /** 有声：忽略内存大小限制（pinned 免 GC）。 */
+  audioIgnoreQuota: boolean
+}
+
+/** 手动跑一轮自动缓存的结果（`POST /api/auto-cache/run-now`，主要用于验收）。 */
+export type AutoCacheRunResult = {
+  novelQueued: number
+  comicQueued: number
+  audioQueued: number
+}
 export type ProgressMergeResponse = { source: 'file' | 'database'; progress?: ReadingProgress; fileFound: boolean; alignedIndex?: number }
 export type BookshelfItem = { sourceId: string; bookUrl: string; name: string; author?: string; tocUrl: string; coverKey?: string; coverUrl?: string; chapterIndex?: number; scrollPosition?: number; lastReadAt: number; cachedChapters: number; totalChapters: number; cacheState: 'idle' | 'caching' | 'ready' | 'failed'; cacheError?: string; completed: boolean; alternateSources?: SearchResult[]; groupName?: string; bookKind?: string; variable?: string }
 export type BookshelfWrite = { sourceId: string; bookUrl: string; name: string; author?: string; tocUrl: string; coverUrl?: string; alternateSources?: SearchResult[]; groupName?: string }
@@ -1016,6 +1049,18 @@ export const api = {
     request<BackupExportSettings>('/api/webdav/export/settings', { method: 'PUT', body: JSON.stringify(patch) }),
   /** 按 Legado 格式导出备份（书源及分组 + 书架及分组 + 阅读进度），写入 WebDAV 存储区。 */
   backupExport: () => request<BackupExportResult>('/api/webdav/export', { method: 'POST' }),
+  /** 自动缓存设置（小说 / 漫画 / 有声三组，各自独立）。 */
+  autoCacheSettings: () => request<AutoCacheSettings>('/api/auto-cache/settings'),
+  /**
+   * 保存自动缓存设置 —— **局部更新**：只提交传进来的字段。
+   *
+   * 勾选类开关（启用 / 忽略内存大小限制）是勾了就存，间隔与每轮本数是组内保存按钮，
+   * 因此必须「改哪个存哪个」，否则点一下开关会把用户还没保存的输入一起写进去。
+   */
+  saveAutoCacheSettings: (patch: Partial<AutoCacheSettings>) =>
+    request<AutoCacheSettings>('/api/auto-cache/settings', { method: 'PUT', body: JSON.stringify(patch) }),
+  /** 手动跑一轮自动缓存（间隔忽略，但仍尊重各组的启用开关）。 */
+  runAutoCacheNow: () => request<AutoCacheRunResult>('/api/auto-cache/run-now', { method: 'POST' }),
   /**
    * 自动导出：关闭网页 / 关闭书籍时由前端上报，服务端按开关决定是否真的写盘。
    *

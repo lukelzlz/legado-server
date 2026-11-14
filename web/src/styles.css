@@ -6384,6 +6384,13 @@ mark.search-highlight { background: var(--accent-soft); color: var(--accent); fo
 .bookmark-cover-current { display: flex; gap: 16px; align-items: flex-start; }
 .bookmark-cover-actions { display: flex; flex-wrap: wrap; gap: 8px; align-content: flex-start; }
 .bookmark-cover-candidates { display: grid; gap: 8px; }
+.bookmark-cover-candidates-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap;
+}
+.bookmark-cover-search-toggle {
+  display: inline-flex; align-items: center; gap: 4px; font-size: 12px; padding: 2px 8px;
+}
+.bookmark-cover-search-toggle:disabled { opacity: .5; cursor: not-allowed; }
 .bookmark-field-label { font-size: 12px; color: var(--muted); }
 .bookmark-cover-candidate-grid {
   display: grid;

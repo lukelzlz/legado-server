@@ -135,4 +135,35 @@ class BookmarkCoverFetchTest {
         assertTrue("旧封面没人引用 ⇒ 文件应被回收", coverCache.file(first.key) == null)
         assertNotNull("新封面文件必须还在", coverCache.file(second.key))
     }
-}
+    // ------------------------------------------------- 按作者名搜（借同作者其它书的封面）
+    @Test
+    fun `按作者名搜索：不按书名过滤，能列出同作者其它书的封面`() = runBlocking {
+        val service = BookmarkCoverService(database, coverCache, null) { keyword ->
+            // 书源搜索按关键词返回；这里断言关键词就是作者名
+            org.junit.Assert.assertEquals("作者乙", keyword)
+            listOf(
+                SearchResult(
+                    sourceId = "s1", name = "作者乙的甲书", author = "作者乙",
+                    bookUrl = "https://example.invalid/b1", coverUrl = "https://example.invalid/c1.png",
+                ),
+                SearchResult(
+                    sourceId = "s1", name = "作者乙的乙书", author = "作者乙",
+                    bookUrl = "https://example.invalid/b2", coverUrl = "https://example.invalid/c2.png",
+                ),
+            )
+        }
+
+        val byAuthor = service.candidates("我这本书", "作者乙", byAuthorOnly = true)
+        org.junit.Assert.assertEquals("按作者搜要列出同作者的书", 2, byAuthor.size)
+        org.junit.Assert.assertEquals(
+            setOf("作者乙的甲书", "作者乙的乙书"),
+            byAuthor.map { it.name }.toSet(),
+        )
+
+        // 不按作者时仍然只认同名书 ⇒ 上面两条都不该出现
+        val byName = service.candidates("我这本书", "作者乙")
+        org.junit.Assert.assertEquals("按书名搜不能混入其它书", 0, byName.size)
+
+        // 作者为空时按作者搜必然没结果（前端也会禁用按钮）
+        org.junit.Assert.assertEquals(0, service.candidates("我这本书", "", byAuthorOnly = true).size)
+    }}

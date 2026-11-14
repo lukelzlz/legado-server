@@ -870,9 +870,9 @@ export const api = {
     remove?: boolean
   }) => request<BookCoverState>('/api/covers/book', { method: 'PUT', body: JSON.stringify(payload) }),
   /** 手动设置封面用：书源搜出来的候选封面（只列不写）。 */
-  bookCoverCandidates: (bookName: string, bookAuthor?: string | null) =>
+  bookCoverCandidates: (bookName: string, bookAuthor?: string | null, byAuthor = false) =>
     request<{ items: BookCoverCandidate[] }>(
-      `/api/covers/candidates?bookName=${encodeURIComponent(bookName)}${bookAuthor ? `&bookAuthor=${encodeURIComponent(bookAuthor)}` : ''}`,
+      `/api/covers/candidates?bookName=${encodeURIComponent(bookName)}${bookAuthor ? `&bookAuthor=${encodeURIComponent(bookAuthor)}` : ''}${byAuthor ? '&byAuthor=true' : ''}`,
     ),
   bookshelf: async () => {
     try {

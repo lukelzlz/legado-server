@@ -1497,6 +1497,12 @@
     "coverRefetch": "按書名重新取得",
     "coverFromSources": "書源搜到的封面（點擊使用）",
     "coverNoCandidates": "書源裡沒有搜到帶封面的候選",
+    "coverFromAuthor": "按作者搜到的封面（點擊使用）",
+    "coverSearchByAuthor": "按作者名搜尋",
+    "coverSearchByAuthorHint": "搜尋該作者名下的其它書，借它們的封面",
+    "coverNoAuthor": "這本書沒有作者資訊，無法按作者搜尋",
+    "coverSearchByName": "改回按書名搜尋",
+    "coverNoAuthorCandidates": "這個作者名下的書沒搜到帶封面的候選",
     "coverRemove": "移除封面",
     "coverMissing": "無封面",
     "coverMissingHint": "連續 5 次沒找到封面，已停止自動補抓；點封面可手動設定",
@@ -1509,3 +1515,4 @@
     "notInShelf": "這本書不在書架裡，無法跳轉（書籤仍保留）"
   }
 }
+

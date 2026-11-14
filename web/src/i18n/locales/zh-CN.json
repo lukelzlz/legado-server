@@ -1501,7 +1501,6 @@
     "coverSearchByAuthor": "按作者名搜索",
     "coverSearchByAuthorHint": "搜索该作者名下的其它书，借它们的封面",
     "coverNoAuthor": "这本书没有作者信息，无法按作者搜索",
-    "coverSearchByName": "改回按书名搜索",
     "coverNoAuthorCandidates": "这个作者名下的书没搜到带封面的候选",
     "coverRemove": "移除封面",
     "coverMissing": "无封面",
@@ -1515,4 +1514,5 @@
     "notInShelf": "这本书不在书架里，无法跳转（书签仍保留）"
   }
 }
+
 

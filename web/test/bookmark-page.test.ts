@@ -293,11 +293,13 @@ test('封面 - 书签页可请求封面、点封面手动设置（书源候选�
   // 「无封面·已停止自动补抓」要有可见标记
   // 按作者名搜索：按钮 + 带 byAuthor 的请求 + 作者为空时禁用
   assert.match(bookmarksPage, /coverSearchByAuthor/)
-  assert.match(bookmarksPage, /loadCandidates\(coverFor, !authorOnly\)/)
+  assert.match(bookmarksPage, /loadCandidates\(coverFor, true\)/)
   // 按钮要和「上传本地图片 / 按书名重新获取 / 移除封面」放在同一列（bookmark-cover-actions）里
   assert.match(bookmarksPage, /bookmark-cover-actions[\s\S]{0,3000}coverSearchByAuthor/)
   assert.doesNotMatch(bookmarksPage, /bookmark-cover-candidates-head/)
+  // 按钮文案固定（不再点一下就变成「改回按书名搜索」），结果直接展示在下面
   assert.match(bookmarksPage, /authorOnly/)
+  assert.doesNotMatch(bookmarksPage, /coverSearchByName/)
   assert.match(bookmarksPage, /bookmarks\.coverNoAuthor/)
   assert.match(bookmarksPage, /book\.coverMissing && !book\.coverKey/)
 })

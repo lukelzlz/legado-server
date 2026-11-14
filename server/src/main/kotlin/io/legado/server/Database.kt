@@ -2633,6 +2633,37 @@ class Database internal constructor(private val spec: DatabaseSpec) : Closeable,
      * 另外跳过非网络来源的 `book_url`：`content://`（Android 本地文件）、
      * `local://`（本项目本地导入）都不是服务端可抓取的地址。
      */
+    /**
+     * 自动缓存（**小说**）的候选书：**包含从未缓存过的书**。
+     *
+     * 与 [cacheRequests] 的差别只在 `state` 口径——那个是「启动续做」语义，只认 `pending/caching`；
+     * 自动缓存的目标是「书架里还没缓存完的书」，所以把 **无状态行 / idle / failed** 也算进来，
+     * 只排除 `ready`（已完成）与 `caching`（正在跑，避免重复入队）。
+     *
+     * 排序沿用「最近读的优先」，`limit` 由调用方按每轮本数上限给（多取一些只为把候选数打进日志）。
+     */
+    fun autoCacheNovelCandidates(limit: Int): List<CachedBookRequest> = connect { db ->
+        db.prepareStatement(
+            """
+            select s.source_id, s.book_url, s.toc_url
+            from book_shelf s
+            left join book_cache_status c on c.source_id = s.source_id and c.book_url = s.book_url
+            where coalesce(s.book_kind, 'novel') = 'novel'
+              -- 只排除 ready；caching 是「上次中断」，自动缓存应当续做。
+              -- 正在跑的书由 BookCacheService.enqueue 自己按 jobs 去重，不靠 DB 状态判断。
+              and coalesce(c.state, 'idle') <> 'ready'
+              and s.book_url not like 'content://%'
+              and s.book_url not like 'local://%'
+            order by s.last_read_at desc
+            limit ?
+            """.trimIndent(),
+        ).use { query ->
+            query.setInt(1, limit)
+            query.executeQuery().use { rs ->
+                buildList { while (rs.next()) add(CachedBookRequest(rs.getString(1), rs.getString(2), rs.getString(3))) }
+            }
+        }
+    }
     fun cacheRequests(): List<CachedBookRequest> = connect { db ->
         db.prepareStatement(
             """

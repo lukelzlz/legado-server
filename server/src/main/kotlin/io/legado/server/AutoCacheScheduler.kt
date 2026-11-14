@@ -26,8 +26,8 @@ import java.time.LocalDateTime
  *
  * ## 入队一律走**既有服务**，不新造抓取实现
  *
- * - 小说：[BookCacheService.enqueue]（候选口径完全复用 `Database.cacheRequests()`：
- *   `book_cache_status.state in ('pending','caching')` + 排除本地/漫画/有声）；
+ * - 小说：[BookCacheService.enqueue]（候选口径 = `Database.autoCacheNovelCandidates()`：
+ *   书架里的 novel 书、`state <> 'ready'`（含从未缓存过的书，也含上次中断的 caching）；
  * - 漫画：[MangaPrefetchService.enqueue]；有声：[AudioPrefetchService.enqueue]。
  *
  * 三者都通过构造参数注入（[enqueueNovel] / [enqueueComic] / [enqueueAudio]），
@@ -39,6 +39,9 @@ import java.time.LocalDateTime
  * 「整本缓存要 pinned 免死金牌」）。**绝不另造配额旁路**：GC 只认 pinned 标记，
  * 多一条旁路就意味着「有的地方查配额、有的地方查旁路」，迟早出现算不清的账。
  */
+/** 小说候选一次性最多取多少条（只为把 candidates 数打进日志，实际入队数由每轮本数决定）。 */
+internal const val NOVEL_CANDIDATE_CAP = 200
+
 internal const val AUTO_CACHE_NOVEL_ENABLED_KEY = "auto_cache_novel_enabled"
 internal const val AUTO_CACHE_NOVEL_INTERVAL_KEY = "auto_cache_novel_interval_minutes"
 internal const val AUTO_CACHE_NOVEL_BOOKS_KEY = "auto_cache_novel_books_per_round"
@@ -168,8 +171,8 @@ private class MediaRound(
  * 挑最多 `booksPerRound` 本「缓存未完成」的书，走**既有服务**入队。
  *
  * 取舍（如实说明）：
- * - 「缓存未完成」的**小说**口径直接复用 `Database.cacheRequests()`（`state in ('pending','caching')`），
- *   不另造一套判断 —— 那套口径已经踩过「无过滤=整架重下」的坑（SESSION-025）。
+ * - 「缓存未完成」的**小说**口径（`Database.autoCacheNovelCandidates()`）：书架里的 novel 书、
+ *   `state <> 'ready'` —— **含从未缓存过的书**（idle / 无状态行 / failed）与上次中断的 caching，
  * - 「缓存未完成」的**漫画/有声**口径：整章就绪数（`readyManga/readyAudioChapterCountsByBook`，
  *   与书架进度、目录绿点同一口径）< 目录章数即未完成；目录还没缓存时按**未完成**处理
  *   （首次自动化本来就该顺带把目录抓下来）。
@@ -262,8 +265,10 @@ class AutoCacheScheduler(
         if (!settings.novelEnabled) return 0
         if (!isDue(now, lastRun[label], settings.novelIntervalMinutes, force)) return 0
 
-        // 候选口径 = 既有 `cacheRequests()`（pending/caching、排除本地与漫画/有声），一行业务判断都不新写
-        val candidates = runCatching { database.cacheRequests() }.getOrElse { error ->
+        // 候选口径：**包括从未缓存过的书**（idle / 无状态行 / failed 都算未完成），
+        // 只排除 ready 与 caching。`Database.cacheRequests()` 是「启动续做」语义（只认 pending/caching），
+        // 直接用它会导致「整架书从来没被自动挑中过」——用户要的是自动把书缓存下来。
+        val candidates = runCatching { database.autoCacheNovelCandidates(NOVEL_CANDIDATE_CAP) }.getOrElse { error ->
             log("[auto-cache] novel: candidate query failed (${error.message})")
             emptyList()
         }
@@ -364,3 +369,4 @@ class AutoCacheScheduler(
         const val TICK_MS = 30_000L
     }
 }
+

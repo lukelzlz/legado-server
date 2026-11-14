@@ -1499,6 +1499,7 @@
     "coverNoCandidates": "書源裡沒有搜到帶封面的候選",
     "coverFromAuthor": "按作者搜到的封面（點擊使用）",
     "coverSearchByAuthor": "按作者名搜尋",
+    "coverSearchByTitle": "按書名搜尋",
     "coverSearchByAuthorHint": "搜尋該作者名下的其它書，借它們的封面",
     "coverNoAuthor": "這本書沒有作者資訊，無法按作者搜尋",
     "coverNoAuthorCandidates": "這個作者名下的書沒搜到帶封面的候選",
@@ -1514,5 +1515,6 @@
     "notInShelf": "這本書不在書架裡，無法跳轉（書籤仍保留）"
   }
 }
+
 
 

@@ -197,7 +197,7 @@ test('i18n - 书签页的 key 在四个语言里都齐全且非空', () => {
     'requestCoversHint',
     'coverTitle',
     'coverUpload',
-    'coverRefetch',
+    'coverSearchByTitle',
     'coverFromSources',
     'coverRemove',
     'coverMissing',
@@ -294,6 +294,10 @@ test('封面 - 书签页可请求封面、点封面手动设置（书源候选�
   // 按作者名搜索：按钮 + 带 byAuthor 的请求 + 作者为空时禁用
   assert.match(bookmarksPage, /coverSearchByAuthor/)
   assert.match(bookmarksPage, /loadCandidates\(coverFor, true\)/)
+  // 按书名搜索：结果同样展示在下方，不自动套用
+  assert.match(bookmarksPage, /loadCandidates\(coverFor, false\)/)
+  assert.match(bookmarksPage, /coverSearchByTitle/)
+  assert.doesNotMatch(bookmarksPage, /coverRefetch/)
   // 按钮要和「上传本地图片 / 按书名重新获取 / 移除封面」放在同一列（bookmark-cover-actions）里
   assert.match(bookmarksPage, /bookmark-cover-actions[\s\S]{0,3000}coverSearchByAuthor/)
   assert.doesNotMatch(bookmarksPage, /bookmark-cover-candidates-head/)

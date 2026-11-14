@@ -2436,10 +2436,14 @@ class Database internal constructor(private val spec: DatabaseSpec) : Closeable,
     }
 
     private fun backfillChapterIndex(db: Connection, limit: Int): Int {
-        val targets = mutableListOf<Pair<String, String>>()
+        // 三元组：source_id / book_url / **书架存的 toc_url**。
+        // 必须带上 toc_url：聚合源的 book_url 与 toc_url 只在尾部类型字段不同
+        //（如 `{"type":"qingtian"}` vs `{"type":"qingtian2"}`），只按 book_url 反查会静默跳过，
+        // 表现为「这本书目录搜不到」。
+        val targets = mutableListOf<Triple<String, String, String?>>()
         db.prepareStatement(
             """
-            select s.source_id, s.book_url
+            select s.source_id, s.book_url, s.toc_url
             from book_shelf s
             where not exists (
                 select 1 from book_chapter_index c
@@ -2451,12 +2455,12 @@ class Database internal constructor(private val spec: DatabaseSpec) : Closeable,
         ).use { stmt ->
             stmt.setInt(1, limit)
             stmt.executeQuery().use { rs ->
-                while (rs.next()) targets.add(rs.getString(1) to rs.getString(2))
+                while (rs.next()) targets.add(Triple(rs.getString(1), rs.getString(2), rs.getString(3)))
             }
         }
         var indexed = 0
-        for ((sourceId, bookUrl) in targets) {
-            val chapters = runCatching { cachedTocChapters(db, sourceId, bookUrl) }.getOrNull().orEmpty()
+        for ((sourceId, bookUrl, shelfTocUrl) in targets) {
+            val chapters = runCatching { cachedTocChapters(db, sourceId, bookUrl, shelfTocUrl) }.getOrNull().orEmpty()
             if (chapters.isEmpty()) continue
             val ok = runCatching {
                 replaceChapterIndex(db, sourceId, bookUrl, chapters)
@@ -2477,12 +2481,22 @@ class Database internal constructor(private val spec: DatabaseSpec) : Closeable,
      * `toc_url` 有多个变体（书源详情给的 tocUrl、书架存的 tocUrl、以及 `like %bookUrl%` 命中的），
      * 与 [getChapterTitle] 同一套兜底口径：按 `updated_at desc` 取最新几条，第一条能解析的胜出。
      */
-    private fun cachedTocChapters(db: Connection, sourceId: String, bookUrl: String): List<Chapter> {
-        val sql = "select chapters_json from book_toc_cache where source_id = ? and (toc_url = ? or toc_url like ?) order by updated_at desc limit 5"
+    private fun cachedTocChapters(db: Connection, sourceId: String, bookUrl: String, tocUrl: String? = null): List<Chapter> {
+        // 命中优先级：书架 toc_url 精确 → book_url 精确 → 双向包含（`? like '%' || toc_url || '%'`）。
+        // 聚合源的 book_url / toc_url 只在尾部类型字段上不同，只按 book_url 反查会漏（实测「目录搜不到」）。
+        val sql = """
+            select chapters_json from book_toc_cache
+            where source_id = ? and (
+                toc_url = ? or toc_url = ? or toc_url like ? or ? like '%' || toc_url || '%'
+            )
+            order by updated_at desc limit 8
+        """.trimIndent()
         db.prepareStatement(sql).use { stmt ->
             stmt.setString(1, sourceId)
-            stmt.setString(2, bookUrl)
-            stmt.setString(3, "%$bookUrl%")
+            stmt.setString(2, tocUrl ?: "")
+            stmt.setString(3, bookUrl)
+            stmt.setString(4, "%$bookUrl%")
+            stmt.setString(5, bookUrl)
             stmt.executeQuery().use { rs ->
                 while (rs.next()) {
                     val chapters = runCatching { Json.decodeFromString<List<Chapter>>(rs.getString(1)) }.getOrNull()

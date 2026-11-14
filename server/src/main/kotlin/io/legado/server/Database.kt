@@ -2398,7 +2398,9 @@ class Database internal constructor(private val spec: DatabaseSpec) : Closeable,
         db.prepareStatement("""
             select chapter_url, title from book_content_cache
             where source_id = ? and (book_url = ? or chapter_url like ?)
-            order by rowid asc
+            -- 不能用 rowid（SQLite 专有）：PG 没有该列，之前会让 /books/chapters 直接 500。
+            -- cached_at + chapter_url 是跨引擎可用的稳定顺序（缓存行按下载顺序写入）。
+            order by cached_at asc, chapter_url asc
         """.trimIndent()).use { stmt ->
             stmt.setString(1, sourceId)
             stmt.setString(2, bookUrl)

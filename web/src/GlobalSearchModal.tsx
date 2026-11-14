@@ -182,7 +182,15 @@ export function GlobalSearchModal({
   }
 
   return createPortal(
-    <div className={`modal-backdrop global-search-backdrop theme-${theme}`} onClick={onClose}>
+    <div
+      className={`modal-backdrop global-search-backdrop theme-${theme}`}
+      // 点磨砂遮罩关闭：用 mousedown + target 判定，和书架其它弹窗行为一致；
+      // 这样即使从弹窗内部拖出来松开，也不会误关。
+      onMouseDown={event => {
+        if (event.target === event.currentTarget) onClose()
+      }}
+      onClick={onClose}
+    >
       <div
         className="global-search-dialog"
         role="dialog"

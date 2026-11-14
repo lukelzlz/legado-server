@@ -6872,6 +6872,16 @@ mark.search-highlight { background: var(--accent-soft); color: var(--accent); fo
   flex-shrink: 0;
 }
 .global-search-input input { width: 100%; padding: 0; border: 0; background: transparent; font-size: 14px; color: var(--ink); }
+/* 焦点不再用浏览器默认的 2px 绿色描边（会和容器边框叠成「双层绿框」），
+   改成整颗输入框容器描边 + 柔和光晕，视觉上只有一个环。 */
+.global-search-input { transition: border-color .15s ease, box-shadow .15s ease; }
+.global-search-input:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
+}
+.global-search-input input:focus,
+.global-search-input input:focus-visible { outline: none; }
+.global-search-input:focus-within svg { color: var(--accent); }
 .global-search-input svg { width: 15px; height: 15px; flex-shrink: 0; }
 .global-search-clear { width: 26px; height: 26px; padding: 0; display: grid; place-items: center; flex-shrink: 0; }
 

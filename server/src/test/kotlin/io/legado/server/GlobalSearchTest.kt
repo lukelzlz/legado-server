@@ -248,6 +248,34 @@ class GlobalSearchTest {
     // --------------------------------------------------------------- 方言守卫
 
     @Test
+    fun `正文搜索只返回书架里的书（孤儿缓存不能变成未知书名）`() {
+        val dbPath = Files.createTempFile("legado-search-orphan", ".sqlite").toString()
+        try {
+            Database(dbPath).use { db ->
+                db.initialize(PASSWORD)
+                saveBook(db, "src-a", "https://a.test/book/1", name = "十日终焉", author = "杀虫队队员")
+                // ① 书在书架：能搜到，书名正常
+                db.cacheBookContent(
+                    "src-a", "https://a.test/book/1", "https://a.test/book/1/c/1",
+                    ChapterContent(title = "第一章 开端", content = "苏尘拔剑，剑光如雪。"),
+                )
+                // ② 书不在书架（换源/删书后的孤儿缓存）：必须搜不到，否则前端只能显示「未知书名」
+                db.cacheBookContent(
+                    "src-a", "https://a.test/gone/9", "https://a.test/gone/9/c/1",
+                    ChapterContent(title = "第一章 旧章", content = "苏尘早已离开此地，剑光不在。"),
+                )
+
+                val hits = db.searchContent("苏尘", 50)
+                assertEquals(1, hits.size)
+                assertEquals("十日终焉", hits.single().bookName)
+                assertTrue("命中必须都带书名", hits.all { it.bookName.isNotBlank() })
+            }
+        } finally {
+            deleteSqlite(dbPath)
+        }
+    }
+
+    @Test
     fun `回填：书架 book_url 与 toc_url 只有尾部类型不同时也能索引（目录搜不到的真实修复）`() {
         val dbPath = Files.createTempFile("legado-search-backfill-tail", ".sqlite").toString()
         try {

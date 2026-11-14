@@ -2404,7 +2404,9 @@ class Database internal constructor(private val spec: DatabaseSpec) : Closeable,
             select cc.source_id, cc.book_url, cc.chapter_url, cc.title, cc.content,
                    s.name, s.author, s.cover_key, c.chapter_index
             from book_content_cache cc
-            left join book_shelf s on s.source_id = cc.source_id and s.book_url = cc.book_url
+            -- 必须 inner join：正文缓存里可能残留「书已不在书架」的孤儿行（换源/删书后），
+            -- left join 会让书名取到 NULL，前端只能显示「未知书名」，而且点进去也打不开。
+            join book_shelf s on s.source_id = cc.source_id and s.book_url = cc.book_url
             left join book_chapter_index c
                    on c.source_id = cc.source_id and c.book_url = cc.book_url and c.chapter_url = cc.chapter_url
             where $where

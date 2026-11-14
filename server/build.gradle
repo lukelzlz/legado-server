@@ -137,6 +137,8 @@ dependencies {
     implementation "com.jayway.jsonpath:json-path:2.9.0"
     implementation "org.mozilla:rhino:1.8.0"
     implementation "org.slf4j:slf4j-simple:2.0.16"
+    // `config/config.yaml` 解析（用户要手改的配置文件，必须支持注释/嵌套/引号）
+    implementation "org.yaml:snakeyaml:2.3"
     testImplementation "io.ktor:ktor-server-test-host:3.4.3"
     testImplementation "io.ktor:ktor-client-content-negotiation:3.4.3"
     testImplementation libs.junit

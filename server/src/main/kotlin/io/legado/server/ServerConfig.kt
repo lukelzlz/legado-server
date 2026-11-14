@@ -126,8 +126,103 @@ data class ServerConfig(
          */
         const val COVER_SELF_HEAL_INTERVAL_MS: Long = 10 * 60 * 1000L
 
-        fun fromEnvironment(env: Map<String, String> = System.getenv()): ServerConfig {
-            val rawDataDir = env["LEGADO_DATA_DIR"] ?: run {
+        /**
+         * 从 `config/config.yaml` + 环境变量装配配置（**服务启动的唯一入口**）。
+         *
+         * - 配置文件不存在 ⇒ 先按 [ConfigFile.defaultContent] 生成一份带注释的默认配置；
+         * - 优先级：环境变量 > 配置文件 > 内置默认值；
+         * - 文件写坏了也不会让服务起不来（回落环境变量/默认值，只在日志里告警）。
+         */
+        fun load(
+            baseDir: Path = ConfigFile.jarDirectory(),
+            env: Map<String, String> = System.getenv(),
+            /** 日志接缝（测试/自定义启动器可用）。 */
+            log: (String) -> Unit = { message -> System.err.println(message) },
+        ): ServerConfig {
+            // ① 文件不存在时，用「环境变量 + 内置默认值」算出的**实际生效值**去渲染模板：
+            //    否则启动脚本导出的 LEGADO_DATA_DIR/LEGADO_PORT 会与生成的模板不一致，
+            //    下次启动（脚本不再导出 env）就会换端口/换数据目录。
+            val templateValues = if (java.nio.file.Files.exists(ConfigFile.fileOf(baseDir))) {
+                emptyMap()
+            } else {
+                effectiveValues(fromSources(emptyMap(), env))
+            }
+            val (file, generated) = runCatching { ConfigFile.ensureDefault(baseDir, templateValues) }
+                .getOrElse { error ->
+                    log("[config] 无法在 $baseDir 生成 config.yaml：${error.message}（继续用环境变量/默认值）")
+                    return fromSources(emptyMap(), env)
+                }
+            if (generated) log("[config] 已生成默认配置文件：$file（按注释修改后重启生效）")
+            val values = ConfigFile.readValues(file)
+            if (values == null) {
+                log("[config] 解析失败：$file 不是合法 YAML，已回落到环境变量/默认值")
+                return fromSources(emptyMap(), env)
+            }
+            log("[config] 已加载配置文件：$file（共 ${values.size} 项；环境变量优先）")
+            return fromSources(values, env)
+        }
+
+        /**
+         * 把一份 [ServerConfig] 反推成 config.yaml 的扁平键值（用于首次生成「与当前实际一致」的模板）。
+         *
+         * 只写会影响启动行为的项；路径全部转成绝对路径，避免生成的模板依赖启动时的工作目录。
+         */
+        fun effectiveValues(config: ServerConfig): ConfigFile.Values = linkedMapOf<String, String>().apply {
+            put("server.host", config.host)
+            put("server.port", config.port.toString())
+            put("data.database", config.databasePath)
+            put("auth.secure_cookies", config.secureCookies.toString())
+            // 数据目录从数据库文件反推（`<data>/legado.sqlite`），保证迁移到文件后仍指向同一份数据
+            runCatching {
+                val db = Path.of(config.databasePath)
+                db.parent?.let { put("data.dir", it.toAbsolutePath().toString()) }
+            }
+            config.initialAdminPassword?.takeIf { it.isNotBlank() }?.let { put("auth.password", it) }
+            put("cache.manga.max_gb", formatGb(config.imageCacheQuotaBytes))
+            put("cache.manga.max_global_fetches", config.maxGlobalImageFetches.toString())
+            put("cache.manga.prefetch", config.mangaPrefetchEnabled.toString())
+            put("cache.manga.gc", config.mangaGcEnabled.toString())
+            put("cache.audio.max_gb", formatGb(config.audioCacheQuotaBytes))
+            put("cache.audio.max_global_fetches", config.maxGlobalAudioFetches.toString())
+            put("cache.audio.prefetch", config.audioPrefetchEnabled.toString())
+            put("cache.audio.gc", config.audioGcEnabled.toString())
+            put("cover.self_heal", config.coverSelfHealEnabled.toString())
+        }
+
+        private fun formatGb(bytes: Long): String {
+            val gb = bytes / (1024.0 * 1024.0 * 1024.0)
+            return if (gb == gb.toLong().toDouble()) gb.toLong().toString() else String.format("%.1f", gb)
+        }
+
+        /**
+         * 旧的「只读环境变量」入口。
+         *
+         * 保留它是因为**测试与 `reset-password` 都在用**：它们不应该因为
+         * 「机器上恰好有 config.yaml」而读出别的数据库/密码。
+         */
+        fun fromEnvironment(env: Map<String, String> = System.getenv()): ServerConfig = fromSources(emptyMap(), env)
+
+        /**
+         * 真正的装配逻辑：`fileValues` 是 config.yaml 扁平化后的键值（如 `server.port`），
+         * `env` 里的同名环境变量优先。
+         */
+        fun fromSources(fileValues: ConfigFile.Values = emptyMap(), env: Map<String, String> = System.getenv()): ServerConfig {
+            /** 环境变量 > 配置文件；空串视为「没配」。 */
+            fun pick(envKey: String, fileKey: String): String? =
+                env[envKey]?.takeIf { it.isNotBlank() } ?: fileValues[fileKey]?.takeIf { it.isNotBlank() }
+
+            fun pickBoolean(envKey: String, fileKey: String, default: Boolean): Boolean =
+                pick(envKey, fileKey)?.toBooleanStrictOrNull() ?: default
+
+            fun pickInt(envKey: String, fileKey: String, default: Int): Int =
+                pick(envKey, fileKey)?.toIntOrNull()?.takeIf { it > 0 } ?: default
+
+            fun pickGb(envKey: String, fileKey: String, defaultGb: Double): Long =
+                (pick(envKey, fileKey)?.toDoubleOrNull() ?: defaultGb)
+                    .takeIf { it > 0 }?.let { (it * 1024 * 1024 * 1024).toLong() }
+                    ?: (defaultGb * 1024 * 1024 * 1024).toLong()
+
+            val rawDataDir = pick("LEGADO_DATA_DIR", "data.dir") ?: run {
                 val rootData = Path.of("/data")
                 if (java.nio.file.Files.isDirectory(rootData) && java.nio.file.Files.isWritable(rootData)) {
                     "/data"
@@ -137,34 +232,33 @@ data class ServerConfig(
             }
             val dataDir = Path.of(rawDataDir).toAbsolutePath()
             return ServerConfig(
-                host = env["LEGADO_HOST"] ?: "0.0.0.0",
-                port = env["LEGADO_PORT"]?.toIntOrNull() ?: 8080,
-                databasePath = env["LEGADO_DATABASE"] ?: dataDir.resolve("legado.sqlite").absolutePathString(),
+                host = pick("LEGADO_HOST", "server.host") ?: "0.0.0.0",
+                port = pick("LEGADO_PORT", "server.port")?.toIntOrNull() ?: 8080,
+                databasePath = pick("LEGADO_DATABASE", "data.database")
+                    ?: dataDir.resolve("legado.sqlite").absolutePathString(),
                 coverCacheDirectory = dataDir.resolve(COVER_DIR_NAME),
                 webDavDirectory = dataDir.resolve("webdav"),
                 localBooksDirectory = dataDir.resolve("local_books"),
-                initialAdminPassword = env["ADMIN_PASSWORD"]?.takeIf { it.isNotBlank() },
-                secureCookies = env["LEGADO_SECURE_COOKIES"]?.toBooleanStrictOrNull() ?: true,
+                initialAdminPassword = pick("ADMIN_PASSWORD", "auth.password")?.takeIf { it.isNotBlank() },
+                secureCookies = pickBoolean("LEGADO_SECURE_COOKIES", "auth.secure_cookies", true),
                 comicCacheDirectory = dataDir.resolve(COMIC_DIR_NAME),
                 illustrationCacheDirectory = dataDir.resolve(ILLUSTRATION_DIR_NAME),
                 audioCacheDirectory = dataDir.resolve("audio"),
                 // 配额按 GB 配置（支持小数），默认 10 GiB —— 见 ADR-028 的滑窗 GC 裁决
-                imageCacheQuotaBytes = (env["LEGADO_MANGA_CACHE_MAX_GB"]?.toDoubleOrNull() ?: DEFAULT_IMAGE_CACHE_QUOTA_GB)
-                    .takeIf { it > 0 }?.let { (it * 1024 * 1024 * 1024).toLong() }
-                    ?: DEFAULT_IMAGE_CACHE_QUOTA_BYTES,
-                maxGlobalImageFetches = env["LEGADO_MAX_GLOBAL_IMAGE_FETCHES"]?.toIntOrNull()
-                    ?.takeIf { it > 0 } ?: DEFAULT_MAX_GLOBAL_IMAGE_FETCHES,
-                mangaPrefetchEnabled = env["LEGADO_MANGA_PREFETCH"]?.toBooleanStrictOrNull() ?: true,
-                mangaGcEnabled = env["LEGADO_MANGA_GC"]?.toBooleanStrictOrNull() ?: true,
+                imageCacheQuotaBytes = pickGb("LEGADO_MANGA_CACHE_MAX_GB", "cache.manga.max_gb", DEFAULT_IMAGE_CACHE_QUOTA_GB),
+                maxGlobalImageFetches = pickInt(
+                    "LEGADO_MAX_GLOBAL_IMAGE_FETCHES", "cache.manga.max_global_fetches", DEFAULT_MAX_GLOBAL_IMAGE_FETCHES,
+                ),
+                mangaPrefetchEnabled = pickBoolean("LEGADO_MANGA_PREFETCH", "cache.manga.prefetch", true),
+                mangaGcEnabled = pickBoolean("LEGADO_MANGA_GC", "cache.manga.gc", true),
                 // 音频：配额按 GB 配置（支持小数），默认 20 GiB（G-4 裁决）
-                audioCacheQuotaBytes = (env["LEGADO_AUDIO_CACHE_MAX_GB"]?.toDoubleOrNull() ?: DEFAULT_AUDIO_CACHE_QUOTA_GB)
-                    .takeIf { it > 0 }?.let { (it * 1024 * 1024 * 1024).toLong() }
-                    ?: DEFAULT_AUDIO_CACHE_QUOTA_BYTES,
-                maxGlobalAudioFetches = env["LEGADO_MAX_GLOBAL_AUDIO_FETCHES"]?.toIntOrNull()
-                    ?.takeIf { it > 0 } ?: DEFAULT_MAX_GLOBAL_AUDIO_FETCHES,
-                audioPrefetchEnabled = env["LEGADO_AUDIO_PREFETCH"]?.toBooleanStrictOrNull() ?: true,
-                audioGcEnabled = env["LEGADO_AUDIO_GC"]?.toBooleanStrictOrNull() ?: true,
-                coverSelfHealEnabled = env["LEGADO_COVER_SELFHEAL"]?.toBooleanStrictOrNull() ?: true,
+                audioCacheQuotaBytes = pickGb("LEGADO_AUDIO_CACHE_MAX_GB", "cache.audio.max_gb", DEFAULT_AUDIO_CACHE_QUOTA_GB),
+                maxGlobalAudioFetches = pickInt(
+                    "LEGADO_MAX_GLOBAL_AUDIO_FETCHES", "cache.audio.max_global_fetches", DEFAULT_MAX_GLOBAL_AUDIO_FETCHES,
+                ),
+                audioPrefetchEnabled = pickBoolean("LEGADO_AUDIO_PREFETCH", "cache.audio.prefetch", true),
+                audioGcEnabled = pickBoolean("LEGADO_AUDIO_GC", "cache.audio.gc", true),
+                coverSelfHealEnabled = pickBoolean("LEGADO_COVER_SELFHEAL", "cover.self_heal", true),
             )
         }
     }

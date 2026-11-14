@@ -21,7 +21,9 @@ fun main(args: Array<String>) {
         resetPasswordMain(args.drop(1).toTypedArray())
         return
     }
-    val config = ServerConfig.fromEnvironment()
+    // 配置来源：<jar 目录>/config/config.yaml（首次启动自动生成带注释的默认文件），
+    // 环境变量优先于文件（容器部署仍可只用 env）。
+    val config = ServerConfig.load()
     embeddedServer(CIO, host = config.host, port = config.port) {
         legadoApplication(config)
     }.start(wait = true)

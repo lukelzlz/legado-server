@@ -191,6 +191,11 @@ object SqlTranslator {
                     out.substring(0, leftStart) + "lower($left) like lower($operand)" + out.substring(match.range.last + 1)
                 }
                 by != null && by.groupValues[1].equals("order", ignoreCase = true) ->
+                    // ⚠️ 库里的 `order by … collate nocase` 全部是**真列/表达式**（`name`、`trim(group_name)`），
+                    // 所以这里统一包 `lower()` 保住「大小写不敏感排序」。
+                    // 若哪天要按 **select 别名** 排序，**不要**写 `collate nocase`（PG 会报
+                    // `order by lower(别名)` → column does not exist），直接 `order by 别名` 即可
+                    // （见 `listSourceGroups`）。
                     out.substring(0, operandStart) + "lower($operand)" + out.substring(match.range.last + 1)
                 // group by（以及极少见的其它上下文）：只删不加，见上面的说明
                 else -> out.substring(0, match.range.first) + out.substring(match.range.last + 1)

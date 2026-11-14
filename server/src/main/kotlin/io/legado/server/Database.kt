@@ -352,13 +352,13 @@ class Database internal constructor(private val spec: DatabaseSpec) : Closeable,
     fun listSourceGroups(): List<SourceGroupSummary> = connect { db ->
         db.prepareStatement(
             """
-            select trim(source_group) as group_name,
+            select min(trim(source_group)) as group_name,
                    count(*) as source_count,
                    sum(case when enabled = 1 then 1 else 0 end) as enabled_count
             from source
             where source_group is not null and trim(source_group) <> ''
-            group by trim(source_group) collate nocase
-            order by group_name collate nocase
+            group by lower(trim(source_group))
+            order by group_name
             """.trimIndent()
         ).use { statement ->
             statement.executeQuery().use { rs ->
@@ -1115,7 +1115,7 @@ class Database internal constructor(private val spec: DatabaseSpec) : Closeable,
     fun mangaCacheStatsByBook(): List<MangaCacheBookStat> = connect { db ->
         db.prepareStatement(
             """select i.source_id, i.book_url, max(s.name) as name, count(*) as image_count, coalesce(sum(i.byte_size),0) as total_bytes,
-                      coalesce(c.chapter_count,0), coalesce(c.ready_count,0), coalesce(c.pinned,0)
+                      coalesce(max(c.chapter_count),0), coalesce(max(c.ready_count),0), coalesce(max(c.pinned),0)
                from manga_image_cache i
                left join book_shelf s on s.source_id = i.source_id and s.book_url = i.book_url
                left join (
@@ -1395,7 +1395,7 @@ class Database internal constructor(private val spec: DatabaseSpec) : Closeable,
     fun audioCacheStatsByBook(): List<AudioCacheBookStat> = connect { db ->
         db.prepareStatement(
             """select a.source_id, a.book_url, max(s.name) as name, count(*) as track_count, coalesce(sum(a.byte_size),0) as total_bytes,
-                      coalesce(c.chapter_count,0), coalesce(c.ready_count,0), coalesce(c.pinned,0)
+                      coalesce(max(c.chapter_count),0), coalesce(max(c.ready_count),0), coalesce(max(c.pinned),0)
                from audio_cache a
                left join book_shelf s on s.source_id = a.source_id and s.book_url = a.book_url
                left join (

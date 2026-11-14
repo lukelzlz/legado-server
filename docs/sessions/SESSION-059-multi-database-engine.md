@@ -48,10 +48,11 @@
 | HTTP 冒烟 | **34/34**（healthz / 登录 / 书架读写 / 书签 / `app_setting` 保留字 upsert / `json_extract` / 分组聚合 / 进度 upsert / 多路 list） |
 | 重启幂等 | 再启动：`已连接目标库：legado` + `22 张表 / 0 个索引（已存在索引跳过 23 个）`，冒烟仍 34/34 |
 | SQLite 零回归 | 失败集合与干净基线 worktree 逐条一致（Windows 删不掉被占用 sqlite 的历史问题） |
-| PostgreSQL | 代码路径完整，但该实例 `postgres/w71251478` **密码认证失败**（`FATAL: password authentication failed`），启动被明确拦下，未伪造通过 |
+| PostgreSQL | ✅ **34/34** | 用户 `wfanan`（不是 postgres）：`[db] 目标库 legado 不存在，尝试自动创建 → 已自动创建数据库：legado` → `建表完成：22 张表 / 23 个索引`，HTTP 冒烟 34/34（与 MySQL 同一套脚本） |
 
 ## 已知边界 / 后续
 
 1. **MySQL 索引列 `varchar(255)`**：受 utf8mb4 联合索引 3072 字节限制，`book_url/chapter_url` 等主键列只能 255 字符；超长 URL（`data:;base64` 聚合源）在 STRICT 模式会 `Data too long`。彻底解法是把 URL 身份换成哈希键（独立立项）。
 2. **PG 唯一约束大小写**：`book_group.name` 在 PG 是大小写敏感 unique（SQLite 是 `collate nocase`）；应用层 `lower()` 重名拦截仍在，DB 层若要齐平需补表达式唯一索引。
+4. **PG 实测修掉的两类 SQL**：`order by <select 别名> collate nocase` 在 PG 会被翻成 `lower(别名)` 而报 column does not exist（`listSourceGroups` 改为 `min(trim(..))` 分组 + 裸别名排序）；`coalesce(c.chapter_count,0)` 这类非聚合列在 GROUP BY 里 PG 直接拒绝（漫画/音频缓存统计改为 `coalesce(max(...),0)`）。
 3. **配置键修正（历史小 bug）**：模板写 `database.sqlite.file`，而旧解析读 `data.database` ⇒ 本次改为**读 `database.sqlite.file` 并兼容旧键**（`data.database` 仍可用）。

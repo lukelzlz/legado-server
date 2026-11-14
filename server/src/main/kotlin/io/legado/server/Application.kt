@@ -42,6 +42,9 @@ fun main(args: Array<String>) {
                 "         原因：数据层 SQL 方言移植（on conflict / collate nocase / pragma）尚未完成。\n" +
                 "         请把 database.type 改回 sqlite，或等待后续版本。",
         )
+        // 非 0 退出码：双击 start.cmd 时窗口会停在 pause 上，让这条说明看得见
+        // （否则 `return` 是 0，窗口一闪而过，用户只会看到「启动了就闪退」）。
+        System.exit(2)
         return
     }
     embeddedServer(CIO, host = config.host, port = config.port) {

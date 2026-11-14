@@ -248,6 +248,31 @@ class GlobalSearchTest {
     // --------------------------------------------------------------- 方言守卫
 
     @Test
+    fun `回填：书架 book_url 与 toc_url 只有尾部类型不同时也能索引（目录搜不到的真实修复）`() {
+        val dbPath = Files.createTempFile("legado-search-backfill-tail", ".sqlite").toString()
+        try {
+            Database(dbPath).use { db ->
+                db.initialize(PASSWORD)
+                // 复刻聚合源真实形态：book_url 以 `{"type":"qingtian"}` 结尾，
+                // toc_url 以 `{"type":"qingtian2"}` 结尾 —— 两者互不为子串。
+                val bookUrl = "data:;base64,AAAA,{\"type\":\"qingtian\"}"
+                val tocUrl = "data:;base64,AAAA,{\"type\":\"qingtian2\"}"
+                saveBook(db, sourceId = "src-a", bookUrl = bookUrl, tocUrl = tocUrl, name = "被废修为后", author = "某作者")
+                db.saveTocCache("src-a", tocUrl, chaptersOf("src-a", 6, "第"))
+                clearChapterIndex(dbPath)
+                assertEquals("先确认清空了索引", 0, db.searchToc("第", 50).size)
+
+                assertEquals("按书架 toc_url 反查必须命中", 1, db.backfillChapterIndex())
+                val hits = db.searchToc("第", 50, sourceId = "src-a", bookUrl = bookUrl)
+                assertEquals(6, hits.size)
+                assertTrue("索引行必须挂在书架的 book_url 上", hits.all { it.bookUrl == bookUrl })
+            }
+        } finally {
+            deleteSqlite(dbPath)
+        }
+    }
+
+    @Test
     fun `DDL 与查询里没有 SQLite 专有写法，PG 变体包含三张表达式索引`() {
         val sqlite = DatabaseSchema.SQLITE_DDL
         val section = sqlite.substringAfter("create table if not exists book_chapter_index")
@@ -370,3 +395,4 @@ class GlobalSearchTest {
         const val PASSWORD = "test-password-1234"
     }
 }
+

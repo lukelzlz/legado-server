@@ -6989,3 +6989,55 @@ mark.search-highlight { background: var(--accent-soft); color: var(--accent); fo
   .shelf-search-btn span { display: none; }
 }
 
+/* ------------------------------------------------------------------
+   弹窗统一「一次到位」的尺寸（用户要求）
+   ------------------------------------------------------------------
+   以前弹窗高度由内容决定：刚打开是小的，数据加载完突然撑大 ⇒ 视觉上跳一下。
+   这里把所有弹窗根节点固定成同一档高度，打开即到位；内容多在各自的内容区里滚。
+   —— 用 min-height + max-height 双锁：不低于目标高度（打开就满），也不超过视口（不溢出）。
+   ------------------------------------------------------------------ */
+.modal-backdrop > .modal-card,
+.modal-backdrop > .book-detail-modal,
+.modal-backdrop > .book-info-edit-modal,
+.modal-backdrop > .bookmark-dialog,
+.modal-backdrop > .group-manage-modal,
+.modal-backdrop > .batch-move-modal,
+.modal-backdrop > .book-manage-sheet,
+.modal-backdrop > .network-import-modal,
+.modal-backdrop > .online-import-modal,
+.modal-backdrop > .rule-modal-card,
+.modal-backdrop > .source-login-dialog,
+.modal-backdrop > .source-login-modal,
+.modal-backdrop > .source-switch-dialog,
+.modal-backdrop > .source-webview-dialog,
+.modal-backdrop > .tts-settings-dialog,
+.modal-backdrop > .global-search-dialog {
+  min-height: min(88vh, 820px);
+  max-height: min(88vh, 820px);
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+/* 手机上一屏本来就矮：占满可用高度，别再留 12vh 的空白 */
+@media (max-width: 720px) {
+  .modal-backdrop > .modal-card,
+  .modal-backdrop > .book-detail-modal,
+  .modal-backdrop > .book-info-edit-modal,
+  .modal-backdrop > .bookmark-dialog,
+  .modal-backdrop > .group-manage-modal,
+  .modal-backdrop > .batch-move-modal,
+  .modal-backdrop > .book-manage-sheet,
+  .modal-backdrop > .network-import-modal,
+  .modal-backdrop > .online-import-modal,
+  .modal-backdrop > .rule-modal-card,
+  .modal-backdrop > .source-login-dialog,
+  .modal-backdrop > .source-login-modal,
+  .modal-backdrop > .source-switch-dialog,
+  .modal-backdrop > .source-webview-dialog,
+  .modal-backdrop > .tts-settings-dialog,
+  .modal-backdrop > .global-search-dialog {
+    min-height: 92vh;
+    max-height: 92vh;
+  }
+}

@@ -87,9 +87,7 @@
     "webdavTitle": "WebDAV 文件服务",
     "openMenu": "打开功能菜单",
     "closeMenu": "关闭功能菜单",
-    "bookmarks": "书签",
-    "settings": "设置",
-    "settingsNav": "设置分区"
+    "bookmarks": "书签"
   },
   "login": {
     "brand": "阅读服务器",
@@ -1551,18 +1549,5 @@
     "coverRefreshResult": "封面：成功 {{fetched}} 张，失败 {{failed}} 本，跳过 {{skipped}} 本",
     "openMark": "跳到这条书签的位置",
     "notInShelf": "这本书不在书架里，无法跳转（书签仍保留）"
-  },
-  "settings": {
-    "kicker": "设置",
-    "title": "设置",
-    "desc": "书源、订阅、规则、文件都在这里；点哪一项进哪一项。",
-    "sources": "书源",
-    "sourcesDesc": "导入/编辑书源，登录与调试，分组管理",
-    "subscriptions": "订阅",
-    "subscriptionsDesc": "订阅源与自动更新策略",
-    "rules": "规则",
-    "rulesDesc": "替换净化规则：正文清洗与反义词对调",
-    "files": "文件",
-    "filesDesc": "WebDAV 存储、备份导入导出、本地书籍与自动缓存"
   }
 }

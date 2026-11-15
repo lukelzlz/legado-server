@@ -39,9 +39,9 @@ test('HeaderMenu - AppHeader static rendering', () => {
   // Verify 5 main navigation tabs
   assert.ok(html.includes('书库'), 'Header should contain 书库 tab')
   assert.ok(html.includes('书架'), 'Header should contain 书架 tab')
-  // 书源/订阅/规则/文件 已收进「设置」：顶栏只留一个入口
-  assert.ok(html.includes('设置'), 'Header should contain 设置 tab')
-  assert.ok(!html.includes('>书源<'), '书源 不再平铺在顶栏')
+  assert.ok(html.includes('书源'), 'Header should contain 书源 tab')
+  assert.ok(html.includes('订阅'), 'Header should contain 订阅 tab')
+  assert.ok(html.includes('规则'), 'Header should contain 规则 tab')
 
   // Verify hamburger menu button
   assert.ok(html.includes('header-menu-btn'), 'Header should contain hamburger menu button')

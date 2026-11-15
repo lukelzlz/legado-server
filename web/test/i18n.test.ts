@@ -164,7 +164,7 @@ test('i18n - AppHeader and Login render dynamically across languages without Chi
     )
     assert.ok(zhHeader.includes('书架'), 'zh-CN header should contain 书架')
     assert.ok(zhHeader.includes('书库'), 'zh-CN header should contain 书库')
-    assert.ok(zhHeader.includes('设置'), 'zh-CN header should contain 设置')
+    assert.ok(zhHeader.includes('书源'), 'zh-CN header should contain 书源')
 
     // 2. Switch to en-US
     await changeAppLanguage('en-US')
@@ -179,7 +179,9 @@ test('i18n - AppHeader and Login render dynamically across languages without Chi
     )
     assert.ok(enHeader.includes('Bookshelf'), 'en-US header should contain Bookshelf')
     assert.ok(enHeader.includes('Library'), 'en-US header should contain Library')
-    assert.ok(enHeader.includes('Settings'), 'en-US header should contain Settings')
+    assert.ok(enHeader.includes('Sources'), 'en-US header should contain Sources')
+    assert.ok(enHeader.includes('Subscriptions'), 'en-US header should contain Subscriptions')
+    assert.ok(enHeader.includes('Rules'), 'en-US header should contain Rules')
     assert.ok(!enHeader.includes('书架'), 'en-US header should not contain Chinese 书架')
     assert.ok(!enHeader.includes('书库'), 'en-US header should not contain Chinese 书库')
 
@@ -205,9 +207,9 @@ test('i18n - AppHeader and Login render dynamically across languages without Chi
     )
     assert.ok(jaHeader.includes('本棚'), 'ja-JP header should contain 本棚')
     assert.ok(jaHeader.includes('ライブラリ'), 'ja-JP header should contain ライブラリ')
-    assert.ok(jaHeader.includes('設定'), 'ja-JP header should contain 設定')
-
-
+    assert.ok(jaHeader.includes('ブックソース'), 'ja-JP header should contain ブックソース')
+    assert.ok(jaHeader.includes('購読'), 'ja-JP header should contain 購読')
+    assert.ok(jaHeader.includes('置換ルール'), 'ja-JP header should contain 置換ルール')
 
     // 4. Switch to zh-TW
     await changeAppLanguage('zh-TW')
@@ -222,13 +224,11 @@ test('i18n - AppHeader and Login render dynamically across languages without Chi
     )
     assert.ok(twHeader.includes('書架'), 'zh-TW header should contain 書架')
     assert.ok(twHeader.includes('書庫'), 'zh-TW header should contain 書庫')
-    assert.ok(twHeader.includes('設定'), 'zh-TW header should contain 設定')
-
-
+    assert.ok(twHeader.includes('書源'), 'zh-TW header should contain 書源')
+    assert.ok(twHeader.includes('訂閱'), 'zh-TW header should contain 訂閱')
+    assert.ok(twHeader.includes('規則'), 'zh-TW header should contain 規則')
 
   } finally {
     await changeAppLanguage('zh-CN')
   }
 })
-
-

@@ -15,7 +15,6 @@ import { cleanAuthor, cleanTitle, defaultSearchFilters, filterSearchGroups, isEx
 import { groupSearchResults, searchStore, SourceChoice, SourceChoiceStatus, useSearchStore } from './searchStore'
 import { SourceSwitchModal } from './SourceSwitchModal'
 import { GlobalSearchModal } from './GlobalSearchModal'
-import { SettingsPage } from './SettingsPage'
 import { matchBestChapter } from './sourceSwitchRemap'
 import { SourceLoginModal } from './SourceLoginModal'
 import { NetworkImportModal } from './NetworkImportModal'
@@ -69,11 +68,11 @@ function resolveShelfCover(item: { coverKey?: string; coverUrl?: string }): stri
 // 「本地导入书」的判定（`loc_book` / `local://`）统一走 `./localBook` 的 `isLocalBook`：
 // 与服务端 `BookKind.isLocalRef` 同源，角标、书籍管理弹窗、阅读器目录抽屉三处共用同一判据。
 
-type Page = 'settings' | 'sources' | 'subscriptions' | 'library' | 'shelf' | 'reader' | 'rules' | 'webdav' | 'explore' | 'bookmarks'
+type Page = 'sources' | 'subscriptions' | 'library' | 'shelf' | 'reader' | 'rules' | 'webdav' | 'explore' | 'bookmarks'
 /** 从「书签」页跳进阅读器时要落到的位置（章序号 + 章内字符偏移；章名用于换源后重新定位）。 */
 type BookmarkJumpTarget = { chapterIndex: number; chapterPos: number; chapterName?: string | null }
 const readerStorageKey = 'legado-open-book-v1'
-const pageFromHash = (): Page => location.hash === '#settings' ? 'settings' : location.hash === '#sources' ? 'sources' : location.hash === '#subscriptions' ? 'subscriptions' : location.hash === '#rules' ? 'rules' : location.hash === '#webdav' ? 'webdav' : location.hash === '#shelf' ? 'shelf' : location.hash === '#reader' ? 'reader' : location.hash === '#explore' ? 'explore' : location.hash === '#bookmarks' ? 'bookmarks' : 'library'
+const pageFromHash = (): Page => location.hash === '#sources' ? 'sources' : location.hash === '#subscriptions' ? 'subscriptions' : location.hash === '#rules' ? 'rules' : location.hash === '#webdav' ? 'webdav' : location.hash === '#shelf' ? 'shelf' : location.hash === '#reader' ? 'reader' : location.hash === '#explore' ? 'explore' : location.hash === '#bookmarks' ? 'bookmarks' : 'library'
 
 function SourceChoiceList({
   choices,
@@ -3660,9 +3659,7 @@ function App() {
         onLogout={() => void logout()}
       />
       <ErrorBoundary>
-        {page === 'settings' ? (
-          <SettingsPage onOpen={section => navigate(section)} />
-        ) : page === 'sources' ? (
+        {page === 'sources' ? (
           <SourcesPage selected={selected} onSelect={setSelected} onSourcesChange={setSources} />
         ) : page === 'subscriptions' ? (
           <SubscriptionPage onSourcesChange={refreshSources} />

@@ -400,7 +400,9 @@
     "startedCacheNext50": "Started caching next 50 chapters",
     "startedCacheNext100": "Started caching next 100 chapters",
     "startedCacheRange": "Started caching chapters {{start}} to {{end}}",
-    "newGroupButton": "New group"
+    "newGroupButton": "New group",
+    "builtinGroup": "Built-in group",
+    "builtinGroupCannotDelete": "Built-in group cannot be deleted"
   },
   "audiobook": {
     "back": "Back",

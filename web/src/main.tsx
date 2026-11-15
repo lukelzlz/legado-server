@@ -2203,10 +2203,13 @@ function ClearCacheScopeModal({
 
 function GroupManageModal({
   groups,
+  totalBooks,
   onClose,
   onGroupsChanged,
 }: {
   groups: BookGroup[]
+  /** 书架总本数（「全部」这一行的计数）。 */
+  totalBooks: number
   onClose: () => void
   onGroupsChanged: () => Promise<void>
 }) {
@@ -2340,6 +2343,28 @@ function GroupManageModal({
           {error && <p className="form-error">{error}</p>}
 
           <div className="group-list">
+            {/* 内置「全部」分组：真实存在但不可改名/排序/删除（删它等于删掉所有归类），删除按钮置灰防误删 */}
+            <div className="group-item-row group-item-row-builtin">
+              <div className="group-item-info">
+                <span className="group-item-name">
+                  <span className="group-private-badge" title={t('shelf.builtinGroup', '内置分组')}><Icon name="lock" /></span>
+                  {t('common.all', '全部')}
+                </span>
+                <span className="group-item-count">{t('shelf.booksInGroup', '{{count}} 本', { count: totalBooks })}</span>
+              </div>
+              <div className="group-item-actions">
+                <button
+                  type="button"
+                  className="subtle-button"
+                  disabled
+                  title={t('shelf.builtinGroupCannotDelete', '内置分组，不能删除')}
+                  aria-label={t('shelf.builtinGroupCannotDelete', '内置分组，不能删除')}
+                >
+                  <Icon name="trash" />
+                </button>
+              </div>
+            </div>
+
             {groups.length === 0 ? (
               <p className="group-list-empty">{t('shelf.groupEmptyTip', '暂无自定义分组，创建后可自由归类书籍')}</p>
             ) : (
@@ -3309,6 +3334,7 @@ function ShelfPage({ onOpen, theme }: { onOpen: (item: BookshelfItem, jump?: Boo
       {managingGroups && (
         <GroupManageModal
           groups={groups}
+          totalBooks={items.length}
           onClose={() => setManagingGroups(false)}
           onGroupsChanged={load}
         />

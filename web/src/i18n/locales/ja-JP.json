@@ -400,7 +400,9 @@
     "startedCacheNext50": "次の50章のキャッシュを開始しました",
     "startedCacheNext100": "次の100章のキャッシュを開始しました",
     "startedCacheRange": "第 {{start}} 章から第 {{end}} 章のキャッシュを開始しました",
-    "newGroupButton": "グループを追加"
+    "newGroupButton": "グループを追加",
+    "builtinGroup": "組み込みグループ",
+    "builtinGroupCannotDelete": "組み込みグループは削除できません"
   },
   "audiobook": {
     "back": "戻る",

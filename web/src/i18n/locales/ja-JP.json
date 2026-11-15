@@ -402,7 +402,10 @@
     "startedCacheRange": "第 {{start}} 章から第 {{end}} 章のキャッシュを開始しました",
     "newGroupButton": "グループを追加",
     "builtinGroup": "組み込みグループ",
-    "builtinGroupCannotDelete": "組み込みグループは削除できません"
+    "builtinGroupCannotDelete": "組み込みグループは削除できません",
+    "builtinGroupCannotHide": "組み込みグループは非表示にできません",
+    "builtinGroupCannotReorder": "組み込みグループは並べ替えできません",
+    "builtinGroupCannotRename": "組み込みグループは名前変更できません"
   },
   "audiobook": {
     "back": "戻る",

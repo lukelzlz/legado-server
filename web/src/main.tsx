@@ -2352,7 +2352,29 @@ function GroupManageModal({
                 </span>
                 <span className="group-item-count">{t('shelf.booksInGroup', '{{count}} 本', { count: totalBooks })}</span>
               </div>
+              {/* 与下面自定义分组**同一套按钮**（隐藏 / 上移 / 下移 / 编辑 / 删除），
+                  但全部置灰：内置聚合视图不能隐藏、不能排序、不能改名、更不能删（删了等于删掉所有归类）。 */}
               <div className="group-item-actions">
+                <button
+                  type="button"
+                  className="subtle-button"
+                  disabled
+                  title={t('shelf.builtinGroupCannotHide', '内置分组，不能隐藏')}
+                  aria-label={t('shelf.builtinGroupCannotHide', '内置分组，不能隐藏')}
+                >
+                  <Icon name="eye" />
+                </button>
+                <button type="button" className="subtle-button" disabled title={t('shelf.builtinGroupCannotReorder', '内置分组，不能排序')} aria-label={t('shelf.builtinGroupCannotReorder', '内置分组，不能排序')}>↑</button>
+                <button type="button" className="subtle-button" disabled title={t('shelf.builtinGroupCannotReorder', '内置分组，不能排序')} aria-label={t('shelf.builtinGroupCannotReorder', '内置分组，不能排序')}>↓</button>
+                <button
+                  type="button"
+                  className="subtle-button"
+                  disabled
+                  title={t('shelf.builtinGroupCannotRename', '内置分组，不能改名')}
+                  aria-label={t('shelf.builtinGroupCannotRename', '内置分组，不能改名')}
+                >
+                  <Icon name="edit" />
+                </button>
                 <button
                   type="button"
                   className="subtle-button"

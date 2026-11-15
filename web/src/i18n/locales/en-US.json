@@ -402,7 +402,10 @@
     "startedCacheRange": "Started caching chapters {{start}} to {{end}}",
     "newGroupButton": "New group",
     "builtinGroup": "Built-in group",
-    "builtinGroupCannotDelete": "Built-in group cannot be deleted"
+    "builtinGroupCannotDelete": "Built-in group cannot be deleted",
+    "builtinGroupCannotHide": "Built-in group cannot be hidden",
+    "builtinGroupCannotReorder": "Built-in group cannot be reordered",
+    "builtinGroupCannotRename": "Built-in group cannot be renamed"
   },
   "audiobook": {
     "back": "Back",

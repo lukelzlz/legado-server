@@ -402,7 +402,10 @@
     "startedCacheRange": "已開始快取第 {{start}} 至 {{end}} 章",
     "newGroupButton": "新建分組",
     "builtinGroup": "內建分組",
-    "builtinGroupCannotDelete": "內建分組，不能刪除"
+    "builtinGroupCannotDelete": "內建分組，不能刪除",
+    "builtinGroupCannotHide": "內建分組，不能隱藏",
+    "builtinGroupCannotReorder": "內建分組，不能排序",
+    "builtinGroupCannotRename": "內建分組，不能改名"
   },
   "audiobook": {
     "back": "返回",

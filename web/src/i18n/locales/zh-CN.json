@@ -399,7 +399,8 @@
     "addedToCacheQueueAll": "已加入全本离线缓存队列",
     "startedCacheNext50": "已开始缓存后续 50 章",
     "startedCacheNext100": "已开始缓存后续 100 章",
-    "startedCacheRange": "已开始缓存第 {{start}} 至 {{end}} 章"
+    "startedCacheRange": "已开始缓存第 {{start}} 至 {{end}} 章",
+    "newGroupButton": "新建分组"
   },
   "audiobook": {
     "back": "返回",

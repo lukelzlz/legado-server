@@ -399,7 +399,8 @@
     "addedToCacheQueueAll": "Full book added to offline cache queue",
     "startedCacheNext50": "Started caching next 50 chapters",
     "startedCacheNext100": "Started caching next 100 chapters",
-    "startedCacheRange": "Started caching chapters {{start}} to {{end}}"
+    "startedCacheRange": "Started caching chapters {{start}} to {{end}}",
+    "newGroupButton": "New group"
   },
   "audiobook": {
     "back": "Back",

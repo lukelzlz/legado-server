@@ -2022,6 +2022,8 @@ mark.search-highlight { background: var(--accent-soft); color: var(--accent); fo
   padding: 12px 16px;
   display: grid;
   gap: 10px;
+  /* 只有一两条候选时贴顶排（不要用可用高度把卡片撑开/居中） */
+  align-content: start;
 }
 .source-candidate-card {
   display: flex;
@@ -5020,6 +5022,7 @@ mark.search-highlight { background: var(--accent-soft); color: var(--accent); fo
 
 /* ---- 书源勾选列表 ---- */
 .source-group-manager .group-picker-list {
+  align-content: start;
   max-height: 300px;
   overflow-y: auto;
   gap: 5px;
@@ -7003,8 +7006,6 @@ mark.search-highlight { background: var(--accent-soft); color: var(--accent); fo
 .modal-backdrop > .group-manage-modal,
 .modal-backdrop > .batch-move-modal,
 .modal-backdrop > .book-manage-sheet,
-.modal-backdrop > .network-import-modal,
-.modal-backdrop > .online-import-modal,
 .modal-backdrop > .rule-modal-card,
 .modal-backdrop > .source-login-dialog,
 .modal-backdrop > .source-login-modal,
@@ -7028,8 +7029,6 @@ mark.search-highlight { background: var(--accent-soft); color: var(--accent); fo
   .modal-backdrop > .group-manage-modal,
   .modal-backdrop > .batch-move-modal,
   .modal-backdrop > .book-manage-sheet,
-  .modal-backdrop > .network-import-modal,
-  .modal-backdrop > .online-import-modal,
   .modal-backdrop > .rule-modal-card,
   .modal-backdrop > .source-login-dialog,
   .modal-backdrop > .source-login-modal,
@@ -7041,3 +7040,74 @@ mark.search-highlight { background: var(--accent-soft); color: var(--accent); fo
     max-height: 92vh;
   }
 }
+
+/* ------------------------------------------------------------------
+   分组管理：概览数字与规则勾选行
+   ------------------------------------------------------------------
+   这两块的 JSX 类名在改版后变成了 `.sgm-overview/.sgm-stat-pill` 与
+   `.pick-item`（旧 CSS 写的是 `.sgm-stats/.sgm-stat` 与
+   `.group-item-row.pick-item`），类名对不上 ⇒ 统计数字变成三行纯文本、
+   勾选行里复选框被挤到名字上方。这里补齐新类名（旧规则保留，互不冲突）。
+   ------------------------------------------------------------------ */
+.sgm-overview {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 12px 22px;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface-muted);
+}
+.sgm-stat-pill {
+  flex: 1 1 130px;
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+  padding: 7px 12px;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  background: var(--surface);
+}
+.sgm-stat-label { font-size: 11px; color: var(--muted); letter-spacing: .02em; }
+.sgm-stat-val { font-size: 18px; font-weight: 700; line-height: 1.15; color: var(--ink); font-variant-numeric: tabular-nums; }
+.sgm-stat-pill.is-warning {
+  border-color: color-mix(in srgb, var(--accent) 42%, var(--line));
+  background: var(--accent-soft);
+}
+.sgm-stat-pill.is-warning .sgm-stat-val { color: var(--accent-ink); }
+
+/* 规则勾选行（`.pick-item` 不带 `.group-item-row`，必须单独成行） */
+.pick-item {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 10px;
+  padding: 8px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+  cursor: pointer;
+}
+.pick-item:hover { border-color: color-mix(in srgb, var(--accent) 42%, var(--line)); }
+.pick-item.is-checked {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+.pick-item input[type="checkbox"] {
+  flex: none;
+  width: 17px;
+  height: 17px;
+  margin: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+.pick-item-info { display: grid; gap: 2px; min-width: 0; }
+.pick-item-name {
+  font-size: 13px;
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pick-item-group-tag { font-size: 11px; color: var(--muted); }
+.pick-item.is-checked .pick-item-group-tag { color: var(--accent-ink); }

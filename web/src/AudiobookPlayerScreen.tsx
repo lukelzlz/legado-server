@@ -4,6 +4,7 @@ import { api, type AudioCacheStats, type AudioTrackItem, type Chapter, type Sear
 import { Icon } from './icons'
 import { clearAudioManifests, getAudioManifest, putAudioManifest, warmChapterAudio } from './audioOffline'
 import { OfflineCacheModal } from './OfflineCacheModal'
+import { useBackdropWheelForward } from './useBackdropWheel'
 import { OpenBook, VirtualChapterList } from './ReaderScreen'
 import { SourceSwitchModal, notifySourceSwitchFallback, remapChapterAfterSourceSwitch, switchBookSource } from './sourceSwitch'
 import { toast } from './Toast'

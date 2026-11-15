@@ -15,6 +15,7 @@ import { cleanAuthor, cleanTitle, defaultSearchFilters, filterSearchGroups, isEx
 import { groupSearchResults, searchStore, SourceChoice, SourceChoiceStatus, useSearchStore } from './searchStore'
 import { SourceSwitchModal } from './SourceSwitchModal'
 import { GlobalSearchModal } from './GlobalSearchModal'
+import { useBackdropWheelForward } from './useBackdropWheel'
 import { matchBestChapter } from './sourceSwitchRemap'
 import { SourceLoginModal } from './SourceLoginModal'
 import { NetworkImportModal } from './NetworkImportModal'
@@ -67,6 +68,9 @@ function resolveShelfCover(item: { coverKey?: string; coverUrl?: string }): stri
 
 // 「本地导入书」的判定（`loc_book` / `local://`）统一走 `./localBook` 的 `isLocalBook`：
 // 与服务端 `BookKind.isLocalRef` 同源，角标、书籍管理弹窗、阅读器目录抽屉三处共用同一判据。
+
+const ALL_GROUP_HIDDEN_KEY = 'legado_shelf_all_hidden'
+const ALL_GROUP_INDEX_KEY = 'legado_shelf_all_index'
 
 type Page = 'sources' | 'subscriptions' | 'library' | 'shelf' | 'reader' | 'rules' | 'webdav' | 'explore' | 'bookmarks'
 /** 从「书签」页跳进阅读器时要落到的位置（章序号 + 章内字符偏移；章名用于换源后重新定位）。 */
@@ -2202,14 +2206,31 @@ function ClearCacheScopeModal({
 
 function GroupManageModal({
   groups,
+  totalBooks,
+  allHidden,
+  allIndex,
+  onAllHiddenChange,
+  onAllIndexChange,
   onClose,
   onGroupsChanged,
 }: {
   groups: BookGroup[]
+  /** 书架总本数（「全部」这一行的计数）。 */
+  totalBooks: number
+  /** 内置「全部」是否隐藏（只影响本机标签栏显示）。 */
+  allHidden: boolean
+  /** 内置「全部」在标签栏里的位置（0 = 最前）。 */
+  allIndex: number
+  onAllHiddenChange: (hidden: boolean) => void
+  onAllIndexChange: (index: number) => void
   onClose: () => void
   onGroupsChanged: () => Promise<void>
 }) {
   const { t } = useTranslation()
+  // 遮罩上的滚轮转发给分组列表（弹窗固定高度、内容多时靠内部滚动）
+  const groupBackdropRef = useRef<HTMLDivElement>(null)
+  const groupScrollRef = useRef<HTMLDivElement>(null)
+  useBackdropWheelForward(groupBackdropRef, groupScrollRef)
   const [newGroupName, setNewGroupName] = useState('')
   const [adding, setAdding] = useState(false)
   const [editingId, setEditingId] = useState<number | null>(null)
@@ -2307,7 +2328,7 @@ function GroupManageModal({
   }
 
   return (
-    <div className="modal-backdrop top-layer-modal-backdrop" onClick={onClose}>
+    <div ref={groupBackdropRef} className="modal-backdrop top-layer-modal-backdrop" onClick={onClose}>
       <div className="group-manage-modal" onClick={e => e.stopPropagation()} role="dialog" aria-modal="true" aria-label={t('shelf.manageGroups', '管理书架分组')}>
         <header className="group-manage-header">
           <div>
@@ -2317,7 +2338,7 @@ function GroupManageModal({
           <button className="subtle-button close-btn" onClick={onClose} aria-label={t('common.close', '关闭')}><Icon name="close" /></button>
         </header>
 
-        <div className="group-manage-body">
+        <div className="group-manage-body" ref={groupScrollRef}>
           <form className="group-add-form" onSubmit={handleAddGroup}>
             <input
               type="text"
@@ -2335,6 +2356,65 @@ function GroupManageModal({
           {error && <p className="form-error">{error}</p>}
 
           <div className="group-list">
+            {/* 内置「全部」分组：改名/删除不可用（聚合视图没有实体），
+                但**隐藏与前后移动可用**（用户要求）——只影响本机标签栏的顺序与可见性。 */}
+            <div className="group-item-row group-item-row-builtin">
+              <div className="group-item-info">
+                <span className="group-item-name">
+                  <span className="group-private-badge" title={t('shelf.builtinGroup', '内置分组')}><Icon name="lock" /></span>
+                  {t('common.all', '全部')}
+                  {allHidden && <span className="group-item-count">{t('shelf.hiddenGroupBadge', '隐藏')}</span>}
+                </span>
+                <span className="group-item-count">{t('shelf.booksInGroup', '{{count}} 本', { count: totalBooks })}</span>
+              </div>
+              <div className="group-item-actions">
+                <button
+                  type="button"
+                  className={`subtle-button ${allHidden ? 'active' : ''}`}
+                  onClick={() => onAllHiddenChange(!allHidden)}
+                  title={allHidden ? t('shelf.makePublic', '恢复公开显示') : t('shelf.makePrivate', '设为隐藏分组')}
+                >
+                  <Icon name={allHidden ? 'eyeOff' : 'eye'} />
+                </button>
+                <button
+                  type="button"
+                  className="subtle-button"
+                  disabled={allIndex <= 0}
+                  onClick={() => onAllIndexChange(allIndex - 1)}
+                  title={t('shelf.moveUp', '上移')}
+                >
+                  ↑
+                </button>
+                <button
+                  type="button"
+                  className="subtle-button"
+                  disabled={allIndex >= groups.length}
+                  onClick={() => onAllIndexChange(allIndex + 1)}
+                  title={t('shelf.moveDown', '下移')}
+                >
+                  ↓
+                </button>
+                <button
+                  type="button"
+                  className="subtle-button"
+                  disabled
+                  title={t('shelf.builtinGroupCannotRename', '内置分组，不能改名')}
+                  aria-label={t('shelf.builtinGroupCannotRename', '内置分组，不能改名')}
+                >
+                  <Icon name="edit" />
+                </button>
+                <button
+                  type="button"
+                  className="subtle-button"
+                  disabled
+                  title={t('shelf.builtinGroupCannotDelete', '内置分组，不能删除')}
+                  aria-label={t('shelf.builtinGroupCannotDelete', '内置分组，不能删除')}
+                >
+                  <Icon name="trash" />
+                </button>
+              </div>
+            </div>
+
             {groups.length === 0 ? (
               <p className="group-list-empty">{t('shelf.groupEmptyTip', '暂无自定义分组，创建后可自由归类书籍')}</p>
             ) : (
@@ -2500,6 +2580,26 @@ function ShelfPage({ onOpen, theme }: { onOpen: (item: BookshelfItem, jump?: Boo
   const [items, setItems] = useState<BookshelfItem[]>([])
   const [groups, setGroups] = useState<BookGroup[]>([])
   const [selectedGroup, setSelectedGroup] = useState<string>('all') // 'all' | '__ungrouped__' | custom group name
+  /**
+   * 内置「全部」标签的偏好（用户要求：除改名/删除外，隐藏与排序都要能用）。
+   * 只影响**这个浏览器**的显示顺序/可见性，落 localStorage，不动服务端数据。
+   */
+  const [allGroupHidden, setAllGroupHidden] = useState<boolean>(() => {
+    try { return localStorage.getItem(ALL_GROUP_HIDDEN_KEY) === '1' } catch { return false }
+  })
+  const [allGroupIndex, setAllGroupIndex] = useState<number>(() => {
+    try { return Math.max(0, Number(localStorage.getItem(ALL_GROUP_INDEX_KEY) ?? '0') || 0) } catch { return 0 }
+  })
+  const updateAllGroupHidden = (hidden: boolean) => {
+    setAllGroupHidden(hidden)
+    try { localStorage.setItem(ALL_GROUP_HIDDEN_KEY, hidden ? '1' : '0') } catch { /* 忽略隐私模式 */ }
+    if (hidden && selectedGroup === 'all') setSelectedGroup('__ungrouped__')
+  }
+  const updateAllGroupIndex = (index: number, max: number) => {
+    const clamped = Math.max(0, Math.min(index, max))
+    setAllGroupIndex(clamped)
+    try { localStorage.setItem(ALL_GROUP_INDEX_KEY, String(clamped)) } catch { /* 忽略 */ }
+  }
   const [statusFilter, setStatusFilter] = useState<'all' | 'reading' | 'completed'>('all')
   const [message, setMessage] = useState('')
   const [switchingItem, setSwitchingItem] = useState<BookshelfItem | null>(null)
@@ -3003,30 +3103,27 @@ function ShelfPage({ onOpen, theme }: { onOpen: (item: BookshelfItem, jump?: Boo
 
       {/* Primary Group Tabs */}
       <nav className="shelf-tabs shelf-group-tabs" aria-label={t('shelf.manageGroups', '书架分组')}>
-        <button
-          type="button"
-          className={selectedGroup === 'all' ? 'active' : ''}
-          onClick={() => setSelectedGroup('all')}
-        >
-          {t('common.all', '全部')}<small>{groupCounts.all}</small>
-        </button>
-        <button
-          type="button"
-          className={selectedGroup === '__ungrouped__' ? 'active' : ''}
-          onClick={() => setSelectedGroup('__ungrouped__')}
-        >
-          {t('search.scopeUngrouped', '未分组')}<small>{groupCounts.ungrouped}</small>
-        </button>
-        {groups.filter(g => !g.isPrivate).map(g => (
-          <button
-            key={g.id}
-            type="button"
-            className={selectedGroup === g.name ? 'active' : ''}
-            onClick={() => setSelectedGroup(g.name)}
-          >
-            {g.name}<small>{g.bookCount}</small>
-          </button>
-        ))}
+        {(() => {
+          // 「全部」可隐藏、可前后移动（用户要求）；「未分组」位置固定，其它分组按服务端顺序
+          const visibleGroups = groups.filter(g => !g.isPrivate)
+          const slots: Array<{ key: string; label: string; count: number; onClick: () => void }> = [
+            { key: '__ungrouped__', label: t('search.scopeUngrouped', '未分组'), count: groupCounts.ungrouped, onClick: () => setSelectedGroup('__ungrouped__') },
+            ...visibleGroups.map(g => ({ key: g.name, label: g.name, count: g.bookCount, onClick: () => setSelectedGroup(g.name) })),
+          ]
+          const insertAt = Math.min(allGroupIndex, slots.length)
+          const allSlot = { key: 'all', label: t('common.all', '全部'), count: groupCounts.all, onClick: () => setSelectedGroup('all') }
+          const ordered = allGroupHidden ? slots : [...slots.slice(0, insertAt), allSlot, ...slots.slice(insertAt)]
+          return ordered.map(slot => (
+            <button
+              key={slot.key}
+              type="button"
+              className={selectedGroup === slot.key ? 'active' : ''}
+              onClick={slot.onClick}
+            >
+              {slot.label}<small>{slot.count}</small>
+            </button>
+          ))
+        })()}
         <button
           type="button"
           className="shelf-manage-group-btn"
@@ -3304,6 +3401,11 @@ function ShelfPage({ onOpen, theme }: { onOpen: (item: BookshelfItem, jump?: Boo
       {managingGroups && (
         <GroupManageModal
           groups={groups}
+          totalBooks={items.length}
+          allHidden={allGroupHidden}
+          allIndex={allGroupIndex}
+          onAllHiddenChange={updateAllGroupHidden}
+          onAllIndexChange={index => updateAllGroupIndex(index, groups.length)}
           onClose={() => setManagingGroups(false)}
           onGroupsChanged={load}
         />
@@ -3697,3 +3799,5 @@ createRoot(document.getElementById('root')!).render(
     <App />
   </ErrorBoundary>
 )
+
+

@@ -399,7 +399,13 @@
     "addedToCacheQueueAll": "Full book added to offline cache queue",
     "startedCacheNext50": "Started caching next 50 chapters",
     "startedCacheNext100": "Started caching next 100 chapters",
-    "startedCacheRange": "Started caching chapters {{start}} to {{end}}"
+    "startedCacheRange": "Started caching chapters {{start}} to {{end}}",
+    "newGroupButton": "New group",
+    "builtinGroup": "Built-in group",
+    "builtinGroupCannotDelete": "Built-in group cannot be deleted",
+    "builtinGroupCannotHide": "Built-in group cannot be hidden",
+    "builtinGroupCannotReorder": "Built-in group cannot be reordered",
+    "builtinGroupCannotRename": "Built-in group cannot be renamed"
   },
   "audiobook": {
     "back": "Back",
@@ -783,7 +789,7 @@
     "hintContent": "Search inside cached chapter text (cached chapters only)",
     "bookNotInShelf": "This book is not on your shelf, so it cannot be opened",
     "scopeCurrentBook": "Current book only",
-    "truncated": "Too many results; showing the first {{count}}. Try a narrower keyword",
+    "truncated": "Too many results; only part of them are shown. Try a narrower keyword",
     "placeholder": "Search books by title or author keyword...",
     "scopeLabel": "Search Scope",
     "scopeAll": "All Sources",
@@ -1286,7 +1292,9 @@
     "filterRulesToGroupPlaceholder": "Filter across all rules...",
     "allRulesAria": "Rules list",
     "selectedRulesSummary": "Selected {{count}} / {{total}} rules",
-    "applyGroupButton": "Assign Selected Rules to Group"
+    "applyGroupButton": "Assign Selected Rules to Group",
+    "noGroupsHintShort": "Put rules into a new group below; then rename or unbind it here",
+    "newGroupNameLabel": "New group name"
   },
   "webdav": {
     "title": "WebDAV & Storage",

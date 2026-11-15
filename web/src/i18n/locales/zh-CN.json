@@ -399,7 +399,13 @@
     "addedToCacheQueueAll": "已加入全本离线缓存队列",
     "startedCacheNext50": "已开始缓存后续 50 章",
     "startedCacheNext100": "已开始缓存后续 100 章",
-    "startedCacheRange": "已开始缓存第 {{start}} 至 {{end}} 章"
+    "startedCacheRange": "已开始缓存第 {{start}} 至 {{end}} 章",
+    "newGroupButton": "新建分组",
+    "builtinGroup": "内置分组",
+    "builtinGroupCannotDelete": "内置分组，不能删除",
+    "builtinGroupCannotHide": "内置分组，不能隐藏",
+    "builtinGroupCannotReorder": "内置分组，不能排序",
+    "builtinGroupCannotRename": "内置分组，不能改名"
   },
   "audiobook": {
     "back": "返回",
@@ -783,7 +789,7 @@
     "hintContent": "在已缓存的正文里查找（只包含缓存过的章节）",
     "bookNotInShelf": "这本书不在书架里，无法打开",
     "scopeCurrentBook": "仅当前书籍",
-    "truncated": "结果过多，只显示前 {{count}} 条，请细化关键词",
+    "truncated": "结果过多，只显示了一部分，请细化关键词",
     "placeholder": "输入书名或作者关键字搜索全网小说...",
     "scopeLabel": "搜索范围",
     "scopeAll": "全部书源",
@@ -1286,7 +1292,9 @@
     "filterRulesToGroupPlaceholder": "在全量规则中筛选…",
     "allRulesAria": "规则列表",
     "selectedRulesSummary": "已勾选 {{count}} / {{total}} 条规则",
-    "applyGroupButton": "将所选规则加入该分组"
+    "applyGroupButton": "将所选规则加入该分组",
+    "noGroupsHintShort": "在下方把规则归入新分组后，可在这里重命名或解绑",
+    "newGroupNameLabel": "新分组名称"
   },
   "webdav": {
     "title": "WebDAV 与文件存储",

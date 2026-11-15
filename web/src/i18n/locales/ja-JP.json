@@ -399,7 +399,13 @@
     "addedToCacheQueueAll": "全編オフラインキャッシュキューに追加しました",
     "startedCacheNext50": "次の50章のキャッシュを開始しました",
     "startedCacheNext100": "次の100章のキャッシュを開始しました",
-    "startedCacheRange": "第 {{start}} 章から第 {{end}} 章のキャッシュを開始しました"
+    "startedCacheRange": "第 {{start}} 章から第 {{end}} 章のキャッシュを開始しました",
+    "newGroupButton": "グループを追加",
+    "builtinGroup": "組み込みグループ",
+    "builtinGroupCannotDelete": "組み込みグループは削除できません",
+    "builtinGroupCannotHide": "組み込みグループは非表示にできません",
+    "builtinGroupCannotReorder": "組み込みグループは並べ替えできません",
+    "builtinGroupCannotRename": "組み込みグループは名前変更できません"
   },
   "audiobook": {
     "back": "戻る",
@@ -783,7 +789,7 @@
     "hintContent": "キャッシュ済みの本文から検索します（キャッシュした章のみ）",
     "bookNotInShelf": "この本は本棚にないため開けません",
     "scopeCurrentBook": "現在の本のみ",
-    "truncated": "結果が多すぎます。先頭 {{count}} 件のみ表示しています。キーワードを絞ってください",
+    "truncated": "結果が多すぎます。一部のみ表示しています。キーワードを絞ってください",
     "placeholder": "作品名または著者名で検索...",
     "scopeLabel": "検索範囲",
     "scopeAll": "全ソース",
@@ -1286,7 +1292,9 @@
     "filterRulesToGroupPlaceholder": "すべてのルールから絞り込み…",
     "allRulesAria": "ルールリスト",
     "selectedRulesSummary": "{{count}} / {{total}} 件のルールを選択中",
-    "applyGroupButton": "選択したルールをこのグループに追加"
+    "applyGroupButton": "選択したルールをこのグループに追加",
+    "noGroupsHintShort": "下でルールを新しいグループに入れると、ここで名前変更や解除ができます",
+    "newGroupNameLabel": "新しいグループ名"
   },
   "webdav": {
     "title": "WebDAV & ファイル",

@@ -399,7 +399,13 @@
     "addedToCacheQueueAll": "已加入全本離線快取佇列",
     "startedCacheNext50": "已開始快取後續 50 章",
     "startedCacheNext100": "已開始快取後續 100 章",
-    "startedCacheRange": "已開始快取第 {{start}} 至 {{end}} 章"
+    "startedCacheRange": "已開始快取第 {{start}} 至 {{end}} 章",
+    "newGroupButton": "新建分組",
+    "builtinGroup": "內建分組",
+    "builtinGroupCannotDelete": "內建分組，不能刪除",
+    "builtinGroupCannotHide": "內建分組，不能隱藏",
+    "builtinGroupCannotReorder": "內建分組，不能排序",
+    "builtinGroupCannotRename": "內建分組，不能改名"
   },
   "audiobook": {
     "back": "返回",
@@ -783,7 +789,7 @@
     "hintContent": "在已快取的正文裡查找（只包含快取過的章節）",
     "bookNotInShelf": "這本書不在書架裡，無法開啟",
     "scopeCurrentBook": "僅目前書籍",
-    "truncated": "結果過多，只顯示前 {{count}} 筆，請細化關鍵字",
+    "truncated": "結果過多，只顯示了部分，請細化關鍵字",
     "placeholder": "輸入書名或作者關鍵字搜尋全網小說...",
     "scopeLabel": "搜尋範圍",
     "scopeAll": "全部書源",
@@ -1286,7 +1292,9 @@
     "filterRulesToGroupPlaceholder": "在全量規則中篩選…",
     "allRulesAria": "規則列表",
     "selectedRulesSummary": "已勾選 {{count}} / {{total}} 條規則",
-    "applyGroupButton": "將所選規則加入該分組"
+    "applyGroupButton": "將所選規則加入該分組",
+    "noGroupsHintShort": "在下方把規則歸入新分組後，可在這裡重新命名或解綁",
+    "newGroupNameLabel": "新分組名稱"
   },
   "webdav": {
     "title": "WebDAV 與檔案儲存",

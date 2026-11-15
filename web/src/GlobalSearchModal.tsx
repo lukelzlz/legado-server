@@ -1,6 +1,7 @@
 // 与仓库里其它组件一致地引入 React：测试用 tsx 跑的是 classic JSX 变换，
 // 少这一行会让 `renderToStaticMarkup` 抛 `ReferenceError: React is not defined`。
 import React, { useEffect, useMemo, useRef, useState } from 'react'
+import { useBackdropWheelForward } from './useBackdropWheel'
 import { createPortal } from 'react-dom'
 import { useTranslation } from 'react-i18next'
 import { api, LocalSearchHit, LocalSearchMode } from './api'
@@ -43,7 +44,6 @@ export type GlobalSearchModalProps = {
 }
 
 /** 一次请求最多取多少条（服务端还会把 1..100 之外的夹回来）。 */
-const SEARCH_LIMIT = 50
 
 /** 输入框 debounce（用户指定 300ms）。 */
 const SEARCH_DEBOUNCE_MS = 300
@@ -83,11 +83,23 @@ export function GlobalSearchModal({
   /** 是否已经真正发过一次查询（区分「还没搜」与「搜了没结果」）。 */
   const [searched, setSearched] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
+  const backdropRef = useRef<HTMLDivElement>(null)
+  const resultsRef = useRef<HTMLDivElement>(null)
+  /** 「重试」按钮：只是让下面的查询 effect 再跑一次。 */
+  const [retryTick, setRetryTick] = useState(0)
 
   // 模式被外部收窄（理论上只在重新挂载时变）时校正一次，避免停在一个不存在的 tab 上
   useEffect(() => {
     if (!available.includes(mode)) setMode(available[0])
   }, [available, mode])
+
+  /**
+   * 滚轮在**磨砂遮罩**上时，事件不会落到结果列表上（弹窗贴边时尤其明显），
+   * 表现为「滚轮没反应」。这里把遮罩上的滚轮转发给结果列表：
+   * - 只在 target 就是遮罩本身时转发（弹窗内部的滚动交给原生行为）；
+   * - 必须 `passive: false` 才能 `preventDefault`，否则页面背后会跟着滚。
+   */
+  useBackdropWheelForward(backdropRef, resultsRef)
 
   // ESC ≡ 关闭（参考现有弹窗写法）
   useEffect(() => {
@@ -97,6 +109,55 @@ export function GlobalSearchModal({
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
   }, [onClose])
+
+  /**
+   * 切 tab / 换关键词 / 拿到新结果时，把结果列表滚回**顶部**。
+   *
+   * 否则会出现「书架结果滑到底、切到目录 tab 后列表仍停在底部」——
+   * 用户看到的是空白或半截列表，以为没搜到东西。
+   */
+  /**
+   * 切 tab 时**立刻清空旧结果**：
+   *
+   * 只清滚动位置是不够的 —— 新 tab 的请求有 300ms 防抖，
+   * 这段时间里列表会继续显示上一个 tab 的结果，用户看到「切过去了还是旧内容」。
+   * 有查询词时立刻进 loading 态，显示「正在搜索…」而不是空白。
+   */
+  useEffect(() => {
+    setItems([])
+    setTruncated(false)
+    setSearched(false)
+    setError('')
+    if (query.trim()) setLoading(true)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mode])
+
+  useEffect(() => {
+    const list = resultsRef.current
+    if (list) list.scrollTop = 0
+  }, [mode, query, items])
+
+  /**
+   * 打开时锁住背景滚动。
+   *
+   * 不锁的话，滚轮放在弹窗上（尤其是头部/输入框这种「没得滚」的区域）时，
+   * 滚动会落到书架页 body 上 —— 用户看到的是「弹窗没动、下面那层在动」。
+   * 关窗时恢复原值，避免影响其它页面。
+   */
+  useEffect(() => {
+    const body = document.body
+    const previousOverflow = body.style.overflow
+    const previousPadding = body.style.paddingRight
+    // 锁滚动会让滚动条消失、内容宽度突然变大 ⇒ 视觉上「跳一下」。
+    // 用 padding-right 补掉滚动条宽度，页面内容就不会横向位移。
+    const scrollbarWidth = window.innerWidth - document.documentElement.clientWidth
+    if (scrollbarWidth > 0) body.style.paddingRight = `${scrollbarWidth}px`
+    body.style.overflow = 'hidden'
+    return () => {
+      body.style.overflow = previousOverflow
+      body.style.paddingRight = previousPadding
+    }
+  }, [])
 
   // 打开即聚焦输入框（书架页点「搜索」后用户下一步一定是输入）
   useEffect(() => {
@@ -126,7 +187,7 @@ export function GlobalSearchModal({
         {
           mode,
           query: trimmed,
-          limit: SEARCH_LIMIT,
+          limit: 0, // 0 = 服务端不限制条数，返回全部命中
           sourceId: sourceId || undefined,
           bookUrl: bookUrl || undefined,
         },
@@ -154,7 +215,7 @@ export function GlobalSearchModal({
       controller.abort()
       setLoading(false)
     }
-  }, [query, mode, sourceId, bookUrl, t])
+  }, [query, mode, sourceId, bookUrl, t, retryTick])
 
   const modeLabel = (value: LocalSearchMode): string => {
     if (value === 'shelf') return t('search.shelf', '书架')
@@ -184,6 +245,7 @@ export function GlobalSearchModal({
   return createPortal(
     <div
       className={`modal-backdrop global-search-backdrop theme-${theme}`}
+      ref={backdropRef}
       // 点磨砂遮罩关闭：用 mousedown + target 判定，和书架其它弹窗行为一致；
       // 这样即使从弹窗内部拖出来松开，也不会误关。
       onMouseDown={event => {
@@ -248,9 +310,17 @@ export function GlobalSearchModal({
 
         <p className="global-search-hint">{hintOf(mode)}</p>
 
-        <div className="global-search-results">
+        <div className="global-search-results" ref={resultsRef}>
           {loading && items.length === 0 && <p className="reader-status">{t('search.loading', '正在搜索…')}</p>}
-          {!loading && error && <p className="reader-error">{error}</p>}
+          {!loading && error && (
+            <div className="global-search-error">
+              <p className="reader-error">{error}</p>
+              {/* 出错时给个「重试」，省得用户改一个字再改回去 */}
+              <button type="button" className="subtle-button" onClick={() => setRetryTick(value => value + 1)}>
+                {t('common.retry', '重试')}
+              </button>
+            </div>
+          )}
           {!loading && !error && searched && items.length === 0 && (
             <p className="reader-status">{t('search.empty', '没有找到匹配的内容')}</p>
           )}
@@ -285,7 +355,7 @@ export function GlobalSearchModal({
           ))}
           {truncated && (
             <p className="global-search-truncated">
-              {t('search.truncated', '结果过多，只显示前 {{count}} 条，请细化关键词', { count: SEARCH_LIMIT })}
+              {t('search.truncated', '结果过多，只显示了一部分，请细化关键词')}
             </p>
           )}
         </div>

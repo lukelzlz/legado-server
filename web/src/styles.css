@@ -7186,3 +7186,37 @@ mark.search-highlight { background: var(--accent-soft); color: var(--accent); fo
   .sgm-toolbar { gap: 8px; }
   .sgm-toolbar .sgm-segmented-helpers { margin-left: 0; width: 100%; }
 }
+
+/* 「新建分组」输入行：与筛选框同一套外观（原本没有样式 ⇒ 裸 input + 默认绿描边） */
+.group-picker-new-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+.group-picker-input-label {
+  flex: none;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--accent-ink);
+}
+.group-picker-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 36px;
+  padding: 0 12px;
+  border: 1px solid color-mix(in srgb, var(--accent) 40%, var(--line));
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--ink);
+  font-size: 13px;
+  outline: none;
+  transition: border-color .15s ease, box-shadow .15s ease;
+}
+.group-picker-input::placeholder { color: var(--muted); }
+.group-picker-input:focus,
+.group-picker-input:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
+}

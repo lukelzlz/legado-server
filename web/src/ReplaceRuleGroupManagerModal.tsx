@@ -360,17 +360,26 @@ export function ReplaceRuleGroupManagerModal({ groups, onChanged, onClose }: Rep
             </div>
 
             {target === NEW_RULE_GROUP_OPTION && (
-              <div className="group-picker-new-row">
+              <label className="group-picker-new-row">
+                <span className="group-picker-input-label">{t('rules.newGroupNameLabel', '新分组名称')}</span>
                 <input
                   type="text"
                   className="group-picker-input"
                   value={newGroupName}
                   onChange={e => setNewGroupName(e.target.value)}
                   placeholder={t('rules.newGroupNamePrompt', '输入新分组名称')}
+                  maxLength={20}
                   disabled={busy}
                   autoFocus
+                  onKeyDown={e => {
+                    // 回车 = 直接执行「加入该分组」，省一次鼠标
+                    if (e.key === 'Enter' && newGroupName.trim() && selectedIds.size > 0 && !busy) {
+                      e.preventDefault()
+                      void handleApplyGroup()
+                    }
+                  }}
                 />
-              </div>
+              </label>
             )}
 
             <div className="group-picker-search group-picker-search-row">

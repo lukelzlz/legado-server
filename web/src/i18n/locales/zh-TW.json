@@ -1288,7 +1288,8 @@
     "allRulesAria": "規則列表",
     "selectedRulesSummary": "已勾選 {{count}} / {{total}} 條規則",
     "applyGroupButton": "將所選規則加入該分組",
-    "noGroupsHintShort": "在下方把規則歸入新分組後，可在這裡重新命名或解綁"
+    "noGroupsHintShort": "在下方把規則歸入新分組後，可在這裡重新命名或解綁",
+    "newGroupNameLabel": "新分組名稱"
   },
   "webdav": {
     "title": "WebDAV 與檔案儲存",

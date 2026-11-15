@@ -1288,7 +1288,8 @@
     "allRulesAria": "ルールリスト",
     "selectedRulesSummary": "{{count}} / {{total}} 件のルールを選択中",
     "applyGroupButton": "選択したルールをこのグループに追加",
-    "noGroupsHintShort": "下でルールを新しいグループに入れると、ここで名前変更や解除ができます"
+    "noGroupsHintShort": "下でルールを新しいグループに入れると、ここで名前変更や解除ができます",
+    "newGroupNameLabel": "新しいグループ名"
   },
   "webdav": {
     "title": "WebDAV & ファイル",

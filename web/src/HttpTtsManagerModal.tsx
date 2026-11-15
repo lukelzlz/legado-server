@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react'
+import { useBackdropWheelForward } from './useBackdropWheel'
 import { useTranslation } from 'react-i18next'
 import { api, HttpTts } from './api'
 import { Icon } from './icons'
@@ -27,6 +28,10 @@ export const HttpTtsManagerModal: React.FC<HttpTtsManagerModalProps> = ({
 
   const audioRef = useRef<HTMLAudioElement | null>(null)
   const fileInputRef = useRef<HTMLInputElement | null>(null)
+  // 遮罩上的滚轮转发给引擎列表（弹窗固定高度，条目多时靠内部滚动）
+  const ttsBackdropRef = useRef<HTMLDivElement>(null)
+  const ttsListRef = useRef<HTMLDivElement>(null)
+  useBackdropWheelForward(ttsBackdropRef, ttsListRef)
 
   const showToast = (text: string, type: 'success' | 'error' = 'success') => {
     setMessage({ text, type })
@@ -178,7 +183,7 @@ export const HttpTtsManagerModal: React.FC<HttpTtsManagerModalProps> = ({
   })
 
   return (
-    <div className="modal-backdrop" onClick={onClose}>
+    <div ref={ttsBackdropRef} className="modal-backdrop" onClick={onClose}>
       <div
         className="tts-settings-dialog http-tts-manager-dialog"
         onClick={e => e.stopPropagation()}
@@ -273,7 +278,7 @@ export const HttpTtsManagerModal: React.FC<HttpTtsManagerModalProps> = ({
         </div>
 
         {/* List Content */}
-        <div className="source-login-body" style={{ flex: 1, overflowY: 'auto', padding: '12px 18px' }}>
+        <div ref={ttsListRef} className="source-login-body" style={{ flex: 1, overflowY: 'auto', padding: '12px 18px' }}>
           {loading ? (
             <div style={{ padding: '30px', textAlign: 'center', color: 'var(--muted)' }}>
               {t('common.loading', '正在加载...')}
@@ -534,6 +539,11 @@ const HttpTtsEditDialog: React.FC<HttpTtsEditDialogProps> = ({
   onTest,
   onClose,
 }) => {
+  // 遮罩上的滚轮转发给表单滚动区（表单较长，必须能滚）
+  const editBackdropRef = useRef<HTMLDivElement>(null)
+  const editBodyRef = useRef<HTMLDivElement>(null)
+  useBackdropWheelForward(editBackdropRef, editBodyRef)
+
   const { t } = useTranslation()
   const [name, setName] = useState(initialTts.name)
   const [url, setUrl] = useState(initialTts.url)
@@ -572,7 +582,7 @@ const HttpTtsEditDialog: React.FC<HttpTtsEditDialogProps> = ({
   }
 
   return (
-    <div className="modal-backdrop" onClick={onClose} style={{ zIndex: 1100 }}>
+    <div ref={editBackdropRef} className="modal-backdrop" onClick={onClose} style={{ zIndex: 1100 }}>
       <div
         className="tts-settings-dialog"
         onClick={e => e.stopPropagation()}
@@ -588,7 +598,7 @@ const HttpTtsEditDialog: React.FC<HttpTtsEditDialogProps> = ({
         </header>
 
         <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}>
-          <div className="source-login-body" style={{ flex: 1, overflowY: 'auto', padding: '16px 20px', display: 'flex', flexDirection: 'column', gap: '14px' }}>
+          <div ref={editBodyRef} className="source-login-body" style={{ flex: 1, overflowY: 'auto', padding: '16px 20px', display: 'flex', flexDirection: 'column', gap: '14px' }}>
             <div className="login-ui-item-field">
               <label className="login-ui-field-label">{t('tts.engineName', '引擎名称 *')}</label>
               <input
@@ -686,3 +696,4 @@ const HttpTtsEditDialog: React.FC<HttpTtsEditDialogProps> = ({
     </div>
   )
 }
+

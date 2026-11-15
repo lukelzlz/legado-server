@@ -1,6 +1,7 @@
 // 与仓库里其它组件一致地引入 React：测试用 tsx 跑的是 classic JSX 变换，
 // 少这一行会让 `renderToStaticMarkup` 抛 `ReferenceError: React is not defined`。
 import React, { useEffect, useMemo, useRef, useState } from 'react'
+import { useBackdropWheelForward } from './useBackdropWheel'
 import { createPortal } from 'react-dom'
 import { useTranslation } from 'react-i18next'
 import { api, LocalSearchHit, LocalSearchMode } from './api'
@@ -98,19 +99,7 @@ export function GlobalSearchModal({
    * - 只在 target 就是遮罩本身时转发（弹窗内部的滚动交给原生行为）；
    * - 必须 `passive: false` 才能 `preventDefault`，否则页面背后会跟着滚。
    */
-  useEffect(() => {
-    const node = backdropRef.current
-    if (!node) return
-    const onWheel = (event: WheelEvent) => {
-      if (event.target !== node) return
-      const list = resultsRef.current
-      if (!list) return
-      event.preventDefault()
-      list.scrollTop += event.deltaY
-    }
-    node.addEventListener('wheel', onWheel, { passive: false })
-    return () => node.removeEventListener('wheel', onWheel)
-  }, [])
+  useBackdropWheelForward(backdropRef, resultsRef)
 
   // ESC ≡ 关闭（参考现有弹窗写法）
   useEffect(() => {

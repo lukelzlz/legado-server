@@ -15,6 +15,7 @@ import { cleanAuthor, cleanTitle, defaultSearchFilters, filterSearchGroups, isEx
 import { groupSearchResults, searchStore, SourceChoice, SourceChoiceStatus, useSearchStore } from './searchStore'
 import { SourceSwitchModal } from './SourceSwitchModal'
 import { GlobalSearchModal } from './GlobalSearchModal'
+import { useBackdropWheelForward } from './useBackdropWheel'
 import { matchBestChapter } from './sourceSwitchRemap'
 import { SourceLoginModal } from './SourceLoginModal'
 import { NetworkImportModal } from './NetworkImportModal'
@@ -2210,9 +2211,11 @@ function GroupManageModal({
   onGroupsChanged: () => Promise<void>
 }) {
   const { t } = useTranslation()
+  // 遮罩上的滚轮转发给分组列表（弹窗固定高度、内容多时靠内部滚动）
+  const groupBackdropRef = useRef<HTMLDivElement>(null)
+  const groupScrollRef = useRef<HTMLDivElement>(null)
+  useBackdropWheelForward(groupBackdropRef, groupScrollRef)
   const [newGroupName, setNewGroupName] = useState('')
-  /** 「新建分组」默认收起成一个按钮，点开才出现输入框（弹窗本身固定高度，避免一直占一行）。 */
-  const [addOpen, setAddOpen] = useState(false)
   const [adding, setAdding] = useState(false)
   const [editingId, setEditingId] = useState<number | null>(null)
   const [editingName, setEditingName] = useState('')
@@ -2228,7 +2231,6 @@ function GroupManageModal({
     try {
       await api.createBookGroup(trimmed)
       setNewGroupName('')
-      setAddOpen(false)
       await onGroupsChanged()
       toast.success(t('shelf.groupCreated', '分组「{{name}}」创建成功', { name: trimmed }))
     } catch (err) {
@@ -2310,7 +2312,7 @@ function GroupManageModal({
   }
 
   return (
-    <div className="modal-backdrop top-layer-modal-backdrop" onClick={onClose}>
+    <div ref={groupBackdropRef} className="modal-backdrop top-layer-modal-backdrop" onClick={onClose}>
       <div className="group-manage-modal" onClick={e => e.stopPropagation()} role="dialog" aria-modal="true" aria-label={t('shelf.manageGroups', '管理书架分组')}>
         <header className="group-manage-header">
           <div>
@@ -2320,58 +2322,20 @@ function GroupManageModal({
           <button className="subtle-button close-btn" onClick={onClose} aria-label={t('common.close', '关闭')}><Icon name="close" /></button>
         </header>
 
-        <div className="group-manage-body">
-          {addOpen ? (
-            <form className="group-add-form is-open" onSubmit={handleAddGroup}>
-              <input
-                type="text"
-                value={newGroupName}
-                onChange={e => setNewGroupName(e.target.value)}
-                placeholder={t('shelf.groupNamePlaceholder', '输入新分组名称...')}
-                maxLength={20}
-                autoFocus
-                disabled={adding || busy}
-                onKeyDown={e => {
-                  if (e.key === 'Escape') {
-                    setNewGroupName('')
-                    setAddOpen(false)
-                  }
-                }}
-              />
-              <button
-                type="submit"
-                className="primary-button"
-                disabled={!newGroupName.trim() || adding || busy}
-                title={t('shelf.createGroup', '新建分组')}
-              >
-                {adding ? <ButtonSpinner size={12} /> : <Icon name="check" />}
-                <span>{adding ? t('shelf.creatingGroup', '创建中...') : t('common.save', '保存')}</span>
-              </button>
-              <button
-                type="button"
-                className="subtle-button"
-                onClick={() => {
-                  setNewGroupName('')
-                  setAddOpen(false)
-                }}
-                disabled={adding}
-                title={t('common.cancel', '取消')}
-                aria-label={t('common.cancel', '取消')}
-              >
-                <Icon name="close" />
-              </button>
-            </form>
-          ) : (
-            <button
-              type="button"
-              className="group-add-trigger"
-              onClick={() => setAddOpen(true)}
-              disabled={busy}
-            >
-              <Icon name="plus" />
-              <span>{t('shelf.newGroupButton', '新建分组')}</span>
+        <div className="group-manage-body" ref={groupScrollRef}>
+          <form className="group-add-form" onSubmit={handleAddGroup}>
+            <input
+              type="text"
+              value={newGroupName}
+              onChange={e => setNewGroupName(e.target.value)}
+              placeholder={t('shelf.groupNamePlaceholder', '输入新分组名称...')}
+              maxLength={20}
+              disabled={adding || busy}
+            />
+            <button type="submit" className="primary-button" disabled={!newGroupName.trim() || adding || busy}>
+              {adding ? t('shelf.creatingGroup', '创建中...') : t('shelf.createGroup', '新建分组')}
             </button>
-          )}
+          </form>
 
           {error && <p className="form-error">{error}</p>}
 

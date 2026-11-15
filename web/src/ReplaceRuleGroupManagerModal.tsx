@@ -1,10 +1,11 @@
 // 显式 import React：本仓库的组件在 `web/test` 下用 tsx 静态渲染时走的是 classic JSX 变换。
-import React, { useCallback, useEffect, useMemo, useState } from 'react'
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { i18n } from './i18n'
 import { api, ReplaceRule, ReplaceRuleGroupSummary, UNGROUPED_SOURCE_GROUP } from './api'
 import { Icon } from './icons'
 import { toast } from './Toast'
+import { useBackdropWheelForward } from './useBackdropWheel'
 
 export const NEW_RULE_GROUP_OPTION = '__new__'
 
@@ -38,6 +39,10 @@ interface ReplaceRuleGroupManagerModalProps {
 
 export function ReplaceRuleGroupManagerModal({ groups, onChanged, onClose }: ReplaceRuleGroupManagerModalProps) {
   const { t } = useTranslation()
+  // 遮罩上的滚轮转发给弹窗内部滚动区
+  const ruleBackdropRef = useRef<HTMLDivElement>(null)
+  const ruleScrollRef = useRef<HTMLDivElement>(null)
+  useBackdropWheelForward(ruleBackdropRef, ruleScrollRef)
   const [localGroups, setLocalGroups] = useState<ReplaceRuleGroupSummary[]>(groups)
   const [rules, setRules] = useState<ReplaceRule[]>([])
   const [query, setQuery] = useState('')
@@ -193,7 +198,7 @@ export function ReplaceRuleGroupManagerModal({ groups, onChanged, onClose }: Rep
   }
 
   return (
-    <div className="modal-backdrop" onClick={onClose}>
+    <div ref={ruleBackdropRef} className="modal-backdrop" onClick={onClose}>
       <div
         className="group-manage-modal source-group-manager"
         onClick={e => e.stopPropagation()}
@@ -226,7 +231,7 @@ export function ReplaceRuleGroupManagerModal({ groups, onChanged, onClose }: Rep
           </div>
         </div>
 
-        <div className="group-manage-body">
+        <div className="group-manage-body" ref={ruleScrollRef}>
           <section className="sgm-section">
             <div className="sgm-section-head">
               <h3>{t('rules.existingGroupsTitle', '已有分组')}</h3>

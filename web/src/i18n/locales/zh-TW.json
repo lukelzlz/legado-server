@@ -87,7 +87,9 @@
     "webdavTitle": "WebDAV 檔案服務",
     "openMenu": "開啟功能選單",
     "closeMenu": "關閉功能選單",
-    "bookmarks": "書籤"
+    "bookmarks": "書籤",
+    "settings": "設定",
+    "settingsNav": "設定分區"
   },
   "login": {
     "brand": "閱讀伺服器",
@@ -1549,5 +1551,18 @@
     "coverRefreshResult": "封面：成功 {{fetched}} 張，失敗 {{failed}} 本，跳過 {{skipped}} 本",
     "openMark": "跳到這條書籤的位置",
     "notInShelf": "這本書不在書架裡，無法跳轉（書籤仍保留）"
+  },
+  "settings": {
+    "kicker": "設定",
+    "title": "設定",
+    "desc": "書源、訂閱、規則、檔案都在這裡；點哪一項進哪一項。",
+    "sources": "書源",
+    "sourcesDesc": "匯入/編輯書源，登入與除錯，分組管理",
+    "subscriptions": "訂閱",
+    "subscriptionsDesc": "訂閱源與自動更新策略",
+    "rules": "規則",
+    "rulesDesc": "替換淨化規則：正文清洗與反義詞對調",
+    "files": "檔案",
+    "filesDesc": "WebDAV 儲存、備份匯入匯出、本地書籍與自動快取"
   }
 }

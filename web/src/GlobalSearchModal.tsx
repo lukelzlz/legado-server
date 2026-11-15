@@ -127,6 +127,22 @@ export function GlobalSearchModal({
    * 否则会出现「书架结果滑到底、切到目录 tab 后列表仍停在底部」——
    * 用户看到的是空白或半截列表，以为没搜到东西。
    */
+  /**
+   * 切 tab 时**立刻清空旧结果**：
+   *
+   * 只清滚动位置是不够的 —— 新 tab 的请求有 300ms 防抖，
+   * 这段时间里列表会继续显示上一个 tab 的结果，用户看到「切过去了还是旧内容」。
+   * 有查询词时立刻进 loading 态，显示「正在搜索…」而不是空白。
+   */
+  useEffect(() => {
+    setItems([])
+    setTruncated(false)
+    setSearched(false)
+    setError('')
+    if (query.trim()) setLoading(true)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mode])
+
   useEffect(() => {
     const list = resultsRef.current
     if (list) list.scrollTop = 0
@@ -140,10 +156,17 @@ export function GlobalSearchModal({
    * 关窗时恢复原值，避免影响其它页面。
    */
   useEffect(() => {
-    const previous = document.body.style.overflow
-    document.body.style.overflow = 'hidden'
+    const body = document.body
+    const previousOverflow = body.style.overflow
+    const previousPadding = body.style.paddingRight
+    // 锁滚动会让滚动条消失、内容宽度突然变大 ⇒ 视觉上「跳一下」。
+    // 用 padding-right 补掉滚动条宽度，页面内容就不会横向位移。
+    const scrollbarWidth = window.innerWidth - document.documentElement.clientWidth
+    if (scrollbarWidth > 0) body.style.paddingRight = `${scrollbarWidth}px`
+    body.style.overflow = 'hidden'
     return () => {
-      document.body.style.overflow = previous
+      body.style.overflow = previousOverflow
+      body.style.paddingRight = previousPadding
     }
   }, [])
 

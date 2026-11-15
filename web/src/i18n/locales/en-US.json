@@ -87,7 +87,9 @@
     "webdavTitle": "WebDAV Files",
     "openMenu": "Open Menu",
     "closeMenu": "Close Menu",
-    "bookmarks": "Bookmarks"
+    "bookmarks": "Bookmarks",
+    "settings": "Settings",
+    "settingsNav": "Settings sections"
   },
   "login": {
     "brand": "Reader Server",
@@ -1549,5 +1551,18 @@
     "coverRefreshResult": "Covers: {{fetched}} fetched, {{failed}} failed, {{skipped}} skipped",
     "openMark": "Jump to this bookmark",
     "notInShelf": "This book is not in the shelf, cannot jump (bookmark kept)"
+  },
+  "settings": {
+    "kicker": "Settings",
+    "title": "Settings",
+    "desc": "Sources, subscriptions, rules and files all live here — pick one to open it.",
+    "sources": "Sources",
+    "sourcesDesc": "Import or edit sources, logins, debugging, group management",
+    "subscriptions": "Subscriptions",
+    "subscriptionsDesc": "Subscriptions and auto-update policy",
+    "rules": "Rules",
+    "rulesDesc": "Replace rules: text cleaning and synonym swapping",
+    "files": "Files",
+    "filesDesc": "WebDAV storage, backup import/export, local books and auto cache"
   }
 }

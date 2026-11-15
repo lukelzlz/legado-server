@@ -9,7 +9,18 @@ import type { ReaderSettings } from './readerSettings'
 import { SUPPORTED_LOCALES, type SupportedLocale, changeAppLanguage, getCurrentLocale } from './i18n'
 import { api } from './api'
 
-export type AppPage = 'sources' | 'subscriptions' | 'library' | 'shelf' | 'reader' | 'rules' | 'webdav' | 'explore' | 'bookmarks'
+export type AppPage = 'settings' | 'sources' | 'subscriptions' | 'library' | 'shelf' | 'reader' | 'rules' | 'webdav' | 'explore' | 'bookmarks'
+
+/** 「设置」分组下的四个入口：顶栏只留一个「设置」，点开后再列这四项。 */
+export const SETTINGS_SECTIONS = [
+  { page: 'sources', labelKey: 'header.sources', fallback: '书源' },
+  { page: 'subscriptions', labelKey: 'header.subscriptions', fallback: '订阅' },
+  { page: 'rules', labelKey: 'header.rules', fallback: '规则' },
+  { page: 'webdav', labelKey: 'header.webdav', fallback: '文件' },
+] as const
+
+export const isSettingsPage = (page: AppPage): boolean =>
+  page === 'settings' || SETTINGS_SECTIONS.some(entry => entry.page === page)
 
 export interface AppHeaderProps {
   page: AppPage
@@ -302,34 +313,28 @@ export function AppHeader({
         </button>
         <button
           type="button"
-          className={page === 'sources' ? 'active' : ''}
-          onClick={() => onNavigate('sources')}
+          className={isSettingsPage(page) ? 'active' : ''}
+          onClick={() => onNavigate('settings')}
         >
-          {t('header.sources')}
-        </button>
-        <button
-          type="button"
-          className={page === 'subscriptions' ? 'active' : ''}
-          onClick={() => onNavigate('subscriptions')}
-        >
-          {t('header.subscriptions')}
-        </button>
-        <button
-          type="button"
-          className={page === 'rules' ? 'active' : ''}
-          onClick={() => onNavigate('rules')}
-        >
-          {t('header.rules')}
-        </button>
-        <button
-          type="button"
-          className={page === 'webdav' ? 'active' : ''}
-          title={t('header.webdavTitle')}
-          onClick={() => onNavigate('webdav')}
-        >
-          {t('header.webdav')}
+          {t('header.settings', '设置')}
         </button>
       </nav>
+
+      {/* 「设置」下面直接列出四项：书源 / 订阅 / 规则 / 文件（用户要求：合并成设置标签） */}
+      {isSettingsPage(page) && (
+        <nav className="settings-subnav" aria-label={t('header.settingsNav', '设置分区')}>
+          {SETTINGS_SECTIONS.map(entry => (
+            <button
+              key={entry.page}
+              type="button"
+              className={page === entry.page ? 'active' : ''}
+              onClick={() => onNavigate(entry.page)}
+            >
+              {t(entry.labelKey, entry.fallback)}
+            </button>
+          ))}
+        </nav>
+      )}
 
       <div className="header-actions">
         <button

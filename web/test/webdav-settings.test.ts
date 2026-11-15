@@ -95,9 +95,11 @@ test('WebDavSettingsPage - header exposes a WebDAV navigation entry', () => {
       onLogout: () => undefined,
     }),
   )
-  assert.ok(html.includes('文件'), 'nav should contain the file service tab')
-  assert.ok(html.includes('WebDAV 文件服务'), 'nav tab should describe the WebDAV service')
-  assert.ok(html.includes('class="active"'), 'active nav tab should be highlighted for the webdav page')
+  // 「文件」现在是「设置」的一个分区：顶栏出现 设置 + 设置子导航（含 文件），且 文件 为当前项
+  assert.ok(html.includes('设置'), 'nav should contain the settings entry')
+  assert.ok(html.includes('settings-subnav'), 'settings subnav should be rendered for settings pages')
+  assert.ok(html.includes('文件'), 'subnav should contain the file section')
+  assert.ok(html.includes('class="active"'), 'active entry should be highlighted for the webdav page')
 })
 
 test('WebDavSettingsPage - size formatting follows binary units', () => {

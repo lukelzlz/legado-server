@@ -87,7 +87,9 @@
     "webdavTitle": "WebDAV ファイル",
     "openMenu": "メニューを開く",
     "closeMenu": "メニューを閉じる",
-    "bookmarks": "しおり"
+    "bookmarks": "しおり",
+    "settings": "設定",
+    "settingsNav": "設定セクション"
   },
   "login": {
     "brand": "リーダーサーバー",
@@ -1549,5 +1551,18 @@
     "coverRefreshResult": "表紙：成功 {{fetched}} 件、失敗 {{failed}} 件、スキップ {{skipped}} 件",
     "openMark": "このしおりへ移動",
     "notInShelf": "この本は本棚にないため移動できません（しおりは保持されます）"
+  },
+  "settings": {
+    "kicker": "設定",
+    "title": "設定",
+    "desc": "書源・購読・ルール・ファイルはここにまとまっています。項目を選んで開きます。",
+    "sources": "書源",
+    "sourcesDesc": "書源のインポート/編集、ログイン、デバッグ、グループ管理",
+    "subscriptions": "購読",
+    "subscriptionsDesc": "購読ソースと自動更新ポリシー",
+    "rules": "ルール",
+    "rulesDesc": "置換ルール：本文のクリーニングと同義語の置換",
+    "files": "ファイル",
+    "filesDesc": "WebDAV ストレージ、バックアップの入出力、ローカル書籍と自動キャッシュ"
   }
 }

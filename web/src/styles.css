@@ -7111,3 +7111,78 @@ mark.search-highlight { background: var(--accent-soft); color: var(--accent); fo
 }
 .pick-item-group-tag { font-size: 11px; color: var(--muted); }
 .pick-item.is-checked .pick-item-group-tag { color: var(--accent-ink); }
+
+/* 规则归类工作台：目标分组 + 批量按钮同一行，筛选、列表各自成行 */
+.sgm-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface-muted);
+}
+.sgm-toolbar .group-picker-label {
+  flex: none;
+  font-size: 12px;
+  color: var(--muted);
+  font-weight: 600;
+}
+.sgm-toolbar .group-picker-select {
+  flex: 1 1 200px;
+  min-width: 0;
+  height: 36px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--ink);
+  font-size: 13px;
+}
+.sgm-toolbar .sgm-segmented-helpers { margin-left: auto; flex: none; display: flex; gap: 6px; }
+.sgm-toolbar .sgm-segmented-helpers .subtle-button.compact { min-height: 30px; padding: 0 10px; font-size: 12px; }
+
+/* 空分组时的紧凑一行提示（替代原来占三行的大图标块） */
+.group-empty-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px dashed color-mix(in srgb, var(--line) 80%, var(--muted));
+  border-radius: 10px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+  background: var(--surface-muted);
+}
+.group-empty-line svg { width: 14px; height: 14px; flex: none; color: var(--accent); }
+
+/* 筛选框单独一行、铺满 */
+.group-picker-search-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 36px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+}
+.group-picker-search-row input {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 100%;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: var(--ink);
+  font-size: 13px;
+}
+.group-picker-search-row svg { width: 14px; height: 14px; flex: none; color: var(--muted); }
+
+@media (max-width: 640px) {
+  .sgm-toolbar { gap: 8px; }
+  .sgm-toolbar .sgm-segmented-helpers { margin-left: 0; width: 100%; }
+}

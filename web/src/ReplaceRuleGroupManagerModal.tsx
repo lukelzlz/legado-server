@@ -234,11 +234,14 @@ export function ReplaceRuleGroupManagerModal({ groups, onChanged, onClose }: Rep
             </div>
 
             {localGroups.length === 0 ? (
-              <div className="group-empty-state">
-                <span className="group-empty-icon" aria-hidden="true">🏷️</span>
-                <p className="group-empty-title">{t('rules.noGroupsYet', '暂无自定义分组')}</p>
-                <p className="group-empty-desc">{t('rules.noGroupsHint', '可以在下方将规则归入新分组，分组创建后即可在此集中重命名或解绑。')}</p>
-              </div>
+              <p className="group-empty-line">
+                <Icon name="bookmark" />
+                <span>
+                  {t('rules.noGroupsYet', '暂无自定义分组')}
+                  {' · '}
+                  {t('rules.noGroupsHintShort', '在下方把规则归入新分组后，可在这里重命名或解绑')}
+                </span>
+              </p>
             ) : (
               <ul className="group-list">
                 {localGroups.map(group => {
@@ -322,7 +325,7 @@ export function ReplaceRuleGroupManagerModal({ groups, onChanged, onClose }: Rep
               <span className="sgm-section-hint">{t('rules.groupWorkbenchDesc', '批量勾选规则并设置归属分组')}</span>
             </div>
 
-            <div className="group-picker-row">
+            <div className="sgm-toolbar">
               <label htmlFor="rule-target-group-select" className="group-picker-label">
                 {t('rules.targetGroupLabel', '目标分组')}
               </label>
@@ -341,6 +344,19 @@ export function ReplaceRuleGroupManagerModal({ groups, onChanged, onClose }: Rep
                 ))}
                 <option value={NEW_RULE_GROUP_OPTION}>{t('rules.targetGroupNewOption', '＋ 新建分组…')}</option>
               </select>
+
+
+              <div className="sgm-segmented-helpers" role="group" aria-label={t('common.select', '选择模式')}>
+                <button type="button" className="subtle-button compact" onClick={handleSelectAll} disabled={busy || visibleRules.length === 0}>
+                  {t('shelf.selectAll', '全选')}
+                </button>
+                <button type="button" className="subtle-button compact" onClick={handleClearAll} disabled={busy || selectedIds.size === 0}>
+                  {t('source.deselectAll', '全不选')}
+                </button>
+                <button type="button" className="subtle-button compact" onClick={handleInvertSelection} disabled={busy || visibleRules.length === 0}>
+                  {t('common.invertSelect', '反选')}
+                </button>
+              </div>
             </div>
 
             {target === NEW_RULE_GROUP_OPTION && (
@@ -357,28 +373,15 @@ export function ReplaceRuleGroupManagerModal({ groups, onChanged, onClose }: Rep
               </div>
             )}
 
-            <div className="group-picker-toolbar">
-              <div className="group-picker-search">
-                <Icon name="search" />
-                <input
-                  type="text"
-                  placeholder={t('rules.filterRulesToGroupPlaceholder', '在全量规则中筛选…')}
-                  value={query}
-                  onChange={e => setQuery(e.target.value)}
-                  disabled={busy}
-                />
-              </div>
-              <div className="sgm-segmented-helpers" role="group" aria-label={t('common.select', '选择模式')}>
-                <button type="button" className="subtle-button compact" onClick={handleSelectAll} disabled={busy || visibleRules.length === 0}>
-                  {t('shelf.selectAll', '全选')}
-                </button>
-                <button type="button" className="subtle-button compact" onClick={handleClearAll} disabled={busy || selectedIds.size === 0}>
-                  {t('source.deselectAll', '全不选')}
-                </button>
-                <button type="button" className="subtle-button compact" onClick={handleInvertSelection} disabled={busy || visibleRules.length === 0}>
-                  {t('common.invertSelect', '反选')}
-                </button>
-              </div>
+            <div className="group-picker-search group-picker-search-row">
+              <Icon name="search" />
+              <input
+                type="text"
+                placeholder={t('rules.filterRulesToGroupPlaceholder', '在全量规则中筛选…')}
+                value={query}
+                onChange={e => setQuery(e.target.value)}
+                disabled={busy}
+              />
             </div>
 
             <div className="group-picker-list" role="list" aria-label={t('rules.allRulesAria', '规则列表')}>
@@ -430,3 +433,4 @@ export function ReplaceRuleGroupManagerModal({ groups, onChanged, onClose }: Rep
     </div>
   )
 }
+

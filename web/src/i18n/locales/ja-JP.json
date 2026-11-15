@@ -1287,7 +1287,8 @@
     "filterRulesToGroupPlaceholder": "すべてのルールから絞り込み…",
     "allRulesAria": "ルールリスト",
     "selectedRulesSummary": "{{count}} / {{total}} 件のルールを選択中",
-    "applyGroupButton": "選択したルールをこのグループに追加"
+    "applyGroupButton": "選択したルールをこのグループに追加",
+    "noGroupsHintShort": "下でルールを新しいグループに入れると、ここで名前変更や解除ができます"
   },
   "webdav": {
     "title": "WebDAV & ファイル",

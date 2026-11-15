@@ -122,6 +122,17 @@ export function GlobalSearchModal({
   }, [onClose])
 
   /**
+   * 切 tab / 换关键词 / 拿到新结果时，把结果列表滚回**顶部**。
+   *
+   * 否则会出现「书架结果滑到底、切到目录 tab 后列表仍停在底部」——
+   * 用户看到的是空白或半截列表，以为没搜到东西。
+   */
+  useEffect(() => {
+    const list = resultsRef.current
+    if (list) list.scrollTop = 0
+  }, [mode, query, items])
+
+  /**
    * 打开时锁住背景滚动。
    *
    * 不锁的话，滚轮放在弹窗上（尤其是头部/输入框这种「没得滚」的区域）时，

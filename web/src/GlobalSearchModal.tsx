@@ -43,7 +43,6 @@ export type GlobalSearchModalProps = {
 }
 
 /** 一次请求最多取多少条（服务端还会把 1..100 之外的夹回来）。 */
-const SEARCH_LIMIT = 50
 
 /** 输入框 debounce（用户指定 300ms）。 */
 const SEARCH_DEBOUNCE_MS = 300
@@ -165,7 +164,7 @@ export function GlobalSearchModal({
         {
           mode,
           query: trimmed,
-          limit: SEARCH_LIMIT,
+          limit: 0, // 0 = 服务端不限制条数，返回全部命中
           sourceId: sourceId || undefined,
           bookUrl: bookUrl || undefined,
         },
@@ -333,7 +332,7 @@ export function GlobalSearchModal({
           ))}
           {truncated && (
             <p className="global-search-truncated">
-              {t('search.truncated', '结果过多，只显示前 {{count}} 条，请细化关键词', { count: SEARCH_LIMIT })}
+              {t('search.truncated', '结果过多，只显示了一部分，请细化关键词')}
             </p>
           )}
         </div>

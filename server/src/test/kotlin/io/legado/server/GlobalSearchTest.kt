@@ -133,12 +133,22 @@ class GlobalSearchTest {
                     assertFalse(empty.truncated)
                 }
 
-                // 8) limit 夹在 1..100：limit=1 ⇒ 只回 1 条且 truncated=true
+                // 8) 默认（limit 缺省/0）= **不限制**：命中多少回多少，truncated=false
+                val unlimited = search("""{"mode":"toc","query":"第","limit":0}""")
+                val allToc = search("""{"mode":"toc","query":"第"}""")
+                assertEquals("缺省就是全量", allToc.items.size, unlimited.items.size)
+                assertFalse("不限制时不能标记截断", unlimited.truncated)
+                assertTrue("种子数据至少命中 2 章", unlimited.items.size >= 2)
+
+                // 9) 显式给正数仍尊重（没有任何 100 的隐式上限）：limit=1 ⇒ 只回 1 条且 truncated=true
                 val limited = search("""{"mode":"toc","query":"第","limit":1}""")
                 assertEquals(1, limited.items.size)
                 assertTrue("命中数超过 limit 时必须标记截断", limited.truncated)
+                // 显式给 150（超过旧的 100 硬上限）也必须照办，不能被静默夹到 100
+                val beyondOldCap = search("""{"mode":"toc","query":"第","limit":150}""")
+                assertFalse("超过旧上限的 limit 不该被截断", beyondOldCap.truncated)
 
-                // 9) 未知模式 ⇒ 400（不能静默当 shelf 处理）
+                // 10) 未知模式 ⇒ 400（不能静默当 shelf 处理）
                 assertEquals(
                     HttpStatusCode.BadRequest,
                     client.post("/api/search/local") {

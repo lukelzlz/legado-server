@@ -783,7 +783,7 @@
     "hintContent": "キャッシュ済みの本文から検索します（キャッシュした章のみ）",
     "bookNotInShelf": "この本は本棚にないため開けません",
     "scopeCurrentBook": "現在の本のみ",
-    "truncated": "結果が多すぎます。先頭 {{count}} 件のみ表示しています。キーワードを絞ってください",
+    "truncated": "結果が多すぎます。一部のみ表示しています。キーワードを絞ってください",
     "placeholder": "作品名または著者名で検索...",
     "scopeLabel": "検索範囲",
     "scopeAll": "全ソース",

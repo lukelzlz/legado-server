@@ -783,7 +783,7 @@
     "hintContent": "在已快取的正文裡查找（只包含快取過的章節）",
     "bookNotInShelf": "這本書不在書架裡，無法開啟",
     "scopeCurrentBook": "僅目前書籍",
-    "truncated": "結果過多，只顯示前 {{count}} 筆，請細化關鍵字",
+    "truncated": "結果過多，只顯示了部分，請細化關鍵字",
     "placeholder": "輸入書名或作者關鍵字搜尋全網小說...",
     "scopeLabel": "搜尋範圍",
     "scopeAll": "全部書源",

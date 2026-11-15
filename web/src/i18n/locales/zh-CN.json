@@ -783,7 +783,7 @@
     "hintContent": "在已缓存的正文里查找（只包含缓存过的章节）",
     "bookNotInShelf": "这本书不在书架里，无法打开",
     "scopeCurrentBook": "仅当前书籍",
-    "truncated": "结果过多，只显示前 {{count}} 条，请细化关键词",
+    "truncated": "结果过多，只显示了一部分，请细化关键词",
     "placeholder": "输入书名或作者关键字搜索全网小说...",
     "scopeLabel": "搜索范围",
     "scopeAll": "全部书源",

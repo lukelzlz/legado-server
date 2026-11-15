@@ -821,7 +821,9 @@ fun Route.apiRoutes(
                 return@post
             }
             val query = request.query.trim()
-            val limit = request.limit.coerceIn(1, 100)
+            // 用户要求「搜索不要限制结果数量」：limit <= 0（默认）⇒ 返回全部命中。
+            // 显式传正数时仍尊重，但**不设上限**（以前夹在 1..100 会静默截断）。
+            val limit = if (request.limit <= 0) Int.MAX_VALUE else request.limit
             // 空查询直接空结果：绝不能把 `like '%%'` 打到库上（等于全表扫描 + 全量返回）。
             if (query.isEmpty()) {
                 call.respond(SearchResponse(emptyList(), 0, false))

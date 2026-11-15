@@ -783,7 +783,7 @@
     "hintContent": "Search inside cached chapter text (cached chapters only)",
     "bookNotInShelf": "This book is not on your shelf, so it cannot be opened",
     "scopeCurrentBook": "Current book only",
-    "truncated": "Too many results; showing the first {{count}}. Try a narrower keyword",
+    "truncated": "Too many results; only part of them are shown. Try a narrower keyword",
     "placeholder": "Search books by title or author keyword...",
     "scopeLabel": "Search Scope",
     "scopeAll": "All Sources",

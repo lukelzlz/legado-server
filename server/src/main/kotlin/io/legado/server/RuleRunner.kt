@@ -481,10 +481,7 @@ class RuleRunner(private val responseFetcher: ((String) -> String)? = null, inte
         }
     }
 
-    private fun isJsRule(rule: String): Boolean {
-        val trimmed = rule.trimStart()
-        return trimmed.startsWith("@js:") || trimmed.startsWith("js:") || (rule.contains("<js>") && rule.contains("</js>"))
-    }
+    private fun isJsRule(rule: String): Boolean = isJsRuleText(rule)
 
     /** `<js>` 形式的列表规则：求值得到 JSON 数组后逐项包装成可继续取值的节点。 */
     private fun jsListNodes(base: NodeValue, listRule: String, body: String, baseUrl: String): List<NodeValue> {
@@ -1528,6 +1525,27 @@ internal class NodeValue private constructor(private val html: Element?, private
         if (rule.isNullOrBlank()) return null
         var trimmedRule = rule.trim()
 
+        // ------------------------------------------------------------------
+        // Legado 的 `A||B` 多规则回退：按顺序求值，取第一个非空结果。
+        // 书源里大量出现 `text.下一章@href||class.m-page@a.-1@href` 这类「主备选择器」，
+        // 旧实现把整串丢给 Jsoup/JsonPath，必然取不到值 ⇒ 分页/目录规则静默失效。
+        // 只在**非 JS 规则**里切分，避免破坏 `@js:` 代码中的 `||` 运算符；
+        // 也只在**真的切开了**才走回退分支 —— `||` 落在 `##正则##` 里时切不开，
+        // 若照样递归会把同一条规则再求值一次，直接栈溢出。
+        // ------------------------------------------------------------------
+        val alternatives = if (trimmedRule.contains("||") && !isJsRuleText(trimmedRule)) {
+            splitAlternatives(trimmedRule)
+        } else {
+            emptyList()
+        }
+        if (alternatives.isNotEmpty() && !(alternatives.size == 1 && alternatives[0] == trimmedRule)) {
+            for (part in alternatives) {
+                val candidate = value(part, jsSandbox, rawBody, baseUrl)
+                if (!candidate.isNullOrBlank()) return candidate
+            }
+            return null
+        }
+
         if (trimmedRule.contains("{{") && trimmedRule.contains("}}")) {
             trimmedRule = Regex("\\{\\{(.*?)}}").replace(trimmedRule) { match ->
                 val inner = match.groupValues[1].trim()
@@ -1630,6 +1648,47 @@ internal class NodeValue private constructor(private val html: Element?, private
         return -1
     }
 
+    /**
+     * 切分 `A||B||C` 多规则回退。必须做引号感知：`##正则##` 的替换串里可能带 `||`，
+     * 直接 split 会把一条规则切成两半。
+     */
+    private fun splitAlternatives(rule: String): List<String> {
+        val parts = mutableListOf<String>()
+        var quote: Char? = null
+        var escaped = false
+        var inRegex = false
+        var start = 0
+        var i = 0
+        while (i < rule.length) {
+            val ch = rule[i]
+            if (quote != null) {
+                when {
+                    escaped -> escaped = false
+                    ch == '\\' -> escaped = true
+                    ch == quote -> quote = null
+                }
+                i++
+                continue
+            }
+            if (ch == '#' && i + 1 < rule.length && rule[i + 1] == '#') {
+                inRegex = !inRegex
+                i += 2
+                continue
+            }
+            if (inRegex) { i++; continue }
+            if (ch == '\'' || ch == '"') { quote = ch; i++; continue }
+            if (ch == '|' && i + 1 < rule.length && rule[i + 1] == '|') {
+                parts.add(rule.substring(start, i).trim())
+                i += 2
+                start = i
+                continue
+            }
+            i++
+        }
+        parts.add(rule.substring(start).trim())
+        return parts.filter { it.isNotBlank() }
+    }
+
     private fun valuePlain(rule: String): String? {
         if (rule.isBlank()) return null
         return if (json != null) valueJson(rule)
@@ -1653,18 +1712,35 @@ internal class NodeValue private constructor(private val html: Element?, private
                 currentList
             }
             if (elements.isEmpty()) return null
+            // 文本选择器（`text.下一页`）命中的往往是内层元素（按钮/span），属性在祖先 `<a>` 上。
+            // 只有在这类规则里才向上找最近的带该属性的祖先，避免影响普通 CSS 规则的取值语义。
+            val textBased = selectorChain.any { it.trim().startsWith("text.") }
             val texts = elements.mapNotNull { el ->
                 when (rawMode) {
                     "html" -> el.html().takeIf { it.isNotBlank() }
                     "text" -> el.text().takeIf { it.isNotBlank() }
                     "textNodes", "textNode" -> el.ownText().takeIf { it.isNotBlank() }
-                    else -> el.attr(rawMode).takeIf { it.isNotBlank() }
+                    else -> (if (textBased) attrFromSelfOrAncestor(el, rawMode) else el.attr(rawMode))
+                        ?.takeIf { it.isNotBlank() }
                 }
             }
             if (texts.isEmpty()) return null
             val resultText = applyRegexReplace(texts.joinToString("\n"), lastSegment)
             resultText.takeIf { it.isNotBlank() }
         }
+    }
+
+    /** 取属性；自身没有就向上找最近的祖先（最多 4 层）。用于 `text.下一页@href` 这类文本选择器。 */
+    private fun attrFromSelfOrAncestor(element: Element, attribute: String): String? {
+        var current: Element? = element
+        var depth = 0
+        while (current != null && depth <= 4) {
+            val value = current.attr(attribute)
+            if (value.isNotBlank()) return value
+            current = current.parent()
+            depth++
+        }
+        return null
     }
 
     private fun selectAllLegado(element: Element, selector: String): List<Element> = runCatching {
@@ -1683,6 +1759,13 @@ internal class NodeValue private constructor(private val html: Element?, private
         if (classOnly != null) {
             return@runCatching element.select(".${classOnly.groupValues[1]}")
         }
+        // `class.col-md-6 text-center`：写规则的人把它当成「同时具备两个类」的元素。
+        // Jsoup 的 getElementsByClass 会按空白拆成多个类名做 And 匹配，而 CSS 选择器
+        // `.col-md-6 text-center` 是非法写法（会被当成后代选择器），旧实现因此恒返回空。
+        val multiClass = Regex("^class\\.([a-zA-Z][a-zA-Z0-9_-]*[ \\t][a-zA-Z0-9_ \\t-]*)$").find(trimmed)
+        if (multiClass != null) {
+            return@runCatching element.getElementsByClass(multiClass.groupValues[1].trim()).toList()
+        }
         // Legado 的 `text.下一页`：按**文本内容**选元素（ownText 包含即可）。
         // 书源分页规则 80% 写成 `text.下一页@href`，旧实现完全不认，导致 nextContentUrl 恒为空。
         val textOnly = Regex("^text\\.(.+)$").find(trimmed)
@@ -1693,20 +1776,22 @@ internal class NodeValue private constructor(private val html: Element?, private
                 return@runCatching matches
             }
         }
-        val indexed = Regex("^([a-zA-Z][a-zA-Z0-9-]*)\\.(\\d+)$").find(trimmed)
+        val indexed = Regex("^([a-zA-Z][a-zA-Z0-9-]*)\\.(-?\\d+)$").find(trimmed)
         if (indexed != null) {
             val tag = indexed.groupValues[1]
-            val ordinal = indexed.groupValues[2].toInt().coerceAtLeast(0)
+            val ordinal = indexed.groupValues[2].toInt()
             val matches = element.getElementsByTag(tag)
-            return@runCatching matches.getOrNull(ordinal)?.let { listOf(it) } ?: emptyList()
+            val picked = if (ordinal < 0) matches.getOrNull(matches.size + ordinal) else matches.getOrNull(ordinal)
+            return@runCatching picked?.let { listOf(it) } ?: emptyList()
         }
-        val classIndexed = Regex("^class\\.([a-zA-Z][a-zA-Z0-9_-]*)\\.(\\d+)$").find(trimmed)
-            ?: Regex("^\\.([a-zA-Z][a-zA-Z0-9_-]*)\\.(\\d+)$").find(trimmed)
+        val classIndexed = Regex("^class\\.([a-zA-Z][a-zA-Z0-9_-]*)\\.(-?\\d+)$").find(trimmed)
+            ?: Regex("^\\.([a-zA-Z][a-zA-Z0-9_-]*)\\.(-?\\d+)$").find(trimmed)
         if (classIndexed != null) {
             val className = classIndexed.groupValues[1]
-            val ordinal = classIndexed.groupValues[2].toInt().coerceAtLeast(0)
+            val ordinal = classIndexed.groupValues[2].toInt()
             val matches = element.select(".$className")
-            return@runCatching matches.getOrNull(ordinal)?.let { listOf(it) } ?: emptyList()
+            val picked = if (ordinal < 0) matches.getOrNull(matches.size + ordinal) else matches.getOrNull(ordinal)
+            return@runCatching picked?.let { listOf(it) } ?: emptyList()
         }
         // 兜底：先翻译 Legado 专有写法（`id.x`→`#x`、`tag.x`→`x`）再交给 Jsoup，
         // 否则 `id.list` 这类非法 CSS 会静默返回空集。
@@ -1832,6 +1917,18 @@ private fun pageStem(url: String): String {
     if (name.isEmpty()) return path
     val stem = if (name.contains('.')) name.substringBeforeLast('.') else name
     return stem.replace(Regex("[_\\-]\\d+$"), "")
+}
+
+/**
+ * 规则是否以 JS 形式书写：`@js:` / `js:` 前缀，或包含 `<js>…</js>` 段。
+ *
+ * 抽成文件级函数是因为「要不要对规则做文本切分」这件事在 `RuleRunner`（规则链调度）
+ * 与 `NodeValue`（`||` 回退的切分闸门）两侧都要判，两处各写一份必然漂移。
+ */
+internal fun isJsRuleText(rule: String): Boolean {
+    val trimmed = rule.trimStart()
+    return trimmed.startsWith("@js:") || trimmed.startsWith("js:") ||
+        (rule.contains("<js>") && rule.contains("</js>"))
 }
 
 internal fun translateSelector(selector: String): String {

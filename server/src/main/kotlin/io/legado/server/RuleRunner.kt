@@ -522,31 +522,84 @@ class RuleRunner(private val responseFetcher: ((String) -> String)? = null, inte
             sourceContext(source, sourceUrl, book).let { it.copy(chapterUrl = chapterUrl) },
         ) {
             val rule = source.objectValue("ruleContent") ?: throw RuleExecutionException("该书源未配置 ruleContent")
+            val contentRule = rule.string("content")
+            val nextRule = rule.string("nextContentUrl")
+            val sourceHeaders = parseSourceHeaders(source, sourceUrl)
             // 聚合源的章节地址同样是 data: 参数载体，正文由内容规则自行取回
             val dataPayload = dataUrlPayload(chapterUrl)
-            val body: String
-            val root: NodeValue
-            if (dataPayload != null) {
-                body = dataPayload
-                root = NodeValue.json(dataPayload)
-            } else {
-                val (url, options) = splitUrlOptions(chapterUrl)
-                val mergedOptions = mergeOptions(parseSourceHeaders(source, sourceUrl), options)
-                body = fetchUrl(url, mergedOptions, null, sourceUrl, database)
-                root = NodeValue.document(body)
+
+            // 单页正文提取：主规则优先，短内容时回退到 <p> 聚合（与原逻辑一致）
+            fun extractPage(pageBody: String, pageRoot: NodeValue, pageUrl: String): String {
+                var t = pageRoot.value(contentRule, jsSandbox, pageBody, pageUrl)?.cleanContent(pageUrl).orEmpty()
+                if (t.length < 500) {
+                    val paragraphs = Regex("(?i)<p[^>]*>([\\s\\S]*?)</p>").findAll(pageBody)
+                        .map { it.groupValues[1].cleanContent(pageUrl) }
+                        .filter { it.length > 2 && !it.contains("按←键返回") && !it.contains("加入书签") && !it.contains("仅放置最近浏览") }
+                        .toList()
+                    if (paragraphs.size >= 5) {
+                        val candidate = paragraphs.joinToString("\n\n")
+                        if (candidate.length > t.length) t = candidate
+                    }
+                }
+                return t
             }
-            // 插图：清洗时保留安全的 <img>（相对地址按章节页补全）——见 cleanContent 的说明
-            var text = root.value(rule.string("content"), jsSandbox, body, chapterUrl)?.cleanContent(chapterUrl).orEmpty()
-            if (text.length < 500) {
-                val paragraphs = Regex("(?i)<p[^>]*>([\\s\\S]*?)</p>").findAll(body)
-                    .map { it.groupValues[1].cleanContent(chapterUrl) }
-                    .filter { it.length > 2 && !it.contains("按←键返回") && !it.contains("加入书签") && !it.contains("仅放置最近浏览") }
-                    .toList()
-                if (paragraphs.size >= 5) {
-                    val candidate = paragraphs.joinToString("\n\n")
-                    if (candidate.length > text.length) text = candidate
+
+            // 正文分页：沿 nextContentUrl 逐页抓取并拼接，最多 20 页、去重防死循环。
+            // 标题与 replaceRegex 仍以第一页为准（与单页语义一致）。
+            val pageParts = mutableListOf<String>()
+            val visitedPages = mutableSetOf<String>()
+            var firstBody = ""
+            var firstRoot: NodeValue? = null
+            var pageUrl = chapterUrl
+            var pageCount = 0
+
+            if (dataPayload != null) {
+                firstBody = dataPayload
+                firstRoot = NodeValue.json(dataPayload)
+                pageParts.add(extractPage(firstBody, firstRoot!!, pageUrl))
+            } else {
+                // 章节地址可能自带选项后缀（如 `...,{"method":"POST","body":"..."}`）。
+                // 必须把「纯 URL」交给 fetchUrl、选项单独合并——直接把整串当 URL 会报非法字符。
+                val (initialUrl, initialOptions) = splitUrlOptions(pageUrl)
+                var fetchTarget = initialUrl
+                var mergedOptions = mergeOptions(sourceHeaders, initialOptions)
+                while (fetchTarget.isNotBlank() && pageCount < 10 && visitedPages.add(fetchTarget)) {
+                    pageCount++
+                    val currentUrl = fetchTarget
+                    val pageBody = fetchUrl(currentUrl, mergedOptions, null, sourceUrl, database)
+                    val pageRoot = NodeValue.document(pageBody)
+                    if (firstRoot == null) { firstBody = pageBody; firstRoot = pageRoot }
+                    pageParts.add(extractPage(pageBody, pageRoot, currentUrl))
+                    if (nextRule.isNullOrBlank()) break
+                    // 候选同时保留各自的选项后缀（部分站点分页接口是 POST，选项不能丢）。
+                    val nextCandidates = runCatching {
+                        pageRoot.value(nextRule, jsSandbox, pageBody, currentUrl)
+                    }.getOrNull()
+                        ?.lineSequence()
+                        ?.map { it.trim() }
+                        ?.filter { it.isNotEmpty() }
+                        ?.mapNotNull { raw ->
+                            val (target, options) = splitUrlOptions(raw)
+                            val absolute = target.trim().absolute(currentUrl)
+                            if (absolute.isBlank()) null else absolute to options
+                        }
+                        ?.toList()
+                        .orEmpty()
+                    // 分页选择器经常一次命中整组页码（如 `.page a@href` 返回 1/2/3/4 页）。
+                    // 取「第一个尚未访问过、且仍属于同一章节系列」的候选推进：
+                    //   · 只看第一行会在第 2 页撞回第 1 页而死循环；
+                    //   · 不加同章节判定，末页之后会顺着「下一章」链接把下一章正文拼进来。
+                    val next = nextCandidates.firstOrNull { (target, _) ->
+                        target.isNotBlank() && target !in visitedPages && isSamePageSeries(currentUrl, target)
+                    }
+                    if (next == null) break
+                    fetchTarget = next.first
+                    mergedOptions = mergeOptions(sourceHeaders, next.second)
                 }
             }
+            val body = firstBody
+            val root = firstRoot ?: NodeValue.document("")
+            var text = pageParts.joinToString("\n\n")
             val replaceRegex = rule.string("replaceRegex")
             if (!replaceRegex.isNullOrBlank()) {
                 val patterns = replaceRegex.split(Regex("[\r\n]+|&&")).map { it.trim() }.filter { it.isNotBlank() }
@@ -1630,6 +1683,16 @@ internal class NodeValue private constructor(private val html: Element?, private
         if (classOnly != null) {
             return@runCatching element.select(".${classOnly.groupValues[1]}")
         }
+        // Legado 的 `text.下一页`：按**文本内容**选元素（ownText 包含即可）。
+        // 书源分页规则 80% 写成 `text.下一页@href`，旧实现完全不认，导致 nextContentUrl 恒为空。
+        val textOnly = Regex("^text\\.(.+)$").find(trimmed)
+        if (textOnly != null) {
+            val needle = textOnly.groupValues[1].trim()
+            if (needle.isNotEmpty()) {
+                val matches = element.allElements.filter { it.ownText().contains(needle) }
+                return@runCatching matches
+            }
+        }
         val indexed = Regex("^([a-zA-Z][a-zA-Z0-9-]*)\\.(\\d+)$").find(trimmed)
         if (indexed != null) {
             val tag = indexed.groupValues[1]
@@ -1747,6 +1810,30 @@ class RuleExecutionException(message: String) : RuntimeException(message)
  * 抽成文件级函数是因为 `RuleRunner`（列表规则的 `css()`）与 `NodeValue`
  * （取值规则的 `selectAllLegado()`）两条路径都需要它，避免两处各写一份而漂移。
  */
+/**
+ * 判断两个 URL 是否属于同一章节的分页序列（`xxx.html` / `xxx_2.html` / `xxx?page=2`）。
+ *
+ * 正文分页循环靠它兜底：分页选择器在末页之后往往会命中「下一章」链接，
+ * 不设这道闸门就会把下一章正文拼进本章。
+ */
+internal fun isSamePageSeries(current: String, next: String): Boolean {
+    val curQuery = current.substringAfter('?', "")
+    val nextQuery = next.substringAfter('?', "")
+    if (curQuery.isNotEmpty() || nextQuery.isNotEmpty()) {
+        return current.substringBefore('?') == next.substringBefore('?')
+    }
+    return pageStem(current) == pageStem(next)
+}
+
+/** 取文件名主干并剥掉页码后缀：`7406889_2.html` → `7406889`。 */
+private fun pageStem(url: String): String {
+    val path = url.substringBefore('?').substringBefore('#')
+    val name = path.substringAfterLast('/')
+    if (name.isEmpty()) return path
+    val stem = if (name.contains('.')) name.substringBeforeLast('.') else name
+    return stem.replace(Regex("[_\\-]\\d+$"), "")
+}
+
 internal fun translateSelector(selector: String): String {
     val s = selector.trim()
     if (s.isEmpty()) return s

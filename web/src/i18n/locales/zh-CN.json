@@ -400,12 +400,7 @@
     "startedCacheNext50": "已开始缓存后续 50 章",
     "startedCacheNext100": "已开始缓存后续 100 章",
     "startedCacheRange": "已开始缓存第 {{start}} 至 {{end}} 章",
-    "newGroupButton": "新建分组",
-    "builtinGroup": "内置分组",
-    "builtinGroupCannotDelete": "内置分组，不能删除",
-    "builtinGroupCannotHide": "内置分组，不能隐藏",
-    "builtinGroupCannotReorder": "内置分组，不能排序",
-    "builtinGroupCannotRename": "内置分组，不能改名"
+    "newGroupButton": "新建分组"
   },
   "audiobook": {
     "back": "返回",

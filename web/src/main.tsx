@@ -15,6 +15,7 @@ import { cleanAuthor, cleanTitle, defaultSearchFilters, filterSearchGroups, isEx
 import { groupSearchResults, searchStore, SourceChoice, SourceChoiceStatus, useSearchStore } from './searchStore'
 import { SourceSwitchModal } from './SourceSwitchModal'
 import { GlobalSearchModal } from './GlobalSearchModal'
+import { useBackdropWheelForward } from './useBackdropWheel'
 import { matchBestChapter } from './sourceSwitchRemap'
 import { SourceLoginModal } from './SourceLoginModal'
 import { NetworkImportModal } from './NetworkImportModal'
@@ -2210,6 +2211,10 @@ function GroupManageModal({
   onGroupsChanged: () => Promise<void>
 }) {
   const { t } = useTranslation()
+  // 遮罩上的滚轮转发给分组列表（弹窗固定高度、内容多时靠内部滚动）
+  const groupBackdropRef = useRef<HTMLDivElement>(null)
+  const groupScrollRef = useRef<HTMLDivElement>(null)
+  useBackdropWheelForward(groupBackdropRef, groupScrollRef)
   const [newGroupName, setNewGroupName] = useState('')
   const [adding, setAdding] = useState(false)
   const [editingId, setEditingId] = useState<number | null>(null)
@@ -2307,7 +2312,7 @@ function GroupManageModal({
   }
 
   return (
-    <div className="modal-backdrop top-layer-modal-backdrop" onClick={onClose}>
+    <div ref={groupBackdropRef} className="modal-backdrop top-layer-modal-backdrop" onClick={onClose}>
       <div className="group-manage-modal" onClick={e => e.stopPropagation()} role="dialog" aria-modal="true" aria-label={t('shelf.manageGroups', '管理书架分组')}>
         <header className="group-manage-header">
           <div>
@@ -2317,7 +2322,7 @@ function GroupManageModal({
           <button className="subtle-button close-btn" onClick={onClose} aria-label={t('common.close', '关闭')}><Icon name="close" /></button>
         </header>
 
-        <div className="group-manage-body">
+        <div className="group-manage-body" ref={groupScrollRef}>
           <form className="group-add-form" onSubmit={handleAddGroup}>
             <input
               type="text"

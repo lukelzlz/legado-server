@@ -1,10 +1,11 @@
 // 显式 import React：本仓库的组件在 `web/test` 下用 tsx 静态渲染时走的是 classic JSX 变换。
-import React, { useCallback, useEffect, useMemo, useState } from 'react'
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { i18n } from './i18n'
 import { api, ReplaceRule, ReplaceRuleGroupSummary, UNGROUPED_SOURCE_GROUP } from './api'
 import { Icon } from './icons'
 import { toast } from './Toast'
+import { useBackdropWheelForward } from './useBackdropWheel'
 
 export const NEW_RULE_GROUP_OPTION = '__new__'
 
@@ -38,6 +39,10 @@ interface ReplaceRuleGroupManagerModalProps {
 
 export function ReplaceRuleGroupManagerModal({ groups, onChanged, onClose }: ReplaceRuleGroupManagerModalProps) {
   const { t } = useTranslation()
+  // 遮罩上的滚轮转发给弹窗内部滚动区
+  const ruleBackdropRef = useRef<HTMLDivElement>(null)
+  const ruleScrollRef = useRef<HTMLDivElement>(null)
+  useBackdropWheelForward(ruleBackdropRef, ruleScrollRef)
   const [localGroups, setLocalGroups] = useState<ReplaceRuleGroupSummary[]>(groups)
   const [rules, setRules] = useState<ReplaceRule[]>([])
   const [query, setQuery] = useState('')
@@ -193,7 +198,7 @@ export function ReplaceRuleGroupManagerModal({ groups, onChanged, onClose }: Rep
   }
 
   return (
-    <div className="modal-backdrop" onClick={onClose}>
+    <div ref={ruleBackdropRef} className="modal-backdrop" onClick={onClose}>
       <div
         className="group-manage-modal source-group-manager"
         onClick={e => e.stopPropagation()}
@@ -226,7 +231,7 @@ export function ReplaceRuleGroupManagerModal({ groups, onChanged, onClose }: Rep
           </div>
         </div>
 
-        <div className="group-manage-body">
+        <div className="group-manage-body" ref={ruleScrollRef}>
           <section className="sgm-section">
             <div className="sgm-section-head">
               <h3>{t('rules.existingGroupsTitle', '已有分组')}</h3>
@@ -234,11 +239,14 @@ export function ReplaceRuleGroupManagerModal({ groups, onChanged, onClose }: Rep
             </div>
 
             {localGroups.length === 0 ? (
-              <div className="group-empty-state">
-                <span className="group-empty-icon" aria-hidden="true">🏷️</span>
-                <p className="group-empty-title">{t('rules.noGroupsYet', '暂无自定义分组')}</p>
-                <p className="group-empty-desc">{t('rules.noGroupsHint', '可以在下方将规则归入新分组，分组创建后即可在此集中重命名或解绑。')}</p>
-              </div>
+              <p className="group-empty-line">
+                <Icon name="bookmark" />
+                <span>
+                  {t('rules.noGroupsYet', '暂无自定义分组')}
+                  {' · '}
+                  {t('rules.noGroupsHintShort', '在下方把规则归入新分组后，可在这里重命名或解绑')}
+                </span>
+              </p>
             ) : (
               <ul className="group-list">
                 {localGroups.map(group => {
@@ -322,7 +330,7 @@ export function ReplaceRuleGroupManagerModal({ groups, onChanged, onClose }: Rep
               <span className="sgm-section-hint">{t('rules.groupWorkbenchDesc', '批量勾选规则并设置归属分组')}</span>
             </div>
 
-            <div className="group-picker-row">
+            <div className="sgm-toolbar">
               <label htmlFor="rule-target-group-select" className="group-picker-label">
                 {t('rules.targetGroupLabel', '目标分组')}
               </label>
@@ -341,33 +349,8 @@ export function ReplaceRuleGroupManagerModal({ groups, onChanged, onClose }: Rep
                 ))}
                 <option value={NEW_RULE_GROUP_OPTION}>{t('rules.targetGroupNewOption', '＋ 新建分组…')}</option>
               </select>
-            </div>
 
-            {target === NEW_RULE_GROUP_OPTION && (
-              <div className="group-picker-new-row">
-                <input
-                  type="text"
-                  className="group-picker-input"
-                  value={newGroupName}
-                  onChange={e => setNewGroupName(e.target.value)}
-                  placeholder={t('rules.newGroupNamePrompt', '输入新分组名称')}
-                  disabled={busy}
-                  autoFocus
-                />
-              </div>
-            )}
 
-            <div className="group-picker-toolbar">
-              <div className="group-picker-search">
-                <Icon name="search" />
-                <input
-                  type="text"
-                  placeholder={t('rules.filterRulesToGroupPlaceholder', '在全量规则中筛选…')}
-                  value={query}
-                  onChange={e => setQuery(e.target.value)}
-                  disabled={busy}
-                />
-              </div>
               <div className="sgm-segmented-helpers" role="group" aria-label={t('common.select', '选择模式')}>
                 <button type="button" className="subtle-button compact" onClick={handleSelectAll} disabled={busy || visibleRules.length === 0}>
                   {t('shelf.selectAll', '全选')}
@@ -379,6 +362,40 @@ export function ReplaceRuleGroupManagerModal({ groups, onChanged, onClose }: Rep
                   {t('common.invertSelect', '反选')}
                 </button>
               </div>
+            </div>
+
+            {target === NEW_RULE_GROUP_OPTION && (
+              <label className="group-picker-new-row">
+                <span className="group-picker-input-label">{t('rules.newGroupNameLabel', '新分组名称')}</span>
+                <input
+                  type="text"
+                  className="group-picker-input"
+                  value={newGroupName}
+                  onChange={e => setNewGroupName(e.target.value)}
+                  placeholder={t('rules.newGroupNamePrompt', '输入新分组名称')}
+                  maxLength={20}
+                  disabled={busy}
+                  autoFocus
+                  onKeyDown={e => {
+                    // 回车 = 直接执行「加入该分组」，省一次鼠标
+                    if (e.key === 'Enter' && newGroupName.trim() && selectedIds.size > 0 && !busy) {
+                      e.preventDefault()
+                      void handleApplyGroup()
+                    }
+                  }}
+                />
+              </label>
+            )}
+
+            <div className="group-picker-search group-picker-search-row">
+              <Icon name="search" />
+              <input
+                type="text"
+                placeholder={t('rules.filterRulesToGroupPlaceholder', '在全量规则中筛选…')}
+                value={query}
+                onChange={e => setQuery(e.target.value)}
+                disabled={busy}
+              />
             </div>
 
             <div className="group-picker-list" role="list" aria-label={t('rules.allRulesAria', '规则列表')}>
@@ -430,3 +447,4 @@ export function ReplaceRuleGroupManagerModal({ groups, onChanged, onClose }: Rep
     </div>
   )
 }
+

@@ -347,7 +347,8 @@ data class SourceLoginStateRecord(
     /** `shelf` 书架 / `toc` 目录 / `content` 正文。 */
     val mode: String = "shelf",
     val query: String = "",
-    val limit: Int = 50,
+    /** 结果条数上限：**0（默认）= 不限制**，返回全部命中；正数才截断。 */
+    val limit: Int = 0,
     val sourceId: String? = null,
     val bookUrl: String? = null,
 )

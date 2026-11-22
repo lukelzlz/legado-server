@@ -2022,6 +2022,8 @@ mark.search-highlight { background: var(--accent-soft); color: var(--accent); fo
   padding: 12px 16px;
   display: grid;
   gap: 10px;
+  /* 只有一两条候选时贴顶排（不要用可用高度把卡片撑开/居中） */
+  align-content: start;
 }
 .source-candidate-card {
   display: flex;
@@ -5020,6 +5022,7 @@ mark.search-highlight { background: var(--accent-soft); color: var(--accent); fo
 
 /* ---- 书源勾选列表 ---- */
 .source-group-manager .group-picker-list {
+  align-content: start;
   max-height: 300px;
   overflow-y: auto;
   gap: 5px;
@@ -6886,10 +6889,20 @@ mark.search-highlight { background: var(--accent-soft); color: var(--accent); fo
 .global-search-clear { width: 26px; height: 26px; padding: 0; display: grid; place-items: center; flex-shrink: 0; }
 
 .global-search-hint { margin: 8px 16px 0; color: var(--muted); font-size: 12px; line-height: 1.5; }
+.global-search-error {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 6px 4px;
+}
+.global-search-error .reader-error { margin: 0; }
 
 .global-search-results {
   flex: 1 1 auto;
   overflow-y: auto;
+  /* 滚到顶/底时不要把滚动链给背景层 */
+  overscroll-behavior: contain;
   padding: 10px 12px 14px;
   display: grid;
   gap: 8px;
@@ -6979,3 +6992,231 @@ mark.search-highlight { background: var(--accent-soft); color: var(--accent); fo
   .shelf-search-btn span { display: none; }
 }
 
+/* ------------------------------------------------------------------
+   弹窗统一「一次到位」的尺寸（用户要求）
+   ------------------------------------------------------------------
+   以前弹窗高度由内容决定：刚打开是小的，数据加载完突然撑大 ⇒ 视觉上跳一下。
+   这里把所有弹窗根节点固定成同一档高度，打开即到位；内容多在各自的内容区里滚。
+   —— 用 min-height + max-height 双锁：不低于目标高度（打开就满），也不超过视口（不溢出）。
+   ------------------------------------------------------------------ */
+.modal-backdrop > .modal-card,
+.modal-backdrop > .book-detail-modal,
+.modal-backdrop > .book-info-edit-modal,
+.modal-backdrop > .bookmark-dialog,
+.modal-backdrop > .group-manage-modal.source-group-manager,
+.modal-backdrop > .batch-move-modal,
+.modal-backdrop > .book-manage-sheet,
+.modal-backdrop > .rule-modal-card,
+.modal-backdrop > .source-login-dialog,
+.modal-backdrop > .source-login-modal,
+.modal-backdrop > .source-switch-dialog,
+.modal-backdrop > .source-webview-dialog,
+.modal-backdrop > .tts-settings-dialog,
+.modal-backdrop > .global-search-dialog {
+  min-height: min(88vh, 820px);
+  max-height: min(88vh, 820px);
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+/* 手机上一屏本来就矮：占满可用高度，别再留 12vh 的空白 */
+@media (max-width: 720px) {
+  .modal-backdrop > .modal-card,
+  .modal-backdrop > .book-detail-modal,
+  .modal-backdrop > .book-info-edit-modal,
+  .modal-backdrop > .bookmark-dialog,
+  .modal-backdrop > .group-manage-modal.source-group-manager,
+  .modal-backdrop > .batch-move-modal,
+  .modal-backdrop > .book-manage-sheet,
+  .modal-backdrop > .rule-modal-card,
+  .modal-backdrop > .source-login-dialog,
+  .modal-backdrop > .source-login-modal,
+  .modal-backdrop > .source-switch-dialog,
+  .modal-backdrop > .source-webview-dialog,
+  .modal-backdrop > .tts-settings-dialog,
+  .modal-backdrop > .global-search-dialog {
+    min-height: 92vh;
+    max-height: 92vh;
+  }
+}
+
+/* ------------------------------------------------------------------
+   分组管理：概览数字与规则勾选行
+   ------------------------------------------------------------------
+   这两块的 JSX 类名在改版后变成了 `.sgm-overview/.sgm-stat-pill` 与
+   `.pick-item`（旧 CSS 写的是 `.sgm-stats/.sgm-stat` 与
+   `.group-item-row.pick-item`），类名对不上 ⇒ 统计数字变成三行纯文本、
+   勾选行里复选框被挤到名字上方。这里补齐新类名（旧规则保留，互不冲突）。
+   ------------------------------------------------------------------ */
+.sgm-overview {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 12px 22px;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface-muted);
+}
+.sgm-stat-pill {
+  flex: 1 1 130px;
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+  padding: 7px 12px;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  background: var(--surface);
+}
+.sgm-stat-label { font-size: 11px; color: var(--muted); letter-spacing: .02em; }
+.sgm-stat-val { font-size: 18px; font-weight: 700; line-height: 1.15; color: var(--ink); font-variant-numeric: tabular-nums; }
+.sgm-stat-pill.is-warning {
+  border-color: color-mix(in srgb, var(--accent) 42%, var(--line));
+  background: var(--accent-soft);
+}
+.sgm-stat-pill.is-warning .sgm-stat-val { color: var(--accent-ink); }
+
+/* 规则勾选行（`.pick-item` 不带 `.group-item-row`，必须单独成行） */
+.pick-item {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 10px;
+  padding: 8px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+  cursor: pointer;
+}
+.pick-item:hover { border-color: color-mix(in srgb, var(--accent) 42%, var(--line)); }
+.pick-item.is-checked {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+.pick-item input[type="checkbox"] {
+  flex: none;
+  width: 17px;
+  height: 17px;
+  margin: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+.pick-item-info { display: grid; gap: 2px; min-width: 0; }
+.pick-item-name {
+  font-size: 13px;
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pick-item-group-tag { font-size: 11px; color: var(--muted); }
+.pick-item.is-checked .pick-item-group-tag { color: var(--accent-ink); }
+
+/* 规则归类工作台：目标分组 + 批量按钮同一行，筛选、列表各自成行 */
+.sgm-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface-muted);
+}
+.sgm-toolbar .group-picker-label {
+  flex: none;
+  font-size: 12px;
+  color: var(--muted);
+  font-weight: 600;
+}
+.sgm-toolbar .group-picker-select {
+  flex: 1 1 200px;
+  min-width: 0;
+  height: 36px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--ink);
+  font-size: 13px;
+}
+.sgm-toolbar .sgm-segmented-helpers { margin-left: auto; flex: none; display: flex; gap: 6px; }
+.sgm-toolbar .sgm-segmented-helpers .subtle-button.compact { min-height: 30px; padding: 0 10px; font-size: 12px; }
+
+/* 空分组时的紧凑一行提示（替代原来占三行的大图标块） */
+.group-empty-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px dashed color-mix(in srgb, var(--line) 80%, var(--muted));
+  border-radius: 10px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+  background: var(--surface-muted);
+}
+.group-empty-line svg { width: 14px; height: 14px; flex: none; color: var(--accent); }
+
+/* 筛选框单独一行、铺满 */
+.group-picker-search-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 36px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+}
+.group-picker-search-row input {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 100%;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: var(--ink);
+  font-size: 13px;
+}
+.group-picker-search-row svg { width: 14px; height: 14px; flex: none; color: var(--muted); }
+
+@media (max-width: 640px) {
+  .sgm-toolbar { gap: 8px; }
+  .sgm-toolbar .sgm-segmented-helpers { margin-left: 0; width: 100%; }
+}
+
+/* 「新建分组」输入行：与筛选框同一套外观（原本没有样式 ⇒ 裸 input + 默认绿描边） */
+.group-picker-new-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+.group-picker-input-label {
+  flex: none;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--accent-ink);
+}
+.group-picker-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 36px;
+  padding: 0 12px;
+  border: 1px solid color-mix(in srgb, var(--accent) 40%, var(--line));
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--ink);
+  font-size: 13px;
+  outline: none;
+  transition: border-color .15s ease, box-shadow .15s ease;
+}
+.group-picker-input::placeholder { color: var(--muted); }
+.group-picker-input:focus,
+.group-picker-input:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
+}

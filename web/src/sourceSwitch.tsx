@@ -2,6 +2,7 @@
 // （会找 `React` 这个标识符），而 `web/tsconfig.json` 是 automatic 变换。
 // 少这一行会让 `renderToStaticMarkup` 抛 `ReferenceError: React is not defined`。
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useBackdropWheelForward } from './useBackdropWheel'
 import { useTranslation } from 'react-i18next'
 import { api, BookDetails, Chapter, SearchResult, SearchStreamEvent, streamSearch } from './api'
 import { Icon } from './icons'
@@ -68,6 +69,10 @@ export function SourceSwitchModal({
   const [switchingSourceId, setSwitchingSourceId] = useState<string | null>(null)
 
   const socketRef = useRef<WebSocket | null>(null)
+  // 遮罩上的滚轮转发给候选列表：只有一两条时贴顶，条目多时靠内部滚动
+  const switchBackdropRef = useRef<HTMLDivElement>(null)
+  const candidateListRef = useRef<HTMLDivElement>(null)
+  useBackdropWheelForward(switchBackdropRef, candidateListRef)
   const fetchingTocRef = useRef<Set<string>>(new Set())
 
   const fetchCandidateToc = useCallback(async (candidate: SourceCandidate) => {
@@ -270,7 +275,7 @@ export function SourceSwitchModal({
     : 0
 
   return (
-    <div className="modal-backdrop" onClick={onClose}>
+    <div ref={switchBackdropRef} className="modal-backdrop" onClick={onClose}>
       <div
         className="source-switch-dialog"
         onClick={e => e.stopPropagation()}
@@ -319,7 +324,7 @@ export function SourceSwitchModal({
         </div>
 
         {/* Candidate List */}
-        <div className="source-candidate-list">
+        <div className="source-candidate-list" ref={candidateListRef}>
           {sortedCandidates.map(c => {
             const isSwitching = switchingSourceId === c.result.sourceId
             const isLoading = c.status === 'loading'
